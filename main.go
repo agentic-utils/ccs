@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 // Message represents a conversation message
 type Message struct {
@@ -260,8 +260,7 @@ func buildSearchLines(conversations []Conversation) ([]string, map[string]Conver
 
 			// Format: id \t date \t project \t message
 			// Colors: date=dim, project=yellow/bold, message=white
-			// Use │ separator for visual clarity
-			line := fmt.Sprintf("%s:%d\t\033[90m%s\033[0m \033[90m│\033[0m \033[1;33m%s\033[0m \033[90m│\033[0m %s",
+			line := fmt.Sprintf("%s:%d\t\033[90m%s\033[0m\t\033[1;33m%s\033[0m\t%s",
 				conv.SessionID, i, ts, projectPad, text)
 			lines = append(lines, line)
 		}
@@ -505,8 +504,9 @@ func main() {
 		"--ansi",
 		"--delimiter=\t",
 		"--with-nth=2,3,4",
+		"--tabstop=4",
 		"--preview", fmt.Sprintf("%s --preview {} {q}", self),
-		"--preview-window=right:60%:wrap",
+		"--preview-window=bottom:70%:wrap:+5",
 		"--header=Search conversations | Enter to resume, Esc to quit",
 		"--prompt=Search: ",
 		"--height=90%",

@@ -28,11 +28,11 @@ checksum:
 
 brews:
   - repository:
-      owner: agents-cli
+      owner: agentic-cli
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
-    homepage: "https://github.com/agents-cli/ccs"
+    homepage: "https://github.com/agentic-cli/ccs"
     description: "Search and resume Claude Code conversations using fzf"
     license: "MIT"
     dependencies:

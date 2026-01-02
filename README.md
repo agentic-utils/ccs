@@ -18,18 +18,18 @@ Search and resume [Claude Code](https://claude.ai/claude-code) conversations usi
 ### Homebrew
 
 ```bash
-brew install brtkwr/tap/ccs
+brew install agents-cli/tap/ccs
 ```
 
 ### From source
 
 ```bash
-go install github.com/brtkwr/ccs@latest
+go install github.com/agents-cli/ccs@latest
 ```
 
 ### Manual
 
-Download the binary from [releases](https://github.com/brtkwr/ccs/releases) and add to your PATH.
+Download the binary from [releases](https://github.com/agents-cli/ccs/releases) and add to your PATH.
 
 ## Requirements
 

@@ -15,13 +15,15 @@ Search and resume [Claude Code](https://claude.ai/claude-code) conversations usi
 
 ## Installation
 
-### Homebrew
+### Homebrew (macOS and Linux)
 
 ```bash
 brew install agentic-utils/tap/ccs
 ```
 
 ### From source
+
+Requires [Go](https://go.dev/doc/install) 1.21+.
 
 ```bash
 go install github.com/agentic-utils/ccs@latest
@@ -33,7 +35,22 @@ Download the binary from [releases](https://github.com/agentic-utils/ccs/release
 
 ## Requirements
 
-- [fzf](https://github.com/junegunn/fzf) - `brew install fzf`
+- [fzf](https://github.com/junegunn/fzf)
+
+  ```bash
+  # macOS
+  brew install fzf
+
+  # Debian/Ubuntu
+  sudo apt install fzf
+
+  # Fedora
+  sudo dnf install fzf
+
+  # Arch
+  sudo pacman -S fzf
+  ```
+
 - [Claude Code](https://claude.ai/claude-code) - must be installed and used at least once
 
 ## Usage

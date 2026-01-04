@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "0.2.1"
+const version = "0.3.0"
 
 // Message represents a conversation message
 type Message struct {
@@ -29,6 +29,7 @@ type Conversation struct {
 	SessionID      string    `json:"session_id"`
 	Cwd            string    `json:"cwd"`
 	FirstTimestamp string    `json:"first_timestamp"`
+	LastTimestamp  string    `json:"last_timestamp"`
 	Messages       []Message `json:"messages"`
 }
 
@@ -145,6 +146,9 @@ func parseConversationFile(path string) (*Conversation, error) {
 		return nil, nil
 	}
 
+	// Set LastTimestamp from the last message
+	conv.LastTimestamp = conv.Messages[len(conv.Messages)-1].Ts
+
 	if conv.Cwd == "" {
 		conv.Cwd = "unknown"
 	}
@@ -202,7 +206,7 @@ func getConversations() ([]Conversation, error) {
 	}
 
 	sort.Slice(conversations, func(i, j int) bool {
-		return conversations[i].FirstTimestamp > conversations[j].FirstTimestamp
+		return conversations[i].LastTimestamp > conversations[j].LastTimestamp
 	})
 
 	return conversations, nil
@@ -249,21 +253,33 @@ func buildSearchLines(conversations []Conversation) ([]string, map[string]Conver
 			project = conv.Cwd[idx+1:]
 		}
 
-		for i, msg := range conv.Messages {
-			if msg.Role != "user" {
-				continue
+		// Collect all user messages for search, display first one
+		var firstUserMsg *Message
+		var allUserText []string
+		for i := range conv.Messages {
+			if conv.Messages[i].Role == "user" {
+				if firstUserMsg == nil {
+					firstUserMsg = &conv.Messages[i]
+				}
+				allUserText = append(allUserText, conv.Messages[i].Text)
 			}
-
-			text := truncate(msg.Text, 100)
-			ts := formatTimestamp(msg.Ts)
-			projectPad := padOrTruncate(project, 25)
-
-			// Format: id \t date \t project \t message
-			// Colors: date=dim, project=yellow/bold, message=white
-			line := fmt.Sprintf("%s:%d\t\033[90m%s\033[0m\t\033[1;33m%s\033[0m\t%s",
-				conv.SessionID, i, ts, projectPad, text)
-			lines = append(lines, line)
 		}
+
+		if firstUserMsg == nil {
+			continue
+		}
+
+		displayText := truncate(firstUserMsg.Text, 100)
+		searchText := strings.Join(strings.Fields(strings.Join(allUserText, " ")), " ")
+		ts := formatTimestamp(conv.LastTimestamp)
+		projectPad := padOrTruncate(project, 25)
+
+		// Format: id \t date \t project \t display_message \t search_text
+		// Colors: date=dim, project=yellow/bold, message=white
+		// search_text is hidden (column 5) but used for matching
+		line := fmt.Sprintf("%s\t\033[90m%s\033[0m\t\033[1;33m%s\033[0m\t%s\t%s",
+			conv.SessionID, ts, projectPad, displayText, searchText)
+		lines = append(lines, line)
 	}
 
 	return lines, convMap
@@ -344,15 +360,7 @@ func showPreview(line, query string) {
 		return
 	}
 
-	sessionMsg := parts[0]
-	lastColon := strings.LastIndex(sessionMsg, ":")
-	if lastColon < 0 {
-		return
-	}
-
-	sessionID := sessionMsg[:lastColon]
-	var msgIdx int
-	fmt.Sscanf(sessionMsg[lastColon+1:], "%d", &msgIdx)
+	sessionID := parts[0]
 
 	conv, ok := convMap[sessionID]
 	if !ok {
@@ -364,19 +372,56 @@ func showPreview(line, query string) {
 	fmt.Printf("\033[1;33mSession:\033[0m %s\n", sessionID)
 	fmt.Printf("\033[1;33mTotal messages:\033[0m %d\n\n", len(conv.Messages))
 
-	start := msgIdx - 2
-	if start < 0 {
-		start = 0
-	}
-	end := msgIdx + 4
-	if end > len(conv.Messages) {
-		end = len(conv.Messages)
+	// Find all messages containing the query
+	var matchIndices []int
+	matchSet := make(map[int]bool)
+	if query != "" {
+		queryLower := strings.ToLower(query)
+		for i, msg := range conv.Messages {
+			if strings.Contains(strings.ToLower(msg.Text), queryLower) {
+				matchIndices = append(matchIndices, i)
+				matchSet[i] = true
+			}
+		}
 	}
 
-	for i := start; i < end; i++ {
+	// Build set of indices to show (matches + 1 context on each side)
+	showSet := make(map[int]bool)
+	if len(matchIndices) > 0 {
+		for _, idx := range matchIndices {
+			if idx > 0 {
+				showSet[idx-1] = true
+			}
+			showSet[idx] = true
+			if idx < len(conv.Messages)-1 {
+				showSet[idx+1] = true
+			}
+		}
+	} else {
+		// No matches, show first 6 messages
+		for i := 0; i < 6 && i < len(conv.Messages); i++ {
+			showSet[i] = true
+		}
+	}
+
+	// Display messages with gaps
+	lastShown := -1
+	for i := 0; i < len(conv.Messages); i++ {
+		if !showSet[i] {
+			continue
+		}
+
+		// Show gap indicator if we skipped messages
+		if lastShown >= 0 && i > lastShown+1 {
+			skipped := i - lastShown - 1
+			fmt.Printf("\033[90m    ... %d messages ...\033[0m\n\n", skipped)
+		} else if lastShown == -1 && i > 0 {
+			fmt.Printf("\033[90m    ... %d earlier messages\033[0m\n\n", i)
+		}
+
 		msg := conv.Messages[i]
 		var prefix string
-		if i == msgIdx {
+		if matchSet[i] {
 			if msg.Role == "user" {
 				prefix = "\033[1;32m>>> User:\033[0m"
 			} else {
@@ -398,10 +443,12 @@ func showPreview(line, query string) {
 		fmt.Println(prefix)
 		fmt.Println(formatCodeBlock(text, query, "    "))
 		fmt.Println()
+
+		lastShown = i
 	}
 
-	remaining := len(conv.Messages) - end
-	if remaining > 0 {
+	if lastShown < len(conv.Messages)-1 {
+		remaining := len(conv.Messages) - lastShown - 1
 		fmt.Printf("\033[90m    ... %d more messages\033[0m\n", remaining)
 	}
 }
@@ -504,6 +551,8 @@ func main() {
 		"--ansi",
 		"--delimiter=\t",
 		"--with-nth=2,3,4",
+		"--nth=2..",
+		"--no-sort",
 		"--tabstop=4",
 		"--preview", fmt.Sprintf("%s --preview {} {q}", self),
 		"--preview-window=bottom:70%:wrap:+5",
@@ -529,9 +578,7 @@ func main() {
 	}
 
 	parts := strings.Split(selected, "\t")
-	sessionMsg := parts[0]
-	lastColon := strings.LastIndex(sessionMsg, ":")
-	sessionID := sessionMsg[:lastColon]
+	sessionID := parts[0]
 
 	conv, ok := convMap[sessionID]
 	if !ok {

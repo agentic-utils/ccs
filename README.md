@@ -64,7 +64,7 @@ Download the binary from [releases](https://github.com/agentic-utils/ccs/release
 ccs
 
 # Resume with auto-accept permissions
-ccs --dangerously-skip-permissions
+ccs --allow-dangerously-skip-permissions
 ```
 
 ### Keybindings

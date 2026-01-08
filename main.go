@@ -7,15 +7,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.4.0"
+const version = "0.5.0"
 
 // Message represents a conversation message
 type Message struct {
@@ -49,18 +52,475 @@ type TextContent struct {
 	Text string `json:"text"`
 }
 
-// CacheData holds all data needed for preview
-type CacheData struct {
-	Conversations map[string]Conversation `json:"conversations"`
+// listItem holds display and search data for a conversation
+type listItem struct {
+	conv       Conversation
+	searchText string // All searchable content
+	display    string // What to show in the list
 }
+
+// Styles
+var (
+	selectedStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("62")).
+			Foreground(lipgloss.Color("230")).
+			Bold(true)
+
+	normalStyle = lipgloss.NewStyle()
+
+	dimStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
+
+	projectStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
+
+	headerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
+
+	userStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("70"))
+
+	assistantStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("68"))
+
+	borderStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("240"))
+
+	helpStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
+)
+
+// model is the bubbletea application state
+type model struct {
+	items          []listItem
+	filtered       []listItem
+	textInput      textinput.Model
+	cursor         int
+	previewScroll  int
+	width          int
+	height         int
+	listHeight     int // Calculated list height for mouse detection
+	selected       *Conversation
+	quitting       bool
+	claudeFlags    []string
+	mouseInPreview bool // Track if mouse is in preview area
+}
+
+func initialModel(items []listItem, filterQuery string, claudeFlags []string) model {
+	ti := textinput.New()
+	ti.Placeholder = "type to search..."
+	ti.Prompt = "> "
+	ti.Focus()
+	ti.SetValue(filterQuery)
+	ti.Width = 40
+
+	m := model{
+		items:       items,
+		textInput:   ti,
+		claudeFlags: claudeFlags,
+	}
+	m.updateFilter()
+	return m
+}
+
+func (m *model) updateFilter() {
+	query := m.textInput.Value()
+	if query == "" {
+		m.filtered = m.items
+	} else {
+		// Exact substring matching (case-insensitive)
+		queryLower := strings.ToLower(query)
+		m.filtered = make([]listItem, 0)
+		for _, item := range m.items {
+			if strings.Contains(strings.ToLower(item.searchText), queryLower) {
+				m.filtered = append(m.filtered, item)
+			}
+		}
+	}
+	// Keep cursor in bounds
+	if m.cursor >= len(m.filtered) {
+		m.cursor = max(0, len(m.filtered)-1)
+	}
+	m.previewScroll = 0
+}
+
+func (m model) Init() tea.Cmd {
+	return textinput.Blink
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		// Calculate list height for mouse detection
+		m.listHeight = m.height * 30 / 100
+		if m.listHeight < 3 {
+			m.listHeight = 3
+		}
+		return m, nil
+
+	case tea.MouseMsg:
+		// Determine if mouse is in preview area (below list + separator)
+		listAreaHeight := 2 + m.listHeight // search line + separator + list
+		m.mouseInPreview = msg.Y > listAreaHeight
+
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			if m.mouseInPreview {
+				m.previewScroll = max(0, m.previewScroll-3)
+			} else {
+				if m.cursor > 0 {
+					m.cursor--
+					m.previewScroll = 0
+				}
+			}
+			return m, nil
+		case tea.MouseButtonWheelDown:
+			if m.mouseInPreview {
+				m.previewScroll += 3
+			} else {
+				if m.cursor < len(m.filtered)-1 {
+					m.cursor++
+					m.previewScroll = 0
+				}
+			}
+			return m, nil
+		}
+		return m, nil
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
+			m.quitting = true
+			return m, tea.Quit
+
+		case "enter":
+			if len(m.filtered) > 0 {
+				m.selected = &m.filtered[m.cursor].conv
+			}
+			m.quitting = true
+			return m, tea.Quit
+
+		case "up", "ctrl+p":
+			if m.cursor > 0 {
+				m.cursor--
+				m.previewScroll = 0
+			}
+			return m, nil
+
+		case "down", "ctrl+n":
+			if m.cursor < len(m.filtered)-1 {
+				m.cursor++
+				m.previewScroll = 0
+			}
+			return m, nil
+
+		case "pgup", "ctrl+k":
+			m.previewScroll = max(0, m.previewScroll-10)
+			return m, nil
+
+		case "pgdown", "ctrl+j":
+			m.previewScroll += 10
+			return m, nil
+
+		case "ctrl+u":
+			m.textInput.SetValue("")
+			m.updateFilter()
+			return m, nil
+		}
+	}
+
+	// Update text input
+	var cmd tea.Cmd
+	prevValue := m.textInput.Value()
+	m.textInput, cmd = m.textInput.Update(msg)
+	if m.textInput.Value() != prevValue {
+		m.updateFilter()
+	}
+	return m, cmd
+}
+
+func (m model) View() string {
+	if m.width == 0 || m.height == 0 {
+		return "Loading..."
+	}
+
+	var b strings.Builder
+
+	// Table width: 2 + 16 + 2 + 22 + 2 + 40 + 2 + 5 + 2 + 4 = 97
+	tableWidth := 97
+
+	// Title line with help right-aligned
+	// Display widths: title="ccs · claude code search"=25, help="↑/↓ Enter Ctrl+J/K Esc"=22
+	titlePadding := tableWidth - 2 - 25 - 22 + 1 // 2 for indent, +1 to shift right
+	if titlePadding < 1 {
+		titlePadding = 1
+	}
+	b.WriteString(fmt.Sprintf("  \033[1;36mccs\033[0m \033[90m· claude code search%s↑/↓ Enter Ctrl+J/K Esc\033[0m\n",
+		strings.Repeat(" ", titlePadding)))
+
+	// Search line with count right-aligned
+	count := fmt.Sprintf("(%d/%d)", len(m.filtered), len(m.items))
+	searchPadding := tableWidth - 2 - 2 - 40 - len(count) - 1 // 2 for indent, 2 for "> ", 40 for textInput, -1 to shift left
+	if searchPadding < 1 {
+		searchPadding = 1
+	}
+	b.WriteString(fmt.Sprintf("  %s%s\033[90m%s\033[0m\n\n",
+		m.textInput.View(), strings.Repeat(" ", searchPadding), count))
+
+	// Calculate heights
+	listHeight := m.height * 30 / 100
+	if listHeight < 3 {
+		listHeight = 3
+	}
+	previewHeight := m.height - listHeight - 6 // 6 for title + search + blank + header + borders
+
+	// Column headers
+	b.WriteString(fmt.Sprintf("  \033[90m%-16s  %-22s  %-40s  %5s  %4s\033[0m\n", "DATE", "PROJECT", "TOPIC", "MSGS", "HITS"))
+	b.WriteString(strings.Repeat("─", m.width))
+	b.WriteString("\n")
+
+	visibleItems := listHeight
+	start := 0
+	if m.cursor >= visibleItems {
+		start = m.cursor - visibleItems + 1
+	}
+
+	for i := start; i < min(start+visibleItems, len(m.filtered)); i++ {
+		item := m.filtered[i]
+		isSelected := i == m.cursor
+		line := m.formatListItem(item, isSelected)
+
+		if isSelected {
+			// Pad to full width for selection highlight
+			line = padRight("> "+line, m.width)
+			b.WriteString(selectedStyle.Render(line))
+		} else {
+			b.WriteString("  " + line)
+		}
+		b.WriteString("\n")
+	}
+
+	// Fill remaining list space
+	for i := len(m.filtered) - start; i < visibleItems; i++ {
+		b.WriteString("\n")
+	}
+
+	// Preview section
+	b.WriteString(strings.Repeat("─", m.width))
+	b.WriteString("\n")
+
+	if len(m.filtered) > 0 {
+		preview := m.renderPreview(m.filtered[m.cursor], previewHeight)
+		b.WriteString(preview)
+	}
+
+	return b.String()
+}
+
+func (m model) formatListItem(item listItem, selected bool) string {
+	ts := formatTimestamp(item.conv.LastTimestamp)
+	project := item.conv.Cwd
+	if idx := strings.LastIndex(project, "/"); idx >= 0 {
+		project = project[idx+1:]
+	}
+	// Truncate project name to fit column
+	if len(project) > 22 {
+		project = project[:19] + "..."
+	}
+
+	// Use first user message as topic
+	topic := ""
+	for _, msg := range item.conv.Messages {
+		if msg.Role == "user" {
+			topic = truncate(msg.Text, 40)
+			break
+		}
+	}
+
+	// Message count
+	msgs := len(item.conv.Messages)
+
+	// Count messages containing the query
+	query := m.textInput.Value()
+	hits := 0
+	if query != "" {
+		queryLower := strings.ToLower(query)
+		for _, msg := range item.conv.Messages {
+			if strings.Contains(strings.ToLower(msg.Text), queryLower) {
+				hits++
+			}
+		}
+	}
+
+	// Format: date | project | topic | msgs | hits (aligned columns)
+	if selected {
+		return fmt.Sprintf("%-16s  %-22s  %-40s  %5d  %4d", ts, project, topic, msgs, hits)
+	}
+	return fmt.Sprintf("\033[90m%-16s\033[0m  \033[1;33m%-22s\033[0m  %-40s  %5d  \033[36m%4d\033[0m",
+		ts, project, topic, msgs, hits)
+}
+
+func (m model) renderPreview(item listItem, height int) string {
+	query := m.textInput.Value()
+	conv := item.conv
+
+	// Fixed header (always visible)
+	var header []string
+	header = append(header, "\033[1;33mProject:\033[0m "+highlight(conv.Cwd, query))
+	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
+	header = append(header, "")
+
+	// Build message lines (scrollable)
+	var msgLines []string
+
+	// Find messages containing the query
+	queryLower := strings.ToLower(query)
+	matchSet := make(map[int]bool)
+	if query != "" {
+		for i, msg := range conv.Messages {
+			if strings.Contains(strings.ToLower(msg.Text), queryLower) {
+				matchSet[i] = true
+			}
+		}
+	}
+
+	// Build set of indices to show
+	showSet := make(map[int]bool)
+
+	// Always show first 2 and last 2 messages
+	for i := 0; i < 2 && i < len(conv.Messages); i++ {
+		showSet[i] = true
+	}
+	for i := len(conv.Messages) - 2; i < len(conv.Messages); i++ {
+		if i >= 0 {
+			showSet[i] = true
+		}
+	}
+
+	// Add matches with context
+	for idx := range matchSet {
+		if idx > 0 {
+			showSet[idx-1] = true
+		}
+		showSet[idx] = true
+		if idx < len(conv.Messages)-1 {
+			showSet[idx+1] = true
+		}
+	}
+
+	// Display messages with gaps
+	lastShown := -1
+	for i := 0; i < len(conv.Messages); i++ {
+		if !showSet[i] {
+			continue
+		}
+
+		if lastShown >= 0 && i > lastShown+1 {
+			skipped := i - lastShown - 1
+			msgLines = append(msgLines, fmt.Sprintf("\033[90m    ... %d messages ...\033[0m", skipped))
+			msgLines = append(msgLines, "")
+		} else if lastShown == -1 && i > 0 {
+			msgLines = append(msgLines, fmt.Sprintf("\033[90m    ... %d earlier messages\033[0m", i))
+			msgLines = append(msgLines, "")
+		}
+
+		msg := conv.Messages[i]
+		ts := formatTimestamp(msg.Ts)
+		var prefix string
+		if matchSet[i] {
+			if msg.Role == "user" {
+				prefix = fmt.Sprintf("\033[1;32m>>> %s User:\033[0m", ts) // Bold green
+			} else {
+				prefix = fmt.Sprintf("\033[1;34m>>> %s Claude:\033[0m", ts) // Bold blue
+			}
+		} else {
+			if msg.Role == "user" {
+				prefix = fmt.Sprintf("\033[32m    %s User:\033[0m", ts) // Green
+			} else {
+				prefix = fmt.Sprintf("\033[34m    %s Claude:\033[0m", ts) // Blue
+			}
+		}
+
+		msgLines = append(msgLines, prefix)
+		text := msg.Text
+		if len(text) > 500 {
+			text = text[:500] + "... (truncated)"
+		}
+		for _, line := range strings.Split(text, "\n") {
+			msgLines = append(msgLines, "    "+highlight(line, query))
+		}
+		msgLines = append(msgLines, "")
+
+		lastShown = i
+	}
+
+	if lastShown < len(conv.Messages)-1 {
+		remaining := len(conv.Messages) - lastShown - 1
+		msgLines = append(msgLines, fmt.Sprintf("\033[90m    ... %d more messages\033[0m", remaining))
+	}
+
+	// Apply scroll to messages only (header stays fixed)
+	msgHeight := height - len(header)
+	if msgHeight < 1 {
+		msgHeight = 1
+	}
+	if m.previewScroll >= len(msgLines) {
+		m.previewScroll = max(0, len(msgLines)-1)
+	}
+	end := min(m.previewScroll+msgHeight, len(msgLines))
+	visibleMsgLines := msgLines[m.previewScroll:end]
+
+	// Combine header + scrolled messages
+	allLines := append(header, visibleMsgLines...)
+	return strings.Join(allLines, "\n")
+}
+
+func highlight(text, query string) string {
+	if query == "" {
+		return text
+	}
+	lower := strings.ToLower(text)
+	queryLower := strings.ToLower(query)
+
+	// Find all occurrences and highlight them
+	var result strings.Builder
+	lastEnd := 0
+	for {
+		idx := strings.Index(lower[lastEnd:], queryLower)
+		if idx == -1 {
+			result.WriteString(text[lastEnd:])
+			break
+		}
+		idx += lastEnd
+		result.WriteString(text[lastEnd:idx])
+		// Yellow background, black text for highlight
+		result.WriteString("\033[43;30m")
+		result.WriteString(text[idx : idx+len(query)])
+		result.WriteString("\033[0m")
+		lastEnd = idx + len(query)
+	}
+	return result.String()
+}
+
+func padRight(s string, length int) string {
+	if len(s) >= length {
+		return s[:length]
+	}
+	return s + strings.Repeat(" ", length-len(s))
+}
+
+// ============================================================================
+// Data loading (preserved from original)
+// ============================================================================
 
 func getProjectsDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".claude", "projects")
-}
-
-func getCachePath() string {
-	return filepath.Join(os.TempDir(), "ccs-cache.json")
 }
 
 func extractText(content json.RawMessage) string {
@@ -146,7 +606,6 @@ func parseConversationFile(path string) (*Conversation, error) {
 		return nil, nil
 	}
 
-	// Set LastTimestamp from the last message
 	conv.LastTimestamp = conv.Messages[len(conv.Messages)-1].Ts
 
 	if conv.Cwd == "" {
@@ -159,7 +618,6 @@ func parseConversationFile(path string) (*Conversation, error) {
 func getConversations() ([]Conversation, error) {
 	projectsDir := getProjectsDir()
 
-	// Collect all jsonl files
 	var files []string
 	err := filepath.Walk(projectsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -174,11 +632,8 @@ func getConversations() ([]Conversation, error) {
 		return nil, err
 	}
 
-	// Parse files in parallel
 	var wg sync.WaitGroup
 	results := make(chan *Conversation, len(files))
-
-	// Limit concurrency
 	sem := make(chan struct{}, 20)
 
 	for _, file := range files {
@@ -234,255 +689,62 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-func padOrTruncate(s string, length int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > length {
-		return s[:length-1] + "…"
-	}
-	return fmt.Sprintf("%-*s", length, s)
-}
-
-func buildSearchLines(conversations []Conversation) ([]string, map[string]Conversation) {
-	var lines []string
-	convMap := make(map[string]Conversation)
+// buildItems creates list items from conversations
+func buildItems(conversations []Conversation) []listItem {
+	items := make([]listItem, 0, len(conversations))
 
 	for _, conv := range conversations {
-		convMap[conv.SessionID] = conv
-		project := conv.Cwd
-		if idx := strings.LastIndex(conv.Cwd, "/"); idx >= 0 {
-			project = conv.Cwd[idx+1:]
-		}
+		// Build search text from all content
+		var searchParts []string
+		searchParts = append(searchParts, conv.SessionID)
+		searchParts = append(searchParts, conv.Cwd)
+		searchParts = append(searchParts, formatTimestamp(conv.FirstTimestamp))
+		searchParts = append(searchParts, formatTimestamp(conv.LastTimestamp))
 
-		// Collect all user messages for search, display first one
-		var firstUserMsg *Message
-		var allUserText []string
-		for i := range conv.Messages {
-			if conv.Messages[i].Role == "user" {
-				if firstUserMsg == nil {
-					firstUserMsg = &conv.Messages[i]
-				}
-				allUserText = append(allUserText, conv.Messages[i].Text)
-			}
-		}
-
-		if firstUserMsg == nil {
-			continue
-		}
-
-		displayText := truncate(firstUserMsg.Text, 100)
-		firstTs := formatTimestamp(conv.FirstTimestamp)
-		lastTs := formatTimestamp(conv.LastTimestamp)
-		// Include session ID, timestamps, project/cwd, and all user messages in search text
-		allSearchText := append([]string{conv.SessionID, firstTs, lastTs, conv.Cwd, project}, allUserText...)
-		searchText := strings.Join(strings.Fields(strings.Join(allSearchText, " ")), " ")
-		projectPad := padOrTruncate(project, 25)
-
-		// Format: id \t date \t project \t display_message \t search_text
-		// search_text hidden with zero-width or minimal display
-		// Colors: date=dim, project=yellow/bold, message=white
-		line := fmt.Sprintf("%s\t\033[90m%s\033[0m\t\033[1;33m%s\033[0m\t%s\t%s",
-			conv.SessionID, lastTs, projectPad, displayText, searchText)
-		lines = append(lines, line)
-	}
-
-	return lines, convMap
-}
-
-func saveCache(convMap map[string]Conversation) error {
-	data := CacheData{Conversations: convMap}
-	file, err := os.Create(getCachePath())
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return json.NewEncoder(file).Encode(data)
-}
-
-func loadCache() (map[string]Conversation, error) {
-	file, err := os.Open(getCachePath())
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var data CacheData
-	if err := json.NewDecoder(file).Decode(&data); err != nil {
-		return nil, err
-	}
-	return data.Conversations, nil
-}
-
-func highlight(text, query string) string {
-	if query == "" {
-		return text
-	}
-	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(query))
-	return re.ReplaceAllStringFunc(text, func(match string) string {
-		return fmt.Sprintf("\033[43;30m%s\033[0m", match)
-	})
-}
-
-func formatCodeBlock(text, query, indent string) string {
-	lines := strings.Split(text, "\n")
-	var result []string
-	inCodeBlock := false
-	codeLang := ""
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "```") {
-			if !inCodeBlock {
-				inCodeBlock = true
-				codeLang = strings.TrimPrefix(line, "```")
-				if codeLang == "" {
-					codeLang = "code"
-				}
-				result = append(result, fmt.Sprintf("%s\033[90m┌─ %s ─\033[0m", indent, codeLang))
-			} else {
-				inCodeBlock = false
-				result = append(result, fmt.Sprintf("%s\033[90m└─────────\033[0m", indent))
-			}
-		} else if inCodeBlock {
-			result = append(result, fmt.Sprintf("%s\033[90m│\033[0m \033[36m%s\033[0m", indent, line))
-		} else {
-			result = append(result, fmt.Sprintf("%s%s", indent, highlight(line, query)))
-		}
-	}
-
-	return strings.Join(result, "\n")
-}
-
-func showPreview(line, query string) {
-	convMap, err := loadCache()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cache not found: %v\n", err)
-		return
-	}
-
-	parts := strings.Split(line, "\t")
-	if len(parts) == 0 {
-		return
-	}
-
-	sessionID := parts[0]
-
-	conv, ok := convMap[sessionID]
-	if !ok {
-		fmt.Println("Conversation not found")
-		return
-	}
-
-	fmt.Printf("\033[1;33mProject:\033[0m %s\n", highlight(conv.Cwd, query))
-	fmt.Printf("\033[1;33mSession:\033[0m %s\n", highlight(sessionID, query))
-	fmt.Printf("\033[1;33mFirst activity:\033[0m %s\n", highlight(formatTimestamp(conv.FirstTimestamp), query))
-	fmt.Printf("\033[1;33mLast activity:\033[0m %s\n", highlight(formatTimestamp(conv.LastTimestamp), query))
-	fmt.Printf("\033[1;33mTotal messages:\033[0m %d\n\n", len(conv.Messages))
-
-	// Find all messages containing the query
-	var matchIndices []int
-	matchSet := make(map[int]bool)
-	if query != "" {
-		queryLower := strings.ToLower(query)
-		for i, msg := range conv.Messages {
-			if strings.Contains(strings.ToLower(msg.Text), queryLower) {
-				matchIndices = append(matchIndices, i)
-				matchSet[i] = true
-			}
-		}
-	}
-
-	// Build set of indices to show
-	showSet := make(map[int]bool)
-
-	// Always show first 2 and last 2 messages
-	for i := 0; i < 2 && i < len(conv.Messages); i++ {
-		showSet[i] = true
-	}
-	for i := len(conv.Messages) - 2; i < len(conv.Messages); i++ {
-		if i >= 0 {
-			showSet[i] = true
-		}
-	}
-
-	// Add matches with 1 context on each side
-	for _, idx := range matchIndices {
-		if idx > 0 {
-			showSet[idx-1] = true
-		}
-		showSet[idx] = true
-		if idx < len(conv.Messages)-1 {
-			showSet[idx+1] = true
-		}
-	}
-
-	// Display messages with gaps
-	lastShown := -1
-	for i := 0; i < len(conv.Messages); i++ {
-		if !showSet[i] {
-			continue
-		}
-
-		// Show gap indicator if we skipped messages
-		if lastShown >= 0 && i > lastShown+1 {
-			skipped := i - lastShown - 1
-			fmt.Printf("\033[90m    ... %d messages ...\033[0m\n\n", skipped)
-		} else if lastShown == -1 && i > 0 {
-			fmt.Printf("\033[90m    ... %d earlier messages\033[0m\n\n", i)
-		}
-
-		msg := conv.Messages[i]
-		var prefix string
-		if matchSet[i] {
+		for _, msg := range conv.Messages {
 			if msg.Role == "user" {
-				prefix = "\033[1;32m>>> User:\033[0m"
-			} else {
-				prefix = "\033[1;34m>>> Claude:\033[0m"
-			}
-		} else {
-			if msg.Role == "user" {
-				prefix = "\033[32m    User:\033[0m"
-			} else {
-				prefix = "\033[34m    Claude:\033[0m"
+				searchParts = append(searchParts, msg.Text)
 			}
 		}
 
-		text := msg.Text
-		if len(text) > 2000 {
-			text = text[:2000] + "\n... (truncated)"
-		}
-
-		fmt.Println(prefix)
-		fmt.Println(formatCodeBlock(text, query, "    "))
-		fmt.Println()
-
-		lastShown = i
+		items = append(items, listItem{
+			conv:       conv,
+			searchText: strings.Join(searchParts, " "),
+		})
 	}
 
-	if lastShown < len(conv.Messages)-1 {
-		remaining := len(conv.Messages) - lastShown - 1
-		fmt.Printf("\033[90m    ... %d more messages\033[0m\n", remaining)
-	}
+	return items
 }
 
 func printHelp() {
 	fmt.Printf(`ccs v%s - Claude Code Search
 
-Search and resume Claude Code conversations using fzf.
+Search and resume Claude Code conversations.
 
-Usage: ccs [flags]
+Usage: ccs [filter] [-- claude-flags...]
+
+Arguments:
+  filter           Initial search query (optional)
+  -- claude-flags  Flags to pass to 'claude --resume' (after --)
 
 Flags:
   -h, --help      Show this help message
   -v, --version   Show version
-
-Any other flags are passed through to 'claude --resume'.
+  --dump [query]  Debug: print all search items (with optional highlighting)
 
 Examples:
-  ccs                                 Search and resume a conversation
-  ccs --dangerously-skip-permissions  Resume with auto-accept permissions
+  ccs                                Search all conversations
+  ccs buyer                          Search with initial query "buyer"
+  ccs -- --plan                      Resume with plan mode
+  ccs buyer -- --plan                Search "buyer", resume with plan mode
 
-Requirements:
-  - fzf (brew install fzf)
-  - claude (Claude Code CLI)
+Key bindings:
+  ↑/↓, Ctrl+P/N   Navigate list
+  Enter           Select and resume conversation
+  Ctrl+J/K        Scroll preview
+  Mouse wheel     Scroll list or preview (based on position)
+  Ctrl+U          Clear search
+  Esc, Ctrl+C     Quit
 
 `, version)
 }
@@ -501,18 +763,7 @@ func main() {
 		}
 	}
 
-	// Preview mode - reads from cache (fast!)
-	if len(args) >= 2 && args[0] == "--preview" {
-		line := args[1]
-		query := ""
-		if len(args) >= 3 {
-			query = args[2]
-		}
-		showPreview(line, query)
-		return
-	}
-
-	// Debug mode - dump search lines with optional filter highlight
+	// Debug mode - dump search lines
 	for i, arg := range args {
 		if arg == "--dump" {
 			filter := ""
@@ -520,8 +771,9 @@ func main() {
 				filter = args[i+1]
 			}
 			conversations, _ := getConversations()
-			lines, _ := buildSearchLines(conversations)
-			for _, line := range lines {
+			items := buildItems(conversations)
+			for _, item := range items {
+				line := item.searchText
 				if filter != "" {
 					line = highlight(line, filter)
 				}
@@ -531,8 +783,7 @@ func main() {
 		}
 	}
 
-	// Parse ccs args: positional arg is filter, args after -- go to claude
-	// Usage: ccs [filter] [-- claude-args...]
+	// Parse args: positional arg is filter, args after -- go to claude
 	var claudeFlags []string
 	var filterQuery string
 	for i, arg := range args {
@@ -552,11 +803,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if _, err := exec.LookPath("fzf"); err != nil {
-		fmt.Fprintf(os.Stderr, "fzf not found. Install with: brew install fzf\n")
-		os.Exit(1)
-	}
-
 	fmt.Fprint(os.Stderr, "Loading conversations...")
 	conversations, err := getConversations()
 	if err != nil {
@@ -570,67 +816,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	lines, convMap := buildSearchLines(conversations)
-	if len(lines) == 0 {
+	items := buildItems(conversations)
+	if len(items) == 0 {
 		fmt.Fprintf(os.Stderr, "No searchable messages found\n")
 		os.Exit(1)
 	}
 
-	// Save cache for preview
-	if err := saveCache(convMap); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not save cache: %v\n", err)
-	}
+	// Run TUI
+	m := initialModel(items, filterQuery, claudeFlags)
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
-	self, _ := os.Executable()
-
-	fzfArgs := []string{
-		"--ansi",
-		"--delimiter=\t",
-		"--exact",
-		"--no-sort",
-		"--tabstop=4",
-		"--preview", fmt.Sprintf("%s --preview {} {q}", self),
-		"--preview-window=bottom:70%:wrap",
-		"--header=Search conversations | Enter to resume, Esc to quit",
-		"--prompt=Search: ",
-		"--height=90%",
-		"--layout=reverse",
-		"--border=rounded",
-		"--info=inline",
-	}
-	if filterQuery != "" {
-		fzfArgs = append(fzfArgs, "--query", filterQuery)
-	}
-
-	cmd := exec.Command("fzf", fzfArgs...)
-	cmd.Stdin = strings.NewReader(strings.Join(lines, "\n"))
-	cmd.Stderr = os.Stderr
-
-	output, err := cmd.Output()
+	finalModel, err := p.Run()
 	if err != nil {
-		return
-	}
-
-	selected := strings.TrimSpace(string(output))
-	if selected == "" {
-		return
-	}
-
-	parts := strings.Split(selected, "\t")
-	sessionID := parts[0]
-
-	conv, ok := convMap[sessionID]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Conversation not found\n")
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
+	final := finalModel.(model)
+	if final.selected == nil {
+		return
+	}
+
+	conv := final.selected
 	cwd := conv.Cwd
 	if cwd == "" || cwd == "unknown" {
 		cwd = "."
 	}
 
-	fmt.Printf("\033[1mResuming conversation %s in %s...\033[0m\n", sessionID, cwd)
+	fmt.Printf("\033[1mResuming conversation %s in %s...\033[0m\n", conv.SessionID, cwd)
 	if len(claudeFlags) > 0 {
 		fmt.Printf("\033[90mFlags: %s\033[0m\n", strings.Join(claudeFlags, " "))
 	}
@@ -646,7 +859,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	execArgs := []string{"claude", "--resume", sessionID}
+	execArgs := []string{"claude", "--resume", conv.SessionID}
 	execArgs = append(execArgs, claudeFlags...)
 
 	syscall.Exec(claudePath, execArgs, os.Environ())

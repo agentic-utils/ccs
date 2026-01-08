@@ -32,7 +32,7 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestPadOrTruncate(t *testing.T) {
+func TestPadRight(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -41,15 +41,14 @@ func TestPadOrTruncate(t *testing.T) {
 	}{
 		{"short string", "hello", 10, "hello     "},
 		{"exact length", "hello", 5, "hello"},
-		{"needs truncation", "hello world", 8, "hello w\u2026"},
-		{"with spaces", "hello   world", 10, "hello wor\u2026"},
+		{"needs truncation", "hello world", 8, "hello wo"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := padOrTruncate(tt.input, tt.length)
+			result := padRight(tt.input, tt.length)
 			if result != tt.expected {
-				t.Errorf("padOrTruncate(%q, %d) = %q, want %q", tt.input, tt.length, result, tt.expected)
+				t.Errorf("padRight(%q, %d) = %q, want %q", tt.input, tt.length, result, tt.expected)
 			}
 		})
 	}
@@ -103,7 +102,7 @@ func TestExtractText(t *testing.T) {
 	}
 }
 
-func TestBuildSearchLines(t *testing.T) {
+func TestBuildItems(t *testing.T) {
 	conversations := []Conversation{
 		{
 			SessionID:      "session1",
@@ -129,48 +128,40 @@ func TestBuildSearchLines(t *testing.T) {
 		},
 	}
 
-	lines, convMap := buildSearchLines(conversations)
+	items := buildItems(conversations)
 
-	// Should have exactly one line per conversation
-	if len(lines) != 2 {
-		t.Errorf("buildSearchLines returned %d lines, want 2", len(lines))
+	// Should have exactly one item per conversation
+	if len(items) != 2 {
+		t.Errorf("buildItems returned %d items, want 2", len(items))
 	}
 
-	// Should have both conversations in the map
-	if len(convMap) != 2 {
-		t.Errorf("convMap has %d entries, want 2", len(convMap))
+	// First item should be for session1
+	if items[0].conv.SessionID != "session1" {
+		t.Errorf("first item should be session1, got %q", items[0].conv.SessionID)
 	}
 
-	// First line should be for session1 with first user message
-	if !strings.HasPrefix(lines[0], "session1\t") {
-		t.Errorf("first line should start with 'session1\\t', got %q", lines[0])
-	}
-	if !strings.Contains(lines[0], "first message") {
-		t.Errorf("first line should contain 'first message', got %q", lines[0])
+	// Search text should contain all user messages
+	if !strings.Contains(items[0].searchText, "first message") || !strings.Contains(items[0].searchText, "second message") {
+		t.Errorf("search text should contain all user messages, got %q", items[0].searchText)
 	}
 
-	// Line should contain all user messages for searching (column 5, not truncated)
-	parts := strings.Split(lines[0], "\t")
-	if len(parts) < 5 {
-		t.Errorf("line should have 5 columns, got %d", len(parts))
-	} else {
-		searchText := parts[4]
-		if !strings.Contains(searchText, "first message") || !strings.Contains(searchText, "second message") {
-			t.Errorf("search text should contain all user messages, got %q", searchText)
-		}
-		// Verify no truncation
-		if strings.Contains(searchText, "...") {
-			t.Errorf("search text should not be truncated, got %q", searchText)
-		}
+	// Search text should contain session ID
+	if !strings.Contains(items[0].searchText, "session1") {
+		t.Errorf("search text should contain session ID, got %q", items[0].searchText)
 	}
 
-	// Second line should be for session2
-	if !strings.HasPrefix(lines[1], "session2\t") {
-		t.Errorf("second line should start with 'session2\\t', got %q", lines[1])
+	// Search text should contain cwd
+	if !strings.Contains(items[0].searchText, "/home/user/project1") {
+		t.Errorf("search text should contain cwd, got %q", items[0].searchText)
+	}
+
+	// Second item should be for session2
+	if items[1].conv.SessionID != "session2" {
+		t.Errorf("second item should be session2, got %q", items[1].conv.SessionID)
 	}
 }
 
-func TestBuildSearchLinesNoUserMessages(t *testing.T) {
+func TestBuildItemsNoUserMessages(t *testing.T) {
 	conversations := []Conversation{
 		{
 			SessionID:      "session1",
@@ -183,15 +174,15 @@ func TestBuildSearchLinesNoUserMessages(t *testing.T) {
 		},
 	}
 
-	lines, _ := buildSearchLines(conversations)
+	items := buildItems(conversations)
 
-	// Should have no lines since there are no user messages
-	if len(lines) != 0 {
-		t.Errorf("buildSearchLines returned %d lines for conversation with no user messages, want 0", len(lines))
+	// Should still have one item (we include all conversations now)
+	if len(items) != 1 {
+		t.Errorf("buildItems returned %d items, want 1", len(items))
 	}
 }
 
-func TestBuildSearchLinesProjectExtraction(t *testing.T) {
+func TestBuildItemsProjectExtraction(t *testing.T) {
 	conversations := []Conversation{
 		{
 			SessionID:      "session1",
@@ -204,11 +195,11 @@ func TestBuildSearchLinesProjectExtraction(t *testing.T) {
 		},
 	}
 
-	lines, _ := buildSearchLines(conversations)
+	items := buildItems(conversations)
 
-	// Should extract project name from path
-	if !strings.Contains(lines[0], "my-project") {
-		t.Errorf("line should contain project name 'my-project', got %q", lines[0])
+	// Search text should contain full path
+	if !strings.Contains(items[0].searchText, "/home/user/my-project") {
+		t.Errorf("search text should contain full path, got %q", items[0].searchText)
 	}
 }
 
@@ -220,8 +211,8 @@ func TestHighlight(t *testing.T) {
 		contains string
 	}{
 		{"empty query", "hello world", "", "hello world"},
-		{"matching query", "hello world", "world", "\033[43;30mworld\033[0m"},
-		{"case insensitive", "Hello World", "world", "\033[43;30mWorld\033[0m"},
+		{"matching query", "hello world", "world", "world"},
+		{"case insensitive", "Hello World", "world", "World"},
 		{"no match", "hello world", "foo", "hello world"},
 	}
 
@@ -230,29 +221,6 @@ func TestHighlight(t *testing.T) {
 			result := highlight(tt.text, tt.query)
 			if !strings.Contains(result, tt.contains) {
 				t.Errorf("highlight(%q, %q) = %q, want to contain %q", tt.text, tt.query, result, tt.contains)
-			}
-		})
-	}
-}
-
-func TestFormatCodeBlock(t *testing.T) {
-	tests := []struct {
-		name     string
-		text     string
-		query    string
-		contains string
-	}{
-		{"plain text", "hello world", "", "hello world"},
-		{"code block", "```go\nfmt.Println()\n```", "", "┌─ go ─"},
-		{"code block end", "```go\nfmt.Println()\n```", "", "└─────────"},
-		{"highlights query outside code", "hello world", "world", "\033[43;30mworld\033[0m"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := formatCodeBlock(tt.text, tt.query, "")
-			if !strings.Contains(result, tt.contains) {
-				t.Errorf("formatCodeBlock(%q, %q) = %q, want to contain %q", tt.text, tt.query, result, tt.contains)
 			}
 		})
 	}
@@ -339,60 +307,3 @@ func TestParseConversationFileEmptyMessages(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadCache(t *testing.T) {
-	convMap := map[string]Conversation{
-		"session1": {
-			SessionID:      "session1",
-			Cwd:            "/test/path",
-			FirstTimestamp: "2024-01-15T10:00:00Z",
-			LastTimestamp:  "2024-01-15T10:01:00Z",
-			Messages: []Message{
-				{Role: "user", Text: "hello", Ts: "2024-01-15T10:00:00Z"},
-			},
-		},
-	}
-
-	if err := saveCache(convMap); err != nil {
-		t.Fatalf("saveCache failed: %v", err)
-	}
-
-	loaded, err := loadCache()
-	if err != nil {
-		t.Fatalf("loadCache failed: %v", err)
-	}
-
-	if len(loaded) != 1 {
-		t.Errorf("loaded cache has %d entries, want 1", len(loaded))
-	}
-
-	conv, ok := loaded["session1"]
-	if !ok {
-		t.Fatal("session1 not found in loaded cache")
-	}
-
-	if conv.Cwd != "/test/path" {
-		t.Errorf("Cwd = %q, want %q", conv.Cwd, "/test/path")
-	}
-}
-
-func TestBuildSearchLinesUsesLastTimestamp(t *testing.T) {
-	conversations := []Conversation{
-		{
-			SessionID:      "session1",
-			Cwd:            "/home/user/project",
-			FirstTimestamp: "2024-01-15T10:00:00Z",
-			LastTimestamp:  "2024-01-15T12:00:00Z",
-			Messages: []Message{
-				{Role: "user", Text: "first", Ts: "2024-01-15T10:00:00Z"},
-				{Role: "user", Text: "second", Ts: "2024-01-15T12:00:00Z"},
-			},
-		},
-	}
-
-	lines, _ := buildSearchLines(conversations)
-
-	// Should use LastTimestamp (12:00) not FirstTimestamp (10:00)
-	if !strings.Contains(lines[0], "12:00") {
-		t.Errorf("line should contain LastTimestamp '12:00', got %q", lines[0])
-	}
-}

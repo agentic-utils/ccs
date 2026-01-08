@@ -4,18 +4,18 @@
 [![Release](https://img.shields.io/github/v/release/agentic-utils/ccs)](https://github.com/agentic-utils/ccs/releases/latest)
 [![License](https://img.shields.io/github/license/agentic-utils/ccs)](LICENSE)
 
-Globally search and resume [Claude Code](https://claude.ai/claude-code) conversations using fzf.
+Globally search and resume [Claude Code](https://claude.ai/claude-code) conversations.
 
 ![Demo](demo.gif)
 
 ## Features
 
-- Fuzzy search through all your Claude Code conversations
-- Preview conversation context with syntax highlighting
-- Search term highlighting in preview
-- Code block rendering
+- Search through all your Claude Code conversations
+- Preview conversation context with search term highlighting
+- See message counts and hit counts per conversation
 - Resume conversations directly from the search interface
-- Pass flags through to `claude` (e.g., `--dangerously-skip-permissions`)
+- Pass flags through to `claude` (e.g., `--plan`)
+- Mouse wheel scrolling support
 
 ## Installation
 
@@ -39,22 +39,6 @@ Download the binary from [releases](https://github.com/agentic-utils/ccs/release
 
 ## Requirements
 
-- [fzf](https://github.com/junegunn/fzf)
-
-  ```bash
-  # macOS
-  brew install fzf
-
-  # Debian/Ubuntu
-  sudo apt install fzf
-
-  # Fedora
-  sudo dnf install fzf
-
-  # Arch
-  sudo pacman -S fzf
-  ```
-
 - [Claude Code](https://claude.ai/claude-code) - must be installed and used at least once
 
 ## Usage
@@ -63,19 +47,28 @@ Download the binary from [releases](https://github.com/agentic-utils/ccs/release
 # Search and resume a conversation
 ccs
 
-# Resume with auto-accept permissions
-ccs --allow-dangerously-skip-permissions
+# Search with initial query
+ccs buyer
+
+# Resume with plan mode
+ccs -- --plan
+
+# Combined: search "buyer", resume with plan mode
+ccs buyer -- --plan
 ```
 
 ### Keybindings
 
+- `↑/↓` or `Ctrl+P/N` - Navigate list
 - `Enter` - Resume selected conversation
+- `Ctrl+J/K` - Scroll preview
+- `Mouse wheel` - Scroll list or preview (context-aware)
+- `Ctrl+U` - Clear search
 - `Esc` / `Ctrl+C` - Quit
-- Type to fuzzy search
 
 ## How it works
 
-ccs reads conversation history from `~/.claude/projects/` and presents them in fzf. When you select a conversation, it changes to the original project directory and runs `claude --resume <session-id>`.
+ccs reads conversation history from `~/.claude/projects/` and presents them in an interactive TUI. When you select a conversation, it changes to the original project directory and runs `claude --resume <session-id>`.
 
 ## License
 

@@ -16,9 +16,11 @@ go test -v -cover
 ### Run locally
 
 ```bash
-./ccs
-./ccs <query>
-./ccs -- --plan  # pass flags to claude
+./ccs                    # search recent (60 days, <1GB files)
+./ccs <query>            # search with initial query
+./ccs --max-age=7        # last 7 days only
+./ccs --all              # include everything
+./ccs -- --plan          # pass flags to claude
 ```
 
 ## Release Process
@@ -71,8 +73,8 @@ go test -v -cover
 
 ### Key Functions
 
-- `getConversations()` - Loads all conversations from `~/.claude/projects/`
-- `parseConversationFile()` - Parses JSONL conversation files
+- `getConversations(cutoff, maxSize)` - Loads conversations from `~/.claude/projects/` with filters
+- `parseConversationFile(path, cutoff, maxSize)` - Parses JSONL files, skips by mtime/size
 - `buildItems()` - Creates list items with searchable text
 - `initialModel()` - Sets up bubbletea TUI
 - `Update()` - Handles keyboard/mouse input

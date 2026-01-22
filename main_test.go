@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTruncate(t *testing.T) {
@@ -239,7 +240,7 @@ func TestParseConversationFile(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	conv, err := parseConversationFile(testFile)
+	conv, err := parseConversationFile(testFile, time.Time{}, 0) // No cutoff, no size limit
 	if err != nil {
 		t.Fatalf("parseConversationFile failed: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestParseConversationFileSkipsAgentFiles(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	conv, err := parseConversationFile(testFile)
+	conv, err := parseConversationFile(testFile, time.Time{}, 0) // No cutoff, no size limit
 	if err != nil {
 		t.Fatalf("parseConversationFile failed: %v", err)
 	}
@@ -297,13 +298,81 @@ func TestParseConversationFileEmptyMessages(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	conv, err := parseConversationFile(testFile)
+	conv, err := parseConversationFile(testFile, time.Time{}, 0) // No cutoff, no size limit
 	if err != nil {
 		t.Fatalf("parseConversationFile failed: %v", err)
 	}
 
 	if conv != nil {
 		t.Error("parseConversationFile should return nil for files with no user/assistant messages")
+	}
+}
+
+func TestParseConversationFileSkipsOldFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "old-session.jsonl")
+
+	content := `{"type":"user","cwd":"/test","message":{"content":"hello"},"timestamp":"2024-01-15T10:00:00Z"}`
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Set file mtime to 60 days ago
+	oldTime := time.Now().AddDate(0, 0, -60)
+	if err := os.Chtimes(testFile, oldTime, oldTime); err != nil {
+		t.Fatalf("failed to set file mtime: %v", err)
+	}
+
+	// Cutoff is 30 days ago - file should be skipped
+	cutoff := time.Now().AddDate(0, 0, -30)
+	conv, err := parseConversationFile(testFile, cutoff, 0)
+	if err != nil {
+		t.Fatalf("parseConversationFile failed: %v", err)
+	}
+
+	if conv != nil {
+		t.Error("parseConversationFile should return nil for files older than cutoff")
+	}
+}
+
+func TestParseConversationFileIncludesRecentFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "recent-session.jsonl")
+
+	content := `{"type":"user","cwd":"/test","message":{"content":"hello"},"timestamp":"2024-01-15T10:00:00Z"}`
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// File mtime is now (recent) - cutoff is 30 days ago
+	cutoff := time.Now().AddDate(0, 0, -30)
+	conv, err := parseConversationFile(testFile, cutoff, 0)
+	if err != nil {
+		t.Fatalf("parseConversationFile failed: %v", err)
+	}
+
+	if conv == nil {
+		t.Error("parseConversationFile should include files newer than cutoff")
+	}
+}
+
+func TestParseConversationFileSkipsLargeFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "large-session.jsonl")
+
+	content := `{"type":"user","cwd":"/test","message":{"content":"hello"},"timestamp":"2024-01-15T10:00:00Z"}`
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// maxSize of 10 bytes - file should be skipped
+	conv, err := parseConversationFile(testFile, time.Time{}, 10)
+	if err != nil {
+		t.Fatalf("parseConversationFile failed: %v", err)
+	}
+
+	if conv != nil {
+		t.Error("parseConversationFile should return nil for files larger than maxSize")
 	}
 }
 

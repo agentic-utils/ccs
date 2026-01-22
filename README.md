@@ -44,11 +44,17 @@ Download the binary from [releases](https://github.com/agentic-utils/ccs/release
 ## Usage
 
 ```bash
-# Search and resume a conversation
+# Search recent conversations (last 60 days, files <1GB)
 ccs
 
 # Search with initial query
 ccs buyer
+
+# Search last 7 days only
+ccs --max-age=7
+
+# Search everything (all time, all files)
+ccs --all
 
 # Resume with plan mode
 ccs -- --plan
@@ -56,6 +62,14 @@ ccs -- --plan
 # Combined: search "buyer", resume with plan mode
 ccs buyer -- --plan
 ```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-age=N` | 60 | Only search files modified in the last N days (0 = no limit) |
+| `--max-size=N` | 1024 | Max file size in MB to include (0 = no limit) |
+| `--all` | - | Include everything (same as `--max-age=0 --max-size=0`) |
 
 ### Keybindings
 

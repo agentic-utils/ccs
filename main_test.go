@@ -1055,6 +1055,53 @@ func TestGetConversations(t *testing.T) {
 	}
 }
 
+func TestGetConversationsSkipsSubagents(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a regular session file
+	sessionFile := filepath.Join(tmpDir, "session-1.jsonl")
+	content := `{"type":"user","cwd":"/test","message":{"content":"hello"},"timestamp":"2024-01-15T10:00:00Z"}`
+	if err := os.WriteFile(sessionFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write session file: %v", err)
+	}
+
+	// Create a subagents directory with a session file inside
+	subagentsDir := filepath.Join(tmpDir, "abc123", "subagents")
+	if err := os.MkdirAll(subagentsDir, 0755); err != nil {
+		t.Fatalf("failed to create subagents dir: %v", err)
+	}
+	subagentFile := filepath.Join(subagentsDir, "agent-test.jsonl")
+	if err := os.WriteFile(subagentFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write subagent file: %v", err)
+	}
+	// Also put a non-agent-prefixed file in subagents to confirm the directory is skipped entirely
+	sneakyFile := filepath.Join(subagentsDir, "sneaky-session.jsonl")
+	if err := os.WriteFile(sneakyFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write sneaky file: %v", err)
+	}
+
+	oldGetProjectsDir := getProjectsDir
+	getProjectsDir = func() string { return tmpDir }
+	defer func() { getProjectsDir = oldGetProjectsDir }()
+
+	convs, err := getConversations(time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("getConversations failed: %v", err)
+	}
+
+	// Should only have 1 conversation (subagents dir should be skipped entirely)
+	if len(convs) != 1 {
+		t.Errorf("expected 1 conversation, got %d", len(convs))
+		for _, c := range convs {
+			t.Logf("  found: %s (file: %s)", c.SessionID, c.FilePath)
+		}
+	}
+
+	if len(convs) > 0 && convs[0].SessionID != "session-1" {
+		t.Errorf("expected session-1, got %s", convs[0].SessionID)
+	}
+}
+
 func TestPrintHelp(t *testing.T) {
 	// Just call it to ensure no panics - we can't easily test stdout
 	// but this at least ensures the function doesn't crash

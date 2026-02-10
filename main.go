@@ -695,6 +695,9 @@ func getConversations(cutoff time.Time, maxSize int64) ([]Conversation, error) {
 		if err != nil {
 			return nil
 		}
+		if info.IsDir() && info.Name() == "subagents" {
+			return filepath.SkipDir
+		}
 		if !info.IsDir() && strings.HasSuffix(path, ".jsonl") && !strings.HasPrefix(info.Name(), "agent-") {
 			files = append(files, path)
 		}

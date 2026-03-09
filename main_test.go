@@ -1036,7 +1036,7 @@ func TestGetConversations(t *testing.T) {
 	defer func() { getProjectsDir = oldGetProjectsDir }()
 
 	// Get conversations
-	convs, err := getConversations(time.Time{}, 0)
+	convs, err := getConversations(time.Time{}, 0, nil)
 	if err != nil {
 		t.Fatalf("getConversations failed: %v", err)
 	}
@@ -1084,7 +1084,7 @@ func TestGetConversationsSkipsSubagents(t *testing.T) {
 	getProjectsDir = func() string { return tmpDir }
 	defer func() { getProjectsDir = oldGetProjectsDir }()
 
-	convs, err := getConversations(time.Time{}, 0)
+	convs, err := getConversations(time.Time{}, 0, nil)
 	if err != nil {
 		t.Fatalf("getConversations failed: %v", err)
 	}

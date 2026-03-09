@@ -687,7 +687,7 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 	return conv, nil
 }
 
-func getConversations(cutoff time.Time, maxSize int64) ([]Conversation, error) {
+func getConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]Conversation, error) {
 	projectsDir := getProjectsDir()
 
 	var files []string
@@ -697,6 +697,13 @@ func getConversations(cutoff time.Time, maxSize int64) ([]Conversation, error) {
 		}
 		if info.IsDir() && info.Name() == "subagents" {
 			return filepath.SkipDir
+		}
+		if info.IsDir() {
+			for _, exc := range excludeDirs {
+				if strings.Contains(info.Name(), exc) {
+					return filepath.SkipDir
+				}
+			}
 		}
 		if !info.IsDir() && strings.HasSuffix(path, ".jsonl") && !strings.HasPrefix(info.Name(), "agent-") {
 			files = append(files, path)
@@ -863,6 +870,7 @@ Flags:
   --max-age=N      Only search last N days (default: 60, 0 = no limit)
   --max-size=N     Max file size in MB (default: 1024, 0 = no limit)
   --all            Include everything (same as --max-age=0 --max-size=0)
+  --exclude=a,b    Exclude dirs containing these strings (default: observer-sessions)
   --dump [query]   Debug: print all search items (with optional highlighting)
 
 Examples:
@@ -902,6 +910,7 @@ func main() {
 	// Parse flags
 	maxAgeDays := 60        // Default to 60 days
 	maxSizeMB := int64(1024) // Default to 1GB
+	excludeDirs := []string{"observer-sessions"}
 	for _, arg := range args {
 		if arg == "--all" {
 			maxAgeDays = 0
@@ -912,6 +921,9 @@ func main() {
 		} else if strings.HasPrefix(arg, "--max-size=") {
 			val := strings.TrimPrefix(arg, "--max-size=")
 			fmt.Sscanf(val, "%d", &maxSizeMB)
+		} else if strings.HasPrefix(arg, "--exclude=") {
+			val := strings.TrimPrefix(arg, "--exclude=")
+			excludeDirs = strings.Split(val, ",")
 		}
 	}
 
@@ -931,7 +943,7 @@ func main() {
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				filter = args[i+1]
 			}
-			conversations, _ := getConversations(cutoff, maxSize)
+			conversations, _ := getConversations(cutoff, maxSize, excludeDirs)
 			items := buildItems(conversations)
 			for _, item := range items {
 				line := item.searchText
@@ -953,7 +965,7 @@ func main() {
 			break
 		}
 		// Skip our flags when looking for filter query
-		if arg == "--all" || strings.HasPrefix(arg, "--max-age=") || strings.HasPrefix(arg, "--max-size=") {
+		if arg == "--all" || strings.HasPrefix(arg, "--max-age=") || strings.HasPrefix(arg, "--max-size=") || strings.HasPrefix(arg, "--exclude=") {
 			continue
 		}
 		if !strings.HasPrefix(arg, "-") && filterQuery == "" {
@@ -969,7 +981,7 @@ func main() {
 	}
 
 	fmt.Fprint(os.Stderr, "Loading conversations...")
-	conversations, err := getConversations(cutoff, maxSize)
+	conversations, err := getConversations(cutoff, maxSize, excludeDirs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\rError loading conversations: %v\n", err)
 		os.Exit(1)

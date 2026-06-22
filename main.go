@@ -646,7 +646,11 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
+	// A single JSONL line holds a whole turn - a big tool result or a base64
+	// image can be tens of MB. ponytail: 64MB ceiling; if a line ever exceeds
+	// it the scanner.Err() check below skips the file rather than silently
+	// truncating the parse.
+	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 
 	for scanner.Scan() {
 		lineBytes := scanner.Bytes()
@@ -687,6 +691,12 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 				})
 			}
 		}
+	}
+
+	// A scan error (e.g. a line over the buffer cap) leaves the parse partial.
+	// Surface it instead of trusting a silently-truncated conversation.
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	if len(conv.Messages) == 0 {
@@ -1045,15 +1055,19 @@ func main() {
 		cwd = "."
 	}
 
+	// Change directory before announcing the resume, and fail loudly rather
+	// than launching claude in the wrong directory (which silently gives it the
+	// wrong project config / MCP servers).
+	if err := os.Chdir(cwd); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot resume in %s: %v\n", cwd, err)
+		os.Exit(1)
+	}
+
 	fmt.Printf("\033[1mResuming conversation %s in %s...\033[0m\n", conv.SessionID, cwd)
 	if len(claudeFlags) > 0 {
 		fmt.Printf("\033[90mFlags: %s\033[0m\n", strings.Join(claudeFlags, " "))
 	}
 	fmt.Println()
-
-	if err := os.Chdir(cwd); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not change to directory %s: %v\n", cwd, err)
-	}
 
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {

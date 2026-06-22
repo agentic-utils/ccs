@@ -272,6 +272,41 @@ func TestParseConversationFile(t *testing.T) {
 	}
 }
 
+func TestParseConversationFileTitle(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "titled-session.jsonl")
+
+	// ai-title appears first, custom-title (user-set) must win
+	content := `{"type":"ai-title","aiTitle":"auto generated name","sessionId":"titled-session"}
+{"type":"user","cwd":"/test/project","message":{"content":"hello"},"timestamp":"2024-01-15T10:00:00Z"}
+{"type":"custom-title","customTitle":"my custom name","sessionId":"titled-session"}
+`
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	conv, err := parseConversationFile(testFile, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("parseConversationFile failed: %v", err)
+	}
+	if conv == nil {
+		t.Fatal("parseConversationFile returned nil")
+	}
+	if conv.Title != "my custom name" {
+		t.Errorf("Title = %q, want %q", conv.Title, "my custom name")
+	}
+	if got := getTopic(*conv); got != "my custom name" {
+		t.Errorf("getTopic = %q, want title %q", got, "my custom name")
+	}
+}
+
+func TestGetTopicFallsBackToFirstMessage(t *testing.T) {
+	conv := Conversation{Messages: []Message{{Role: "user", Text: "first msg"}}}
+	if got := getTopic(conv); got != "first msg" {
+		t.Errorf("getTopic = %q, want %q", got, "first msg")
+	}
+}
+
 func TestParseConversationFileSkipsAgentFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "agent-test.jsonl")

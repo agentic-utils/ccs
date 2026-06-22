@@ -30,6 +30,7 @@ type Message struct {
 // Conversation represents a parsed conversation
 type Conversation struct {
 	SessionID      string    `json:"session_id"`
+	Title          string    `json:"title"` // custom-title (user-set) or ai-title
 	Cwd            string    `json:"cwd"`
 	FirstTimestamp string    `json:"first_timestamp"`
 	LastTimestamp  string    `json:"last_timestamp"`
@@ -44,7 +45,9 @@ type RawMessage struct {
 	Message struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
-	Timestamp string `json:"timestamp"`
+	Timestamp   string `json:"timestamp"`
+	CustomTitle string `json:"customTitle"`
+	AiTitle     string `json:"aiTitle"`
 }
 
 // TextContent for parsing content arrays
@@ -384,14 +387,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		project = project[:19] + "..."
 	}
 
-	// Use first user message as topic
-	topic := ""
-	for _, msg := range item.conv.Messages {
-		if msg.Role == "user" {
-			topic = truncate(msg.Text, 40)
-			break
-		}
-	}
+	topic := truncate(getTopic(item.conv), 40)
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -423,6 +419,9 @@ func (m model) renderPreview(item listItem, height int) string {
 	// Fixed header (always visible)
 	var header []string
 	header = append(header, "\033[1;33mProject:\033[0m "+highlight(conv.Cwd, query))
+	if conv.Title != "" {
+		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
+	}
 	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
 	header = append(header, "")
 
@@ -647,7 +646,13 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 			continue
 		}
 
-		if raw.Type == "user" {
+		if raw.Type == "custom-title" {
+			conv.Title = raw.CustomTitle // user-set name wins over ai-title
+		} else if raw.Type == "ai-title" {
+			if conv.Title == "" {
+				conv.Title = raw.AiTitle
+			}
+		} else if raw.Type == "user" {
 			if conv.Cwd == "" {
 				conv.Cwd = raw.Cwd
 			}
@@ -777,8 +782,11 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-// getTopic returns the first user message or session ID
+// getTopic returns the session name (custom/ai title), else first user message, else session ID
 func getTopic(conv Conversation) string {
+	if conv.Title != "" {
+		return conv.Title
+	}
 	for _, msg := range conv.Messages {
 		if msg.Role == "user" {
 			return msg.Text
@@ -834,6 +842,7 @@ func buildItems(conversations []Conversation) []listItem {
 		// Build search text from all content
 		var searchParts []string
 		searchParts = append(searchParts, conv.SessionID)
+		searchParts = append(searchParts, conv.Title)
 		searchParts = append(searchParts, conv.Cwd)
 		searchParts = append(searchParts, formatTimestamp(conv.FirstTimestamp))
 		searchParts = append(searchParts, formatTimestamp(conv.LastTimestamp))

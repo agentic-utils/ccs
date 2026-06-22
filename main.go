@@ -388,7 +388,15 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		project = project[:19] + "..."
 	}
 
-	topic := truncate(getTopic(item.conv), 40)
+	// Mark named sessions (custom/ai title) so they're distinguishable from
+	// rows that fall back to the first user message. ponytail: the glyph is
+	// ambiguous-width, so a named row may sit one cell narrow on CJK-width
+	// terminals - cosmetic only, truncate is rune-safe.
+	topic := getTopic(item.conv)
+	if item.conv.Title != "" {
+		topic = "✎ " + topic
+	}
+	topic = truncate(topic, 40)
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -861,10 +869,11 @@ func buildItems(conversations []Conversation) []listItem {
 		searchParts = append(searchParts, formatTimestamp(conv.FirstTimestamp))
 		searchParts = append(searchParts, formatTimestamp(conv.LastTimestamp))
 
+		// Include assistant messages too so a conversation is findable by
+		// what Claude said, matching the HITS column and preview which already
+		// count all messages.
 		for _, msg := range conv.Messages {
-			if msg.Role == "user" {
-				searchParts = append(searchParts, msg.Text)
-			}
+			searchParts = append(searchParts, msg.Text)
 		}
 
 		searchText := strings.Join(searchParts, " ")

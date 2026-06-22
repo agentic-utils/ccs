@@ -186,6 +186,11 @@ func TestBuildItems(t *testing.T) {
 		t.Errorf("search text should contain all user messages, got %q", items[0].searchText)
 	}
 
+	// Search text should also contain assistant messages (findable by what Claude said)
+	if !strings.Contains(items[0].searchText, "response 1") || !strings.Contains(items[0].searchText, "response 2") {
+		t.Errorf("search text should contain assistant messages, got %q", items[0].searchText)
+	}
+
 	// Search text should contain session ID
 	if !strings.Contains(items[0].searchText, "session1") {
 		t.Errorf("search text should contain session ID, got %q", items[0].searchText)
@@ -694,6 +699,28 @@ func TestFormatListItem(t *testing.T) {
 	// Should show 2 hits (both user messages contain "message")
 	if !strings.Contains(result, "2") {
 		t.Errorf("should show hit count when query matches")
+	}
+}
+
+func TestFormatListItemNamedSessionMarker(t *testing.T) {
+	named := listItem{conv: Conversation{
+		SessionID:     "s1",
+		Title:         "Refactor auth flow",
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Messages:      []Message{{Role: "user", Text: "hi"}},
+	}}
+	unnamed := listItem{conv: Conversation{
+		SessionID:     "s2",
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Messages:      []Message{{Role: "user", Text: "just a first message"}},
+	}}
+	m := initialModel([]listItem{named, unnamed}, "", nil)
+
+	if got := m.formatListItem(named, false); !strings.Contains(got, "✎ Refactor auth flow") {
+		t.Errorf("named session should show the marker, got %q", got)
+	}
+	if got := m.formatListItem(unnamed, false); strings.Contains(got, "✎") {
+		t.Errorf("first-message fallback should not show the marker, got %q", got)
 	}
 }
 

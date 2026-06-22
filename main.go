@@ -534,34 +534,43 @@ func highlight(text, query string) string {
 	if query == "" {
 		return text
 	}
-	lower := strings.ToLower(text)
+	tr := []rune(text)
+	lr := []rune(strings.ToLower(text))
 	queryLower := strings.ToLower(query)
+	qr := []rune(queryLower)
 
-	// Find all occurrences and highlight them
+	// Match on runes so multibyte text (CJK, emoji) is never sliced mid-rune.
+	// ponytail: a handful of runes change length when lowercased (İ, Kelvin K),
+	// which breaks the lr/tr index alignment - bail to plain text rather than
+	// emit corrupted bytes. Highlighting those is not worth the complexity.
+	if len(lr) != len(tr) || len(qr) == 0 {
+		return text
+	}
+
 	var result strings.Builder
-	lastEnd := 0
-	for {
-		idx := strings.Index(lower[lastEnd:], queryLower)
-		if idx == -1 {
-			result.WriteString(text[lastEnd:])
-			break
+	for i := 0; i < len(tr); {
+		if i+len(qr) <= len(tr) && string(lr[i:i+len(qr)]) == queryLower {
+			// Yellow background, black text for highlight
+			result.WriteString("\033[43;30m")
+			result.WriteString(string(tr[i : i+len(qr)]))
+			result.WriteString("\033[0m")
+			i += len(qr)
+		} else {
+			result.WriteRune(tr[i])
+			i++
 		}
-		idx += lastEnd
-		result.WriteString(text[lastEnd:idx])
-		// Yellow background, black text for highlight
-		result.WriteString("\033[43;30m")
-		result.WriteString(text[idx : idx+len(query)])
-		result.WriteString("\033[0m")
-		lastEnd = idx + len(query)
 	}
 	return result.String()
 }
 
 func padRight(s string, length int) string {
-	if len(s) >= length {
-		return s[:length]
+	r := []rune(s)
+	if len(r) >= length {
+		return string(r[:length])
 	}
-	return s + strings.Repeat(" ", length-len(s))
+	// ponytail: pads by rune count, not display width; CJK/emoji rows can still
+	// look a cell narrow. Swap in go-runewidth if column alignment matters.
+	return s + strings.Repeat(" ", length-len(r))
 }
 
 // ============================================================================
@@ -776,10 +785,14 @@ func formatTimestamp(ts string) string {
 
 func truncate(s string, maxLen int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= maxLen {
+	r := []rune(s)
+	if len(r) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	if maxLen < 3 {
+		return string(r[:maxLen]) // no room for the ellipsis
+	}
+	return string(r[:maxLen-3]) + "..."
 }
 
 // getTopic returns the session name (custom/ai title), else first user message, else session ID

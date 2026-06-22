@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -23,6 +24,9 @@ func TestTruncate(t *testing.T) {
 		{"needs truncation", "hello world", 8, "hello..."},
 		{"with newlines", "hello\nworld", 20, "hello world"},
 		{"multiple spaces", "hello   world", 20, "hello world"},
+		{"multibyte fits", "世界", 5, "世界"},
+		{"multibyte truncates on rune boundary", "世界世界世界", 5, "世界..."},
+		{"tiny maxLen no ellipsis", "世界世界", 2, "世界"},
 	}
 
 	for _, tt := range tests {
@@ -45,6 +49,8 @@ func TestPadRight(t *testing.T) {
 		{"short string", "hello", 10, "hello     "},
 		{"exact length", "hello", 5, "hello"},
 		{"needs truncation", "hello world", 8, "hello wo"},
+		{"multibyte pads by rune count", "世界", 5, "世界   "},
+		{"multibyte truncates on rune boundary", "世界世界世界", 4, "世界世界"},
 	}
 
 	for _, tt := range tests {
@@ -54,6 +60,38 @@ func TestPadRight(t *testing.T) {
 				t.Errorf("padRight(%q, %d) = %q, want %q", tt.input, tt.length, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestRenderingNeverCorruptsUTF8(t *testing.T) {
+	// These would emit invalid UTF-8 (mid-rune byte cuts) under byte-based slicing.
+	multibyte := []string{"世界世界世界", "😀😀😀😀", "café résumé naïve", "İstanbul Kelvin K"}
+	for _, s := range multibyte {
+		for n := 0; n <= len([]rune(s))+2; n++ {
+			if got := truncate(s, n); !utf8.ValidString(got) {
+				t.Errorf("truncate(%q, %d) = %q: invalid UTF-8", s, n, got)
+			}
+			if got := padRight(s, n); !utf8.ValidString(got) {
+				t.Errorf("padRight(%q, %d) = %q: invalid UTF-8", s, n, got)
+			}
+		}
+		for _, q := range []string{"世", "😀", "é", "i", "k"} {
+			if got := highlight(s, q); !utf8.ValidString(got) {
+				t.Errorf("highlight(%q, %q) = %q: invalid UTF-8", s, q, got)
+			}
+		}
+	}
+}
+
+func TestHighlightMatchesMultibyte(t *testing.T) {
+	got := highlight("héllo wörld héllo", "héllo")
+	if n := strings.Count(got, "\033[43;30m"); n != 2 {
+		t.Errorf("expected 2 highlights of multibyte query, got %d in %q", n, got)
+	}
+	// The visible text must be preserved exactly once ANSI codes are stripped.
+	stripped := strings.NewReplacer("\033[43;30m", "", "\033[0m", "").Replace(got)
+	if stripped != "héllo wörld héllo" {
+		t.Errorf("highlight altered visible text: %q", stripped)
 	}
 }
 

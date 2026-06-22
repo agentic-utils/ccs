@@ -379,8 +379,32 @@ func TestParseConversationFileTitle(t *testing.T) {
 	if conv.Title != "my custom name" {
 		t.Errorf("Title = %q, want %q", conv.Title, "my custom name")
 	}
+	if !conv.IsCustomTitle {
+		t.Error("IsCustomTitle should be true when a custom-title is present")
+	}
 	if got := getTopic(*conv); got != "my custom name" {
 		t.Errorf("getTopic = %q, want title %q", got, "my custom name")
+	}
+}
+
+func TestParseConversationFileAiTitleNotCustom(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "ai-titled.jsonl")
+	content := `{"type":"ai-title","aiTitle":"auto name","sessionId":"ai-titled"}
+{"type":"user","cwd":"/test","message":{"content":"hello"},"timestamp":"2024-01-15T10:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	conv, err := parseConversationFile(testFile, time.Time{}, 0)
+	if err != nil || conv == nil {
+		t.Fatalf("parseConversationFile failed: %v", err)
+	}
+	if conv.Title != "auto name" {
+		t.Errorf("Title = %q, want %q", conv.Title, "auto name")
+	}
+	if conv.IsCustomTitle {
+		t.Error("IsCustomTitle must be false for an ai-title (auto-generated)")
 	}
 }
 
@@ -739,23 +763,35 @@ func TestFormatListItem(t *testing.T) {
 }
 
 func TestFormatListItemNamedSessionMarker(t *testing.T) {
-	named := listItem{conv: Conversation{
+	custom := listItem{conv: Conversation{
 		SessionID:     "s1",
 		Title:         "Refactor auth flow",
+		IsCustomTitle: true,
 		LastTimestamp: "2024-01-15T10:30:00Z",
 		Messages:      []Message{{Role: "user", Text: "hi"}},
 	}}
-	unnamed := listItem{conv: Conversation{
+	// ai-title: has a Title but it's auto-generated - must NOT get the marker.
+	aiTitled := listItem{conv: Conversation{
 		SessionID:     "s2",
+		Title:         "Some auto generated title",
+		IsCustomTitle: false,
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Messages:      []Message{{Role: "user", Text: "hi"}},
+	}}
+	fallback := listItem{conv: Conversation{
+		SessionID:     "s3",
 		LastTimestamp: "2024-01-15T10:30:00Z",
 		Messages:      []Message{{Role: "user", Text: "just a first message"}},
 	}}
-	m := initialModel([]listItem{named, unnamed}, "", nil)
+	m := initialModel([]listItem{custom, aiTitled, fallback}, "", nil)
 
-	if got := m.formatListItem(named, false); !strings.Contains(got, "✎ Refactor auth flow") {
-		t.Errorf("named session should show the marker, got %q", got)
+	if got := m.formatListItem(custom, false); !strings.Contains(got, "✎ Refactor auth flow") {
+		t.Errorf("user-set custom title should show the marker, got %q", got)
 	}
-	if got := m.formatListItem(unnamed, false); strings.Contains(got, "✎") {
+	if got := m.formatListItem(aiTitled, false); strings.Contains(got, "✎") {
+		t.Errorf("auto ai-title must NOT show the marker, got %q", got)
+	}
+	if got := m.formatListItem(fallback, false); strings.Contains(got, "✎") {
 		t.Errorf("first-message fallback should not show the marker, got %q", got)
 	}
 }

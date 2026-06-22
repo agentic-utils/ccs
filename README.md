@@ -80,6 +80,7 @@ ccs buyer -- --plan
 - `↑/↓` or `Ctrl+P/N` - Navigate list
 - `Enter` - Resume selected conversation
 - `Ctrl+D` - Delete selected conversation (with confirmation)
+- `Ctrl+R` - Prune selected conversation - shrink it losslessly (with confirmation)
 - `Ctrl+J/K` - Scroll preview
 - `Mouse wheel` - Scroll list or preview (context-aware)
 - `Ctrl+U` - Clear search
@@ -104,6 +105,8 @@ ccs prune --apply --no-tool-results  # keep tool results, only drop snapshot bac
 ```
 
 Run `ccs prune --help` for all flags.
+
+You can also prune a single conversation from the search interface: select it and press `Ctrl+R` (with confirmation).
 
 ## How it works
 

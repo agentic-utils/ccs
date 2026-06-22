@@ -1479,3 +1479,71 @@ func TestPruneFileDryRunLeavesFileUnchanged(t *testing.T) {
 		t.Error("dry run must not modify the file")
 	}
 }
+
+func TestPruneConversationShrinksAndUpdatesSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s1.jsonl")
+	content := `{"type":"user","message":{"content":"keep"},"uuid":"u1"}` + "\n" +
+		`{"type":"file-history-snapshot","snapshot":{"data":"` + strings.Repeat("x", 4000) + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+
+	item := listItem{conv: Conversation{SessionID: "s1", FilePath: path, Size: info.Size(),
+		Messages: []Message{{Role: "user", Text: "keep"}}}}
+	m := initialModel([]listItem{item}, "", nil)
+	m.confirmPrune = true
+	m.pruneIndex = 0
+	m.pruneConversation()
+
+	if m.errorMsg != "" {
+		t.Fatalf("prune errored: %s", m.errorMsg)
+	}
+	if m.confirmPrune {
+		t.Error("should exit confirm mode after pruning")
+	}
+	after, _ := os.Stat(path)
+	if after.Size() >= info.Size() {
+		t.Errorf("file should shrink: %d -> %d", info.Size(), after.Size())
+	}
+	if m.items[0].conv.Size != after.Size() || m.filtered[0].conv.Size != after.Size() {
+		t.Errorf("displayed size not updated to %d (items=%d filtered=%d)", after.Size(), m.items[0].conv.Size, m.filtered[0].conv.Size)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "file-history-snapshot") {
+		t.Error("snapshot should be removed")
+	}
+	if !strings.Contains(string(data), "keep") {
+		t.Error("conversation message should be kept")
+	}
+}
+
+func TestCtrlREntersAndCancelsPruneConfirm(t *testing.T) {
+	// Ctrl+R measures the file to preview savings, so it needs a real file.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s1.jsonl")
+	content := `{"type":"user","message":{"content":"hi"}}` + "\n" +
+		`{"type":"file-history-snapshot","snapshot":{"data":"` + strings.Repeat("x", 3000) + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	item := listItem{conv: Conversation{SessionID: "s1", FilePath: path, Size: info.Size(),
+		Messages: []Message{{Role: "user", Text: "hi"}}}}
+	m := initialModel([]listItem{item}, "", nil)
+
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = res.(model)
+	if !m.confirmPrune {
+		t.Fatalf("ctrl+r should enter prune confirm mode (err=%q)", m.errorMsg)
+	}
+	if m.pruneSaved <= 0 {
+		t.Errorf("ctrl+r should measure a positive saving, got %d", m.pruneSaved)
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = res.(model)
+	if m.confirmPrune {
+		t.Error("esc should cancel prune confirm")
+	}
+}

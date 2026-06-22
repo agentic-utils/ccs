@@ -499,8 +499,8 @@ func (m model) renderPreview(item listItem, height int) string {
 
 		msgLines = append(msgLines, prefix)
 		text := msg.Text
-		if len(text) > 500 {
-			text = text[:500] + "... (truncated)"
+		if r := []rune(text); len(r) > 500 {
+			text = string(r[:500]) + "... (truncated)" // slice on runes, not bytes
 		}
 		for _, line := range strings.Split(text, "\n") {
 			msgLines = append(msgLines, "    "+highlight(line, query))

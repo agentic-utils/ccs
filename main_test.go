@@ -975,6 +975,22 @@ func TestRenderPreview(t *testing.T) {
 	}
 }
 
+func TestRenderPreviewLongMultibyteMessageStaysValidUTF8(t *testing.T) {
+	// A message longer than the 500-char preview cap, all multibyte: byte
+	// slicing would cut mid-rune at byte 500 and emit invalid UTF-8.
+	conv := Conversation{
+		SessionID: "s1",
+		Cwd:       "/p",
+		Messages:  []Message{{Role: "user", Text: strings.Repeat("世", 800), Ts: "2024-01-15T10:00:00Z"}},
+	}
+	item := listItem{conv: conv}
+	m := initialModel([]listItem{item}, "", nil)
+
+	if got := m.renderPreview(item, 40); !utf8.ValidString(got) {
+		t.Error("preview of a long multibyte message produced invalid UTF-8")
+	}
+}
+
 func TestUpdateMouseScroll(t *testing.T) {
 	items := []listItem{
 		{conv: Conversation{SessionID: "test-1"}, searchText: "first"},

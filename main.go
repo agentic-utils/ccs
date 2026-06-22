@@ -30,7 +30,8 @@ type Message struct {
 // Conversation represents a parsed conversation
 type Conversation struct {
 	SessionID      string    `json:"session_id"`
-	Title          string    `json:"title"` // custom-title (user-set) or ai-title
+	Title          string    `json:"title"`           // custom-title (user-set) or ai-title
+	IsCustomTitle  bool      `json:"is_custom_title"` // true only when Title came from a user-set custom-title
 	Cwd            string    `json:"cwd"`
 	FirstTimestamp string    `json:"first_timestamp"`
 	LastTimestamp  string    `json:"last_timestamp"`
@@ -360,12 +361,13 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		project = project[:19] + "..."
 	}
 
-	// Mark named sessions (custom/ai title) so they're distinguishable from
-	// rows that fall back to the first user message. ponytail: the glyph is
-	// ambiguous-width, so a named row may sit one cell narrow on CJK-width
-	// terminals - cosmetic only, truncate is rune-safe.
+	// Mark only user-set custom titles. Claude auto-generates an ai-title for
+	// almost every session, so marking any title would flag nearly every row;
+	// the ✎ should mean "you named this". ponytail: the glyph is ambiguous-width,
+	// so a marked row may sit one cell narrow on CJK-width terminals - cosmetic
+	// only, truncate is rune-safe.
 	topic := getTopic(item.conv)
-	if item.conv.Title != "" {
+	if item.conv.IsCustomTitle {
 		topic = "✎ " + topic
 	}
 	topic = truncate(topic, 40)
@@ -662,6 +664,7 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 
 		if raw.Type == "custom-title" {
 			conv.Title = raw.CustomTitle // user-set name wins over ai-title
+			conv.IsCustomTitle = raw.CustomTitle != ""
 		} else if raw.Type == "ai-title" {
 			if conv.Title == "" {
 				conv.Title = raw.AiTitle

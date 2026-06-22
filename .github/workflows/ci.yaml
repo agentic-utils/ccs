@@ -10,6 +10,11 @@ jobs:
 
   release:
     needs: test
+    # Serialise releases: never cancel a publish mid-flight (half-tagged /
+    # half-pushed Homebrew tap), queue the next one behind it instead.
+    concurrency:
+      group: release
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -30,7 +35,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.24"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6

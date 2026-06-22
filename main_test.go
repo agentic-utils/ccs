@@ -158,6 +158,11 @@ func TestBuildItems(t *testing.T) {
 		t.Errorf("search text should contain cwd, got %q", items[0].searchText)
 	}
 
+	// searchLower must be the lowercased searchText, precomputed for filtering
+	if items[0].searchLower != strings.ToLower(items[0].searchText) {
+		t.Errorf("searchLower = %q, want lowercased searchText %q", items[0].searchLower, strings.ToLower(items[0].searchText))
+	}
+
 	// Second item should be for session2
 	if items[1].conv.SessionID != "session2" {
 		t.Errorf("second item should be session2, got %q", items[1].conv.SessionID)
@@ -571,9 +576,9 @@ func TestDeleteConversationErrorHandling(t *testing.T) {
 
 func TestUpdateFilter(t *testing.T) {
 	items := []listItem{
-		{conv: Conversation{SessionID: "test-1"}, searchText: "hello world foo"},
-		{conv: Conversation{SessionID: "test-2"}, searchText: "goodbye world bar"},
-		{conv: Conversation{SessionID: "test-3"}, searchText: "hello bar baz"},
+		{conv: Conversation{SessionID: "test-1"}, searchText: "Hello World foo", searchLower: "hello world foo"},
+		{conv: Conversation{SessionID: "test-2"}, searchText: "Goodbye World bar", searchLower: "goodbye world bar"},
+		{conv: Conversation{SessionID: "test-3"}, searchText: "Hello bar baz", searchLower: "hello bar baz"},
 	}
 
 	m := initialModel(items, "", nil)

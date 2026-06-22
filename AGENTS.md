@@ -29,6 +29,7 @@ go test -v -cover
 ./ccs --max-age=7        # last 7 days only
 ./ccs --all              # include everything
 ./ccs -- --plan          # pass flags to claude
+./ccs prune --dry-run    # preview lossless size reduction of large files
 ```
 
 ## Release Process
@@ -91,6 +92,8 @@ go test -v -cover
 - `formatListItem()` - Formats a single list row
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `getTopic()` - Extracts first user message as topic
+- `pruneFile()` / `pruneStream()` - Shrink a conversation by dropping duplicate/redundant data (never touches user/assistant lines)
+- `runPrune()` - `ccs prune` subcommand driver
 
 ### TUI Layout
 

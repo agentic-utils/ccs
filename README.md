@@ -13,9 +13,10 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Search through all your Claude Code conversations
 - See session names (your custom titles or Claude's auto-generated ones) in the list
 - Preview conversation context with search term highlighting
-- See message counts and hit counts per conversation
+- See message counts, hit counts, and file size per conversation
 - Resume conversations directly from the search interface
 - Delete conversations with confirmation prompt
+- Prune bloated conversations losslessly (`ccs prune`)
 - Pass flags through to `claude` (e.g., `--plan`)
 - Mouse wheel scrolling support
 
@@ -83,6 +84,26 @@ ccs buyer -- --plan
 - `Mouse wheel` - Scroll list or preview (context-aware)
 - `Ctrl+U` - Clear search
 - `Esc` / `Ctrl+C` - Quit
+
+## Pruning
+
+Conversation files grow large over time. `ccs prune` shrinks them by removing data that duplicates content kept elsewhere, so pruned conversations still resume with their full dialogue intact:
+
+- `toolUseResult` fields - a copy of the tool result already present in `message.content`
+- `file-history-snapshot` lines - rewind/checkpoint backups (pruning loses rewind history, not the conversation)
+
+User and assistant messages are never modified, and a file is only rewritten if its conversation line count is unchanged.
+
+`ccs prune` is a dry-run preview by default - it only reports what it would reclaim. Pass `--apply` to actually rewrite the files.
+
+```bash
+ccs prune                       # preview savings, change nothing (files >= 50MB)
+ccs prune --apply               # prune after a confirmation prompt
+ccs prune --apply --min-size=200  # only files >= 200MB
+ccs prune --apply --no-tool-results  # keep tool results, only drop snapshot backups
+```
+
+Run `ccs prune --help` for all flags.
 
 ## How it works
 

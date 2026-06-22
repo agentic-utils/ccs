@@ -11,6 +11,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 ## Features
 
 - Search through all your Claude Code conversations
+- See session names (your custom titles or Claude's auto-generated ones) in the list
 - Preview conversation context with search term highlighting
 - See message counts and hit counts per conversation
 - Resume conversations directly from the search interface
@@ -28,7 +29,7 @@ brew install agentic-utils/tap/ccs
 
 ### From source
 
-Requires [Go](https://go.dev/doc/install) 1.21+.
+Requires [Go](https://go.dev/doc/install) 1.24+.
 
 ```bash
 go install github.com/agentic-utils/ccs@latest
@@ -71,6 +72,7 @@ ccs buyer -- --plan
 | `--max-age=N` | 60 | Only search files modified in the last N days (0 = no limit) |
 | `--max-size=N` | 1024 | Max file size in MB to include (0 = no limit) |
 | `--all` | - | Include everything (same as `--max-age=0 --max-size=0`) |
+| `--exclude=a,b` | observer-sessions | Exclude project dirs whose path contains any of these substrings |
 
 ### Keybindings
 

@@ -784,6 +784,7 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 		Messages:      []Message{{Role: "user", Text: "just a first message"}},
 	}}
 	m := initialModel([]listItem{custom, aiTitled, fallback}, "", nil)
+	m.width = 120 // give TOPIC room so the title isn't truncated
 
 	if got := m.formatListItem(custom, false); !strings.Contains(got, "✎ Refactor auth flow") {
 		t.Errorf("user-set custom title should show the marker, got %q", got)
@@ -793,6 +794,38 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 	}
 	if got := m.formatListItem(fallback, false); strings.Contains(got, "✎") {
 		t.Errorf("first-message fallback should not show the marker, got %q", got)
+	}
+}
+
+func TestTopicColWidthFlexes(t *testing.T) {
+	fixed := listIndent + colDate + colProject + colMsgs + colHits + colSize + numGaps*colGap
+	for _, w := range []int{80, 120, 200} {
+		m := model{width: w}
+		if got, want := m.topicColWidth(), w-fixed; got != want {
+			t.Errorf("topicColWidth(width=%d) = %d, want %d", w, got, want)
+		}
+	}
+	// Tiny terminal clamps to a minimum rather than going negative.
+	if got := (model{width: 20}).topicColWidth(); got != 10 {
+		t.Errorf("topicColWidth(width=20) = %d, want 10 (min)", got)
+	}
+}
+
+func TestFormatListItemFillsWidth(t *testing.T) {
+	item := listItem{conv: Conversation{
+		SessionID:     "s",
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Size:          1 << 20,
+		Messages:      []Message{{Role: "user", Text: "hi"}},
+	}}
+	for _, w := range []int{80, 120, 200} {
+		m := initialModel([]listItem{item}, "", nil)
+		m.width = w
+		// Selected row has no ANSI codes; its width + the 2-char row prefix
+		// added by View should fill the terminal exactly.
+		if got := len(m.formatListItem(item, true)); got != w-listIndent {
+			t.Errorf("width=%d: row length = %d, want %d", w, got, w-listIndent)
+		}
 	}
 }
 

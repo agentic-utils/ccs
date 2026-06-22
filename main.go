@@ -163,7 +163,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.MouseButtonWheelDown:
 			if m.mouseInPreview {
-				m.previewScroll += 3
+				m.previewScroll = min(m.previewScroll+3, m.maxPreviewScroll())
 			} else {
 				if m.cursor < len(m.filtered)-1 {
 					m.cursor++
@@ -231,7 +231,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "pgdown", "ctrl+j":
-			m.previewScroll += 10
+			m.previewScroll = min(m.previewScroll+10, m.maxPreviewScroll())
 			return m, nil
 
 		case "ctrl+u":
@@ -393,20 +393,11 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		ts, project, topic, msgs, hits)
 }
 
-func (m model) renderPreview(item listItem, height int) string {
-	query := m.textInput.Value()
-	conv := item.conv
-
-	// Fixed header (always visible)
-	var header []string
-	header = append(header, "\033[1;33mProject:\033[0m "+highlight(conv.Cwd, query))
-	if conv.Title != "" {
-		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
-	}
-	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
-	header = append(header, "")
-
-	// Build message lines (scrollable)
+// buildPreviewLines builds the scrollable message lines of a conversation
+// preview (everything below the fixed header). Shared by renderPreview and
+// maxPreviewScroll so the render and the scroll-clamp can never disagree on how
+// far the preview can scroll.
+func buildPreviewLines(conv Conversation, query string) []string {
 	var msgLines []string
 
 	// Find messages containing the query
@@ -495,16 +486,45 @@ func (m model) renderPreview(item listItem, height int) string {
 		msgLines = append(msgLines, fmt.Sprintf("\033[90m    ... %d more messages\033[0m", remaining))
 	}
 
-	// Apply scroll to messages only (header stays fixed)
+	return msgLines
+}
+
+// maxPreviewScroll is the furthest the preview of the current selection can
+// scroll - one line short of the rendered message-line count.
+func (m model) maxPreviewScroll() int {
+	if len(m.filtered) == 0 {
+		return 0
+	}
+	lines := buildPreviewLines(m.filtered[m.cursor].conv, m.textInput.Value())
+	return max(0, len(lines)-1)
+}
+
+func (m model) renderPreview(item listItem, height int) string {
+	query := m.textInput.Value()
+	conv := item.conv
+
+	// Fixed header (always visible)
+	var header []string
+	header = append(header, "\033[1;33mProject:\033[0m "+highlight(conv.Cwd, query))
+	if conv.Title != "" {
+		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
+	}
+	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
+	header = append(header, "")
+
+	msgLines := buildPreviewLines(conv, query)
+
+	// Apply scroll to messages only (header stays fixed). Clamp locally for this
+	// render; the persisted m.previewScroll is bounded in Update via
+	// maxPreviewScroll (this method has a value receiver, so a write here would
+	// be discarded).
 	msgHeight := height - len(header)
 	if msgHeight < 1 {
 		msgHeight = 1
 	}
-	if m.previewScroll >= len(msgLines) {
-		m.previewScroll = max(0, len(msgLines)-1)
-	}
-	end := min(m.previewScroll+msgHeight, len(msgLines))
-	visibleMsgLines := msgLines[m.previewScroll:end]
+	scroll := min(m.previewScroll, max(0, len(msgLines)-1))
+	end := min(scroll+msgHeight, len(msgLines))
+	visibleMsgLines := msgLines[scroll:end]
 
 	// Combine header + scrolled messages
 	allLines := append(header, visibleMsgLines...)

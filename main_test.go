@@ -992,10 +992,15 @@ func TestRenderPreviewLongMultibyteMessageStaysValidUTF8(t *testing.T) {
 }
 
 func TestUpdateMouseScroll(t *testing.T) {
+	// Give each conversation enough messages that the preview is scrollable.
+	msgs := make([]Message, 10)
+	for i := range msgs {
+		msgs[i] = Message{Role: "user", Text: "message text line", Ts: "2024-01-15T10:00:00Z"}
+	}
 	items := []listItem{
-		{conv: Conversation{SessionID: "test-1"}, searchText: "first"},
-		{conv: Conversation{SessionID: "test-2"}, searchText: "second"},
-		{conv: Conversation{SessionID: "test-3"}, searchText: "third"},
+		{conv: Conversation{SessionID: "test-1", Messages: msgs}, searchText: "first"},
+		{conv: Conversation{SessionID: "test-2", Messages: msgs}, searchText: "second"},
+		{conv: Conversation{SessionID: "test-3", Messages: msgs}, searchText: "third"},
 	}
 
 	m := initialModel(items, "", nil)
@@ -1035,6 +1040,35 @@ func TestUpdateMouseScroll(t *testing.T) {
 	m = result.(model)
 	if m.previewScroll != 3 {
 		t.Errorf("wheel down in preview should scroll preview, got %d", m.previewScroll)
+	}
+}
+
+func TestPreviewScrollClampedToContent(t *testing.T) {
+	conv := Conversation{SessionID: "s1", Messages: []Message{
+		{Role: "user", Text: "only message", Ts: "2024-01-15T10:00:00Z"},
+	}}
+	m := initialModel([]listItem{{conv: conv}}, "", nil)
+	m.mouseInPreview = true
+
+	maxScroll := m.maxPreviewScroll()
+
+	// Hammer pgdown far past the content; previewScroll must never exceed max.
+	for i := 0; i < 100; i++ {
+		result, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		m = result.(model)
+		if m.previewScroll > maxScroll {
+			t.Fatalf("previewScroll %d exceeded max %d after pgdown", m.previewScroll, maxScroll)
+		}
+	}
+	if m.previewScroll != maxScroll {
+		t.Errorf("previewScroll should settle at max %d, got %d", maxScroll, m.previewScroll)
+	}
+
+	// A single pgup from the bottom must visibly move (no dead scroll-up zone).
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = result.(model)
+	if maxScroll > 0 && m.previewScroll >= maxScroll {
+		t.Errorf("pgup should move up from max; stuck at %d", m.previewScroll)
 	}
 }
 

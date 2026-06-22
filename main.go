@@ -36,6 +36,7 @@ type Conversation struct {
 	LastTimestamp  string    `json:"last_timestamp"`
 	Messages       []Message `json:"messages"`
 	FilePath       string    `json:"file_path"` // Full path to the .jsonl file
+	Size           int64     `json:"size"`      // .jsonl file size in bytes
 }
 
 // RawMessage represents the JSON structure in conversation files
@@ -258,8 +259,8 @@ func (m model) View() string {
 
 	var b strings.Builder
 
-	// Table width: 2 + 16 + 2 + 22 + 2 + 40 + 2 + 5 + 2 + 4 = 97
-	tableWidth := 97
+	// Table width: 2 + 16 + 2 + 22 + 2 + 34 + 2 + 5 + 2 + 4 + 2 + 6 = 99
+	tableWidth := 99
 
 	// Title line with help right-aligned
 	title := fmt.Sprintf("ccs · claude code search · %s", version)
@@ -307,7 +308,7 @@ func (m model) View() string {
 	previewHeight := m.height - listHeight - 6 // 6 for title + search + blank + header + borders
 
 	// Column headers
-	b.WriteString(fmt.Sprintf("  \033[90m%-16s  %-22s  %-40s  %5s  %4s\033[0m\n", "DATE", "PROJECT", "TOPIC", "MSGS", "HITS"))
+	b.WriteString(fmt.Sprintf("  \033[90m%-16s  %-22s  %-34s  %5s  %4s  %6s\033[0m\n", "DATE", "PROJECT", "TOPIC", "MSGS", "HITS", "SIZE"))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -368,7 +369,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	if item.conv.Title != "" {
 		topic = "✎ " + topic
 	}
-	topic = truncate(topic, 40)
+	topic = truncate(topic, 34)
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -385,12 +386,14 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		}
 	}
 
-	// Format: date | project | topic | msgs | hits (aligned columns)
+	size := formatBytes(item.conv.Size)
+
+	// Format: date | project | topic | msgs | hits | size (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-16s  %-22s  %-40s  %5d  %4d", ts, project, topic, msgs, hits)
+		return fmt.Sprintf("%-16s  %-22s  %-34s  %5d  %4d  %6s", ts, project, topic, msgs, hits, size)
 	}
-	return fmt.Sprintf("\033[90m%-16s\033[0m  \033[1;33m%-22s\033[0m  %-40s  %5d  \033[36m%4d\033[0m",
-		ts, project, topic, msgs, hits)
+	return fmt.Sprintf("\033[90m%-16s\033[0m  \033[1;33m%-22s\033[0m  %-34s  %5d  \033[36m%4d\033[0m  \033[35m%6s\033[0m",
+		ts, project, topic, msgs, hits, size)
 }
 
 func (m model) renderPreview(item listItem, height int) string {
@@ -617,6 +620,7 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 	conv := &Conversation{
 		SessionID: sessionID,
 		FilePath:  path,
+		Size:      info.Size(),
 	}
 
 	file, err := os.Open(path)
@@ -772,6 +776,20 @@ func formatTimestamp(ts string) string {
 		return ts
 	}
 	return t.Local().Format("2006-01-02 15:04")
+}
+
+// formatBytes renders a byte count compactly (fits the 6-wide SIZE column).
+func formatBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fGB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%dMB", n/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%dKB", n/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
 
 func truncate(s string, maxLen int) string {

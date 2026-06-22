@@ -61,42 +61,14 @@ type listItem struct {
 	conv        Conversation
 	searchText  string // All searchable content
 	searchLower string // searchText lowercased once, for case-insensitive filtering
-	display     string // What to show in the list
 }
 
-// Styles
-var (
-	selectedStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("62")).
-			Foreground(lipgloss.Color("230")).
-			Bold(true)
-
-	normalStyle = lipgloss.NewStyle()
-
-	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
-
-	projectStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true)
-
-	headerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true)
-
-	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("70"))
-
-	assistantStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("68"))
-
-	borderStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("240"))
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
-)
+// selectedStyle highlights the cursor row. The rest of the UI is rendered with
+// raw ANSI escapes in View/formatListItem/renderPreview.
+var selectedStyle = lipgloss.NewStyle().
+	Background(lipgloss.Color("62")).
+	Foreground(lipgloss.Color("230")).
+	Bold(true)
 
 // model is the bubbletea application state
 type model struct {

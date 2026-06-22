@@ -58,9 +58,10 @@ type TextContent struct {
 
 // listItem holds display and search data for a conversation
 type listItem struct {
-	conv       Conversation
-	searchText string // All searchable content
-	display    string // What to show in the list
+	conv        Conversation
+	searchText  string // All searchable content
+	searchLower string // searchText lowercased once, for case-insensitive filtering
+	display     string // What to show in the list
 }
 
 // Styles
@@ -144,7 +145,7 @@ func (m *model) updateFilter() {
 		queryLower := strings.ToLower(query)
 		m.filtered = make([]listItem, 0)
 		for _, item := range m.items {
-			if strings.Contains(strings.ToLower(item.searchText), queryLower) {
+			if strings.Contains(item.searchLower, queryLower) {
 				m.filtered = append(m.filtered, item)
 			}
 		}
@@ -866,9 +867,11 @@ func buildItems(conversations []Conversation) []listItem {
 			}
 		}
 
+		searchText := strings.Join(searchParts, " ")
 		items = append(items, listItem{
-			conv:       conv,
-			searchText: strings.Join(searchParts, " "),
+			conv:        conv,
+			searchText:  searchText,
+			searchLower: strings.ToLower(searchText),
 		})
 	}
 

@@ -146,7 +146,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.listHeight < 3 {
 			m.listHeight = 3
 		}
-		return m, nil
+		// Clear so a shrink doesn't leave wider stale rows behind.
+		return m, tea.ClearScreen
 
 	case tea.MouseMsg:
 		// Determine if mouse is in preview area (below list + separator)
@@ -261,8 +262,8 @@ func (m model) View() string {
 
 	var b strings.Builder
 
-	// Table width: 2 + 16 + 2 + 22 + 2 + 34 + 2 + 5 + 2 + 4 + 2 + 6 = 99
-	tableWidth := 99
+	// The list spans the full terminal width; TOPIC flexes to fill it.
+	tableWidth := m.width
 
 	// Title line with help right-aligned
 	title := fmt.Sprintf("ccs · claude code search · %s", version)
@@ -310,7 +311,8 @@ func (m model) View() string {
 	previewHeight := m.height - listHeight - 6 // 6 for title + search + blank + header + borders
 
 	// Column headers
-	b.WriteString(fmt.Sprintf("  \033[90m%-16s  %-22s  %-34s  %5s  %4s  %6s\033[0m\n", "DATE", "PROJECT", "TOPIC", "MSGS", "HITS", "SIZE"))
+	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %*s  %*s  %*s\033[0m\n",
+		colDate, "DATE", colProject, "PROJECT", m.topicColWidth(), "TOPIC", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -352,16 +354,35 @@ func (m model) View() string {
 	return b.String()
 }
 
+// Fixed list column widths. TOPIC is the flex column - it absorbs the rest of
+// the terminal width (see topicColWidth).
+const (
+	colDate    = 16
+	colProject = 22
+	colMsgs    = 5
+	colHits    = 4
+	colSize    = 6
+	colGap     = 2 // spaces between columns
+	listIndent = 2 // leading "  " / "> " on each row
+	numGaps    = 5
+)
+
+// topicColWidth flexes the TOPIC column to fill the terminal width.
+func (m model) topicColWidth() int {
+	used := listIndent + colDate + colProject + colMsgs + colHits + colSize + numGaps*colGap
+	if w := m.width - used; w > 10 {
+		return w
+	}
+	return 10
+}
+
 func (m model) formatListItem(item listItem, selected bool) string {
 	ts := formatTimestamp(item.conv.LastTimestamp)
 	project := item.conv.Cwd
 	if idx := strings.LastIndex(project, "/"); idx >= 0 {
 		project = project[idx+1:]
 	}
-	// Truncate project name to fit column
-	if len(project) > 22 {
-		project = project[:19] + "..."
-	}
+	project = truncate(project, colProject)
 
 	// Mark only user-set custom titles. Claude auto-generates an ai-title for
 	// almost every session, so marking any title would flag nearly every row;
@@ -372,7 +393,8 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	if item.conv.IsCustomTitle {
 		topic = "✎ " + topic
 	}
-	topic = truncate(topic, 34)
+	tw := m.topicColWidth()
+	topic = truncate(topic, tw)
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -393,10 +415,11 @@ func (m model) formatListItem(item listItem, selected bool) string {
 
 	// Format: date | project | topic | msgs | hits | size (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-16s  %-22s  %-34s  %5d  %4d  %6s", ts, project, topic, msgs, hits, size)
+		return fmt.Sprintf("%-*s  %-*s  %-*s  %*d  %*d  %*s",
+			colDate, ts, colProject, project, tw, topic, colMsgs, msgs, colHits, hits, colSize, size)
 	}
-	return fmt.Sprintf("\033[90m%-16s\033[0m  \033[1;33m%-22s\033[0m  %-34s  %5d  \033[36m%4d\033[0m  \033[35m%6s\033[0m",
-		ts, project, topic, msgs, hits, size)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %-*s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
+		colDate, ts, colProject, project, tw, topic, colMsgs, msgs, colHits, hits, colSize, size)
 }
 
 // buildPreviewLines builds the scrollable message lines of a conversation

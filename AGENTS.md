@@ -98,11 +98,11 @@ go test -v -cover
   ccs · claude code search    Resume:Enter Delete:Ctrl+D Scroll:Ctrl+J/K Exit:Esc
   > type to search...                                                     (N/total)
 
-  DATE              PROJECT               TOPIC                 MSGS  HITS
-────────────────────────────────────────────────────────────────────────────
-  2024-01-08 15:04  project-name          First user message     42     3
-> 2024-01-08 14:30  selected              This one is selected   28     1
-────────────────────────────────────────────────────────────────────────────
+  DATE              PROJECT               TOPIC                       MSGS  HITS    SIZE
+──────────────────────────────────────────────────────────────────────────────────────
+  2024-01-08 15:04  project-name          ✎ Refactor auth flow          42     3   1.2GB
+> 2024-01-08 14:30  selected              This one is selected          28     1    12MB
+──────────────────────────────────────────────────────────────────────────────────────
 Project: /path/to/project
 Session: abc123...
 

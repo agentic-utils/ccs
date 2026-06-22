@@ -95,6 +95,42 @@ func TestHighlightMatchesMultibyte(t *testing.T) {
 	}
 }
 
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0B"},
+		{512, "512B"},
+		{2048, "2KB"},
+		{75 * 1 << 20, "75MB"},
+		{1 << 30, "1.0GB"},
+		{3*(1<<30) + (1 << 29), "3.5GB"},
+	}
+	for _, tt := range tests {
+		got := formatBytes(tt.n)
+		if got != tt.want {
+			t.Errorf("formatBytes(%d) = %q, want %q", tt.n, got, tt.want)
+		}
+		if len(got) > 6 {
+			t.Errorf("formatBytes(%d) = %q exceeds the 6-wide SIZE column", tt.n, got)
+		}
+	}
+}
+
+func TestFormatListItemShowsSize(t *testing.T) {
+	item := listItem{conv: Conversation{
+		SessionID:     "s1",
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Size:          75 * 1 << 20,
+		Messages:      []Message{{Role: "user", Text: "hi"}},
+	}}
+	m := initialModel([]listItem{item}, "", nil)
+	if got := m.formatListItem(item, false); !strings.Contains(got, "75MB") {
+		t.Errorf("list row should show the file size, got %q", got)
+	}
+}
+
 func TestFormatTimestamp(t *testing.T) {
 	tests := []struct {
 		name     string

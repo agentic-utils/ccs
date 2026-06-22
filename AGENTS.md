@@ -91,6 +91,7 @@ go test -v -cover
 - `renderPreview()` - Renders conversation preview with highlights
 - `formatListItem()` - Formats a single list row
 - `deleteConversation()` - Removes conversation file and updates UI state
+- `pruneConversation()` - Prunes the selected conversation in place (Ctrl+R) and refreshes its size
 - `getTopic()` - Extracts first user message as topic
 - `pruneFile()` / `pruneStream()` - Shrink a conversation by dropping duplicate/redundant data (never touches user/assistant lines)
 - `runPrune()` - `ccs prune` subcommand driver
@@ -98,7 +99,7 @@ go test -v -cover
 ### TUI Layout
 
 ```
-  ccs · claude code search    Resume:Enter Delete:Ctrl+D Scroll:Ctrl+J/K Exit:Esc
+  ccs · claude code search    Resume:Enter Delete:Ctrl+D Prune:Ctrl+R Scroll:Ctrl+J/K Exit:Esc
   > type to search...                                                     (N/total)
 
   DATE              PROJECT               TOPIC                       MSGS  HITS    SIZE

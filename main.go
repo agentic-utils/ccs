@@ -89,7 +89,10 @@ type model struct {
 	mouseInPreview bool // Track if mouse is in preview area
 	confirmDelete  bool   // Are we in delete confirmation mode?
 	deleteIndex    int    // Index of item to delete
-	errorMsg       string // Show deletion errors
+	confirmPrune   bool   // Are we in prune confirmation mode?
+	pruneIndex     int    // Index of item to prune
+	pruneSaved     int64  // Bytes the pending prune would reclaim (measured on Ctrl+R)
+	errorMsg       string // Show deletion/prune errors
 }
 
 func initialModel(items []listItem, filterQuery string, claudeFlags []string) model {
@@ -192,6 +195,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // Ignore all other keys
 		}
 
+		// Handle prune confirmation mode
+		if m.confirmPrune {
+			switch msg.String() {
+			case "y", "Y":
+				m.pruneConversation()
+				return m, nil
+			case "n", "N", "esc":
+				m.confirmPrune = false
+				return m, nil
+			}
+			return m, nil // Ignore all other keys
+		}
+
 		// Clear error message on any keypress in normal mode
 		if m.errorMsg != "" {
 			m.errorMsg = ""
@@ -213,6 +229,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.filtered) > 0 {
 				m.confirmDelete = true
 				m.deleteIndex = m.cursor
+			}
+			return m, nil
+
+		case "ctrl+r":
+			if len(m.filtered) > 0 {
+				// Measure the projected saving so the prompt can show it.
+				// ponytail: reads the file once now (and again on confirm) - a
+				// multi-GB file briefly blocks, acceptable for a manual action.
+				st, err := pruneFile(m.filtered[m.cursor].conv.FilePath, false, pruneOpts{dropSnapshots: true, stripToolResults: true})
+				if err != nil {
+					m.errorMsg = fmt.Sprintf("Prune preview failed: %v", err)
+					return m, nil
+				}
+				m.confirmPrune = true
+				m.pruneIndex = m.cursor
+				m.pruneSaved = st.bytesIn - st.bytesOut
 			}
 			return m, nil
 
@@ -267,7 +299,7 @@ func (m model) View() string {
 
 	// Title line with help right-aligned
 	title := fmt.Sprintf("ccs · claude code search · %s", version)
-	help := "Resume:Enter Delete:Ctrl+D Scroll:Ctrl+J/K Exit:Esc"
+	help := "Resume:Enter Delete:Ctrl+D Prune:Ctrl+R Scroll:Ctrl+J/K Exit:Esc"
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
 		titlePadding = 1
@@ -278,7 +310,14 @@ func (m model) View() string {
 	// Search line or delete confirmation
 	var sections []string
 	var inputSection string
-	if m.confirmDelete {
+	if m.confirmPrune {
+		conv := m.filtered[m.pruneIndex].conv
+		inputSection = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")). // Amber
+			Render(fmt.Sprintf("Prune \"%s\"? %s -> %s, saves %s (keeps dialogue). [y/N]",
+				truncate(getTopic(conv), 32), formatBytes(conv.Size), formatBytes(conv.Size-m.pruneSaved), formatBytes(m.pruneSaved)))
+		sections = append(sections, "  "+inputSection)
+	} else if m.confirmDelete {
 		topic := getTopic(m.filtered[m.deleteIndex].conv)
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")). // Red
@@ -903,6 +942,36 @@ func (m *model) deleteConversation() {
 	m.errorMsg = ""
 }
 
+// pruneConversation prunes the selected conversation file in place and refreshes
+// its displayed size. The conversation stays in the list (only shrunk).
+// ponytail: synchronous - a multi-GB file briefly blocks the UI, same as delete.
+func (m *model) pruneConversation() {
+	m.confirmPrune = false
+	if m.pruneIndex >= len(m.filtered) {
+		return
+	}
+	conv := m.filtered[m.pruneIndex].conv
+
+	st, err := pruneFile(conv.FilePath, true, pruneOpts{dropSnapshots: true, stripToolResults: true})
+	if err != nil {
+		m.errorMsg = fmt.Sprintf("Prune failed: %v", err)
+		return
+	}
+
+	newSize := conv.Size - (st.bytesIn - st.bytesOut)
+	if info, e := os.Stat(conv.FilePath); e == nil {
+		newSize = info.Size()
+	}
+	for _, items := range [][]listItem{m.items, m.filtered} {
+		for i := range items {
+			if items[i].conv.SessionID == conv.SessionID {
+				items[i].conv.Size = newSize
+			}
+		}
+	}
+	m.errorMsg = ""
+}
+
 // buildItems creates list items from conversations
 func buildItems(conversations []Conversation) []listItem {
 	items := make([]listItem, 0, len(conversations))
@@ -1243,6 +1312,7 @@ Key bindings:
   ↑/↓, Ctrl+P/N   Navigate list
   Enter           Select and resume conversation
   Ctrl+D          Delete conversation (with confirmation)
+  Ctrl+R          Prune conversation - shrink it losslessly (with confirmation)
   Ctrl+J/K        Scroll preview
   Mouse wheel     Scroll list or preview (based on position)
   Ctrl+U          Clear search

@@ -92,6 +92,58 @@ type model struct {
 	pruneIndex     int    // Index of item to prune
 	pruneSaved     int64  // Bytes the pending prune would reclaim (measured on Ctrl+R)
 	errorMsg       string // Show deletion/prune errors
+	preview        *previewCache // memoised preview lines for the selected conversation
+	hits           *hitCounter   // memoised per-query hit counts, keyed by SessionID
+}
+
+// previewCache memoises buildPreviewLines for the selected conversation so the
+// preview isn't rebuilt (scanning every message) on every frame. It lives behind
+// a pointer so it survives the value-receiver copies of model that View makes.
+type previewCache struct {
+	key   string
+	lines []string
+}
+
+// hitCounter memoises HITS (messages containing the query) per conversation for
+// the current query, so formatListItem doesn't rescan every visible row's
+// messages on every frame. Pointer-held so it survives model value copies.
+type hitCounter struct {
+	query string
+	byID  map[string]int
+}
+
+// countHits is the number of a conversation's messages containing query.
+func countHits(conv Conversation, query string) int {
+	queryLower := strings.ToLower(query)
+	n := 0
+	for _, msg := range conv.Messages {
+		if strings.Contains(strings.ToLower(msg.Text), queryLower) {
+			n++
+		}
+	}
+	return n
+}
+
+// hitCount returns the memoised hit count for item under the current query.
+func (m model) hitCount(item listItem) int {
+	query := m.textInput.Value()
+	if query == "" {
+		return 0
+	}
+	if m.hits == nil { // model built without initialModel (e.g. tests)
+		return countHits(item.conv, query)
+	}
+	if m.hits.query != query {
+		m.hits.query = query
+		m.hits.byID = make(map[string]int)
+	}
+	id := item.conv.SessionID
+	if h, ok := m.hits.byID[id]; ok {
+		return h
+	}
+	h := countHits(item.conv, query)
+	m.hits.byID[id] = h
+	return h
 }
 
 func initialModel(items []listItem, filterQuery string, claudeFlags []string) model {
@@ -106,9 +158,31 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		items:       items,
 		textInput:   ti,
 		claudeFlags: claudeFlags,
+		preview:     &previewCache{},
+		hits:        &hitCounter{byID: make(map[string]int)},
 	}
 	m.updateFilter()
 	return m
+}
+
+// previewLines returns the preview lines for the selected conversation,
+// rebuilding only when the selection or query changes. Keyed by SessionID (not
+// cursor index) so it stays correct when the filtered list shifts.
+func (m model) previewLines() []string {
+	if len(m.filtered) == 0 {
+		return nil
+	}
+	conv := m.filtered[m.cursor].conv
+	query := m.textInput.Value()
+	if m.preview == nil { // model built without initialModel (e.g. tests)
+		return buildPreviewLines(conv, query)
+	}
+	key := conv.SessionID + "\x00" + query
+	if m.preview.key != key {
+		m.preview.key = key
+		m.preview.lines = buildPreviewLines(conv, query)
+	}
+	return m.preview.lines
 }
 
 func (m *model) updateFilter() {
@@ -408,17 +482,8 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// Message count
 	msgs := len(item.conv.Messages)
 
-	// Count messages containing the query
-	query := m.textInput.Value()
-	hits := 0
-	if query != "" {
-		queryLower := strings.ToLower(query)
-		for _, msg := range item.conv.Messages {
-			if strings.Contains(strings.ToLower(msg.Text), queryLower) {
-				hits++
-			}
-		}
-	}
+	// Number of messages containing the query (memoised per query).
+	hits := m.hitCount(item)
 
 	size := formatBytes(item.conv.Size)
 
@@ -533,8 +598,7 @@ func (m model) maxPreviewScroll() int {
 	if len(m.filtered) == 0 {
 		return 0
 	}
-	lines := buildPreviewLines(m.filtered[m.cursor].conv, m.textInput.Value())
-	return max(0, len(lines)-1)
+	return max(0, len(m.previewLines())-1)
 }
 
 func (m model) renderPreview(item listItem, height int) string {
@@ -550,7 +614,7 @@ func (m model) renderPreview(item listItem, height int) string {
 	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
 	header = append(header, "")
 
-	msgLines := buildPreviewLines(conv, query)
+	msgLines := m.previewLines() // memoised; item is always the selected conversation
 
 	// Apply scroll to messages only (header stays fixed). Clamp locally for this
 	// render; the persisted m.previewScroll is bounded in Update via

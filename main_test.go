@@ -1050,6 +1050,59 @@ func TestGetProjectsDir(t *testing.T) {
 	}
 }
 
+func TestPreviewLinesCachedUntilSelectionOrQueryChanges(t *testing.T) {
+	items := []listItem{
+		{conv: Conversation{SessionID: "s1", Messages: []Message{{Role: "user", Text: "alpha"}}}, searchText: "alpha"},
+		{conv: Conversation{SessionID: "s2", Messages: []Message{{Role: "user", Text: "beta"}}}, searchText: "beta"},
+	}
+	m := initialModel(items, "", nil)
+
+	_ = m.previewLines() // build + cache for s1
+	// Poison the cache; a cached call must return it without rebuilding.
+	m.preview.lines = []string{"CACHED"}
+	if got := m.previewLines(); len(got) != 1 || got[0] != "CACHED" {
+		t.Errorf("expected cached value, got %v", got)
+	}
+
+	// Changing the query invalidates the cache → rebuild (not the poison).
+	m.textInput.SetValue("alpha")
+	if got := m.previewLines(); len(got) == 1 && got[0] == "CACHED" {
+		t.Error("changing query should rebuild the preview, not return stale cache")
+	}
+
+	// Moving the cursor to a different conversation also rebuilds.
+	m.textInput.SetValue("")
+	_ = m.previewLines()
+	m.preview.lines = []string{"CACHED"}
+	m.cursor = 1
+	if got := m.previewLines(); len(got) == 1 && got[0] == "CACHED" {
+		t.Error("moving the cursor should rebuild the preview")
+	}
+}
+
+func TestHitCountCachedPerQuery(t *testing.T) {
+	conv := Conversation{SessionID: "s1", Messages: []Message{
+		{Role: "user", Text: "alpha beta"},
+		{Role: "assistant", Text: "beta gamma"},
+	}}
+	item := listItem{conv: conv}
+	m := initialModel([]listItem{item}, "beta", nil)
+
+	if got := m.hitCount(item); got != 2 {
+		t.Fatalf("hitCount = %d, want 2", got)
+	}
+	// Poison the cache; a cached call must return it (no rescan).
+	m.hits.byID["s1"] = 99
+	if got := m.hitCount(item); got != 99 {
+		t.Errorf("expected cached value 99, got %d", got)
+	}
+	// Changing the query invalidates the cache → recompute.
+	m.textInput.SetValue("gamma")
+	if got := m.hitCount(item); got != 1 {
+		t.Errorf("query change should recompute hits: got %d, want 1", got)
+	}
+}
+
 func TestRenderPreview(t *testing.T) {
 	conv := Conversation{
 		SessionID: "test-123",

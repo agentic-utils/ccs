@@ -18,7 +18,6 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Pass flags through to `claude` (e.g., `--plan`)
-- Mouse wheel scrolling support
 
 ## Installation
 
@@ -82,7 +81,6 @@ ccs buyer -- --plan
 - `Ctrl+D` - Delete selected conversation (with confirmation)
 - `Ctrl+R` - Prune selected conversation - shrink it losslessly (with confirmation)
 - `Ctrl+J/K` - Scroll preview
-- `Mouse wheel` - Scroll list or preview (context-aware)
 - `Ctrl+U` - Clear search
 - `Esc` / `Ctrl+C` - Quit
 

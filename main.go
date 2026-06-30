@@ -82,11 +82,10 @@ type model struct {
 	previewScroll  int
 	width          int
 	height         int
-	listHeight     int // Calculated list height for mouse detection
+	listHeight     int // Calculated visible list height
 	selected       *Conversation
 	quitting       bool
 	claudeFlags    []string
-	mouseInPreview bool // Track if mouse is in preview area
 	confirmDelete  bool   // Are we in delete confirmation mode?
 	deleteIndex    int    // Index of item to delete
 	confirmPrune   bool   // Are we in prune confirmation mode?
@@ -144,42 +143,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Calculate list height for mouse detection
+		// Calculate visible list height
 		m.listHeight = m.height * 30 / 100
 		if m.listHeight < 3 {
 			m.listHeight = 3
 		}
 		// Clear so a shrink doesn't leave wider stale rows behind.
 		return m, tea.ClearScreen
-
-	case tea.MouseMsg:
-		// Determine if mouse is in preview area (below list + separator)
-		listAreaHeight := 2 + m.listHeight // search line + separator + list
-		m.mouseInPreview = msg.Y > listAreaHeight
-
-		switch msg.Button {
-		case tea.MouseButtonWheelUp:
-			if m.mouseInPreview {
-				m.previewScroll = max(0, m.previewScroll-3)
-			} else {
-				if m.cursor > 0 {
-					m.cursor--
-					m.previewScroll = 0
-				}
-			}
-			return m, nil
-		case tea.MouseButtonWheelDown:
-			if m.mouseInPreview {
-				m.previewScroll = min(m.previewScroll+3, m.maxPreviewScroll())
-			} else {
-				if m.cursor < len(m.filtered)-1 {
-					m.cursor++
-					m.previewScroll = 0
-				}
-			}
-			return m, nil
-		}
-		return m, nil
 
 	case tea.KeyMsg:
 		// Handle delete confirmation mode
@@ -1314,7 +1284,6 @@ Key bindings:
   Ctrl+D          Delete conversation (with confirmation)
   Ctrl+R          Prune conversation - shrink it losslessly (with confirmation)
   Ctrl+J/K        Scroll preview
-  Mouse wheel     Scroll list or preview (based on position)
   Ctrl+U          Clear search
   Esc, Ctrl+C     Quit
 
@@ -1432,9 +1401,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Run TUI
+	// Run TUI. Mouse reporting is intentionally NOT enabled: under a heavy
+	// frame the terminal emits mouse-wheel reports faster than bubbletea reads
+	// them, and the fragmented sequences leak into the search box as text.
+	// Scrolling is keyboard-only (arrows / Ctrl+J/K / PgUp/PgDn).
 	m := initialModel(items, filterQuery, claudeFlags)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	finalModel, err := p.Run()
 	if err != nil {

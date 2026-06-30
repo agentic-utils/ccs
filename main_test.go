@@ -1096,65 +1096,11 @@ func TestRenderPreviewLongMultibyteMessageStaysValidUTF8(t *testing.T) {
 		t.Error("preview of a long multibyte message produced invalid UTF-8")
 	}
 }
-
-func TestUpdateMouseScroll(t *testing.T) {
-	// Give each conversation enough messages that the preview is scrollable.
-	msgs := make([]Message, 10)
-	for i := range msgs {
-		msgs[i] = Message{Role: "user", Text: "message text line", Ts: "2024-01-15T10:00:00Z"}
-	}
-	items := []listItem{
-		{conv: Conversation{SessionID: "test-1", Messages: msgs}, searchText: "first"},
-		{conv: Conversation{SessionID: "test-2", Messages: msgs}, searchText: "second"},
-		{conv: Conversation{SessionID: "test-3", Messages: msgs}, searchText: "third"},
-	}
-
-	m := initialModel(items, "", nil)
-
-	// Set window size first to initialize mouse tracking
-	result, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = result.(model)
-
-	// Mouse wheel up in list area (Y=5, which should be in list)
-	m.mouseInPreview = false // Explicitly set for test
-	result, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Y: 5})
-	m = result.(model)
-	// Should not move cursor from 0
-	if m.cursor != 0 {
-		t.Errorf("wheel up at top should keep cursor at 0, got %d", m.cursor)
-	}
-
-	// Move to second item
-	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = result.(model)
-	if m.cursor != 1 {
-		t.Errorf("should be at cursor 1, got %d", m.cursor)
-	}
-
-	// Mouse wheel down in list area should move cursor forward
-	m.mouseInPreview = false // Ensure we're scrolling list not preview
-	result, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Y: 5})
-	m = result.(model)
-	if m.cursor != 2 {
-		t.Errorf("wheel down should move to cursor 2, got %d", m.cursor)
-	}
-
-	// Mouse wheel in preview area
-	m.previewScroll = 0
-	m.mouseInPreview = true
-	result, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Y: 20})
-	m = result.(model)
-	if m.previewScroll != 3 {
-		t.Errorf("wheel down in preview should scroll preview, got %d", m.previewScroll)
-	}
-}
-
 func TestPreviewScrollClampedToContent(t *testing.T) {
 	conv := Conversation{SessionID: "s1", Messages: []Message{
 		{Role: "user", Text: "only message", Ts: "2024-01-15T10:00:00Z"},
 	}}
 	m := initialModel([]listItem{{conv: conv}}, "", nil)
-	m.mouseInPreview = true
 
 	maxScroll := m.maxPreviewScroll()
 

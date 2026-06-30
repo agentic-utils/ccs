@@ -678,6 +678,32 @@ func TestDeleteConversationErrorHandling(t *testing.T) {
 	}
 }
 
+func TestUpdateFilterIncrementalNarrowing(t *testing.T) {
+	items := []listItem{
+		{conv: Conversation{SessionID: "1"}, searchText: "auth gateway", searchLower: "auth gateway"},
+		{conv: Conversation{SessionID: "2"}, searchText: "auth service", searchLower: "auth service"},
+		{conv: Conversation{SessionID: "3"}, searchText: "billing", searchLower: "billing"},
+	}
+	m := initialModel(items, "", nil)
+
+	check := func(q string, want int) {
+		t.Helper()
+		m.textInput.SetValue(q)
+		m.updateFilter()
+		if len(m.filtered) != want {
+			t.Fatalf("query %q: got %d results, want %d", q, len(m.filtered), want)
+		}
+	}
+	check("auth", 2)         // full scan
+	check("auth gateway", 1) // narrowing: filters the previous 2, not all 3
+	if m.filtered[0].conv.SessionID != "1" {
+		t.Errorf("narrowed result should be session 1, got %s", m.filtered[0].conv.SessionID)
+	}
+	check("auth", 2) // broadening: "auth gateway" not in "auth" -> full rescan
+	check("billing", 1)
+	check("", 3) // cleared
+}
+
 func TestUpdateFilter(t *testing.T) {
 	items := []listItem{
 		{conv: Conversation{SessionID: "test-1"}, searchText: "Hello World foo", searchLower: "hello world foo"},
@@ -1047,6 +1073,59 @@ func TestGetProjectsDir(t *testing.T) {
 	dir := getProjectsDir()
 	if !strings.Contains(dir, ".claude") || !strings.Contains(dir, "projects") {
 		t.Errorf("getProjectsDir should return path containing .claude/projects, got %s", dir)
+	}
+}
+
+func TestPreviewLinesCachedUntilSelectionOrQueryChanges(t *testing.T) {
+	items := []listItem{
+		{conv: Conversation{SessionID: "s1", Messages: []Message{{Role: "user", Text: "alpha"}}}, searchText: "alpha"},
+		{conv: Conversation{SessionID: "s2", Messages: []Message{{Role: "user", Text: "beta"}}}, searchText: "beta"},
+	}
+	m := initialModel(items, "", nil)
+
+	_ = m.previewLines() // build + cache for s1
+	// Poison the cache; a cached call must return it without rebuilding.
+	m.preview.lines = []string{"CACHED"}
+	if got := m.previewLines(); len(got) != 1 || got[0] != "CACHED" {
+		t.Errorf("expected cached value, got %v", got)
+	}
+
+	// Changing the query invalidates the cache → rebuild (not the poison).
+	m.textInput.SetValue("alpha")
+	if got := m.previewLines(); len(got) == 1 && got[0] == "CACHED" {
+		t.Error("changing query should rebuild the preview, not return stale cache")
+	}
+
+	// Moving the cursor to a different conversation also rebuilds.
+	m.textInput.SetValue("")
+	_ = m.previewLines()
+	m.preview.lines = []string{"CACHED"}
+	m.cursor = 1
+	if got := m.previewLines(); len(got) == 1 && got[0] == "CACHED" {
+		t.Error("moving the cursor should rebuild the preview")
+	}
+}
+
+func TestHitCountCachedPerQuery(t *testing.T) {
+	conv := Conversation{SessionID: "s1", Messages: []Message{
+		{Role: "user", Text: "alpha beta"},
+		{Role: "assistant", Text: "beta gamma"},
+	}}
+	item := listItem{conv: conv}
+	m := initialModel([]listItem{item}, "beta", nil)
+
+	if got := m.hitCount(item); got != 2 {
+		t.Fatalf("hitCount = %d, want 2", got)
+	}
+	// Poison the cache; a cached call must return it (no rescan).
+	m.hits.byID["s1"] = 99
+	if got := m.hitCount(item); got != 99 {
+		t.Errorf("expected cached value 99, got %d", got)
+	}
+	// Changing the query invalidates the cache → recompute.
+	m.textInput.SetValue("gamma")
+	if got := m.hitCount(item); got != 1 {
+		t.Errorf("query change should recompute hits: got %d, want 1", got)
 	}
 }
 

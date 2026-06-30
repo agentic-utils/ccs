@@ -89,6 +89,8 @@ go test -v -cover
 - `Update()` - Handles keyboard/mouse input, including delete confirmation
 - `View()` - Renders the TUI with delete confirmation prompt
 - `renderPreview()` - Renders conversation preview with highlights
+- `previewLines()` - Memoised `buildPreviewLines` for the selected conversation (rebuilt only when selection/query changes), avoids per-frame rescans of huge conversations
+- `hitCount()` / `countHits()` - Memoised per-query HITS count (messages containing the query), keyed by SessionID, so `formatListItem` doesn't rescan every visible row each frame
 - `formatListItem()` - Formats a single list row
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `pruneConversation()` - Prunes the selected conversation in place (Ctrl+R) and refreshes its size

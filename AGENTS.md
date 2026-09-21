@@ -92,6 +92,7 @@ go test -v -cover
 - `previewLines()` - Memoised `buildPreviewLines` for the selected conversation (rebuilt only when selection/query changes), avoids per-frame rescans of huge conversations
 - `hitCount()` / `countHits()` - Memoised per-query HITS count (messages containing the query), keyed by SessionID, so `formatListItem` doesn't rescan every visible row each frame
 - `formatListItem()` - Formats a single list row
+- `openResumeTab()` / `resumeInITermTab()` - Opens the selected conversation in a new iTerm tab (focus stays on ccs); falls back to exec-in-place elsewhere
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `pruneConversation()` - Prunes the selected conversation in place (Ctrl+R) and refreshes its size
 - `getTopic()` - Extracts first user message as topic

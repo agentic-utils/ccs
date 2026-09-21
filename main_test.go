@@ -1592,3 +1592,10 @@ func TestResumeInITermTabSkipsOutsideITerm(t *testing.T) {
 		t.Error("should not open a tab outside iTerm")
 	}
 }
+
+func TestResumeInTmuxWindowSkipsOutsideTmux(t *testing.T) {
+	t.Setenv("TMUX", "")
+	if resumeInTmuxWindow("/tmp", []string{"claude"}) {
+		t.Error("should not open a window outside tmux")
+	}
+}

@@ -1531,8 +1531,8 @@ func main() {
 	syscall.Exec(claudePath, execArgs, os.Environ())
 }
 
-// openResumeTab tries to resume conv in a new iTerm tab. Returns false when
-// that isn't possible, leaving the caller to exec claude in place.
+// openResumeTab tries to resume conv in a new tmux window or iTerm tab. Returns
+// false when that isn't possible, leaving the caller to exec claude in place.
 func openResumeTab(conv Conversation, claudeFlags []string) bool {
 	cwd := conv.Cwd
 	if cwd == "" || cwd == "unknown" {
@@ -1543,7 +1543,19 @@ func openResumeTab(conv Conversation, claudeFlags []string) bool {
 		return false
 	}
 	args := append([]string{claudePath, "--resume", conv.SessionID}, claudeFlags...)
-	return resumeInITermTab(cwd, args)
+	// tmux first: inside tmux the iTerm tab would land outside the session.
+	return resumeInTmuxWindow(cwd, args) || resumeInITermTab(cwd, args)
+}
+
+// resumeInTmuxWindow opens args in a new background tmux window. Returns false
+// if we're not in tmux or tmux failed, so the caller can try the next option.
+func resumeInTmuxWindow(cwd string, args []string) bool {
+	if os.Getenv("TMUX") == "" {
+		return false
+	}
+	// -d leaves the current window (ccs) focused.
+	tmuxArgs := append([]string{"new-window", "-d", "-c", cwd}, args...)
+	return exec.Command("tmux", tmuxArgs...).Run() == nil
 }
 
 // shellQuote wraps s for /bin/sh single-quoted use.

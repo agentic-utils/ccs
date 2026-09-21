@@ -271,9 +271,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "enter":
-			if len(m.filtered) > 0 {
-				m.selected = &m.filtered[m.cursor].conv
+			if len(m.filtered) == 0 {
+				m.quitting = true
+				return m, tea.Quit
 			}
+			conv := m.filtered[m.cursor].conv
+			// In iTerm the session opens in its own tab, so ccs stays up and
+			// you can resume another conversation.
+			if openResumeTab(conv, m.claudeFlags) {
+				return m, nil
+			}
+			m.selected = &conv
 			m.quitting = true
 			return m, tea.Quit
 
@@ -1521,4 +1529,49 @@ func main() {
 	execArgs = append(execArgs, claudeFlags...)
 
 	syscall.Exec(claudePath, execArgs, os.Environ())
+}
+
+// openResumeTab tries to resume conv in a new iTerm tab. Returns false when
+// that isn't possible, leaving the caller to exec claude in place.
+func openResumeTab(conv Conversation, claudeFlags []string) bool {
+	cwd := conv.Cwd
+	if cwd == "" || cwd == "unknown" {
+		cwd = "."
+	}
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		return false
+	}
+	args := append([]string{claudePath, "--resume", conv.SessionID}, claudeFlags...)
+	return resumeInITermTab(cwd, args)
+}
+
+// shellQuote wraps s for /bin/sh single-quoted use.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// resumeInITermTab opens the resume command in a new iTerm tab. Returns false
+// if we're not in iTerm or osascript failed, so the caller can exec in place.
+// ponytail: osascript, not the iTerm python API - no deps, no daemon.
+func resumeInITermTab(cwd string, args []string) bool {
+	if os.Getenv("TERM_PROGRAM") != "iTerm.app" {
+		return false
+	}
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = shellQuote(a)
+	}
+	cmd := "cd " + shellQuote(cwd) + " && exec " + strings.Join(quoted, " ")
+	// Focus stays on the ccs tab: creating a tab selects it, so select the old
+	// one back. No "activate", so iTerm doesn't jump to the front either.
+	script := fmt.Sprintf(`tell application "iTerm2"
+	tell current window
+		set oldTab to current tab
+		create tab with default profile
+		tell current session to write text %q
+		select oldTab
+	end tell
+end tell`, cmd)
+	return exec.Command("osascript", "-e", script).Run() == nil
 }

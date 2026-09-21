@@ -751,6 +751,10 @@ func TestUpdateFilter(t *testing.T) {
 }
 
 func TestFormatListItem(t *testing.T) {
+	// Timestamps render in local time, so pin the zone or this fails outside UTC.
+	defer func(l *time.Location) { time.Local = l }(time.Local)
+	time.Local = time.UTC
+
 	conv := Conversation{
 		SessionID:     "test-123",
 		Cwd:           "/home/user/very-long-project-name-that-exceeds-column-width",
@@ -1570,5 +1574,21 @@ func TestCtrlREntersAndCancelsPruneConfirm(t *testing.T) {
 	m = res.(model)
 	if m.confirmPrune {
 		t.Error("esc should cancel prune confirm")
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	if got := shellQuote(`a b`); got != `'a b'` {
+		t.Errorf("got %s", got)
+	}
+	if got := shellQuote(`it's`); got != `'it'\''s'` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestResumeInITermTabSkipsOutsideITerm(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
+	if resumeInITermTab("/tmp", []string{"claude"}) {
+		t.Error("should not open a tab outside iTerm")
 	}
 }

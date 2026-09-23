@@ -75,6 +75,8 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (1 min), keeping the cursor on the same conversation; skipped while a delete/prune/rename prompt is open, and dropped if `m.gen` moved (a delete/prune/rename happened while the scan ran); search text is built once at parse and shared through `parseCache`, so unchanged conversations cost nothing on refresh
 - `parseCache` - Reuses parsed conversations whose file size+mtime are unchanged, so refreshes only reparse changed files
 - `openResumeTab()` / `resumeInTmuxWindow()` / `resumeInITermTab()` - Opens the selected conversation in a new tmux window or iTerm tab (focus stays on ccs); falls back to exec-in-place elsewhere
+- `focusSession()` / `tmuxPaneForTTY()` - Enter on a live session: find its terminal by the claude pid's tty (`liveSessionPIDs()`) and select that tmux pane or iTerm tab instead of resuming a second copy
+- Ctrl+F forks: `openResumeTab` / exec with `--fork-session`
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `pruneConversation()` - Prunes the selected conversation in place (Ctrl+X) and refreshes its size
 - `getTopic()` - Title, else first real user message (skips tag-wrapped harness text, shows `/cmd` or `! cmd` for command-only sessions), else session id
@@ -86,7 +88,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 ### TUI Layout
 
 ```
-  ccs · claude code search    Resume:Enter Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc
+  ccs · claude code search    Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc
   > type to search...                                                     (N/total)
 
   DATE              PROJECT               TOPIC                       MSGS  HITS    SIZE

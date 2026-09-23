@@ -819,20 +819,20 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 	m := initialModel([]listItem{custom, aiTitled, fallback}, "", nil)
 	m.width = 120 // give TOPIC room so the title isn't truncated
 
-	if got := m.formatListItem(custom, false); !strings.Contains(got, "Refactor auth flow ✎") {
+	if got := m.formatListItem(custom, false); !strings.Contains(got, "Refactor auth flow ✍") {
 		t.Errorf("user-set custom title should show the marker, got %q", got)
 	}
-	if got := m.formatListItem(aiTitled, false); strings.Contains(got, "✎") {
+	if got := m.formatListItem(aiTitled, false); strings.Contains(got, "✍") {
 		t.Errorf("auto ai-title must NOT show the marker, got %q", got)
 	}
-	if got := m.formatListItem(fallback, false); strings.Contains(got, "✎") {
+	if got := m.formatListItem(fallback, false); strings.Contains(got, "✍") {
 		t.Errorf("first-message fallback should not show the marker, got %q", got)
 	}
 }
 
 func TestTopicColWidthFlexes(t *testing.T) {
-	fixed := listIndent + colDate + colProject + colMsgs + colHits + colSize + numGaps*colGap
-	for _, w := range []int{80, 120, 200} {
+	fixed := listIndent + colDate + colAgo + colProject + colMsgs + colHits + colSize + numGaps*colGap
+	for _, w := range []int{100, 120, 200} {
 		m := model{width: w}
 		if got, want := m.topicColWidth(), w-fixed; got != want {
 			t.Errorf("topicColWidth(width=%d) = %d, want %d", w, got, want)
@@ -851,7 +851,7 @@ func TestFormatListItemFillsWidth(t *testing.T) {
 		Size:          1 << 20,
 		Messages:      []Message{{Role: "user", Text: "hi"}},
 	}}
-	for _, w := range []int{80, 120, 200} {
+	for _, w := range []int{100, 120, 200} {
 		m := initialModel([]listItem{item}, "", nil)
 		m.width = w
 		// Selected row has no ANSI codes; its width + the 2-char row prefix
@@ -1991,5 +1991,32 @@ func TestCtrlFForksInPlaceOutsideTabbedTerminals(t *testing.T) {
 	}
 	if len(m.claudeFlags) != 1 || m.claudeFlags[:2][1] == "--fork-session" {
 		t.Error("fork flag must not leak into the shared claude flags")
+	}
+}
+
+func TestFormatAgo(t *testing.T) {
+	now := time.Date(2026, 9, 23, 18, 30, 0, 0, time.UTC)
+	cases := map[time.Duration]string{
+		10 * time.Second:     "now",
+		2 * time.Minute:      "2m",
+		59 * time.Minute:     "59m",
+		3 * time.Hour:        "3h",
+		23 * time.Hour:       "23h",
+		36 * time.Hour:       "1d",
+		13 * 24 * time.Hour:  "13d",
+		20 * 24 * time.Hour:  "2w",
+		59 * 24 * time.Hour:  "8w",
+		90 * 24 * time.Hour:  "3mo",
+		364 * 24 * time.Hour: "12mo",
+		800 * 24 * time.Hour: "2y",
+	}
+	for d, want := range cases {
+		ts := now.Add(-d).Format(time.RFC3339)
+		if got := formatAgo(ts, now); got != want || len(got) > colAgo {
+			t.Errorf("formatAgo(-%v) = %q, want %q (max %d wide)", d, got, want, colAgo)
+		}
+	}
+	if formatAgo("garbage", now) != "" {
+		t.Error("unparseable timestamp should render empty")
 	}
 }

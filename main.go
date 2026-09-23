@@ -626,8 +626,8 @@ func (m model) View() string {
 	previewHeight := m.height - listHeight - 6 // 6 for title + search + blank + header + borders
 
 	// Column headers
-	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %*s  %*s  %*s\033[0m\n",
-		colDate, "DATE", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
+	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %*s  %-*s  %-*s  %*s  %*s  %*s\033[0m\n",
+		colDate, "DATE", colAgo, "AGO", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -673,19 +673,20 @@ func (m model) View() string {
 // the terminal width (see topicColWidth).
 const (
 	colDate    = 16
+	colAgo     = 4
 	colProject = 22
 	colMsgs    = 5
 	colHits    = 4
 	colSize    = 6
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " / "> " on each row
-	numGaps    = 5
+	numGaps    = 6
 	colMarks   = 3 // status icons (● ⚙) packed right, then a space
 )
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
 func (m model) topicColWidth() int {
-	used := listIndent + colDate + colProject + colMsgs + colHits + colSize + numGaps*colGap
+	used := listIndent + colDate + colAgo + colProject + colMsgs + colHits + colSize + numGaps*colGap
 	if w := m.width - used; w > 10 {
 		return w
 	}
@@ -720,11 +721,11 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	pad := strings.Repeat(" ", colMarks-1-n)
 	marks, colouredMarks := pad+icons+" ", pad+colouredIcons+" "
 	tw := m.topicColWidth()
-	// A trailing ✎ marks a name you set (not the ai-title Claude gives almost
+	// A trailing ✍ marks a name you set (not the ai-title Claude gives almost
 	// every session); the title is cut short so it always stays visible.
 	topic := truncate(getTopic(item.conv), tw-colMarks)
 	if item.conv.IsCustomTitle {
-		topic = truncate(getTopic(item.conv), tw-colMarks-2) + " ✎"
+		topic = truncate(getTopic(item.conv), tw-colMarks-2) + " ✍"
 	}
 
 	// Message count
@@ -735,15 +736,17 @@ func (m model) formatListItem(item listItem, selected bool) string {
 
 	size := formatBytes(item.conv.Size)
 
-	// Format: date | project | topic | msgs | hits | size (aligned columns)
+	ago := formatAgo(item.conv.LastTimestamp, time.Now())
+
+	// Format: date | ago | project | topic | msgs | hits | size (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %*d  %*d  %*s",
-			colDate, ts, colProject, project, marks, tw-colMarks, topic, colMsgs, msgs, colHits, hits, colSize, size)
+		return fmt.Sprintf("%-*s  %*s  %-*s  %s%-*s  %*d  %*d  %*s",
+			colDate, ts, colAgo, ago, colProject, project, marks, tw-colMarks, topic, colMsgs, msgs, colHits, hits, colSize, size)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
-		colDate, ts, colProject, project, topic, colMsgs, msgs, colHits, hits, colSize, size)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  %*s  \033[1;33m%-*s\033[0m  %s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
+		colDate, ts, colAgo, ago, colProject, project, topic, colMsgs, msgs, colHits, hits, colSize, size)
 }
 
 // buildPreviewLines builds the scrollable message lines of a conversation
@@ -1185,6 +1188,31 @@ func formatTimestamp(ts string) string {
 		return ts
 	}
 	return t.Local().Format("2006-01-02 15:04")
+}
+
+// formatAgo renders how long before now ts was, compactly enough for the
+// 4-wide AGO column: "now", 5m, 3h, 2d, 3w, 4mo, 1y.
+func formatAgo(ts string, now time.Time) string {
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ""
+	}
+	d := now.Sub(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < 14*24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	case d < 60*24*time.Hour:
+		return fmt.Sprintf("%dw", int(d.Hours()/24/7))
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%dmo", int(d.Hours()/24/30))
+	}
+	return fmt.Sprintf("%dy", int(d.Hours()/24/365))
 }
 
 // formatBytes renders a byte count compactly (fits the 6-wide SIZE column).

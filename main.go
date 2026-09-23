@@ -33,6 +33,7 @@ type Conversation struct {
 	SessionID      string    `json:"session_id"`
 	Title          string    `json:"title"`           // custom-title (user-set) or ai-title
 	IsCustomTitle  bool      `json:"is_custom_title"` // true only when Title came from a user-set custom-title
+	Spawned        bool      `json:"spawned"`         // started by a script/another session (sdk-cli) or a team lead, not typed by you
 	Cwd            string    `json:"cwd"`
 	FirstTimestamp string    `json:"first_timestamp"`
 	LastTimestamp  string    `json:"last_timestamp"`
@@ -49,6 +50,9 @@ type RawMessage struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	Timestamp   string `json:"timestamp"`
+	IsMeta      bool   `json:"isMeta"`     // harness-injected (e.g. the local-command caveat), not typed
+	Entrypoint  string `json:"entrypoint"` // cli / claude-desktop = interactive, sdk-cli = claude -p or SDK
+	TeamName    string `json:"teamName"`   // set on teammate transcripts spawned by a team lead
 	CustomTitle string `json:"customTitle"`
 	AiTitle     string `json:"aiTitle"`
 }
@@ -86,11 +90,14 @@ type model struct {
 	selected        *Conversation
 	quitting        bool
 	claudeFlags     []string
-	confirmDelete   bool              // Are we in delete confirmation mode?
-	deleteIndex     int               // Index of item to delete
-	confirmPrune    bool              // Are we in prune confirmation mode?
-	pruneIndex      int               // Index of item to prune
-	pruneSaved      int64             // Bytes the pending prune would reclaim (measured on Ctrl+R)
+	confirmDelete   bool  // Are we in delete confirmation mode?
+	deleteIndex     int   // Index of item to delete
+	confirmPrune    bool  // Are we in prune confirmation mode?
+	pruneIndex      int   // Index of item to prune
+	pruneSaved      int64 // Bytes the pending prune would reclaim (measured on Ctrl+X)
+	renaming        bool  // Are we typing a new name?
+	renameIndex     int   // Index of item being renamed
+	renameInput     textinput.Model
 	errorMsg        string            // Show deletion/prune errors
 	preview         *previewCache     // memoised preview lines for the selected conversation
 	hits            *hitCounter       // memoised per-query hit counts, keyed by SessionID
@@ -319,14 +326,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case refreshMsg:
-		// Delete/prune confirmations hold an index into m.filtered, so don't
+		// Delete/prune/rename prompts hold an index into m.filtered, so don't
 		// reshuffle it under them; the next tick catches up.
-		if !m.confirmDelete && !m.confirmPrune {
+		if !m.confirmDelete && !m.confirmPrune && !m.renaming {
 			m.applyRefresh(msg)
 		}
 		return m, refreshTick()
 
 	case tea.KeyMsg:
+		if m.renaming {
+			switch msg.String() {
+			case "enter":
+				m.renameConversation(strings.TrimSpace(m.renameInput.Value()))
+				return m, nil
+			case "esc", "ctrl+c":
+				m.renaming = false
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.renameInput, cmd = m.renameInput.Update(msg)
+			return m, cmd
+		}
+
 		// Handle delete confirmation mode
 		if m.confirmDelete {
 			switch msg.String() {
@@ -386,6 +407,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "ctrl+r":
+			if len(m.filtered) > 0 {
+				conv := m.filtered[m.cursor].conv
+				// A running claude re-appends its own title and would undo ours.
+				if m.live[conv.SessionID] {
+					m.errorMsg = "Session is open in claude - use /rename there"
+					return m, nil
+				}
+				m.renaming = true
+				m.renameIndex = m.cursor
+				m.renameInput = textinput.New()
+				m.renameInput.Prompt = "Rename: "
+				m.renameInput.Width = 50
+				m.renameInput.SetValue(conv.Title)
+				m.renameInput.Focus()
+				return m, textinput.Blink
+			}
+			return m, nil
+
+		case "ctrl+x":
 			if len(m.filtered) > 0 {
 				// Measure the projected saving so the prompt can show it.
 				// ponytail: reads the file once now (and again on confirm) - a
@@ -452,7 +492,7 @@ func (m model) View() string {
 
 	// Title line with help right-aligned
 	title := fmt.Sprintf("ccs · claude code search · %s", version)
-	help := "Resume:Enter Delete:Ctrl+D Prune:Ctrl+R Scroll:Ctrl+J/K Exit:Esc"
+	help := "Resume:Enter Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc"
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
 		titlePadding = 1
@@ -463,7 +503,9 @@ func (m model) View() string {
 	// Search line or delete confirmation
 	var sections []string
 	var inputSection string
-	if m.confirmPrune {
+	if m.renaming {
+		sections = append(sections, "  "+m.renameInput.View()+"  \033[90mEnter:save Esc:cancel\033[0m")
+	} else if m.confirmPrune {
 		conv := m.filtered[m.pruneIndex].conv
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214")). // Amber
@@ -585,12 +627,19 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	if item.conv.IsCustomTitle {
 		topic = "✎ " + topic
 	}
-	live := m.live[item.conv.SessionID]
-	if live {
-		topic = "● " + topic
+	// Status markers: ● open in a running claude, ⚙ started by a script or
+	// another session. Coloured separately after padding (see below).
+	var marks, colouredMarks string
+	if m.live[item.conv.SessionID] {
+		marks += "● "
+		colouredMarks += "\033[32m●\033[0m "
+	}
+	if item.conv.Spawned {
+		marks += "⚙ "
+		colouredMarks += "\033[90m⚙\033[0m "
 	}
 	tw := m.topicColWidth()
-	topic = truncate(topic, tw)
+	topic = truncate(marks+topic, tw) // tw >= 10 so the marks always survive
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -606,10 +655,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 			colDate, ts, colProject, project, tw, topic, colMsgs, msgs, colHits, hits, colSize, size)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
-	topic = padRight(topic, tw)
-	if live {
-		topic = "\033[32m●\033[0m" + strings.TrimPrefix(topic, "●")
-	}
+	topic = colouredMarks + strings.TrimPrefix(padRight(topic, tw), marks)
 	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
 		colDate, ts, colProject, project, topic, colMsgs, msgs, colHits, hits, colSize, size)
 }
@@ -914,9 +960,11 @@ func parseConversationBody(path string, info os.FileInfo) (*Conversation, error)
 			if conv.Title == "" {
 				conv.Title = raw.AiTitle
 			}
-		} else if raw.Type == "user" {
+		} else if raw.Type == "user" && !raw.IsMeta {
 			if conv.Cwd == "" {
 				conv.Cwd = raw.Cwd
+				// The first user line says how the session was started.
+				conv.Spawned = raw.Entrypoint == "sdk-cli" || raw.TeamName != ""
 			}
 			text := extractText(raw.Message.Content)
 			if strings.TrimSpace(text) != "" {
@@ -1074,11 +1122,81 @@ func getTopic(conv Conversation) string {
 		return conv.Title
 	}
 	for _, msg := range conv.Messages {
-		if msg.Role == "user" {
+		if msg.Role != "user" {
+			continue
+		}
+		// Harness text (command echoes and output, task notifications, teammate
+		// messages) is tag-wrapped. ponytail: a real prompt starting with "<"
+		// is treated as harness text too.
+		if !strings.HasPrefix(msg.Text, "<") {
 			return msg.Text
+		}
+		// Slash and ! commands: show the command itself.
+		if cmd := tagText(msg.Text, "command-name"); cmd != "" {
+			return cmd
+		}
+		if cmd := tagText(msg.Text, "bash-input"); cmd != "" {
+			return "! " + cmd
 		}
 	}
 	return conv.SessionID
+}
+
+// tagText returns the trimmed text inside the first <tag>...</tag> of s, or "".
+func tagText(s, tag string) string {
+	_, rest, ok := strings.Cut(s, "<"+tag+">")
+	if !ok {
+		return ""
+	}
+	inner, _, ok := strings.Cut(rest, "</"+tag+">")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(inner)
+}
+
+// renameConversation sets a custom title the same way /rename does: by
+// appending a custom-title line to the transcript.
+func (m *model) renameConversation(name string) {
+	m.renaming = false
+	if name == "" || m.renameIndex >= len(m.filtered) {
+		return
+	}
+	conv := m.filtered[m.renameIndex].conv
+	line, _ := json.Marshal(map[string]string{"type": "custom-title", "customTitle": name, "sessionId": conv.SessionID})
+	if err := appendLine(conv.FilePath, line); err != nil {
+		m.errorMsg = fmt.Sprintf("Rename failed: %v", err)
+		return
+	}
+	for _, items := range [][]listItem{m.items, m.filtered} {
+		for i := range items {
+			if items[i].conv.SessionID == conv.SessionID {
+				items[i].conv.Title = name
+				items[i].conv.IsCustomTitle = true
+				items[i].searchText += " " + name
+				items[i].searchLower += " " + strings.ToLower(name)
+			}
+		}
+	}
+	m.errorMsg = ""
+}
+
+// appendLine appends one JSONL line, first adding a newline if the file lacks
+// a trailing one so the new line can't fuse with the last record.
+func appendLine(path string, line []byte) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.Size() > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, info.Size()-1); err == nil && last[0] != '\n' {
+			line = append([]byte{'\n'}, line...)
+		}
+	}
+	_, err = f.Write(append(line, '\n'))
+	return err
 }
 
 // deleteConversation removes the selected conversation from disk and UI
@@ -1490,7 +1608,8 @@ Key bindings:
   ↑/↓, Ctrl+P/N   Navigate list
   Enter           Select and resume conversation
   Ctrl+D          Delete conversation (with confirmation)
-  Ctrl+R          Prune conversation - shrink it losslessly (with confirmation)
+  Ctrl+R          Rename conversation (not while it's open in claude)
+  Ctrl+X          Prune conversation - shrink it losslessly (with confirmation)
   Ctrl+J/K        Scroll preview
   Ctrl+U          Clear search
   Esc, Ctrl+C     Quit

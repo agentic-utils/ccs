@@ -1718,7 +1718,9 @@ func TestParseSkipsMetaAndDetectsSpawned(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		p := filepath.Join(dir, name)
-		os.WriteFile(p, []byte(body), 0o644)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		return p
 	}
 	human := write("h.jsonl", `{"type":"user","isMeta":true,"entrypoint":"cli","cwd":"/p","message":{"content":"<local-command-caveat>x</local-command-caveat>"},"timestamp":"t1"}
@@ -1764,7 +1766,9 @@ func TestFormatListItemSpawnedAndLiveMarkers(t *testing.T) {
 func TestRename(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s1.jsonl")
 	// No trailing newline: the rename must not fuse onto the last record.
-	os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"t"}`), 0o644)
+	if err := os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"t"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	item := buildItems([]Conversation{{SessionID: "s1", FilePath: path, Messages: []Message{{Role: "user", Text: "hi"}}}})[0]
 	m := initialModel([]listItem{item}, "", nil)
 
@@ -1871,20 +1875,64 @@ func TestGetConversationsMissingDirErrors(t *testing.T) {
 	}
 }
 
-func TestReuseItemsKeepsUnchanged(t *testing.T) {
-	a := Conversation{SessionID: "a", FilePath: "/a", Size: 10, Messages: []Message{{Role: "user", Text: "old"}}}
-	items, prev := reuseItems([]Conversation{a}, nil)
-	// Same size: the previous item (and its search text) is reused as-is.
-	same := a
-	same.Messages = []Message{{Role: "user", Text: "different"}}
-	next, prev := reuseItems([]Conversation{same}, prev)
-	if next[0].searchText != items[0].searchText {
-		t.Error("unchanged size should reuse the previous item")
+func TestParsedSearchTextSharedThroughCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"needle"},"timestamp":"t"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	// Grown file: rebuilt.
-	same.Size = 20
-	next, _ = reuseItems([]Conversation{same}, prev)
-	if !strings.Contains(next[0].searchText, "different") {
-		t.Error("changed size should rebuild the item")
+	conv, err := parseConversationFile(path, time.Time{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := buildItems([]Conversation{*conv})[0]
+	if !strings.Contains(item.searchLower, "needle") || item.searchText != conv.searchText {
+		t.Errorf("item should carry the parsed search text, got %q", item.searchText)
+	}
+}
+
+func TestMetaOnlySessionKeepsCwdAndOrigin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	body := `{"type":"user","isMeta":true,"entrypoint":"sdk-cli","cwd":"/real","message":{"content":"<local-command-caveat>x</local-command-caveat>"},"timestamp":"t1"}
+{"type":"user","cwd":"/real","message":{"content":"<command-name>/model</command-name>"},"timestamp":"t2"}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := parseConversationFile(path, time.Time{}, 0)
+	if err != nil || c == nil {
+		t.Fatal(c, err)
+	}
+	if c.Cwd != "/real" || !c.Spawned || len(c.Messages) != 1 {
+		t.Errorf("cwd/origin should come from the meta line, messages should skip it: %+v", c)
+	}
+}
+
+func TestLiveCheckedAtConfirmAndAlwaysApplied(t *testing.T) {
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	defer func() { getSessionsDir = old }()
+
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hi"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", FilePath: path}}}, "", nil)
+	m.confirmPrune = true
+
+	// Session becomes live between Ctrl+X and y: the confirm must re-check.
+	if err := os.WriteFile(filepath.Join(dir, "1.json"), []byte(fmt.Sprintf(`{"pid":%d,"sessionId":"s"}`, os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if m = res.(model); m.confirmPrune || m.errorMsg == "" || m.gen != 0 {
+		t.Errorf("prune confirm should be refused once the session is live (gen=%d err=%q)", m.gen, m.errorMsg)
+	}
+
+	// A dropped (stale) refresh still updates liveness.
+	m.gen = 5
+	res, _ = m.Update(refreshMsg{gen: 0, live: map[string]bool{"other": true}})
+	if m = res.(model); !m.live["other"] {
+		t.Error("live should be applied even when the refresh is stale")
 	}
 }

@@ -593,7 +593,7 @@ func (m model) View() string {
 
 	// Column headers
 	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %*s  %*s  %*s\033[0m\n",
-		colDate, "DATE", colProject, "PROJECT", m.topicColWidth(), "TOPIC", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
+		colDate, "DATE", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -635,6 +635,18 @@ func (m model) View() string {
 	return b.String()
 }
 
+// markSlot renders one 2-cell marker slot: the glyph (plain and coloured, or
+// uncoloured when color is "") or blanks.
+func markSlot(on bool, glyph, color string) (plain, coloured string) {
+	if !on {
+		return "  ", "  "
+	}
+	if color == "" {
+		return glyph + " ", glyph + " "
+	}
+	return glyph + " ", "\033[" + color + "m" + glyph + "\033[0m "
+}
+
 // Fixed list column widths. TOPIC is the flex column - it absorbs the rest of
 // the terminal width (see topicColWidth).
 const (
@@ -646,6 +658,7 @@ const (
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " / "> " on each row
 	numGaps    = 5
+	colMarks   = 6 // three 2-cell marker slots (● ⚙ ✎) at the start of TOPIC
 )
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
@@ -665,28 +678,22 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	}
 	project = truncate(project, colProject)
 
-	// Mark only user-set custom titles. Claude auto-generates an ai-title for
-	// almost every session, so marking any title would flag nearly every row;
-	// the ✎ should mean "you named this". ponytail: the glyph is ambiguous-width,
-	// so a marked row may sit one cell narrow on CJK-width terminals - cosmetic
-	// only, truncate is rune-safe.
-	topic := getTopic(item.conv)
-	if item.conv.IsCustomTitle {
-		topic = "✎ " + topic
-	}
-	// Status markers: ● open in a running claude, ⚙ started by a script or
-	// another session. Coloured separately after padding (see below).
-	var marks, colouredMarks string
-	if m.live[item.conv.SessionID] {
-		marks += "● "
-		colouredMarks += "\033[32m●\033[0m "
-	}
-	if item.conv.Spawned {
-		marks += "⚙ "
-		colouredMarks += "\033[90m⚙\033[0m "
+	// Markers sit in fixed slots ahead of the topic so titles stay aligned:
+	// ● open in a running claude, ⚙ started by a script or another session,
+	// ✎ user-set name (not the ai-title Claude gives almost every session).
+	// ponytail: the glyphs are ambiguous-width, so a marked row may sit one
+	// cell off on CJK-width terminals - cosmetic only.
+	marks, colouredMarks := markSlot(m.live[item.conv.SessionID], "●", "32")
+	for _, s := range []struct {
+		on           bool
+		glyph, color string
+	}{{item.conv.Spawned, "⚙", "90"}, {item.conv.IsCustomTitle, "✎", ""}} {
+		plain, coloured := markSlot(s.on, s.glyph, s.color)
+		marks += plain
+		colouredMarks += coloured
 	}
 	tw := m.topicColWidth()
-	topic = truncate(marks+topic, tw) // tw >= 10 so the marks always survive
+	topic := truncate(getTopic(item.conv), tw-colMarks)
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -698,11 +705,11 @@ func (m model) formatListItem(item listItem, selected bool) string {
 
 	// Format: date | project | topic | msgs | hits | size (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-*s  %-*s  %-*s  %*d  %*d  %*s",
-			colDate, ts, colProject, project, tw, topic, colMsgs, msgs, colHits, hits, colSize, size)
+		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %*d  %*d  %*s",
+			colDate, ts, colProject, project, marks, tw-colMarks, topic, colMsgs, msgs, colHits, hits, colSize, size)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
-	topic = colouredMarks + strings.TrimPrefix(padRight(topic, tw), marks)
+	topic = colouredMarks + padRight(topic, tw-colMarks)
 	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
 		colDate, ts, colProject, project, topic, colMsgs, msgs, colHits, hits, colSize, size)
 }

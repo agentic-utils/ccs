@@ -98,12 +98,13 @@ type model struct {
 	renaming        bool  // Are we typing a new name?
 	renameIndex     int   // Index of item being renamed
 	renameInput     textinput.Model
-	errorMsg        string            // Show deletion/prune errors
-	preview         *previewCache     // memoised preview lines for the selected conversation
-	hits            *hitCounter       // memoised per-query hit counts, keyed by SessionID
-	lastFilterQuery string            // lowercased query the current m.filtered was built from
-	live            map[string]bool   // SessionIDs attached to a running claude process
-	reload          func() []listItem // re-scans conversations; nil disables auto-refresh
+	errorMsg        string                     // Show deletion/prune errors
+	preview         *previewCache              // memoised preview lines for the selected conversation
+	hits            *hitCounter                // memoised per-query hit counts, keyed by SessionID
+	lastFilterQuery string                     // lowercased query the current m.filtered was built from
+	live            map[string]bool            // SessionIDs attached to a running claude process
+	reload          func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
+	gen             int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
 }
 
 // refreshInterval is how often ccs re-scans conversations and live sessions.
@@ -114,7 +115,9 @@ type refreshTickMsg struct{}
 
 type refreshMsg struct {
 	items []listItem
+	err   error // scan failed: keep the current list
 	live  map[string]bool
+	gen   int // m.gen when the scan started
 }
 
 func refreshTick() tea.Cmd {
@@ -158,7 +161,7 @@ func readLiveSessions() map[string]bool {
 // conversation and re-running the current filter.
 func (m *model) applyRefresh(msg refreshMsg) {
 	m.live = msg.live
-	if msg.items == nil {
+	if msg.err != nil {
 		return
 	}
 	var selectedID string
@@ -320,15 +323,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.ClearScreen
 
 	case refreshTickMsg:
-		reload := m.reload
+		reload, gen := m.reload, m.gen
 		return m, func() tea.Msg {
-			return refreshMsg{items: reload(), live: readLiveSessions()}
+			items, err := reload()
+			return refreshMsg{items: items, err: err, live: readLiveSessions(), gen: gen}
 		}
 
 	case refreshMsg:
 		// Delete/prune/rename prompts hold an index into m.filtered, so don't
-		// reshuffle it under them; the next tick catches up.
-		if !m.confirmDelete && !m.confirmPrune && !m.renaming {
+		// reshuffle it under them; and a scan that started before a delete,
+		// prune or rename would undo it. The next tick catches up.
+		if msg.gen == m.gen && !m.confirmDelete && !m.confirmPrune && !m.renaming {
 			m.applyRefresh(msg)
 		}
 		return m, refreshTick()
@@ -427,6 +432,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "ctrl+x":
 			if len(m.filtered) > 0 {
+				// Prune rewrites the file; a running claude's appends during
+				// the rewrite would be lost.
+				if m.live[m.filtered[m.cursor].conv.SessionID] {
+					m.errorMsg = "Session is open in claude - quit it before pruning"
+					return m, nil
+				}
 				// Measure the projected saving so the prompt can show it.
 				// ponytail: reads the file once now (and again on confirm) - a
 				// multi-GB file briefly blocks, acceptable for a manual action.
@@ -513,10 +524,15 @@ func (m model) View() string {
 				truncate(getTopic(conv), 32), formatBytes(conv.Size), formatBytes(conv.Size-m.pruneSaved), formatBytes(m.pruneSaved)))
 		sections = append(sections, "  "+inputSection)
 	} else if m.confirmDelete {
-		topic := getTopic(m.filtered[m.deleteIndex].conv)
+		conv := m.filtered[m.deleteIndex].conv
+		topic := getTopic(conv)
+		liveWarning := ""
+		if m.live[conv.SessionID] {
+			liveWarning = " It is open in claude."
+		}
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")). // Red
-			Render(fmt.Sprintf("Delete conversation \"%s\"? [y/N]", truncate(topic, 50)))
+			Render(fmt.Sprintf("Delete conversation \"%s\"?%s [y/N]", truncate(topic, 50), liveWarning))
 		sections = append(sections, "  "+inputSection)
 	} else {
 		count := fmt.Sprintf("(%d/%d)", len(m.filtered), len(m.items))
@@ -901,7 +917,7 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 	if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
 		return cached.conv, nil
 	}
-	conv, err := parseConversationBody(path, info)
+	conv, err := parseConversationUncached(path, info)
 	if err == nil {
 		parseCacheMu.Lock()
 		parseCache[path] = parsedFile{info.Size(), info.ModTime(), conv}
@@ -924,7 +940,7 @@ var (
 	parseCache   = make(map[string]parsedFile)
 )
 
-func parseConversationBody(path string, info os.FileInfo) (*Conversation, error) {
+func parseConversationUncached(path string, info os.FileInfo) (*Conversation, error) {
 	sessionID := strings.TrimSuffix(info.Name(), ".jsonl")
 	conv := &Conversation{
 		SessionID: sessionID,
@@ -1010,6 +1026,11 @@ func parseConversationBody(path string, info os.FileInfo) (*Conversation, error)
 
 func getConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]Conversation, error) {
 	projectsDir := getProjectsDir()
+	// Walk swallows a root error, so a vanished dir would read as "no
+	// conversations" and a refresh would wipe the list.
+	if _, err := os.Stat(projectsDir); err != nil {
+		return nil, err
+	}
 
 	var files []string
 	err := filepath.Walk(projectsDir, func(path string, info os.FileInfo, err error) error {
@@ -1168,6 +1189,7 @@ func (m *model) renameConversation(name string) {
 		m.errorMsg = fmt.Sprintf("Rename failed: %v", err)
 		return
 	}
+	m.gen++
 	for _, items := range [][]listItem{m.items, m.filtered} {
 		for i := range items {
 			if items[i].conv.SessionID == conv.SessionID {
@@ -1213,6 +1235,10 @@ func (m *model) deleteConversation() {
 		m.confirmDelete = false
 		return
 	}
+	m.gen++
+	parseCacheMu.Lock()
+	delete(parseCache, conv.FilePath)
+	parseCacheMu.Unlock()
 
 	// Remove from filtered slice
 	m.filtered = append(m.filtered[:m.deleteIndex], m.filtered[m.deleteIndex+1:]...)
@@ -1253,6 +1279,7 @@ func (m *model) pruneConversation() {
 		m.errorMsg = fmt.Sprintf("Prune failed: %v", err)
 		return
 	}
+	m.gen++
 
 	newSize := conv.Size - (st.bytesIn - st.bytesOut)
 	if info, e := os.Stat(conv.FilePath); e == nil {
@@ -1266,6 +1293,29 @@ func (m *model) pruneConversation() {
 		}
 	}
 	m.errorMsg = ""
+}
+
+// reuseItems builds list items like buildItems, but reuses the previous item
+// for any file whose size is unchanged, so a refresh doesn't rebuild the
+// search text of every conversation. Returns the items and the next lookup.
+func reuseItems(convs []Conversation, prev map[string]listItem) ([]listItem, map[string]listItem) {
+	items := make([]listItem, 0, len(convs))
+	for _, conv := range convs {
+		if old, ok := prev[conv.FilePath]; ok && conv.FilePath != "" && old.conv.Size == conv.Size {
+			items = append(items, old)
+		} else {
+			items = append(items, buildItems([]Conversation{conv})[0])
+		}
+	}
+	return items, itemsByPath(items)
+}
+
+func itemsByPath(items []listItem) map[string]listItem {
+	byPath := make(map[string]listItem, len(items))
+	for _, item := range items {
+		byPath[item.conv.FilePath] = item
+	}
+	return byPath
 }
 
 // buildItems creates list items from conversations
@@ -1734,12 +1784,15 @@ func main() {
 	// Scrolling is keyboard-only (arrows / Ctrl+J/K / PgUp/PgDn).
 	m := initialModel(items, filterQuery, claudeFlags)
 	m.live = readLiveSessions()
-	m.reload = func() []listItem {
+	prev := itemsByPath(items)
+	m.reload = func() ([]listItem, error) {
 		convs, err := getConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {
-			return nil // keep the current list
+			return nil, err
 		}
-		return buildItems(convs)
+		var next []listItem
+		next, prev = reuseItems(convs, prev)
+		return next, nil
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 

@@ -1798,3 +1798,93 @@ func TestRename(t *testing.T) {
 		t.Error("rename should be refused on a live session")
 	}
 }
+
+func TestRefreshTickRunsReloadAndCarriesGen(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.reload = func() ([]listItem, error) { return []listItem{{conv: Conversation{SessionID: "x"}}}, nil }
+	m.gen = 3
+	_, cmd := m.Update(refreshTickMsg{})
+	msg, ok := cmd().(refreshMsg)
+	if !ok || msg.gen != 3 || len(msg.items) != 1 {
+		t.Fatalf("tick should produce a refreshMsg from reload, got %+v", msg)
+	}
+}
+
+func TestRefreshDroppedWhenStaleOrFailed(t *testing.T) {
+	a := listItem{conv: Conversation{SessionID: "a"}}
+	m := initialModel([]listItem{a}, "", nil)
+
+	// A scan that started before a delete/prune/rename must not undo it.
+	m.gen = 1
+	res, cmd := m.Update(refreshMsg{gen: 0, items: []listItem{a, {conv: Conversation{SessionID: "deleted"}}}})
+	if m = res.(model); len(m.items) != 1 || cmd == nil {
+		t.Errorf("stale refresh should be dropped but still reschedule, items=%d", len(m.items))
+	}
+
+	// A failed scan keeps the current list.
+	res, _ = m.Update(refreshMsg{gen: 1, err: os.ErrNotExist, live: map[string]bool{"a": true}})
+	if m = res.(model); len(m.items) != 1 || !m.live["a"] {
+		t.Error("failed refresh should keep items and still update live")
+	}
+
+	// A successful scan that legitimately finds nothing empties the list.
+	res, _ = m.Update(refreshMsg{gen: 1, items: []listItem{}})
+	if m = res.(model); len(m.items) != 0 {
+		t.Error("empty successful refresh should apply")
+	}
+}
+
+func TestDeleteBumpsGenAndEvictsCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hi"},"timestamp":"t"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseConversationFile(path, time.Time{}, 0); err != nil {
+		t.Fatal(err)
+	}
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", FilePath: path}}}, "", nil)
+	m.deleteIndex = 0
+	m.deleteConversation()
+	parseCacheMu.Lock()
+	_, cached := parseCache[path]
+	parseCacheMu.Unlock()
+	if m.gen != 1 || cached {
+		t.Errorf("delete should bump gen and evict cache: gen=%d cached=%v", m.gen, cached)
+	}
+}
+
+func TestPruneRefusedOnLiveSession(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.live = map[string]bool{"s": true}
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	if m = res.(model); m.confirmPrune || m.errorMsg == "" {
+		t.Error("prune should be refused on a live session")
+	}
+}
+
+func TestGetConversationsMissingDirErrors(t *testing.T) {
+	old := getProjectsDir
+	getProjectsDir = func() string { return filepath.Join(t.TempDir(), "gone") }
+	defer func() { getProjectsDir = old }()
+	if _, err := getConversations(time.Time{}, 0, nil); err == nil {
+		t.Error("missing projects dir should be an error, not an empty list")
+	}
+}
+
+func TestReuseItemsKeepsUnchanged(t *testing.T) {
+	a := Conversation{SessionID: "a", FilePath: "/a", Size: 10, Messages: []Message{{Role: "user", Text: "old"}}}
+	items, prev := reuseItems([]Conversation{a}, nil)
+	// Same size: the previous item (and its search text) is reused as-is.
+	same := a
+	same.Messages = []Message{{Role: "user", Text: "different"}}
+	next, prev := reuseItems([]Conversation{same}, prev)
+	if next[0].searchText != items[0].searchText {
+		t.Error("unchanged size should reuse the previous item")
+	}
+	// Grown file: rebuilt.
+	same.Size = 20
+	next, _ = reuseItems([]Conversation{same}, prev)
+	if !strings.Contains(next[0].searchText, "different") {
+		t.Error("changed size should rebuild the item")
+	}
+}

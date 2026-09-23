@@ -82,7 +82,7 @@ ccs buyer -- --plan
 - `Enter` - Resume selected conversation
 - `Ctrl+D` - Delete selected conversation (with confirmation)
 - `Ctrl+R` - Rename selected conversation (not while it's open in `claude`; use `/rename` there)
-- `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation)
+- `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
 - `Ctrl+J/K` - Scroll preview
 - `Ctrl+U` - Clear search
 - `Esc` / `Ctrl+C` - Quit

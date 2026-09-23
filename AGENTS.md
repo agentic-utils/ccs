@@ -72,7 +72,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `hitCount()` / `countHits()` - Memoised per-query HITS count (messages containing the query), keyed by SessionID, so `formatListItem` doesn't rescan every visible row each frame
 - `formatListItem()` - Formats a single list row (green `●` prefix on live sessions)
 - `readLiveSessions()` - SessionIDs open in a running claude, from `~/.claude/sessions/<pid>.json` where the pid is alive
-- `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (1 min), keeping the cursor on the same conversation; skipped while a delete/prune confirm is open
+- `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (1 min), keeping the cursor on the same conversation; skipped while a delete/prune/rename prompt is open, and dropped if `m.gen` moved (a delete/prune/rename happened while the scan ran); `reuseItems()` keeps unchanged items so search text isn't rebuilt
 - `parseCache` - Reuses parsed conversations whose file size+mtime are unchanged, so refreshes only reparse changed files
 - `openResumeTab()` / `resumeInTmuxWindow()` / `resumeInITermTab()` - Opens the selected conversation in a new tmux window or iTerm tab (focus stays on ccs); falls back to exec-in-place elsewhere
 - `deleteConversation()` - Removes conversation file and updates UI state

@@ -34,30 +34,9 @@ go test -v -cover
 
 ## Release Process
 
-1. Update version in `main.go`:
-   ```go
-   const version = "X.Y.Z"
-   ```
+Merging to `main` releases automatically: `.github/workflows/ci.yaml` runs tests, bumps and pushes the tag from the conventional-commit prefixes (`feat:` minor, `fix:`/other patch, breaking-change major), then GoReleaser publishes and updates the Homebrew tap. Never tag by hand; `version` in `main.go` is injected at build time.
 
-2. Commit changes:
-   ```bash
-   git add -A && git commit -m "feat/fix: description"
-   ```
-
-3. Push and tag:
-   ```bash
-   git push
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
-
-4. CI will run tests, then release via GoReleaser and update Homebrew tap
-
-## Version Bumping
-
-- **Patch** (0.0.X): Bug fixes, minor tweaks
-- **Minor** (0.X.0): New features, backwards compatible
-- **Major** (X.0.0): Breaking changes
+Install the release locally: `brew update && brew upgrade ccs`.
 
 ## Architecture
 
@@ -93,7 +72,7 @@ go test -v -cover
 - `hitCount()` / `countHits()` - Memoised per-query HITS count (messages containing the query), keyed by SessionID, so `formatListItem` doesn't rescan every visible row each frame
 - `formatListItem()` - Formats a single list row (green `●` prefix on live sessions)
 - `readLiveSessions()` - SessionIDs open in a running claude, from `~/.claude/sessions/<pid>.json` where the pid is alive
-- `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (15s), keeping the cursor on the same conversation; skipped while a delete/prune confirm is open
+- `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (1 min), keeping the cursor on the same conversation; skipped while a delete/prune confirm is open
 - `parseCache` - Reuses parsed conversations whose file size+mtime are unchanged, so refreshes only reparse changed files
 - `openResumeTab()` / `resumeInTmuxWindow()` / `resumeInITermTab()` - Opens the selected conversation in a new tmux window or iTerm tab (focus stays on ccs); falls back to exec-in-place elsewhere
 - `deleteConversation()` - Removes conversation file and updates UI state

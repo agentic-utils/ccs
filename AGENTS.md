@@ -91,7 +91,10 @@ go test -v -cover
 - `renderPreview()` - Renders conversation preview with highlights
 - `previewLines()` - Memoised `buildPreviewLines` for the selected conversation (rebuilt only when selection/query changes), avoids per-frame rescans of huge conversations
 - `hitCount()` / `countHits()` - Memoised per-query HITS count (messages containing the query), keyed by SessionID, so `formatListItem` doesn't rescan every visible row each frame
-- `formatListItem()` - Formats a single list row
+- `formatListItem()` - Formats a single list row (green `●` prefix on live sessions)
+- `readLiveSessions()` - SessionIDs open in a running claude, from `~/.claude/sessions/<pid>.json` where the pid is alive
+- `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (15s), keeping the cursor on the same conversation; skipped while a delete/prune confirm is open
+- `parseCache` - Reuses parsed conversations whose file size+mtime are unchanged, so refreshes only reparse changed files
 - `openResumeTab()` / `resumeInTmuxWindow()` / `resumeInITermTab()` - Opens the selected conversation in a new tmux window or iTerm tab (focus stays on ccs); falls back to exec-in-place elsewhere
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `pruneConversation()` - Prunes the selected conversation in place (Ctrl+R) and refreshes its size
@@ -107,7 +110,7 @@ go test -v -cover
 
   DATE              PROJECT               TOPIC                       MSGS  HITS    SIZE
 ──────────────────────────────────────────────────────────────────────────────────────
-  2024-01-08 15:04  project-name          ✎ Refactor auth flow          42     3   1.2GB
+  2024-01-08 15:04  project-name          ● ✎ Refactor auth flow          42     3   1.2GB
 > 2024-01-08 14:30  selected              This one is selected          28     1    12MB
 ──────────────────────────────────────────────────────────────────────────────────────
 Project: /path/to/project

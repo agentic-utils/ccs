@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1398,7 +1399,6 @@ func TestPrintHelp(t *testing.T) {
 	printHelp()
 }
 
-
 func TestPruneStreamRemovesDuplicatesKeepsDialogue(t *testing.T) {
 	input := strings.Join([]string{
 		`{"type":"user","message":{"content":"hello"},"uuid":"u1"}`,
@@ -1597,5 +1597,91 @@ func TestResumeInTmuxWindowSkipsOutsideTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
 	if resumeInTmuxWindow("/tmp", []string{"claude"}) {
 		t.Error("should not open a window outside tmux")
+	}
+}
+
+func TestReadLiveSessions(t *testing.T) {
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	defer func() { getSessionsDir = old }()
+
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("self.json", fmt.Sprintf(`{"pid":%d,"sessionId":"alive"}`, os.Getpid()))
+	write("dead.json", `{"pid":999999999,"sessionId":"dead"}`)
+	write("junk.json", `not json`)
+
+	live := readLiveSessions()
+	if !live["alive"] || live["dead"] || len(live) != 1 {
+		t.Errorf("want only 'alive', got %v", live)
+	}
+}
+
+func TestFormatListItemLiveMarker(t *testing.T) {
+	item := listItem{conv: Conversation{SessionID: "s1", Title: "Topic", Messages: []Message{{Role: "user", Text: "x"}}}}
+	m := initialModel([]listItem{item}, "", nil)
+	m.width = 120
+	if strings.Contains(m.formatListItem(item, false), "●") {
+		t.Error("non-live row should have no marker")
+	}
+	m.live = map[string]bool{"s1": true}
+	plain := m.formatListItem(item, true)
+	if !strings.Contains(plain, "● Topic") {
+		t.Errorf("live row should be marked, got %q", plain)
+	}
+	coloured := m.formatListItem(item, false)
+	if !strings.Contains(coloured, "\033[32m●\033[0m Topic") {
+		t.Errorf("live marker should be green, got %q", coloured)
+	}
+}
+
+func TestRefreshKeepsSelectionAndFilter(t *testing.T) {
+	mk := func(id, text string) listItem {
+		return buildItems([]Conversation{{SessionID: id, Messages: []Message{{Role: "user", Text: text}}}})[0]
+	}
+	m := initialModel([]listItem{mk("a", "apple"), mk("b", "banana")}, "an", nil)
+	m.cursor = 0 // "b" is the only match
+	next, cmd := m.Update(refreshMsg{
+		items: []listItem{mk("c", "mango"), mk("a", "apple"), mk("b", "banana")},
+		live:  map[string]bool{"b": true},
+	})
+	m = next.(model)
+	if cmd == nil {
+		t.Error("refresh should schedule the next tick")
+	}
+	if len(m.filtered) != 2 || m.filtered[m.cursor].conv.SessionID != "b" {
+		t.Errorf("cursor should stay on b within refiltered list, got %+v at %d", m.filtered, m.cursor)
+	}
+	if !m.live["b"] {
+		t.Error("live set not applied")
+	}
+
+	// A pending delete confirmation must not have its index shifted.
+	m.confirmDelete = true
+	next, _ = m.Update(refreshMsg{items: []listItem{mk("z", "zzz")}})
+	if len(next.(model).items) != 3 {
+		t.Error("refresh should be skipped while confirming a delete")
+	}
+}
+
+func TestParseConversationFileReusesUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	line := `{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"2024-01-01T00:00:00Z"}` + "\n"
+	os.WriteFile(path, []byte(line), 0o644)
+	a, _ := parseConversationFile(path, time.Time{}, 0)
+	b, _ := parseConversationFile(path, time.Time{}, 0)
+	if a != b {
+		t.Error("unchanged file should come from the cache")
+	}
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(line)
+	f.Close()
+	c, _ := parseConversationFile(path, time.Time{}, 0)
+	if c == a || len(c.Messages) != 2 {
+		t.Error("appended file should be reparsed")
 	}
 }

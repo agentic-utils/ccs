@@ -75,26 +75,101 @@ var selectedStyle = lipgloss.NewStyle().
 
 // model is the bubbletea application state
 type model struct {
-	items          []listItem
-	filtered       []listItem
-	textInput      textinput.Model
-	cursor         int
-	previewScroll  int
-	width          int
-	height         int
-	listHeight     int // Calculated visible list height
-	selected       *Conversation
-	quitting       bool
-	claudeFlags    []string
-	confirmDelete  bool   // Are we in delete confirmation mode?
-	deleteIndex    int    // Index of item to delete
-	confirmPrune   bool   // Are we in prune confirmation mode?
-	pruneIndex     int    // Index of item to prune
-	pruneSaved     int64  // Bytes the pending prune would reclaim (measured on Ctrl+R)
-	errorMsg        string // Show deletion/prune errors
-	preview         *previewCache // memoised preview lines for the selected conversation
-	hits            *hitCounter   // memoised per-query hit counts, keyed by SessionID
-	lastFilterQuery string        // lowercased query the current m.filtered was built from
+	items           []listItem
+	filtered        []listItem
+	textInput       textinput.Model
+	cursor          int
+	previewScroll   int
+	width           int
+	height          int
+	listHeight      int // Calculated visible list height
+	selected        *Conversation
+	quitting        bool
+	claudeFlags     []string
+	confirmDelete   bool              // Are we in delete confirmation mode?
+	deleteIndex     int               // Index of item to delete
+	confirmPrune    bool              // Are we in prune confirmation mode?
+	pruneIndex      int               // Index of item to prune
+	pruneSaved      int64             // Bytes the pending prune would reclaim (measured on Ctrl+R)
+	errorMsg        string            // Show deletion/prune errors
+	preview         *previewCache     // memoised preview lines for the selected conversation
+	hits            *hitCounter       // memoised per-query hit counts, keyed by SessionID
+	lastFilterQuery string            // lowercased query the current m.filtered was built from
+	live            map[string]bool   // SessionIDs attached to a running claude process
+	reload          func() []listItem // re-scans conversations; nil disables auto-refresh
+}
+
+// refreshInterval is how often ccs re-scans conversations and live sessions.
+const refreshInterval = 15 * time.Second
+
+type refreshTickMsg struct{}
+
+type refreshMsg struct {
+	items []listItem
+	live  map[string]bool
+}
+
+func refreshTick() tea.Cmd {
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshTickMsg{} })
+}
+
+// getSessionsDir returns where Claude Code records running sessions, one
+// <pid>.json per process. Declared as a variable so tests can override it.
+var getSessionsDir = func() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "sessions")
+}
+
+// readLiveSessions returns the SessionIDs of conversations currently open in a
+// running claude process. A session file whose pid is gone is a stale leftover.
+// ponytail: a recycled pid can make a stale file look live until claude cleans it up.
+func readLiveSessions() map[string]bool {
+	live := make(map[string]bool)
+	files, _ := filepath.Glob(filepath.Join(getSessionsDir(), "*.json"))
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var s struct {
+			Pid       int    `json:"pid"`
+			SessionID string `json:"sessionId"`
+		}
+		if json.Unmarshal(data, &s) != nil || s.SessionID == "" || s.Pid <= 0 {
+			continue
+		}
+		// Signal 0 probes the pid; EPERM still means the process exists.
+		if err := syscall.Kill(s.Pid, 0); err == nil || err == syscall.EPERM {
+			live[s.SessionID] = true
+		}
+	}
+	return live
+}
+
+// applyRefresh swaps in freshly loaded items, keeping the cursor on the same
+// conversation and re-running the current filter.
+func (m *model) applyRefresh(msg refreshMsg) {
+	m.live = msg.live
+	if msg.items == nil {
+		return
+	}
+	var selectedID string
+	if len(m.filtered) > 0 {
+		selectedID = m.filtered[m.cursor].conv.SessionID
+	}
+	prevScroll := m.previewScroll
+	m.items = msg.items
+	m.lastFilterQuery = "" // force a full rescan, not incremental narrowing
+	m.hits = &hitCounter{byID: make(map[string]int)}
+	m.preview = &previewCache{}
+	m.updateFilter()
+	for i, item := range m.filtered {
+		if item.conv.SessionID == selectedID {
+			m.cursor = i
+			m.previewScroll = min(prevScroll, m.maxPreviewScroll())
+			break
+		}
+	}
 }
 
 // previewCache memoises buildPreviewLines for the selected conversation so the
@@ -217,7 +292,10 @@ func (m *model) updateFilter() {
 }
 
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	if m.reload == nil {
+		return textinput.Blink
+	}
+	return tea.Batch(textinput.Blink, refreshTick())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -232,6 +310,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Clear so a shrink doesn't leave wider stale rows behind.
 		return m, tea.ClearScreen
+
+	case refreshTickMsg:
+		reload := m.reload
+		return m, func() tea.Msg {
+			return refreshMsg{items: reload(), live: readLiveSessions()}
+		}
+
+	case refreshMsg:
+		// Delete/prune confirmations hold an index into m.filtered, so don't
+		// reshuffle it under them; the next tick catches up.
+		if !m.confirmDelete && !m.confirmPrune {
+			m.applyRefresh(msg)
+		}
+		return m, refreshTick()
 
 	case tea.KeyMsg:
 		// Handle delete confirmation mode
@@ -492,6 +584,10 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	if item.conv.IsCustomTitle {
 		topic = "✎ " + topic
 	}
+	live := m.live[item.conv.SessionID]
+	if live {
+		topic = "● " + topic
+	}
 	tw := m.topicColWidth()
 	topic = truncate(topic, tw)
 
@@ -508,8 +604,13 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		return fmt.Sprintf("%-*s  %-*s  %-*s  %*d  %*d  %*s",
 			colDate, ts, colProject, project, tw, topic, colMsgs, msgs, colHits, hits, colSize, size)
 	}
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %-*s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
-		colDate, ts, colProject, project, tw, topic, colMsgs, msgs, colHits, hits, colSize, size)
+	// Pad before colouring so the escape codes don't eat into the column width.
+	topic = padRight(topic, tw)
+	if live {
+		topic = "\033[32m●\033[0m" + strings.TrimPrefix(topic, "●")
+	}
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
+		colDate, ts, colProject, project, topic, colMsgs, msgs, colHits, hits, colSize, size)
 }
 
 // buildPreviewLines builds the scrollable message lines of a conversation
@@ -727,10 +828,6 @@ func extractText(content json.RawMessage) string {
 	return ""
 }
 
-
-
-
-
 func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conversation, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -751,6 +848,36 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 		return nil, nil
 	}
 
+	parseCacheMu.Lock()
+	cached, ok := parseCache[path]
+	parseCacheMu.Unlock()
+	if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
+		return cached.conv, nil
+	}
+	conv, err := parseConversationBody(path, info)
+	if err == nil {
+		parseCacheMu.Lock()
+		parseCache[path] = parsedFile{info.Size(), info.ModTime(), conv}
+		parseCacheMu.Unlock()
+	}
+	return conv, err
+}
+
+// parseCache lets auto-refresh reparse only files that changed since the last
+// scan. ponytail: entries for deleted files are never evicted; negligible for a
+// session-long TUI.
+type parsedFile struct {
+	size    int64
+	modTime time.Time
+	conv    *Conversation
+}
+
+var (
+	parseCacheMu sync.Mutex
+	parseCache   = make(map[string]parsedFile)
+)
+
+func parseConversationBody(path string, info os.FileInfo) (*Conversation, error) {
 	sessionID := strings.TrimSuffix(info.Name(), ".jsonl")
 	conv := &Conversation{
 		SessionID: sessionID,
@@ -1390,7 +1517,7 @@ func main() {
 	}
 
 	// Parse flags
-	maxAgeDays := 60        // Default to 60 days
+	maxAgeDays := 60         // Default to 60 days
 	maxSizeMB := int64(1024) // Default to 1GB
 	excludeDirs := []string{"observer-sessions"}
 	for _, arg := range args {
@@ -1486,6 +1613,14 @@ func main() {
 	// them, and the fragmented sequences leak into the search box as text.
 	// Scrolling is keyboard-only (arrows / Ctrl+J/K / PgUp/PgDn).
 	m := initialModel(items, filterQuery, claudeFlags)
+	m.live = readLiveSessions()
+	m.reload = func() []listItem {
+		convs, err := getConversations(cutoff, maxSize, excludeDirs)
+		if err != nil {
+			return nil // keep the current list
+		}
+		return buildItems(convs)
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	finalModel, err := p.Run()

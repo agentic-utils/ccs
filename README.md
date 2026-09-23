@@ -13,7 +13,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Search through all your Claude Code conversations
 - See session names (your custom titles or Claude's auto-generated ones) in the list
 - Preview conversation context with search term highlighting
-- See message counts, hit counts, and file size per conversation
+- See context size (tokens as of the last reply), message counts, hit counts, and file size per conversation
 - Resume conversations directly from the search interface
 - Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, a `⚙` marks ones started by a script, `claude -p` or a team lead
 - Rename conversations (`Ctrl+R`)

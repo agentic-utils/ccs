@@ -1631,11 +1631,11 @@ func TestFormatListItemLiveMarker(t *testing.T) {
 	}
 	m.live = map[string]bool{"s1": true}
 	plain := m.formatListItem(item, true)
-	if !strings.Contains(plain, "● Topic") {
+	if !strings.Contains(plain, "●     Topic") {
 		t.Errorf("live row should be marked, got %q", plain)
 	}
 	coloured := m.formatListItem(item, false)
-	if !strings.Contains(coloured, "\033[32m●\033[0m Topic") {
+	if !strings.Contains(coloured, "\033[32m●\033[0m     Topic") {
 		t.Errorf("live marker should be green, got %q", coloured)
 	}
 }
@@ -1746,11 +1746,11 @@ func TestFormatListItemSpawnedAndLiveMarkers(t *testing.T) {
 	m := initialModel([]listItem{item}, "", nil)
 	m.width = 120
 	m.live = map[string]bool{"s1": true}
-	if got := m.formatListItem(item, true); !strings.Contains(got, "● ⚙ Topic") {
+	if got := m.formatListItem(item, true); !strings.Contains(got, "● ⚙   Topic") {
 		t.Errorf("selected row = %q", got)
 	}
 	got := m.formatListItem(item, false)
-	if !strings.Contains(got, "\033[32m●\033[0m \033[90m⚙\033[0m Topic") {
+	if !strings.Contains(got, "\033[32m●\033[0m \033[90m⚙\033[0m   Topic") {
 		t.Errorf("unselected row = %q", got)
 	}
 	// Same visible width as an unmarked row.
@@ -1758,8 +1758,17 @@ func TestFormatListItemSpawnedAndLiveMarkers(t *testing.T) {
 	strip := func(s string) int {
 		return utf8.RuneCountInString(regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, ""))
 	}
-	if strip(got) != strip(m.formatListItem(plain, false)) {
+	unmarked := m.formatListItem(plain, false)
+	if strip(got) != strip(unmarked) {
 		t.Error("marked row width differs from unmarked row")
+	}
+	// Titles line up whatever the markers.
+	col := func(s string) int {
+		s = regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, "")
+		return utf8.RuneCountInString(s[:strings.Index(s, "Topic")])
+	}
+	if col(got) != col(unmarked) {
+		t.Errorf("topic column differs: marked %d, unmarked %d", col(got), col(unmarked))
 	}
 }
 

@@ -40,8 +40,9 @@ type Conversation struct {
 	FirstTimestamp string    `json:"first_timestamp"`
 	LastTimestamp  string    `json:"last_timestamp"`
 	Messages       []Message `json:"messages"`
-	FilePath       string    `json:"file_path"` // Full path to the .jsonl file
-	Size           int64     `json:"size"`      // .jsonl file size in bytes
+	FilePath       string    `json:"file_path"`      // Full path to the .jsonl file
+	Size           int64     `json:"size"`           // .jsonl file size in bytes
+	ContextTokens  int       `json:"context_tokens"` // conversation size as of the last reply (input + cache reads/writes)
 
 	// Built once at parse and shared through parseCache, so a refresh
 	// doesn't rebuild the search text of unchanged conversations.
@@ -54,6 +55,11 @@ type RawMessage struct {
 	Cwd     string `json:"cwd"`
 	Message struct {
 		Content json.RawMessage `json:"content"`
+		Usage   struct {
+			InputTokens              int `json:"input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
 	Timestamp   string `json:"timestamp"`
 	IsMeta      bool   `json:"isMeta"`     // harness-injected (e.g. the local-command caveat), not typed
@@ -626,8 +632,8 @@ func (m model) View() string {
 	previewHeight := m.height - listHeight - 6 // 6 for title + search + blank + header + borders
 
 	// Column headers
-	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %*s  %*s  %*s\033[0m\n",
-		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
+	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s\033[0m\n",
+		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colCtx, "CTX", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -674,18 +680,19 @@ func (m model) View() string {
 const (
 	colWhen    = 8 // longest is "12mo ago"
 	colProject = 22
+	colCtx     = 5
 	colMsgs    = 5
 	colHits    = 4
 	colSize    = 6
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " / "> " on each row
-	numGaps    = 5
+	numGaps    = 6
 	colMarks   = 3 // status icons (● ⚙) packed right, then a space
 )
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
 func (m model) topicColWidth() int {
-	used := listIndent + colWhen + colProject + colMsgs + colHits + colSize + numGaps*colGap
+	used := listIndent + colWhen + colProject + colCtx + colMsgs + colHits + colSize + numGaps*colGap
 	if w := m.width - used; w > 10 {
 		return w
 	}
@@ -736,15 +743,17 @@ func (m model) formatListItem(item listItem, selected bool) string {
 
 	when := formatAgo(item.conv.LastTimestamp, time.Now())
 
-	// Format: when | project | topic | msgs | hits | size (aligned columns)
+	ctx := formatTokens(item.conv.ContextTokens)
+
+	// Format: when | project | topic | ctx | msgs | hits | size (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %*d  %*d  %*s",
-			colWhen, when, colProject, project, marks, tw-colMarks, topic, colMsgs, msgs, colHits, hits, colSize, size)
+		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %*s  %*d  %*d  %*s",
+			colWhen, when, colProject, project, marks, tw-colMarks, topic, colCtx, ctx, colMsgs, msgs, colHits, hits, colSize, size)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
-		colWhen, when, colProject, project, topic, colMsgs, msgs, colHits, hits, colSize, size)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[34m%*s\033[0m  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
+		colWhen, when, colProject, project, topic, colCtx, ctx, colMsgs, msgs, colHits, hits, colSize, size)
 }
 
 // buildPreviewLines builds the scrollable message lines of a conversation
@@ -1069,6 +1078,13 @@ func parseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 				})
 			}
 		} else if raw.Type == "assistant" {
+			// Each reply's usage counts the whole conversation it was sent, so
+			// the last one is the current context. Zero-usage lines are
+			// placeholders (e.g. API errors) and would read as an empty context.
+			u := raw.Message.Usage
+			if ctx := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens; ctx > 0 {
+				conv.ContextTokens = ctx
+			}
 			text := extractText(raw.Message.Content)
 			if strings.TrimSpace(text) != "" {
 				conv.Messages = append(conv.Messages, Message{
@@ -1219,6 +1235,21 @@ func formatAgo(ts string, now time.Time) string {
 }
 
 // formatBytes renders a byte count compactly (fits the 6-wide SIZE column).
+// formatTokens renders a token count for the 5-wide CTX column: 950, 12k,
+// 281k, 1.2M. Blank when unknown (no reply with usage yet).
+func formatTokens(n int) string {
+	switch {
+	case n <= 0:
+		return ""
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1000:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
 func formatBytes(n int64) string {
 	switch {
 	case n >= 1<<30:

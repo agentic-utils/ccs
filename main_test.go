@@ -831,7 +831,7 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 }
 
 func TestTopicColWidthFlexes(t *testing.T) {
-	fixed := listIndent + colWhen + colProject + colMsgs + colHits + colSize + numGaps*colGap
+	fixed := listIndent + colWhen + colProject + colCtx + colMsgs + colHits + colSize + numGaps*colGap
 	for _, w := range []int{100, 120, 200} {
 		m := model{width: w}
 		if got, want := m.topicColWidth(), w-fixed; got != want {
@@ -2018,5 +2018,32 @@ func TestFormatAgo(t *testing.T) {
 	}
 	if formatAgo("garbage", now) != "" {
 		t.Error("unparseable timestamp should render empty")
+	}
+}
+
+func TestFormatTokens(t *testing.T) {
+	for n, want := range map[int]string{0: "", 950: "950", 12_345: "12k", 281_080: "281k", 1_234_567: "1.2M", 99_900_000: "99.9M"} {
+		if got := formatTokens(n); got != want || len(got) > colCtx {
+			t.Errorf("formatTokens(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestParseContextTokensFromLastReply(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	body := `{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"t1"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"input_tokens":2,"cache_creation_input_tokens":1000,"cache_read_input_tokens":500,"output_tokens":9}},"timestamp":"t2"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"b"}],"usage":{"input_tokens":3,"cache_creation_input_tokens":200,"cache_read_input_tokens":1500,"output_tokens":9}},"timestamp":"t3"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"API Error"}],"usage":{"input_tokens":0,"output_tokens":0}},"timestamp":"t4"}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := parseConversationFile(path, time.Time{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ContextTokens != 1703 {
+		t.Errorf("ContextTokens = %d, want 1703 (last non-zero reply)", c.ContextTokens)
 	}
 }

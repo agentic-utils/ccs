@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -92,6 +94,7 @@ type model struct {
 	height          int
 	listHeight      int // Calculated visible list height
 	selected        *Conversation
+	fork            bool // exec the selected conversation with --fork-session
 	quitting        bool
 	claudeFlags     []string
 	confirmDelete   bool  // Are we in delete confirmation mode?
@@ -140,6 +143,15 @@ var getSessionsDir = func() string {
 // ponytail: a recycled pid can make a stale file look live until claude cleans it up.
 func readLiveSessions() map[string]bool {
 	live := make(map[string]bool)
+	for id := range liveSessionPIDs() {
+		live[id] = true
+	}
+	return live
+}
+
+// liveSessionPIDs maps each live SessionID to the pid of its claude process.
+func liveSessionPIDs() map[string]int {
+	live := make(map[string]int)
 	files, _ := filepath.Glob(filepath.Join(getSessionsDir(), "*.json"))
 	for _, f := range files {
 		data, err := os.ReadFile(f)
@@ -155,7 +167,7 @@ func readLiveSessions() map[string]bool {
 		}
 		// Signal 0 probes the pid; EPERM still means the process exists.
 		if err := syscall.Kill(s.Pid, 0); err == nil || err == syscall.EPERM {
-			live[s.SessionID] = true
+			live[s.SessionID] = s.Pid
 		}
 	}
 	return live
@@ -422,6 +434,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			conv := m.filtered[m.cursor].conv
+			// Already running: jump to it rather than resuming a second copy
+			// that would write to the same transcript.
+			if pid, ok := liveSessionPIDs()[conv.SessionID]; ok {
+				if !focusSession(pid) {
+					m.errorMsg = fmt.Sprintf("Session is open in claude (pid %d) but its terminal wasn't found - Ctrl+F forks it", pid)
+				}
+				return m, nil
+			}
 			// In iTerm the session opens in its own tab, so ccs stays up and
 			// you can resume another conversation.
 			if openResumeTab(conv, m.claudeFlags) {
@@ -432,6 +452,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.selected = &conv
+			m.quitting = true
+			return m, tea.Quit
+
+		case "ctrl+f":
+			// Fork: resume into a new session id, leaving the original as is.
+			if len(m.filtered) == 0 {
+				return m, nil
+			}
+			conv := m.filtered[m.cursor].conv
+			if openResumeTab(conv, append(slices.Clone(m.claudeFlags), "--fork-session")) {
+				return m, nil
+			}
+			m.selected = &conv
+			m.fork = true
 			m.quitting = true
 			return m, tea.Quit
 
@@ -534,7 +568,7 @@ func (m model) View() string {
 
 	// Title line with help right-aligned
 	title := fmt.Sprintf("ccs · claude code search · %s", version)
-	help := "Resume:Enter Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc"
+	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc"
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
 		titlePadding = 1
@@ -1673,6 +1707,7 @@ Key bindings:
   ↑/↓, Ctrl+P/N   Navigate list
   Enter           Select and resume conversation
   Ctrl+D          Delete conversation (with confirmation)
+  Ctrl+F          Fork conversation (resume into a new session id)
   Ctrl+R          Rename conversation (not while it's open in claude)
   Ctrl+X          Prune conversation - shrink it losslessly (with confirmation)
   Ctrl+J/K        Scroll preview
@@ -1847,6 +1882,9 @@ func main() {
 
 	execArgs := []string{"claude", "--resume", conv.SessionID}
 	execArgs = append(execArgs, claudeFlags...)
+	if final.fork {
+		execArgs = append(execArgs, "--fork-session")
+	}
 
 	syscall.Exec(claudePath, execArgs, os.Environ())
 }
@@ -1876,6 +1914,54 @@ func resumeInTmuxWindow(cwd string, args []string) bool {
 	// -d leaves the current window (ccs) focused.
 	tmuxArgs := append([]string{"new-window", "-d", "-c", cwd}, args...)
 	return exec.Command("tmux", tmuxArgs...).Run() == nil
+}
+
+// focusSession brings the terminal running pid to the front: its tmux pane
+// when ccs is in tmux, else its iTerm tab. Matched by the process's tty.
+func focusSession(pid int) bool {
+	out, err := exec.Command("ps", "-o", "tty=", "-p", strconv.Itoa(pid)).Output()
+	tty := strings.TrimSpace(string(out))
+	if err != nil || tty == "" || tty == "??" {
+		return false
+	}
+	tty = "/dev/" + tty
+	if os.Getenv("TMUX") != "" {
+		panes, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}").Output()
+		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
+			return exec.Command("tmux", "switch-client", "-t", target, ";", "select-window", "-t", target, ";", "select-pane", "-t", target).Run() == nil
+		}
+	}
+	if os.Getenv("TERM_PROGRAM") != "iTerm.app" {
+		return false
+	}
+	script := fmt.Sprintf(`tell application "iTerm2"
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				if tty of s is %q then
+					select w
+					tell t to select
+					tell s to select
+					activate
+					return "found"
+				end if
+			end repeat
+		end repeat
+	end repeat
+end tell`, tty)
+	out, err = exec.Command("osascript", "-e", script).Output()
+	return err == nil && strings.TrimSpace(string(out)) == "found"
+}
+
+// tmuxPaneForTTY picks the pane target whose tty matches from
+// `tmux list-panes -a -F '#{pane_tty} <target>'` output.
+func tmuxPaneForTTY(panes, tty string) string {
+	for _, line := range strings.Split(panes, "\n") {
+		if t, target, ok := strings.Cut(line, " "); ok && t == tty {
+			return target
+		}
+	}
+	return ""
 }
 
 // shellQuote wraps s for /bin/sh single-quoted use.

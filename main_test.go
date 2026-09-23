@@ -1945,3 +1945,51 @@ func TestLiveCheckedAtConfirmAndAlwaysApplied(t *testing.T) {
 		t.Error("live should be applied even when the refresh is stale")
 	}
 }
+
+func TestTmuxPaneForTTY(t *testing.T) {
+	panes := "/dev/ttys001 main:0.0\n/dev/ttys007 work:2.1\n"
+	if got := tmuxPaneForTTY(panes, "/dev/ttys007"); got != "work:2.1" {
+		t.Errorf("got %q", got)
+	}
+	if got := tmuxPaneForTTY(panes, "/dev/ttys999"); got != "" {
+		t.Errorf("unknown tty should give no target, got %q", got)
+	}
+}
+
+func TestEnterOnLiveSessionFocusesInsteadOfResuming(t *testing.T) {
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	defer func() { getSessionsDir = old }()
+	if err := os.WriteFile(filepath.Join(dir, "1.json"), []byte(fmt.Sprintf(`{"pid":%d,"sessionId":"s"}`, os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX", "")
+	t.Setenv("TERM_PROGRAM", "") // no terminal to focus in the test
+
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(model)
+	if m.selected != nil || m.quitting || cmd != nil {
+		t.Error("enter on a live session must not resume a second copy")
+	}
+	if !strings.Contains(m.errorMsg, "Ctrl+F") {
+		t.Errorf("unfocusable live session should point at fork, got %q", m.errorMsg)
+	}
+}
+
+func TestCtrlFForksInPlaceOutsideTabbedTerminals(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TERM_PROGRAM", "")
+	flags := make([]string, 1, 4) // spare capacity: fork must not write into it
+	flags[0] = "--plan"
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", flags)
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = res.(model)
+	if m.selected == nil || !m.fork || !m.quitting {
+		t.Error("ctrl+f should select the conversation for a forked resume")
+	}
+	if len(m.claudeFlags) != 1 || m.claudeFlags[:2][1] == "--fork-session" {
+		t.Error("fork flag must not leak into the shared claude flags")
+	}
+}

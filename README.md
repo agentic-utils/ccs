@@ -79,7 +79,8 @@ ccs buyer -- --plan
 ### Keybindings
 
 - `↑/↓` or `Ctrl+P/N` - Navigate list
-- `Enter` - Resume selected conversation
+- `Enter` - Resume selected conversation, or jump to its iTerm tab / tmux pane if it's already open in `claude`
+- `Ctrl+F` - Fork selected conversation (`claude --resume <id> --fork-session`)
 - `Ctrl+D` - Delete selected conversation (with confirmation)
 - `Ctrl+R` - Rename selected conversation (not while it's open in `claude`; use `/rename` there)
 - `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)

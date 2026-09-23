@@ -100,7 +100,8 @@ type model struct {
 }
 
 // refreshInterval is how often ccs re-scans conversations and live sessions.
-const refreshInterval = 15 * time.Second
+// Changed files are reparsed whole, and active sessions are often 100MB+.
+const refreshInterval = time.Minute
 
 type refreshTickMsg struct{}
 

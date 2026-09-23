@@ -93,10 +93,10 @@ Install the release locally: `brew update && brew upgrade ccs`.
   ccs · claude code search    Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc
   > type to search...                                                     (N/total)
 
-  WHEN      PROJECT               TOPIC                    CTX  MSGS  HITS    SIZE
+  WHEN      PROJECT               TOPIC                    SIZE   CTX  MSGS  HITS
 ──────────────────────────────────────────────────────────────────────────────────────
-  2h ago    project-name          ● Refactor auth flow ✍  281k    42     3   1.2GB
-> 3h ago    selected              This one is selected     92k    28     1    12MB
+  2h ago    project-name          ● Refactor auth flow ✍  1.2GB  281k    42     3
+> 3h ago    selected              This one is selected     12MB   92k    28     1
 ──────────────────────────────────────────────────────────────────────────────────────
 Project: /path/to/project
 Session: abc123...

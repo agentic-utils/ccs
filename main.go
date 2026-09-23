@@ -633,7 +633,7 @@ func (m model) View() string {
 
 	// Column headers
 	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s\033[0m\n",
-		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colCtx, "CTX", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
+		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", colHits, "HITS"))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -745,15 +745,15 @@ func (m model) formatListItem(item listItem, selected bool) string {
 
 	ctx := formatTokens(item.conv.ContextTokens)
 
-	// Format: when | project | topic | ctx | msgs | hits | size (aligned columns)
+	// Format: when | project | topic | size | ctx | msgs | hits (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %*s  %*d  %*d  %*s",
-			colWhen, when, colProject, project, marks, tw-colMarks, topic, colCtx, ctx, colMsgs, msgs, colHits, hits, colSize, size)
+		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %*s  %*s  %*d  %*d",
+			colWhen, when, colProject, project, marks, tw-colMarks, topic, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[34m%*s\033[0m  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
-		colWhen, when, colProject, project, topic, colCtx, ctx, colMsgs, msgs, colHits, hits, colSize, size)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[35m%*s\033[0m  \033[34m%*s\033[0m  %*d  \033[36m%*d\033[0m",
+		colWhen, when, colProject, project, topic, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
 }
 
 // buildPreviewLines builds the scrollable message lines of a conversation

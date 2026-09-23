@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -118,6 +119,118 @@ type model struct {
 	live            map[string]bool            // SessionIDs attached to a running claude process
 	reload          func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
 	gen             int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
+
+	// Self-update. checkLatest nil disables the check (tests, dev builds);
+	// upgrade nil means not installed via Homebrew, so only notify.
+	checkLatest   func() (string, error)
+	upgrade       func() error
+	updateTo      string    // newer release tag found, "" if none
+	updateShownAt time.Time // popup ignores keys for a moment so in-flight typing can't answer it
+	updateOpen    bool
+	updating      bool
+	dismissed     string // tag the user said "later" to
+	restart       bool   // quit so main can exec the upgraded binary
+}
+
+// updateCheckInterval is how often ccs asks GitHub for a newer release. The
+// unauthenticated API allows 60 requests/hour per IP, so not every refresh.
+const updateCheckInterval = time.Hour
+
+// updateKeyGrace is how long a freshly opened update popup ignores keys.
+const updateKeyGrace = time.Second
+
+type updateCheckTickMsg struct{}
+type latestMsg struct{ tag string }
+type upgradeDoneMsg struct{ err error }
+
+func (m model) checkUpdateCmd() tea.Cmd {
+	check := m.checkLatest
+	return func() tea.Msg {
+		tag, _ := check() // a failed check just means no popup this time
+		return latestMsg{tag}
+	}
+}
+
+// newerVersion reports whether release tag (e.g. "v0.25.0") is newer than
+// current (e.g. "0.24.1"). Non-release builds ("dev") never update.
+func newerVersion(tag, current string) bool {
+	parse := func(v string) ([3]int, bool) {
+		var p [3]int
+		parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
+		if len(parts) != 3 {
+			return p, false
+		}
+		for i, s := range parts {
+			n, err := strconv.Atoi(s)
+			if err != nil {
+				return p, false
+			}
+			p[i] = n
+		}
+		return p, true
+	}
+	a, ok1 := parse(tag)
+	b, ok2 := parse(current)
+	if !ok1 || !ok2 {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] > b[i]
+		}
+	}
+	return false
+}
+
+// latestRelease finds the newest ccs release tag from where GitHub's
+// releases/latest page redirects (.../releases/tag/v0.25.0). The web redirect
+// isn't subject to the REST API's 60/hour unauthenticated limit, which shared
+// office IPs exhaust.
+func latestRelease() (string, error) {
+	client := http.Client{
+		Timeout:       10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Head("https://github.com/agentic-utils/ccs/releases/latest")
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	return releaseTagFromURL(resp.Header.Get("Location"))
+}
+
+func releaseTagFromURL(loc string) (string, error) {
+	_, tag, ok := strings.Cut(loc, "/releases/tag/")
+	if !ok || tag == "" {
+		return "", fmt.Errorf("unexpected releases/latest redirect %q", loc)
+	}
+	return tag, nil
+}
+
+// brewUpgrade returns an upgrade func when this binary lives in Homebrew's
+// Cellar, else nil (built from source or downloaded: notify only).
+func brewUpgrade() func() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	brew, err := exec.LookPath("brew")
+	if err != nil || !strings.Contains(exe, "/Cellar/ccs/") {
+		return nil
+	}
+	return func() error {
+		// brew update refreshes the tap so upgrade can see the new formula.
+		for _, args := range [][]string{{"update", "--quiet"}, {"upgrade", "ccs"}} {
+			if out, err := exec.Command(brew, args...).CombinedOutput(); err != nil {
+				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+				return fmt.Errorf("brew %s: %s", args[0], lines[len(lines)-1])
+			}
+		}
+		return nil
+	}
 }
 
 // refreshInterval is how often ccs re-scans conversations and live sessions.
@@ -337,10 +450,14 @@ func (m *model) updateFilter() {
 }
 
 func (m model) Init() tea.Cmd {
-	if m.reload == nil {
-		return textinput.Blink
+	cmds := []tea.Cmd{textinput.Blink}
+	if m.reload != nil {
+		cmds = append(cmds, refreshTick())
 	}
-	return tea.Batch(textinput.Blink, refreshTick())
+	if m.checkLatest != nil {
+		cmds = append(cmds, m.checkUpdateCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -373,7 +490,53 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, refreshTick()
 
+	case updateCheckTickMsg:
+		return m, m.checkUpdateCmd()
+
+	case latestMsg:
+		if newerVersion(msg.tag, version) && msg.tag != m.dismissed && !m.updating {
+			if msg.tag != m.updateTo {
+				m.updateOpen = true
+				m.updateShownAt = time.Now()
+			}
+			m.updateTo = msg.tag
+		}
+		return m, tea.Tick(updateCheckInterval, func(time.Time) tea.Msg { return updateCheckTickMsg{} })
+
+	case upgradeDoneMsg:
+		m.updating = false
+		if msg.err != nil {
+			m.errorMsg = fmt.Sprintf("Update failed: %v", msg.err)
+			return m, nil
+		}
+		m.restart = true
+		m.quitting = true
+		return m, tea.Quit
+
 	case tea.KeyMsg:
+		if m.updateOpen {
+			if time.Since(m.updateShownAt) < updateKeyGrace {
+				return m, nil
+			}
+			switch msg.String() {
+			case "enter":
+				m.updateOpen = false
+				if m.upgrade == nil {
+					return m, nil
+				}
+				m.updating = true
+				upgrade := m.upgrade
+				return m, func() tea.Msg { return upgradeDoneMsg{upgrade()} }
+			case "esc":
+				m.updateOpen = false
+				m.dismissed = m.updateTo
+				m.updateTo = ""
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if m.renaming {
 			switch msg.String() {
 			case "enter":
@@ -573,14 +736,18 @@ func (m model) View() string {
 	tableWidth := m.width
 
 	// Title line with help right-aligned
-	title := fmt.Sprintf("ccs · claude code search · %s", version)
+	status := ""
+	if m.updating {
+		status = fmt.Sprintf(" · updating to %s...", m.updateTo)
+	}
+	title := fmt.Sprintf("ccs · claude code search · %s%s", version, status)
 	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc"
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
 		titlePadding = 1
 	}
-	b.WriteString(fmt.Sprintf("  \033[1;36mccs\033[0m \033[90m· claude code search · %s%s%s\033[0m\n",
-		version, strings.Repeat(" ", titlePadding), help))
+	b.WriteString(fmt.Sprintf("  \033[1;36mccs\033[0m \033[90m· claude code search · %s\033[0m\033[33m%s\033[0m\033[90m%s%s\033[0m\n",
+		version, status, strings.Repeat(" ", titlePadding), help))
 
 	// Search line or delete confirmation
 	var sections []string
@@ -667,12 +834,30 @@ func (m model) View() string {
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	if len(m.filtered) > 0 {
+	if m.updateOpen {
+		b.WriteString(m.updatePopup())
+	} else if len(m.filtered) > 0 {
 		preview := m.renderPreview(m.filtered[m.cursor], previewHeight)
 		b.WriteString(preview)
 	}
 
 	return b.String()
+}
+
+// updatePopup renders the update offer in place of the preview pane.
+func (m model) updatePopup() string {
+	body := fmt.Sprintf("ccs %s is available (you have v%s).\n\n", m.updateTo, version)
+	if m.upgrade != nil {
+		body += "Enter: update and restart    Esc: later"
+	} else {
+		body += "Update with your package manager.    Esc: close"
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("214")).
+		Padding(1, 3).
+		Render(body)
+	return "\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, box)
 }
 
 // Fixed list column widths. TOPIC is the flex column - it absorbs the rest of
@@ -1894,6 +2079,10 @@ func main() {
 	// Scrolling is keyboard-only (arrows / Ctrl+J/K / PgUp/PgDn).
 	m := initialModel(items, filterQuery, claudeFlags)
 	m.live = readLiveSessions()
+	if version != "dev" {
+		m.checkLatest = latestRelease
+		m.upgrade = brewUpgrade()
+	}
 	m.reload = func() ([]listItem, error) {
 		convs, err := getConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {
@@ -1910,6 +2099,15 @@ func main() {
 	}
 
 	final := finalModel.(model)
+	if final.restart {
+		// Re-exec through PATH: brew has replaced (and cleaned up) the old binary.
+		exe, err := exec.LookPath("ccs")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Updated; run ccs again (%v)\n", err)
+			os.Exit(1)
+		}
+		syscall.Exec(exe, append([]string{"ccs"}, os.Args[1:]...), os.Environ())
+	}
 	if final.selected == nil {
 		return
 	}

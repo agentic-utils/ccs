@@ -2047,3 +2047,111 @@ func TestParseContextTokensFromLastReply(t *testing.T) {
 		t.Errorf("ContextTokens = %d, want 1703 (last non-zero reply)", c.ContextTokens)
 	}
 }
+
+func TestNewerVersion(t *testing.T) {
+	cases := []struct {
+		tag, cur string
+		want     bool
+	}{
+		{"v0.25.0", "0.24.1", true},
+		{"v0.24.2", "0.24.1", true},
+		{"v1.0.0", "0.99.99", true},
+		{"v0.24.1", "0.24.1", false},
+		{"v0.9.0", "0.24.1", false}, // numeric, not lexical
+		{"v0.25.0", "dev", false},
+		{"garbage", "0.24.1", false},
+	}
+	for _, c := range cases {
+		if got := newerVersion(c.tag, c.cur); got != c.want {
+			t.Errorf("newerVersion(%q, %q) = %v, want %v", c.tag, c.cur, got, c.want)
+		}
+	}
+}
+
+func TestUpdatePopupFlow(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.24.1"
+	upgraded := false
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 100, 30
+	m.upgrade = func() error { upgraded = true; return nil }
+
+	res, cmd := m.Update(latestMsg{"v0.25.0"})
+	m = res.(model)
+	if !m.updateOpen || cmd == nil {
+		t.Fatal("newer release should open the popup and schedule the next check")
+	}
+	if !strings.Contains(m.View(), "v0.25.0 is available") {
+		t.Error("popup should render in the view")
+	}
+
+	// Keys straight after it opens are swallowed, so typing can't answer it.
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m = res.(model); !m.updateOpen || m.updating {
+		t.Fatal("enter inside the grace period must be ignored")
+	}
+
+	m.updateShownAt = time.Now().Add(-2 * updateKeyGrace)
+	res, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m = res.(model); !m.updating || cmd == nil {
+		t.Fatal("enter should start the upgrade")
+	}
+	res, _ = m.Update(cmd())
+	if m = res.(model); !upgraded || !m.restart || !m.quitting {
+		t.Error("a successful upgrade should quit for restart")
+	}
+}
+
+func TestUpdatePopupLaterAndFailure(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.24.1"
+	m := initialModel(nil, "", nil)
+	m.upgrade = func() error { return fmt.Errorf("network down") }
+
+	res, _ := m.Update(latestMsg{"v0.25.0"})
+	m = res.(model)
+	m.updateShownAt = time.Now().Add(-2 * updateKeyGrace)
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m = res.(model); m.updateOpen || m.quitting {
+		t.Fatal("esc should dismiss the popup, not quit ccs")
+	}
+	res, _ = m.Update(latestMsg{"v0.25.0"})
+	if m = res.(model); m.updateOpen {
+		t.Error("a dismissed version should not pop up again this session")
+	}
+	res, _ = m.Update(latestMsg{"v0.26.0"})
+	if m = res.(model); !m.updateOpen {
+		t.Error("an even newer version should pop up again")
+	}
+
+	m.updateShownAt = time.Now().Add(-2 * updateKeyGrace)
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(model)
+	res, _ = m.Update(cmd())
+	if m = res.(model); m.restart || !strings.Contains(m.errorMsg, "network down") {
+		t.Errorf("failed upgrade should show an error and not restart, got %q", m.errorMsg)
+	}
+}
+
+func TestUpdatePopupWithoutBrew(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.24.1"
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 100, 30
+	res, _ := m.Update(latestMsg{"v0.25.0"})
+	m = res.(model)
+	if !strings.Contains(m.View(), "package manager") {
+		t.Error("non-Homebrew installs should be told to update themselves")
+	}
+}
+
+func TestReleaseTagFromURL(t *testing.T) {
+	if tag, err := releaseTagFromURL("https://github.com/agentic-utils/ccs/releases/tag/v0.24.1"); err != nil || tag != "v0.24.1" {
+		t.Errorf("got %q, %v", tag, err)
+	}
+	for _, bad := range []string{"", "https://github.com/agentic-utils/ccs/releases"} {
+		if _, err := releaseTagFromURL(bad); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+}

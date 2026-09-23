@@ -79,6 +79,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `openResumeTab()` / `resumeInTmuxWindow()` / `resumeInITermTab()` - Opens the selected conversation in a new tmux window or iTerm tab (focus stays on ccs); falls back to exec-in-place elsewhere
 - `focusSession()` / `tmuxPaneForTTY()` - Enter on a live session: find its terminal by the claude pid's tty (`liveSessionPIDs()`) and select that tmux pane or iTerm tab instead of resuming a second copy
 - Ctrl+F forks: `openResumeTab` / exec with `--fork-session`
+- `latestRelease()` / `newerVersion()` / `brewUpgrade()` - Self-update: at startup and hourly, read the newest tag from the `github.com/.../releases/latest` redirect (not the REST API, whose 60/h unauthenticated limit shared IPs exhaust); if newer, a popup over the preview offers Enter = `brew update && brew upgrade ccs` then re-exec, Esc = later (for that version, this session). Keys are ignored for `updateKeyGrace` after it opens. Non-Homebrew installs get a notice only; `dev` builds never check
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `pruneConversation()` - Prunes the selected conversation in place (Ctrl+X) and refreshes its size
 - `getTopic()` - Title, else first real user message (skips tag-wrapped harness text, shows `/cmd` or `! cmd` for command-only sessions), else session id

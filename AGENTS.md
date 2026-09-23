@@ -76,15 +76,17 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `parseCache` - Reuses parsed conversations whose file size+mtime are unchanged, so refreshes only reparse changed files
 - `openResumeTab()` / `resumeInTmuxWindow()` / `resumeInITermTab()` - Opens the selected conversation in a new tmux window or iTerm tab (focus stays on ccs); falls back to exec-in-place elsewhere
 - `deleteConversation()` - Removes conversation file and updates UI state
-- `pruneConversation()` - Prunes the selected conversation in place (Ctrl+R) and refreshes its size
-- `getTopic()` - Extracts first user message as topic
+- `pruneConversation()` - Prunes the selected conversation in place (Ctrl+X) and refreshes its size
+- `getTopic()` - Title, else first real user message (skips tag-wrapped harness text, shows `/cmd` or `! cmd` for command-only sessions), else session id
+- `renameConversation()` / `appendLine()` - Ctrl+R rename: appends a `custom-title` line like `/rename`; refused on live sessions since a running claude re-appends its own title
+- `Conversation.Spawned` - first user line has `entrypoint: sdk-cli` or a `teamName`; shown as `⚙`
 - `pruneFile()` / `pruneStream()` - Shrink a conversation by dropping duplicate/redundant data (never touches user/assistant lines)
 - `runPrune()` - `ccs prune` subcommand driver
 
 ### TUI Layout
 
 ```
-  ccs · claude code search    Resume:Enter Delete:Ctrl+D Prune:Ctrl+R Scroll:Ctrl+J/K Exit:Esc
+  ccs · claude code search    Resume:Enter Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc
   > type to search...                                                     (N/total)
 
   DATE              PROJECT               TOPIC                       MSGS  HITS    SIZE

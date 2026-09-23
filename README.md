@@ -15,7 +15,8 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Preview conversation context with search term highlighting
 - See message counts, hit counts, and file size per conversation
 - Resume conversations directly from the search interface
-- Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`
+- Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, a `⚙` marks ones started by a script, `claude -p` or a team lead
+- Rename conversations (`Ctrl+R`)
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Pass flags through to `claude` (e.g., `--plan`)
@@ -80,7 +81,8 @@ ccs buyer -- --plan
 - `↑/↓` or `Ctrl+P/N` - Navigate list
 - `Enter` - Resume selected conversation
 - `Ctrl+D` - Delete selected conversation (with confirmation)
-- `Ctrl+R` - Prune selected conversation - shrink it losslessly (with confirmation)
+- `Ctrl+R` - Rename selected conversation (not while it's open in `claude`; use `/rename` there)
+- `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation)
 - `Ctrl+J/K` - Scroll preview
 - `Ctrl+U` - Clear search
 - `Esc` / `Ctrl+C` - Quit
@@ -105,7 +107,7 @@ ccs prune --apply --no-tool-results  # keep tool results, only drop snapshot bac
 
 Run `ccs prune --help` for all flags.
 
-You can also prune a single conversation from the search interface: select it and press `Ctrl+R` (with confirmation).
+You can also prune a single conversation from the search interface: select it and press `Ctrl+X` (with confirmation).
 
 ## How it works
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1548,8 +1549,8 @@ func TestPruneConversationShrinksAndUpdatesSize(t *testing.T) {
 	}
 }
 
-func TestCtrlREntersAndCancelsPruneConfirm(t *testing.T) {
-	// Ctrl+R measures the file to preview savings, so it needs a real file.
+func TestCtrlXEntersAndCancelsPruneConfirm(t *testing.T) {
+	// Ctrl+X measures the file to preview savings, so it needs a real file.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s1.jsonl")
 	content := `{"type":"user","message":{"content":"hi"}}` + "\n" +
@@ -1562,13 +1563,13 @@ func TestCtrlREntersAndCancelsPruneConfirm(t *testing.T) {
 		Messages: []Message{{Role: "user", Text: "hi"}}}}
 	m := initialModel([]listItem{item}, "", nil)
 
-	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
 	m = res.(model)
 	if !m.confirmPrune {
-		t.Fatalf("ctrl+r should enter prune confirm mode (err=%q)", m.errorMsg)
+		t.Fatalf("ctrl+x should enter prune confirm mode (err=%q)", m.errorMsg)
 	}
 	if m.pruneSaved <= 0 {
-		t.Errorf("ctrl+r should measure a positive saving, got %d", m.pruneSaved)
+		t.Errorf("ctrl+x should measure a positive saving, got %d", m.pruneSaved)
 	}
 	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = res.(model)
@@ -1683,5 +1684,117 @@ func TestParseConversationFileReusesUnchanged(t *testing.T) {
 	c, _ := parseConversationFile(path, time.Time{}, 0)
 	if c == a || len(c.Messages) != 2 {
 		t.Error("appended file should be reparsed")
+	}
+}
+
+func TestGetTopicSkipsHarnessText(t *testing.T) {
+	msgs := func(texts ...string) Conversation {
+		c := Conversation{SessionID: "sid"}
+		for _, x := range texts {
+			c.Messages = append(c.Messages, Message{Role: "user", Text: x})
+		}
+		return c
+	}
+	cases := []struct {
+		want string
+		conv Conversation
+	}{
+		{"/model", msgs("<command-name>/model</command-name> <command-message>model</command-message>", "<local-command-stdout>ok</local-command-stdout>")},
+		{"real prompt", msgs("<task-notification>done</task-notification>", "real prompt")},
+		{"sid", msgs("<local-command-stdout>ok</local-command-stdout>")},
+		{"/grill", msgs("<command-message>grill</command-message>\n<command-name>/grill</command-name>")},
+		{"! glogin -S", msgs("<bash-input>glogin -S</bash-input>")},
+		{"plain first", msgs("plain first", "<b>html</b>")},
+		{"why <command-name>x</command-name>", msgs("why <command-name>x</command-name>")},
+	}
+	for _, c := range cases {
+		if got := getTopic(c.conv); got != c.want {
+			t.Errorf("getTopic = %q, want %q", got, c.want)
+		}
+	}
+}
+
+func TestParseSkipsMetaAndDetectsSpawned(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte(body), 0o644)
+		return p
+	}
+	human := write("h.jsonl", `{"type":"user","isMeta":true,"entrypoint":"cli","cwd":"/p","message":{"content":"<local-command-caveat>x</local-command-caveat>"},"timestamp":"t1"}
+{"type":"user","entrypoint":"cli","cwd":"/p","message":{"content":"hello"},"timestamp":"t2"}
+`)
+	sdk := write("s.jsonl", `{"type":"user","entrypoint":"sdk-cli","cwd":"/p","message":{"content":"do it"},"timestamp":"t"}
+`)
+	team := write("t.jsonl", `{"type":"user","entrypoint":"cli","teamName":"session-x","cwd":"/p","message":{"content":"<teammate-message>go</teammate-message>"},"timestamp":"t"}
+`)
+	c, _ := parseConversationFile(human, time.Time{}, 0)
+	if len(c.Messages) != 1 || c.Messages[0].Text != "hello" || c.Spawned {
+		t.Errorf("meta line should be dropped and cli is not spawned: %+v", c)
+	}
+	for _, p := range []string{sdk, team} {
+		if c, _ := parseConversationFile(p, time.Time{}, 0); !c.Spawned {
+			t.Errorf("%s should be marked spawned", p)
+		}
+	}
+}
+
+func TestFormatListItemSpawnedAndLiveMarkers(t *testing.T) {
+	item := listItem{conv: Conversation{SessionID: "s1", Title: "Topic", Spawned: true, Messages: []Message{{Role: "user", Text: "x"}}}}
+	m := initialModel([]listItem{item}, "", nil)
+	m.width = 120
+	m.live = map[string]bool{"s1": true}
+	if got := m.formatListItem(item, true); !strings.Contains(got, "● ⚙ Topic") {
+		t.Errorf("selected row = %q", got)
+	}
+	got := m.formatListItem(item, false)
+	if !strings.Contains(got, "\033[32m●\033[0m \033[90m⚙\033[0m Topic") {
+		t.Errorf("unselected row = %q", got)
+	}
+	// Same visible width as an unmarked row.
+	plain := listItem{conv: Conversation{SessionID: "s2", Title: "Topic", Messages: item.conv.Messages}}
+	strip := func(s string) int {
+		return utf8.RuneCountInString(regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, ""))
+	}
+	if strip(got) != strip(m.formatListItem(plain, false)) {
+		t.Error("marked row width differs from unmarked row")
+	}
+}
+
+func TestRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s1.jsonl")
+	// No trailing newline: the rename must not fuse onto the last record.
+	os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"t"}`), 0o644)
+	item := buildItems([]Conversation{{SessionID: "s1", FilePath: path, Messages: []Message{{Role: "user", Text: "hi"}}}})[0]
+	m := initialModel([]listItem{item}, "", nil)
+
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = res.(model)
+	if !m.renaming {
+		t.Fatal("ctrl+r should start renaming")
+	}
+	m.renameInput.SetValue("  new name ")
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(model)
+	if m.renaming || m.items[0].conv.Title != "new name" || !m.items[0].conv.IsCustomTitle {
+		t.Fatalf("rename not applied: %+v err=%q", m.items[0].conv, m.errorMsg)
+	}
+	conv, err := parseConversationFile(path, time.Time{}, 0)
+	if err != nil || conv.Title != "new name" || !conv.IsCustomTitle || len(conv.Messages) != 1 {
+		t.Errorf("reparsed = %+v, %v", conv, err)
+	}
+	m.textInput.SetValue("new name")
+	m.updateFilter()
+	if len(m.filtered) != 1 {
+		t.Error("new name should be searchable")
+	}
+
+	// Live sessions can't be renamed from ccs.
+	m.textInput.SetValue("")
+	m.updateFilter()
+	m.live = map[string]bool{"s1": true}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if m = res.(model); m.renaming || m.errorMsg == "" {
+		t.Error("rename should be refused on a live session")
 	}
 }

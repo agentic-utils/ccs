@@ -40,6 +40,10 @@ type Conversation struct {
 	Messages       []Message `json:"messages"`
 	FilePath       string    `json:"file_path"` // Full path to the .jsonl file
 	Size           int64     `json:"size"`      // .jsonl file size in bytes
+
+	// Built once at parse and shared through parseCache, so a refresh
+	// doesn't rebuild the search text of unchanged conversations.
+	searchText, searchLower string
 }
 
 // RawMessage represents the JSON structure in conversation files
@@ -157,10 +161,22 @@ func readLiveSessions() map[string]bool {
 	return live
 }
 
+// isLive re-reads the session files so a prune/rename decision never trusts a
+// liveness snapshot up to a refresh interval old. A session already marked live
+// (e.g. one ccs just opened, before claude writes its session file) stays live
+// until the next refresh replaces m.live.
+func (m *model) isLive(id string) bool {
+	fresh := readLiveSessions()
+	if m.live[id] {
+		fresh[id] = true
+	}
+	m.live = fresh
+	return fresh[id]
+}
+
 // applyRefresh swaps in freshly loaded items, keeping the cursor on the same
 // conversation and re-running the current filter.
 func (m *model) applyRefresh(msg refreshMsg) {
-	m.live = msg.live
 	if msg.err != nil {
 		return
 	}
@@ -330,6 +346,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case refreshMsg:
+		m.live = msg.live // liveness is independent of the list, never stale-dropped
 		// Delete/prune/rename prompts hold an index into m.filtered, so don't
 		// reshuffle it under them; and a scan that started before a delete,
 		// prune or rename would undo it. The next tick catches up.
@@ -342,6 +359,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.renaming {
 			switch msg.String() {
 			case "enter":
+				if m.renameIndex < len(m.filtered) && m.isLive(m.filtered[m.renameIndex].conv.SessionID) {
+					m.renaming = false
+					m.errorMsg = "Session is open in claude - use /rename there"
+					return m, nil
+				}
 				m.renameConversation(strings.TrimSpace(m.renameInput.Value()))
 				return m, nil
 			case "esc", "ctrl+c":
@@ -370,6 +392,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.confirmPrune {
 			switch msg.String() {
 			case "y", "Y":
+				if m.pruneIndex < len(m.filtered) && m.isLive(m.filtered[m.pruneIndex].conv.SessionID) {
+					m.confirmPrune = false
+					m.errorMsg = "Session is open in claude - quit it before pruning"
+					return m, nil
+				}
 				m.pruneConversation()
 				return m, nil
 			case "n", "N", "esc":
@@ -398,6 +425,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// In iTerm the session opens in its own tab, so ccs stays up and
 			// you can resume another conversation.
 			if openResumeTab(conv, m.claudeFlags) {
+				if m.live == nil {
+					m.live = make(map[string]bool)
+				}
+				m.live[conv.SessionID] = true // before claude has written its session file
 				return m, nil
 			}
 			m.selected = &conv
@@ -415,7 +446,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.filtered) > 0 {
 				conv := m.filtered[m.cursor].conv
 				// A running claude re-appends its own title and would undo ours.
-				if m.live[conv.SessionID] {
+				if m.isLive(conv.SessionID) {
 					m.errorMsg = "Session is open in claude - use /rename there"
 					return m, nil
 				}
@@ -434,7 +465,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.filtered) > 0 {
 				// Prune rewrites the file; a running claude's appends during
 				// the rewrite would be lost.
-				if m.live[m.filtered[m.cursor].conv.SessionID] {
+				if m.isLive(m.filtered[m.cursor].conv.SessionID) {
 					m.errorMsg = "Session is open in claude - quit it before pruning"
 					return m, nil
 				}
@@ -927,8 +958,8 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 }
 
 // parseCache lets auto-refresh reparse only files that changed since the last
-// scan. ponytail: entries for deleted files are never evicted; negligible for a
-// session-long TUI.
+// scan. ponytail: entries for files deleted outside ccs are never evicted;
+// negligible for a session-long TUI.
 type parsedFile struct {
 	size    int64
 	modTime time.Time
@@ -954,6 +985,7 @@ func parseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 	}
 	defer file.Close()
 
+	seenUser := false
 	scanner := bufio.NewScanner(file)
 	// A single JSONL line holds a whole turn - a big tool result or a base64
 	// image can be tens of MB. ponytail: 64MB ceiling; if a line ever exceeds
@@ -976,14 +1008,17 @@ func parseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 			if conv.Title == "" {
 				conv.Title = raw.AiTitle
 			}
-		} else if raw.Type == "user" && !raw.IsMeta {
-			if conv.Cwd == "" {
-				conv.Cwd = raw.Cwd
+		} else if raw.Type == "user" {
+			if !seenUser {
 				// The first user line says how the session was started.
+				seenUser = true
 				conv.Spawned = raw.Entrypoint == "sdk-cli" || raw.TeamName != ""
 			}
-			text := extractText(raw.Message.Content)
-			if strings.TrimSpace(text) != "" {
+			if conv.Cwd == "" {
+				conv.Cwd = raw.Cwd
+			}
+			// isMeta lines are harness-injected (e.g. the local-command caveat).
+			if text := extractText(raw.Message.Content); !raw.IsMeta && strings.TrimSpace(text) != "" {
 				if conv.FirstTimestamp == "" {
 					conv.FirstTimestamp = raw.Timestamp
 				}
@@ -1020,6 +1055,8 @@ func parseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 	if conv.Cwd == "" {
 		conv.Cwd = "unknown"
 	}
+	conv.searchText = searchTextOf(*conv)
+	conv.searchLower = strings.ToLower(conv.searchText)
 
 	return conv, nil
 }
@@ -1295,58 +1332,29 @@ func (m *model) pruneConversation() {
 	m.errorMsg = ""
 }
 
-// reuseItems builds list items like buildItems, but reuses the previous item
-// for any file whose size is unchanged, so a refresh doesn't rebuild the
-// search text of every conversation. Returns the items and the next lookup.
-func reuseItems(convs []Conversation, prev map[string]listItem) ([]listItem, map[string]listItem) {
-	items := make([]listItem, 0, len(convs))
-	for _, conv := range convs {
-		if old, ok := prev[conv.FilePath]; ok && conv.FilePath != "" && old.conv.Size == conv.Size {
-			items = append(items, old)
-		} else {
-			items = append(items, buildItems([]Conversation{conv})[0])
-		}
-	}
-	return items, itemsByPath(items)
-}
-
-func itemsByPath(items []listItem) map[string]listItem {
-	byPath := make(map[string]listItem, len(items))
-	for _, item := range items {
-		byPath[item.conv.FilePath] = item
-	}
-	return byPath
-}
-
 // buildItems creates list items from conversations
 func buildItems(conversations []Conversation) []listItem {
 	items := make([]listItem, 0, len(conversations))
-
 	for _, conv := range conversations {
-		// Build search text from all content
-		var searchParts []string
-		searchParts = append(searchParts, conv.SessionID)
-		searchParts = append(searchParts, conv.Title)
-		searchParts = append(searchParts, conv.Cwd)
-		searchParts = append(searchParts, formatTimestamp(conv.FirstTimestamp))
-		searchParts = append(searchParts, formatTimestamp(conv.LastTimestamp))
-
-		// Include assistant messages too so a conversation is findable by
-		// what Claude said, matching the HITS column and preview which already
-		// count all messages.
-		for _, msg := range conv.Messages {
-			searchParts = append(searchParts, msg.Text)
+		if conv.searchText == "" { // not from parseConversationFile (e.g. tests)
+			conv.searchText = searchTextOf(conv)
+			conv.searchLower = strings.ToLower(conv.searchText)
 		}
-
-		searchText := strings.Join(searchParts, " ")
-		items = append(items, listItem{
-			conv:        conv,
-			searchText:  searchText,
-			searchLower: strings.ToLower(searchText),
-		})
+		items = append(items, listItem{conv: conv, searchText: conv.searchText, searchLower: conv.searchLower})
 	}
-
 	return items
+}
+
+// searchTextOf joins everything a conversation can be found by.
+func searchTextOf(conv Conversation) string {
+	parts := []string{conv.SessionID, conv.Title, conv.Cwd,
+		formatTimestamp(conv.FirstTimestamp), formatTimestamp(conv.LastTimestamp)}
+	// Include assistant messages too so a conversation is findable by what
+	// Claude said, matching the HITS column and preview.
+	for _, msg := range conv.Messages {
+		parts = append(parts, msg.Text)
+	}
+	return strings.Join(parts, " ")
 }
 
 // ============================================================================
@@ -1784,15 +1792,12 @@ func main() {
 	// Scrolling is keyboard-only (arrows / Ctrl+J/K / PgUp/PgDn).
 	m := initialModel(items, filterQuery, claudeFlags)
 	m.live = readLiveSessions()
-	prev := itemsByPath(items)
 	m.reload = func() ([]listItem, error) {
 		convs, err := getConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {
 			return nil, err
 		}
-		var next []listItem
-		next, prev = reuseItems(convs, prev)
-		return next, nil
+		return buildItems(convs), nil
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 

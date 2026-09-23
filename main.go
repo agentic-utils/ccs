@@ -1,7 +1,12 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -121,15 +127,16 @@ type model struct {
 	gen             int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
 
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
-	// upgrade nil means not installed via Homebrew, so only notify.
+	// upgrade installs tag and returns the binary to restart; nil means ccs
+	// can't update this install itself (e.g. Nix), so only notify.
 	checkLatest   func() (string, error)
-	upgrade       func() error
+	upgrade       func(tag string) (string, error)
 	updateTo      string    // newer release tag found, "" if none
 	updateShownAt time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen    bool
 	updating      bool
 	dismissed     string // tag the user said "later" to
-	restart       bool   // quit so main can exec the upgraded binary
+	restart       string // after an upgrade: binary to exec once the TUI exits
 }
 
 // updateCheckInterval is how often ccs asks GitHub for a newer release. The
@@ -141,7 +148,10 @@ const updateKeyGrace = time.Second
 
 type updateCheckTickMsg struct{}
 type latestMsg struct{ tag string }
-type upgradeDoneMsg struct{ err error }
+type upgradeDoneMsg struct {
+	path string
+	err  error
+}
 
 func (m model) checkUpdateCmd() tea.Cmd {
 	check := m.checkLatest
@@ -207,29 +217,123 @@ func releaseTagFromURL(loc string) (string, error) {
 	return tag, nil
 }
 
-// brewUpgrade returns an upgrade func when this binary lives in Homebrew's
-// Cellar, else nil (built from source or downloaded: notify only).
-func brewUpgrade() func() error {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil
-	}
+// chooseUpgrader picks how to update the binary at exe. Homebrew installs are
+// only ever upgraded through brew, never overwritten, so ccs can't fight the
+// formula; Nix store paths are read-only; anything else (go install, a
+// downloaded release) is replaced in place from the GitHub release.
+func chooseUpgrader(exe string) func(string) (string, error) {
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
-	brew, err := exec.LookPath("brew")
-	if err != nil || !strings.Contains(exe, "/Cellar/ccs/") {
+	switch {
+	case strings.Contains(exe, "/Cellar/"):
+		brew, err := exec.LookPath("brew")
+		if err != nil {
+			return nil
+		}
+		return func(string) (string, error) { return brewUpgrade(brew) }
+	case strings.HasPrefix(exe, "/nix/"):
 		return nil
 	}
-	return func() error {
-		// brew update refreshes the tap so upgrade can see the new formula.
-		for _, args := range [][]string{{"update", "--quiet"}, {"upgrade", "ccs"}} {
-			if out, err := exec.Command(brew, args...).CombinedOutput(); err != nil {
-				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-				return fmt.Errorf("brew %s: %s", args[0], lines[len(lines)-1])
-			}
+	return func(tag string) (string, error) { return exe, replaceBinary(exe, tag) }
+}
+
+func brewUpgrade(brew string) (string, error) {
+	// brew update refreshes the tap so upgrade can see the new formula.
+	for _, args := range [][]string{{"update", "--quiet"}, {"upgrade", "ccs"}} {
+		if out, err := exec.Command(brew, args...).CombinedOutput(); err != nil {
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			return "", fmt.Errorf("brew %s: %s", args[0], lines[len(lines)-1])
 		}
-		return nil
+	}
+	// brew cleans up the old keg, so restart via the linked binary on PATH.
+	return exec.LookPath("ccs")
+}
+
+// releaseDownloadURL is the base for release assets; a var so tests can
+// serve their own.
+var releaseDownloadURL = "https://github.com/agentic-utils/ccs/releases/download"
+
+// replaceBinary downloads tag's release archive for this OS/arch, checks it
+// against the release's checksums.txt, and atomically swaps the ccs binary
+// inside it in place of exe.
+func replaceBinary(exe, tag string) error {
+	asset := fmt.Sprintf("ccs_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	sums, err := download(releaseDownloadURL + "/" + tag + "/checksums.txt")
+	if err != nil {
+		return err
+	}
+	archive, err := download(releaseDownloadURL + "/" + tag + "/" + asset)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(archive)
+	if want := checksumFor(string(sums), asset); want == "" || want != hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("checksum mismatch for %s", asset)
+	}
+	bin, err := binaryFromTarGz(archive, "ccs")
+	if err != nil {
+		return err
+	}
+	// Temp file beside exe so the rename is atomic (same filesystem).
+	tmp, err := os.CreateTemp(filepath.Dir(exe), ".ccs-update-*")
+	if err != nil {
+		return fmt.Errorf("can't write to %s: %w", filepath.Dir(exe), err)
+	}
+	defer os.Remove(tmp.Name()) // no-op once renamed
+	if _, err := tmp.Write(bin); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), exe)
+}
+
+func download(url string) ([]byte, error) {
+	client := http.Client{Timeout: 2 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download %s: %s", url, resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// checksumFor finds name's sha256 in a checksums.txt ("<hex>  <name>" lines).
+func checksumFor(sums, name string) string {
+	for _, line := range strings.Split(sums, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[1] == name {
+			return f[0]
+		}
+	}
+	return ""
+}
+
+func binaryFromTarGz(archive []byte, name string) ([]byte, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		return nil, err
+	}
+	tr := tar.NewReader(gz)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return nil, fmt.Errorf("%s not found in release archive", name)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if h.Typeflag == tar.TypeReg && filepath.Base(h.Name) == name {
+			return io.ReadAll(tr)
+		}
 	}
 }
 
@@ -509,7 +613,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorMsg = fmt.Sprintf("Update failed: %v", msg.err)
 			return m, nil
 		}
-		m.restart = true
+		m.restart = msg.path
 		m.quitting = true
 		return m, tea.Quit
 
@@ -525,8 +629,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.updating = true
-				upgrade := m.upgrade
-				return m, func() tea.Msg { return upgradeDoneMsg{upgrade()} }
+				upgrade, tag := m.upgrade, m.updateTo
+				return m, func() tea.Msg {
+					path, err := upgrade(tag)
+					return upgradeDoneMsg{path, err}
+				}
 			case "esc":
 				m.updateOpen = false
 				m.dismissed = m.updateTo
@@ -2081,7 +2188,9 @@ func main() {
 	m.live = readLiveSessions()
 	if version != "dev" {
 		m.checkLatest = latestRelease
-		m.upgrade = brewUpgrade()
+		if exe, err := os.Executable(); err == nil {
+			m.upgrade = chooseUpgrader(exe)
+		}
 	}
 	m.reload = func() ([]listItem, error) {
 		convs, err := getConversations(cutoff, maxSize, excludeDirs)
@@ -2099,14 +2208,10 @@ func main() {
 	}
 
 	final := finalModel.(model)
-	if final.restart {
-		// Re-exec through PATH: brew has replaced (and cleaned up) the old binary.
-		exe, err := exec.LookPath("ccs")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Updated; run ccs again (%v)\n", err)
-			os.Exit(1)
-		}
-		syscall.Exec(exe, append([]string{"ccs"}, os.Args[1:]...), os.Environ())
+	if final.restart != "" {
+		err := syscall.Exec(final.restart, append([]string{"ccs"}, os.Args[1:]...), os.Environ())
+		fmt.Fprintf(os.Stderr, "Updated; run ccs again (%v)\n", err)
+		os.Exit(1)
 	}
 	if final.selected == nil {
 		return

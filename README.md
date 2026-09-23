@@ -20,7 +20,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Pass flags through to `claude` (e.g., `--plan`)
-- Checks for new releases at startup and hourly; Homebrew installs can update and restart from a popup
+- Checks for new releases at startup and hourly and offers to update and restart from a popup (via `brew upgrade` for Homebrew installs, otherwise by replacing the binary with the checksum-verified release)
 
 ## Installation
 

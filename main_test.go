@@ -1,12 +1,21 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2074,7 +2083,7 @@ func TestUpdatePopupFlow(t *testing.T) {
 	upgraded := false
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
-	m.upgrade = func() error { upgraded = true; return nil }
+	m.upgrade = func(string) (string, error) { upgraded = true; return "/bin/ccs", nil }
 
 	res, cmd := m.Update(latestMsg{"v0.25.0"})
 	m = res.(model)
@@ -2097,7 +2106,7 @@ func TestUpdatePopupFlow(t *testing.T) {
 		t.Fatal("enter should start the upgrade")
 	}
 	res, _ = m.Update(cmd())
-	if m = res.(model); !upgraded || !m.restart || !m.quitting {
+	if m = res.(model); !upgraded || m.restart != "/bin/ccs" || !m.quitting {
 		t.Error("a successful upgrade should quit for restart")
 	}
 }
@@ -2106,7 +2115,7 @@ func TestUpdatePopupLaterAndFailure(t *testing.T) {
 	defer func(v string) { version = v }(version)
 	version = "0.24.1"
 	m := initialModel(nil, "", nil)
-	m.upgrade = func() error { return fmt.Errorf("network down") }
+	m.upgrade = func(string) (string, error) { return "", fmt.Errorf("network down") }
 
 	res, _ := m.Update(latestMsg{"v0.25.0"})
 	m = res.(model)
@@ -2128,7 +2137,7 @@ func TestUpdatePopupLaterAndFailure(t *testing.T) {
 	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(model)
 	res, _ = m.Update(cmd())
-	if m = res.(model); m.restart || !strings.Contains(m.errorMsg, "network down") {
+	if m = res.(model); m.restart != "" || !strings.Contains(m.errorMsg, "network down") {
 		t.Errorf("failed upgrade should show an error and not restart, got %q", m.errorMsg)
 	}
 }
@@ -2153,5 +2162,106 @@ func TestReleaseTagFromURL(t *testing.T) {
 		if _, err := releaseTagFromURL(bad); err == nil {
 			t.Errorf("%q should be rejected", bad)
 		}
+	}
+}
+
+// fakeRelease serves tag's checksums.txt and this platform's archive holding
+// binary as "ccs"; tamper corrupts the published checksum.
+func fakeRelease(t *testing.T, tag string, binary []byte, tamper bool) {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for name, body := range map[string][]byte{"README.md": []byte("readme"), "ccs": binary} {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		tw.Write(body)
+	}
+	tw.Close()
+	gz.Close()
+	asset := fmt.Sprintf("ccs_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	sum := sha256.Sum256(buf.Bytes())
+	sums := hex.EncodeToString(sum[:]) + "  " + asset + "\n"
+	if tamper {
+		sums = strings.Repeat("0", 64) + "  " + asset + "\n"
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/" + tag + "/checksums.txt":
+			io.WriteString(w, sums)
+		case "/" + tag + "/" + asset:
+			w.Write(buf.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	old := releaseDownloadURL
+	releaseDownloadURL = srv.URL
+	t.Cleanup(func() { releaseDownloadURL = old })
+}
+
+func TestReplaceBinary(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "ccs")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeRelease(t, "v9.9.9", []byte("new binary"), false)
+	if err := replaceBinary(exe, "v9.9.9"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(exe)
+	info, _ := os.Stat(exe)
+	if string(got) != "new binary" || info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("binary not replaced/executable: %q %v", got, info.Mode())
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), ".ccs-update-*")); len(left) != 0 {
+		t.Errorf("temp files left behind: %v", left)
+	}
+}
+
+func TestReplaceBinaryRejectsBadChecksum(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "ccs")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeRelease(t, "v9.9.9", []byte("evil"), true)
+	if err := replaceBinary(exe, "v9.9.9"); err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("want checksum error, got %v", err)
+	}
+	if got, _ := os.ReadFile(exe); string(got) != "old" {
+		t.Error("a failed checksum must leave the binary untouched")
+	}
+}
+
+func TestReplaceBinaryUnwritableDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write anywhere")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "ccs")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(dir, 0o555)
+	defer os.Chmod(dir, 0o755)
+	fakeRelease(t, "v9.9.9", []byte("new"), false)
+	if err := replaceBinary(exe, "v9.9.9"); err == nil || !strings.Contains(err.Error(), "can't write") {
+		t.Fatalf("want a clear permission error, got %v", err)
+	}
+}
+
+func TestChooseUpgrader(t *testing.T) {
+	if chooseUpgrader("/nix/store/abc-ccs/bin/ccs") != nil {
+		t.Error("nix store is read-only: notify only")
+	}
+	if chooseUpgrader(filepath.Join(t.TempDir(), "ccs")) == nil {
+		t.Error("a plain install should self-update")
+	}
+	// A Homebrew keg is never replaced in place: it gets brew or nothing.
+	up := chooseUpgrader("/opt/homebrew/Cellar/ccs/0.25.0/bin/ccs")
+	if _, err := exec.LookPath("brew"); err != nil && up != nil {
+		t.Error("Cellar install without brew on PATH must not self-replace")
 	}
 }

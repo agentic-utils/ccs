@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -2083,7 +2084,11 @@ func TestUpdatePopupFlow(t *testing.T) {
 	upgraded := false
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
-	m.upgrade = func(string) (string, error) { upgraded = true; return "/bin/ccs", nil }
+	m.upgrade = &upgrader{install: func(_ string, step func(string)) (string, error) {
+		step("brew upgrade")
+		upgraded = true
+		return "/bin/ccs", nil
+	}}
 
 	res, cmd := m.Update(latestMsg{"v0.25.0"})
 	m = res.(model)
@@ -2105,7 +2110,7 @@ func TestUpdatePopupFlow(t *testing.T) {
 	if m = res.(model); !m.updating || cmd == nil {
 		t.Fatal("enter should start the upgrade")
 	}
-	res, _ = m.Update(cmd())
+	res, _ = m.Update(firstOfBatch(cmd))
 	if m = res.(model); !upgraded || m.restart != "/bin/ccs" || !m.quitting {
 		t.Error("a successful upgrade should quit for restart")
 	}
@@ -2115,7 +2120,7 @@ func TestUpdatePopupLaterAndFailure(t *testing.T) {
 	defer func(v string) { version = v }(version)
 	version = "0.24.1"
 	m := initialModel(nil, "", nil)
-	m.upgrade = func(string) (string, error) { return "", fmt.Errorf("network down") }
+	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", fmt.Errorf("network down") }}
 
 	res, _ := m.Update(latestMsg{"v0.25.0"})
 	m = res.(model)
@@ -2136,7 +2141,7 @@ func TestUpdatePopupLaterAndFailure(t *testing.T) {
 	m.updateShownAt = time.Now().Add(-2 * updateKeyGrace)
 	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(model)
-	res, _ = m.Update(cmd())
+	res, _ = m.Update(firstOfBatch(cmd))
 	if m = res.(model); m.restart != "" || !strings.Contains(m.errorMsg, "network down") {
 		t.Errorf("failed upgrade should show an error and not restart, got %q", m.errorMsg)
 	}
@@ -2208,7 +2213,7 @@ func TestReplaceBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeRelease(t, "v9.9.9", []byte("new binary"), false)
-	if err := replaceBinary(exe, "v9.9.9"); err != nil {
+	if _, err := chooseUpgrader(exe).Install("v9.9.9", func(string) {}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(exe)
@@ -2227,7 +2232,7 @@ func TestReplaceBinaryRejectsBadChecksum(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeRelease(t, "v9.9.9", []byte("evil"), true)
-	if err := replaceBinary(exe, "v9.9.9"); err == nil || !strings.Contains(err.Error(), "checksum") {
+	if _, err := chooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "checksum") {
 		t.Fatalf("want checksum error, got %v", err)
 	}
 	if got, _ := os.ReadFile(exe); string(got) != "old" {
@@ -2247,7 +2252,7 @@ func TestReplaceBinaryUnwritableDir(t *testing.T) {
 	os.Chmod(dir, 0o555)
 	defer os.Chmod(dir, 0o755)
 	fakeRelease(t, "v9.9.9", []byte("new"), false)
-	if err := replaceBinary(exe, "v9.9.9"); err == nil || !strings.Contains(err.Error(), "can't write") {
+	if _, err := chooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "can't write") {
 		t.Fatalf("want a clear permission error, got %v", err)
 	}
 }
@@ -2263,5 +2268,68 @@ func TestChooseUpgrader(t *testing.T) {
 	up := chooseUpgrader("/opt/homebrew/Cellar/ccs/0.25.0/bin/ccs")
 	if _, err := exec.LookPath("brew"); err != nil && up != nil {
 		t.Error("Cellar install without brew on PATH must not self-replace")
+	}
+}
+
+// firstOfBatch runs the first command of a tea.Batch (the upgrade itself;
+// the rest is the 1s redraw tick, which would just sleep).
+func firstOfBatch(cmd tea.Cmd) tea.Msg {
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		return batch[0]()
+	}
+	return cmd()
+}
+
+func TestUpgraderInstallWaitsForPrepare(t *testing.T) {
+	release := make(chan struct{})
+	var order []string
+	var mu sync.Mutex
+	log := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	u := &upgrader{
+		prepare: func(string) error { <-release; log("prepared"); return nil },
+		install: func(string, func(string)) (string, error) { log("installed"); return "", nil },
+	}
+	u.Prepare("v1")
+	u.Prepare("v1") // second call is a no-op
+	var steps []string
+	done := make(chan struct{})
+	go func() { u.Install("v1", func(s string) { steps = append(steps, s) }); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	<-done
+	if strings.Join(order, ",") != "prepared,installed" || len(steps) == 0 || steps[0] != "finishing download" {
+		t.Errorf("install must wait for prepare: order=%v steps=%v", order, steps)
+	}
+}
+
+func TestPreparedReleaseSkipsDownloadOnInstall(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "ccs")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeRelease(t, "v9.9.9", []byte("new binary"), false)
+	u := chooseUpgrader(exe)
+	u.Prepare("v9.9.9")
+	u.mu.Lock()
+	done := u.pending["v9.9.9"]
+	u.mu.Unlock()
+	<-done
+	releaseDownloadURL = "http://127.0.0.1:1" // any download after prepare would now fail
+	var steps []string
+	if _, err := u.Install("v9.9.9", func(s string) { steps = append(steps, s) }); err != nil {
+		t.Fatalf("install should use the prepared download: %v (steps %v)", err, steps)
+	}
+	if got, _ := os.ReadFile(exe); string(got) != "new binary" {
+		t.Errorf("binary not replaced: %q", got)
+	}
+}
+
+func TestUpdatingHeaderShowsStep(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 140, 30
+	m.updating, m.updateTo = true, "v0.27.0"
+	m.progress = &updateProgress{step: "brew upgrade", started: time.Now().Add(-5 * time.Second)}
+	if v := m.View(); !strings.Contains(v, "updating to v0.27.0: brew upgrade (5s)") {
+		t.Errorf("header should show step and elapsed time")
 	}
 }

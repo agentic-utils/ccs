@@ -15,6 +15,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Preview conversation context with search term highlighting
 - See message counts, hit counts, and file size per conversation
 - Resume conversations directly from the search interface
+- Auto-refreshes every 15s; a green `●` marks conversations open in a running `claude`
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Pass flags through to `claude` (e.g., `--plan`)
@@ -108,7 +109,7 @@ You can also prune a single conversation from the search interface: select it an
 
 ## How it works
 
-ccs reads conversation history from `~/.claude/projects/` and presents them in an interactive TUI. When you select a conversation, it changes to the original project directory and runs `claude --resume <session-id>`.
+ccs reads conversation history from `~/.claude/projects/` and presents them in an interactive TUI. Live sessions come from `~/.claude/sessions/<pid>.json`, counted only while that pid is still running. When you select a conversation, it changes to the original project directory and runs `claude --resume <session-id>`.
 
 ## License
 

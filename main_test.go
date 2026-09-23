@@ -819,7 +819,7 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 	m := initialModel([]listItem{custom, aiTitled, fallback}, "", nil)
 	m.width = 120 // give TOPIC room so the title isn't truncated
 
-	if got := m.formatListItem(custom, false); !strings.Contains(got, "✎ Refactor auth flow") {
+	if got := m.formatListItem(custom, false); !strings.Contains(got, "Refactor auth flow ✎") {
 		t.Errorf("user-set custom title should show the marker, got %q", got)
 	}
 	if got := m.formatListItem(aiTitled, false); strings.Contains(got, "✎") {
@@ -1631,11 +1631,11 @@ func TestFormatListItemLiveMarker(t *testing.T) {
 	}
 	m.live = map[string]bool{"s1": true}
 	plain := m.formatListItem(item, true)
-	if !strings.Contains(plain, "●     Topic") {
+	if !strings.Contains(plain, " ● Topic") {
 		t.Errorf("live row should be marked, got %q", plain)
 	}
 	coloured := m.formatListItem(item, false)
-	if !strings.Contains(coloured, "\033[32m●\033[0m     Topic") {
+	if !strings.Contains(coloured, " \033[32m●\033[0m Topic") {
 		t.Errorf("live marker should be green, got %q", coloured)
 	}
 }
@@ -1746,11 +1746,11 @@ func TestFormatListItemSpawnedAndLiveMarkers(t *testing.T) {
 	m := initialModel([]listItem{item}, "", nil)
 	m.width = 120
 	m.live = map[string]bool{"s1": true}
-	if got := m.formatListItem(item, true); !strings.Contains(got, "● ⚙   Topic") {
+	if got := m.formatListItem(item, true); !strings.Contains(got, " ●⚙ Topic") {
 		t.Errorf("selected row = %q", got)
 	}
 	got := m.formatListItem(item, false)
-	if !strings.Contains(got, "\033[32m●\033[0m \033[90m⚙\033[0m   Topic") {
+	if !strings.Contains(got, " \033[32m●\033[0m\033[90m⚙\033[0m Topic") {
 		t.Errorf("unselected row = %q", got)
 	}
 	// Same visible width as an unmarked row.

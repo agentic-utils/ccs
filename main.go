@@ -669,18 +669,6 @@ func (m model) View() string {
 	return b.String()
 }
 
-// markSlot renders one 2-cell marker slot: the glyph (plain and coloured, or
-// uncoloured when color is "") or blanks.
-func markSlot(on bool, glyph, color string) (plain, coloured string) {
-	if !on {
-		return "  ", "  "
-	}
-	if color == "" {
-		return glyph + " ", glyph + " "
-	}
-	return glyph + " ", "\033[" + color + "m" + glyph + "\033[0m "
-}
-
 // Fixed list column widths. TOPIC is the flex column - it absorbs the rest of
 // the terminal width (see topicColWidth).
 const (
@@ -692,7 +680,7 @@ const (
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " / "> " on each row
 	numGaps    = 5
-	colMarks   = 6 // three 2-cell marker slots (● ⚙ ✎) at the start of TOPIC
+	colMarks   = 3 // status icons (● ⚙) packed right, then a space
 )
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
@@ -712,22 +700,32 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	}
 	project = truncate(project, colProject)
 
-	// Markers sit in fixed slots ahead of the topic so titles stay aligned:
-	// ● open in a running claude, ⚙ started by a script or another session,
-	// ✎ user-set name (not the ai-title Claude gives almost every session).
+	// Status icons, packed right against the topic so titles stay aligned:
+	// ● open in a running claude, ⚙ started by a script or another session.
 	// ponytail: the glyphs are ambiguous-width, so a marked row may sit one
 	// cell off on CJK-width terminals - cosmetic only.
-	marks, colouredMarks := markSlot(m.live[item.conv.SessionID], "●", "32")
+	var icons, colouredIcons string
+	n := 0
 	for _, s := range []struct {
 		on           bool
 		glyph, color string
-	}{{item.conv.Spawned, "⚙", "90"}, {item.conv.IsCustomTitle, "✎", ""}} {
-		plain, coloured := markSlot(s.on, s.glyph, s.color)
-		marks += plain
-		colouredMarks += coloured
+	}{{m.live[item.conv.SessionID], "●", "32"}, {item.conv.Spawned, "⚙", "90"}} {
+		if !s.on {
+			continue
+		}
+		n++
+		icons += s.glyph
+		colouredIcons += "\033[" + s.color + "m" + s.glyph + "\033[0m"
 	}
+	pad := strings.Repeat(" ", colMarks-1-n)
+	marks, colouredMarks := pad+icons+" ", pad+colouredIcons+" "
 	tw := m.topicColWidth()
+	// A trailing ✎ marks a name you set (not the ai-title Claude gives almost
+	// every session); the title is cut short so it always stays visible.
 	topic := truncate(getTopic(item.conv), tw-colMarks)
+	if item.conv.IsCustomTitle {
+		topic = truncate(getTopic(item.conv), tw-colMarks-2) + " ✎"
+	}
 
 	// Message count
 	msgs := len(item.conv.Messages)

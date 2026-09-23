@@ -70,7 +70,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `renderPreview()` - Renders conversation preview with highlights
 - `previewLines()` - Memoised `buildPreviewLines` for the selected conversation (rebuilt only when selection/query changes), avoids per-frame rescans of huge conversations
 - `hitCount()` / `countHits()` - Memoised per-query HITS count (messages containing the query), keyed by SessionID, so `formatListItem` doesn't rescan every visible row each frame
-- `formatListItem()` - Formats a single list row; `●` live / `⚙` spawned / `✎` named sit in fixed 2-cell slots (`colMarks`) so titles stay aligned
+- `formatListItem()` - Formats a single list row; `●` live / `⚙` spawned are packed right into a 2-cell column (`colMarks`) just before the title, so titles stay aligned; `✎` trails a user-set name
 - `readLiveSessions()` - SessionIDs open in a running claude, from `~/.claude/sessions/<pid>.json` where the pid is alive
 - `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (1 min), keeping the cursor on the same conversation; skipped while a delete/prune/rename prompt is open, and dropped if `m.gen` moved (a delete/prune/rename happened while the scan ran); search text is built once at parse and shared through `parseCache`, so unchanged conversations cost nothing on refresh
 - `parseCache` - Reuses parsed conversations whose file size+mtime are unchanged, so refreshes only reparse changed files
@@ -93,7 +93,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 
   DATE              PROJECT               TOPIC                       MSGS  HITS    SIZE
 ──────────────────────────────────────────────────────────────────────────────────────
-  2024-01-08 15:04  project-name          ●   ✎ Refactor auth flow        42     3   1.2GB
+  2024-01-08 15:04  project-name          ● Refactor auth flow ✎        42     3   1.2GB
 > 2024-01-08 14:30  selected              This one is selected          28     1    12MB
 ──────────────────────────────────────────────────────────────────────────────────────
 Project: /path/to/project

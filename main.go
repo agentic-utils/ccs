@@ -130,9 +130,10 @@ type model struct {
 	// upgrade installs tag and returns the binary to restart; nil means ccs
 	// can't update this install itself (e.g. Nix), so only notify.
 	checkLatest   func() (string, error)
-	upgrade       func(tag string) (string, error)
-	updateTo      string    // newer release tag found, "" if none
-	updateShownAt time.Time // popup ignores keys for a moment so in-flight typing can't answer it
+	upgrade       *upgrader
+	progress      *updateProgress // step + start time, written by the upgrade goroutine
+	updateTo      string          // newer release tag found, "" if none
+	updateShownAt time.Time       // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen    bool
 	updating      bool
 	dismissed     string // tag the user said "later" to
@@ -143,10 +144,80 @@ type model struct {
 // unauthenticated API allows 60 requests/hour per IP, so not every refresh.
 const updateCheckInterval = time.Hour
 
+func updatingTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return updatingTickMsg{} })
+}
+
 // updateKeyGrace is how long a freshly opened update popup ignores keys.
 const updateKeyGrace = time.Second
 
 type updateCheckTickMsg struct{}
+type updatingTickMsg struct{}
+
+// upgrader updates this install. prepare (optional) does the slow,
+// side-effect-free part (refresh the tap, download and verify) while the popup
+// is still up; install does the rest once the user confirms, waiting for a
+// prepare still in flight so the two never run brew at the same time.
+type upgrader struct {
+	prepare func(tag string) error
+	install func(tag string, step func(string)) (string, error)
+
+	mu      sync.Mutex
+	pending map[string]chan struct{}
+}
+
+// Prepare starts preparing tag in the background, once per tag.
+func (u *upgrader) Prepare(tag string) {
+	if u.prepare == nil {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.pending == nil {
+		u.pending = make(map[string]chan struct{})
+	}
+	if _, ok := u.pending[tag]; ok {
+		return
+	}
+	done := make(chan struct{})
+	u.pending[tag] = done
+	go func() {
+		u.prepare(tag) // failures are retried by install
+		close(done)
+	}()
+}
+
+func (u *upgrader) Install(tag string, step func(string)) (string, error) {
+	u.mu.Lock()
+	done := u.pending[tag]
+	u.mu.Unlock()
+	if done != nil {
+		step("finishing download")
+		<-done
+	}
+	return u.install(tag, step)
+}
+
+// updateProgress is what the header shows while an upgrade runs. The upgrade
+// runs off the UI goroutine, hence the lock.
+type updateProgress struct {
+	mu      sync.Mutex
+	step    string
+	started time.Time
+}
+
+func (p *updateProgress) set(step string) {
+	p.mu.Lock()
+	p.step = step
+	p.mu.Unlock()
+}
+
+func (p *updateProgress) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return fmt.Sprintf("%s (%ds)", p.step, int(time.Since(p.started).Seconds()))
+}
+
 type latestMsg struct{ tag string }
 type upgradeDoneMsg struct {
 	path string
@@ -221,7 +292,7 @@ func releaseTagFromURL(loc string) (string, error) {
 // only ever upgraded through brew, never overwritten, so ccs can't fight the
 // formula; Nix store paths are read-only; anything else (go install, a
 // downloaded release) is replaced in place from the GitHub release.
-func chooseUpgrader(exe string) func(string) (string, error) {
+func chooseUpgrader(exe string) *upgrader {
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
@@ -231,50 +302,101 @@ func chooseUpgrader(exe string) func(string) (string, error) {
 		if err != nil {
 			return nil
 		}
-		return func(string) (string, error) { return brewUpgrade(brew) }
+		return &upgrader{
+			prepare: func(string) error {
+				refreshTap(brew, func(string) {})
+				return runBrew(brew, "fetch", "agentic-utils/tap/ccs") // into brew's download cache
+			},
+			install: func(_ string, step func(string)) (string, error) {
+				if err := refreshTap(brew, step); err != nil {
+					return "", err
+				}
+				step("brew upgrade")
+				if err := runBrew(brew, "upgrade", "agentic-utils/tap/ccs"); err != nil {
+					return "", err
+				}
+				// brew cleans up the old keg, so restart via the linked binary on PATH.
+				return exec.LookPath("ccs")
+			},
+		}
 	case strings.HasPrefix(exe, "/nix/"):
 		return nil
 	}
-	return func(tag string) (string, error) { return exe, replaceBinary(exe, tag) }
+	var fetched sync.Map // tag -> verified binary, filled by prepare
+	return &upgrader{
+		prepare: func(tag string) error {
+			bin, err := fetchRelease(tag, func(string) {})
+			if err == nil {
+				fetched.Store(tag, bin)
+			}
+			return err
+		},
+		install: func(tag string, step func(string)) (string, error) {
+			bin, ok := fetched.Load(tag)
+			if !ok {
+				b, err := fetchRelease(tag, step)
+				if err != nil {
+					return "", err
+				}
+				bin = b
+			}
+			step("installing")
+			return exe, installBinary(exe, bin.([]byte))
+		},
+	}
 }
 
-func brewUpgrade(brew string) (string, error) {
-	// brew update refreshes the tap so upgrade can see the new formula.
-	for _, args := range [][]string{{"update", "--quiet"}, {"upgrade", "ccs"}} {
-		if out, err := exec.Command(brew, args...).CombinedOutput(); err != nil {
-			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			return "", fmt.Errorf("brew %s: %s", args[0], lines[len(lines)-1])
-		}
+// refreshTap pulls only ccs's tap: a full `brew update` fetches every tap and
+// can take minutes. Falls back to it if the tap isn't a plain git checkout.
+func refreshTap(brew string, step func(string)) error {
+	step("refreshing tap")
+	tap, err := exec.Command(brew, "--repository", "agentic-utils/tap").Output()
+	if err == nil && exec.Command("git", "-C", strings.TrimSpace(string(tap)), "pull", "--ff-only", "--quiet").Run() == nil {
+		return nil
 	}
-	// brew cleans up the old keg, so restart via the linked binary on PATH.
-	return exec.LookPath("ccs")
+	step("brew update")
+	return runBrew(brew, "update", "--quiet")
+}
+
+// runBrew runs brew without its own auto-update (we refresh the tap
+// ourselves), returning brew's last output line as the error.
+func runBrew(brew string, args ...string) error {
+	cmd := exec.Command(brew, args...)
+	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		return fmt.Errorf("brew %s: %s", args[0], lines[len(lines)-1])
+	}
+	return nil
 }
 
 // releaseDownloadURL is the base for release assets; a var so tests can
 // serve their own.
 var releaseDownloadURL = "https://github.com/agentic-utils/ccs/releases/download"
 
-// replaceBinary downloads tag's release archive for this OS/arch, checks it
-// against the release's checksums.txt, and atomically swaps the ccs binary
-// inside it in place of exe.
-func replaceBinary(exe, tag string) error {
+// fetchRelease downloads tag's release archive for this OS/arch, checks it
+// against the release's checksums.txt, and returns the ccs binary inside.
+func fetchRelease(tag string, step func(string)) ([]byte, error) {
 	asset := fmt.Sprintf("ccs_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	step("downloading")
 	sums, err := download(releaseDownloadURL + "/" + tag + "/checksums.txt")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	archive, err := download(releaseDownloadURL + "/" + tag + "/" + asset)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	step("verifying")
 	sum := sha256.Sum256(archive)
 	if want := checksumFor(string(sums), asset); want == "" || want != hex.EncodeToString(sum[:]) {
-		return fmt.Errorf("checksum mismatch for %s", asset)
+		return nil, fmt.Errorf("checksum mismatch for %s", asset)
 	}
-	bin, err := binaryFromTarGz(archive, "ccs")
-	if err != nil {
-		return err
-	}
+	return binaryFromTarGz(archive, "ccs")
+}
+
+// installBinary atomically swaps bin in place of exe.
+func installBinary(exe string, bin []byte) error {
 	// Temp file beside exe so the rename is atomic (same filesystem).
 	tmp, err := os.CreateTemp(filepath.Dir(exe), ".ccs-update-*")
 	if err != nil {
@@ -604,8 +726,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateShownAt = time.Now()
 			}
 			m.updateTo = msg.tag
+			if m.upgrade != nil {
+				m.upgrade.Prepare(msg.tag) // download now so Enter only has to install
+			}
 		}
 		return m, tea.Tick(updateCheckInterval, func(time.Time) tea.Msg { return updateCheckTickMsg{} })
+
+	case updatingTickMsg:
+		if m.updating {
+			return m, updatingTick() // redraw so the step and seconds stay live
+		}
+		return m, nil
 
 	case upgradeDoneMsg:
 		m.updating = false
@@ -629,11 +760,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.updating = true
-				upgrade, tag := m.upgrade, m.updateTo
-				return m, func() tea.Msg {
-					path, err := upgrade(tag)
+				m.progress = &updateProgress{step: "starting", started: time.Now()}
+				upgrade, tag, progress := m.upgrade, m.updateTo, m.progress
+				return m, tea.Batch(func() tea.Msg {
+					path, err := upgrade.Install(tag, progress.set)
 					return upgradeDoneMsg{path, err}
-				}
+				}, updatingTick())
 			case "esc":
 				m.updateOpen = false
 				m.dismissed = m.updateTo
@@ -845,7 +977,7 @@ func (m model) View() string {
 	// Title line with help right-aligned
 	status := ""
 	if m.updating {
-		status = fmt.Sprintf(" · updating to %s...", m.updateTo)
+		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
 	title := fmt.Sprintf("ccs · claude code search · %s%s", version, status)
 	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc"

@@ -773,8 +773,8 @@ func TestFormatListItem(t *testing.T) {
 
 	// Test selected formatting
 	result := m.formatListItem(item, true)
-	if !strings.Contains(result, "2024-01-15 10:30") {
-		t.Errorf("formatted item should contain timestamp")
+	if !strings.Contains(result, "y ago") { // 2024 timestamp, rendered relative
+		t.Errorf("formatted item should show how long ago it was active, got %q", result)
 	}
 	if !strings.Contains(result, "3") { // message count
 		t.Errorf("formatted item should contain message count")
@@ -831,7 +831,7 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 }
 
 func TestTopicColWidthFlexes(t *testing.T) {
-	fixed := listIndent + colDate + colAgo + colProject + colMsgs + colHits + colSize + numGaps*colGap
+	fixed := listIndent + colWhen + colProject + colMsgs + colHits + colSize + numGaps*colGap
 	for _, w := range []int{100, 120, 200} {
 		m := model{width: w}
 		if got, want := m.topicColWidth(), w-fixed; got != want {
@@ -1040,7 +1040,7 @@ func TestViewRendering(t *testing.T) {
 	if !strings.Contains(output, "type to search") {
 		t.Error("output should contain search prompt")
 	}
-	if !strings.Contains(output, "DATE") || !strings.Contains(output, "PROJECT") {
+	if !strings.Contains(output, "WHEN") || !strings.Contains(output, "PROJECT") {
 		t.Error("output should contain column headers")
 	}
 	if !strings.Contains(output, "/test/project") {
@@ -1998,22 +1998,22 @@ func TestFormatAgo(t *testing.T) {
 	now := time.Date(2026, 9, 23, 18, 30, 0, 0, time.UTC)
 	cases := map[time.Duration]string{
 		10 * time.Second:     "now",
-		2 * time.Minute:      "2m",
-		59 * time.Minute:     "59m",
-		3 * time.Hour:        "3h",
-		23 * time.Hour:       "23h",
-		36 * time.Hour:       "1d",
-		13 * 24 * time.Hour:  "13d",
-		20 * 24 * time.Hour:  "2w",
-		59 * 24 * time.Hour:  "8w",
-		90 * 24 * time.Hour:  "3mo",
-		364 * 24 * time.Hour: "12mo",
-		800 * 24 * time.Hour: "2y",
+		2 * time.Minute:      "2m ago",
+		59 * time.Minute:     "59m ago",
+		3 * time.Hour:        "3h ago",
+		23 * time.Hour:       "23h ago",
+		36 * time.Hour:       "1d ago",
+		13 * 24 * time.Hour:  "13d ago",
+		20 * 24 * time.Hour:  "2w ago",
+		59 * 24 * time.Hour:  "8w ago",
+		90 * 24 * time.Hour:  "3mo ago",
+		364 * 24 * time.Hour: "12mo ago",
+		800 * 24 * time.Hour: "2y ago",
 	}
 	for d, want := range cases {
 		ts := now.Add(-d).Format(time.RFC3339)
-		if got := formatAgo(ts, now); got != want || len(got) > colAgo {
-			t.Errorf("formatAgo(-%v) = %q, want %q (max %d wide)", d, got, want, colAgo)
+		if got := formatAgo(ts, now); got != want || len(got) > colWhen {
+			t.Errorf("formatAgo(-%v) = %q, want %q (max %d wide)", d, got, want, colWhen)
 		}
 	}
 	if formatAgo("garbage", now) != "" {

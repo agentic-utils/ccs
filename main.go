@@ -626,8 +626,8 @@ func (m model) View() string {
 	previewHeight := m.height - listHeight - 6 // 6 for title + search + blank + header + borders
 
 	// Column headers
-	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %*s  %-*s  %-*s  %*s  %*s  %*s\033[0m\n",
-		colDate, "DATE", colAgo, "AGO", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
+	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %*s  %*s  %*s\033[0m\n",
+		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colMsgs, "MSGS", colHits, "HITS", colSize, "SIZE"))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -672,21 +672,20 @@ func (m model) View() string {
 // Fixed list column widths. TOPIC is the flex column - it absorbs the rest of
 // the terminal width (see topicColWidth).
 const (
-	colDate    = 16
-	colAgo     = 4
+	colWhen    = 8 // longest is "12mo ago"
 	colProject = 22
 	colMsgs    = 5
 	colHits    = 4
 	colSize    = 6
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " / "> " on each row
-	numGaps    = 6
+	numGaps    = 5
 	colMarks   = 3 // status icons (● ⚙) packed right, then a space
 )
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
 func (m model) topicColWidth() int {
-	used := listIndent + colDate + colAgo + colProject + colMsgs + colHits + colSize + numGaps*colGap
+	used := listIndent + colWhen + colProject + colMsgs + colHits + colSize + numGaps*colGap
 	if w := m.width - used; w > 10 {
 		return w
 	}
@@ -694,7 +693,6 @@ func (m model) topicColWidth() int {
 }
 
 func (m model) formatListItem(item listItem, selected bool) string {
-	ts := formatTimestamp(item.conv.LastTimestamp)
 	project := item.conv.Cwd
 	if idx := strings.LastIndex(project, "/"); idx >= 0 {
 		project = project[idx+1:]
@@ -736,17 +734,17 @@ func (m model) formatListItem(item listItem, selected bool) string {
 
 	size := formatBytes(item.conv.Size)
 
-	ago := formatAgo(item.conv.LastTimestamp, time.Now())
+	when := formatAgo(item.conv.LastTimestamp, time.Now())
 
-	// Format: date | ago | project | topic | msgs | hits | size (aligned columns)
+	// Format: when | project | topic | msgs | hits | size (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-*s  %*s  %-*s  %s%-*s  %*d  %*d  %*s",
-			colDate, ts, colAgo, ago, colProject, project, marks, tw-colMarks, topic, colMsgs, msgs, colHits, hits, colSize, size)
+		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %*d  %*d  %*s",
+			colWhen, when, colProject, project, marks, tw-colMarks, topic, colMsgs, msgs, colHits, hits, colSize, size)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
-	return fmt.Sprintf("\033[90m%-*s\033[0m  %*s  \033[1;33m%-*s\033[0m  %s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
-		colDate, ts, colAgo, ago, colProject, project, topic, colMsgs, msgs, colHits, hits, colSize, size)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  %*d  \033[36m%*d\033[0m  \033[35m%*s\033[0m",
+		colWhen, when, colProject, project, topic, colMsgs, msgs, colHits, hits, colSize, size)
 }
 
 // buildPreviewLines builds the scrollable message lines of a conversation
@@ -1190,29 +1188,34 @@ func formatTimestamp(ts string) string {
 	return t.Local().Format("2006-01-02 15:04")
 }
 
-// formatAgo renders how long before now ts was, compactly enough for the
-// 4-wide AGO column: "now", 5m, 3h, 2d, 3w, 4mo, 1y.
+// formatAgo renders how long before now ts was, for the WHEN column:
+// "now", "5m ago", "3h ago", "2d ago", "3w ago", "4mo ago", "1y ago". The
+// full timestamp stays searchable and shows on each message in the preview.
 func formatAgo(ts string, now time.Time) string {
 	t, err := time.Parse(time.RFC3339, ts)
 	if err != nil {
 		return ""
 	}
 	d := now.Sub(t)
+	var n int
+	var unit string
 	switch {
 	case d < time.Minute:
 		return "now"
 	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
+		n, unit = int(d.Minutes()), "m"
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
+		n, unit = int(d.Hours()), "h"
 	case d < 14*24*time.Hour:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
+		n, unit = int(d.Hours()/24), "d"
 	case d < 60*24*time.Hour:
-		return fmt.Sprintf("%dw", int(d.Hours()/24/7))
+		n, unit = int(d.Hours()/24/7), "w"
 	case d < 365*24*time.Hour:
-		return fmt.Sprintf("%dmo", int(d.Hours()/24/30))
+		n, unit = int(d.Hours()/24/30), "mo"
+	default:
+		n, unit = int(d.Hours()/24/365), "y"
 	}
-	return fmt.Sprintf("%dy", int(d.Hours()/24/365))
+	return fmt.Sprintf("%d%s ago", n, unit)
 }
 
 // formatBytes renders a byte count compactly (fits the 6-wide SIZE column).

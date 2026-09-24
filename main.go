@@ -136,6 +136,7 @@ type model struct {
 	updateTo      string          // newer release tag found, "" if none
 	updateShownAt time.Time       // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen    bool
+	updateHeld    bool // popup waited behind another prompt; restart its key grace when it shows
 	updating      bool
 	dismissed     string // tag the user said "later" to
 	restart       string // after an upgrade: binary to exec once the TUI exits
@@ -571,6 +572,11 @@ func sameStart(recorded string, actual time.Time) bool {
 // refreshStalled reports a scan running far longer than normal (e.g. blocked
 // on a hung network mount under ~/.claude/projects). It can't be cancelled,
 // so the header just says so rather than showing a silently frozen list.
+// prompting reports an open rename, delete or prune prompt.
+func (m model) prompting() bool {
+	return m.renaming || m.confirmDelete || m.confirmPrune
+}
+
 func (m model) refreshStalled() bool {
 	return !m.refreshStarted.IsZero() && time.Since(m.refreshStarted) > 5*time.Minute
 }
@@ -770,7 +776,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Delete/prune/rename prompts hold an index into m.filtered, so don't
 		// reshuffle it under them; and a scan that started before a delete,
 		// prune or rename would undo it. The next tick catches up.
-		if msg.gen == m.gen && !m.confirmDelete && !m.confirmPrune && !m.renaming {
+		if msg.gen == m.gen && !m.prompting() {
 			m.applyRefresh(msg)
 		}
 		return m, refreshTick()
@@ -808,7 +814,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case tea.KeyMsg:
-		if m.updateOpen {
+		// The popup waits behind rename/delete/prune prompts, so it never takes
+		// their keys; once they close, it gets a fresh grace period.
+		if m.updateOpen && m.prompting() {
+			m.updateHeld = true
+		} else if m.updateOpen {
+			if m.updateHeld {
+				m.updateHeld = false
+				m.updateShownAt = time.Now()
+			}
 			if time.Since(m.updateShownAt) < updateKeyGrace {
 				return m, nil
 			}
@@ -1135,7 +1149,7 @@ func (m model) View() string {
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	if m.updateOpen {
+	if m.updateOpen && !m.prompting() {
 		b.WriteString(m.updatePopup())
 	} else if len(m.filtered) > 0 {
 		preview := m.renderPreview(m.filtered[m.cursor], previewHeight)

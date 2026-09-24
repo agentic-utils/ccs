@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -2381,5 +2382,39 @@ func TestRefreshStalledShowsInHeader(t *testing.T) {
 	res, _ := m.Update(refreshMsg{})
 	if m = res.(model); m.refreshStalled() {
 		t.Error("a completed scan clears the stall")
+	}
+}
+
+func TestUpdatePopupWaitsBehindPrompts(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.27.1"
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", Title: "old"}}}, "", nil)
+	m.width, m.height = 100, 30
+	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
+	m.renaming = true
+	m.renameInput = textinput.New()
+	m.renameInput.Focus()
+
+	res, _ := m.Update(latestMsg{"v0.27.2"})
+	m = res.(model)
+	m.updateShownAt = time.Now().Add(-time.Hour) // grace long gone
+	if strings.Contains(m.View(), "is available") {
+		t.Error("popup must not show over the rename prompt")
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m = res.(model); !strings.HasSuffix(m.renameInput.Value(), "x") {
+		t.Error("typing should reach the rename input, not the popup")
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m = res.(model); m.renaming || !m.updateOpen {
+		t.Fatal("esc should cancel the rename and leave the update pending")
+	}
+	if !strings.Contains(m.View(), "is available") {
+		t.Error("popup should show once the prompt closes")
+	}
+	// First key after it appears is swallowed by a fresh grace period.
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m = res.(model); m.updating {
+		t.Error("enter straight after the prompt closed must not start the update")
 	}
 }

@@ -44,7 +44,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `main_test.go` - Unit tests
 - `.goreleaser.yaml` - Release configuration
 - `.github/workflows/test.yaml` - CI test workflow (reusable)
-- `.github/workflows/release.yaml` - Release workflow (calls test.yaml)
+- `.github/workflows/ci.yaml` - On push to main: runs test.yaml, then tags and releases
 
 ### Dependencies
 
@@ -73,7 +73,8 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `formatAgo()` - WHEN column: time since the last message (`now`, `5m ago` ... `1y ago`), recomputed each frame; replaces the absolute date in the list (full timestamps stay searchable and show per message in the preview)
 - `formatTokens()` / `Conversation.ContextTokens` - CTX column: context size as of the last reply (input + cache reads + cache writes from its `usage`; zero-usage placeholder replies skipped)
 - `formatListItem()` - Formats a single list row; `●` live / `⚙` spawned are packed right into a 2-cell column (`colMarks`) just before the title, so titles stay aligned; `✍` trails a user-set name
-- `readLiveSessions()` - SessionIDs open in a running claude, from `~/.claude/sessions/<pid>.json` where the pid is alive
+- `readLiveSessions()` / `liveSessionPIDs()` - SessionIDs open in a running claude, from `~/.claude/sessions/<pid>.json` where the pid is alive and its start time (`ps lstart`, local) matches the file's `procStart` (UTC), so a recycled pid doesn't count
+- `refreshStalled()` - header shows "refresh stalled Nm" when a scan has run over 5 min (e.g. hung network mount); it can't be cancelled
 - `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (1 min), keeping the cursor on the same conversation; skipped while a delete/prune/rename prompt is open, and dropped if `m.gen` moved (a delete/prune/rename happened while the scan ran); search text is built once at parse and shared through `parseCache`, so unchanged conversations cost nothing on refresh
 - `parseCache` - Reuses parsed conversations whose file size+mtime are unchanged, so refreshes only reparse changed files
 - `openResumeTab()` / `resumeInTmuxWindow()` / `resumeInITermTab()` - Opens the selected conversation in a new tmux window or iTerm tab (focus stays on ccs); falls back to exec-in-place elsewhere

@@ -126,6 +126,8 @@ type model struct {
 	reload          func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
 	gen             int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
 	refreshStarted  time.Time                  // when the in-flight scan began; zero when none
+	lastRefresh     time.Time                  // when the list last matched disk (startup or a completed scan)
+	refreshFailed   bool                       // the last scan errored; the list is from lastRefresh
 
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
 	// upgrade installs tag and returns the binary to restart; nil means ccs
@@ -572,6 +574,29 @@ func sameStart(recorded string, actual time.Time) bool {
 // refreshStalled reports a scan running far longer than normal (e.g. blocked
 // on a hung network mount under ~/.claude/projects). It can't be cancelled,
 // so the header just says so rather than showing a silently frozen list.
+// refreshNote says what the background refresh is doing, for the header:
+// "refreshing…", "refreshed 20s ago", "refresh failed 3m ago". Empty when
+// auto-refresh is off, or when a stall is reported instead.
+func (m model) refreshNote() string {
+	switch {
+	case m.reload == nil || m.refreshStalled():
+		return ""
+	case !m.refreshStarted.IsZero():
+		return " · refreshing…"
+	case m.lastRefresh.IsZero():
+		return ""
+	}
+	ago := time.Since(m.lastRefresh)
+	when := fmt.Sprintf("%ds", int(ago.Seconds()))
+	if ago >= time.Minute {
+		when = fmt.Sprintf("%dm", int(ago.Minutes()))
+	}
+	if m.refreshFailed {
+		return " · refresh failed, list from " + when + " ago"
+	}
+	return " · refreshed " + when + " ago"
+}
+
 // prompting reports an open rename, delete or prune prompt.
 func (m model) prompting() bool {
 	return m.renaming || m.confirmDelete || m.confirmPrune
@@ -772,6 +797,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshMsg:
 		m.refreshStarted = time.Time{}
+		m.refreshFailed = msg.err != nil
+		if msg.err == nil {
+			m.lastRefresh = time.Now()
+		}
 		m.live = msg.live // liveness is independent of the list, never stale-dropped
 		// Delete/prune/rename prompts hold an index into m.filtered, so don't
 		// reshuffle it under them; and a scan that started before a delete,
@@ -1048,6 +1077,7 @@ func (m model) View() string {
 	tableWidth := m.width
 
 	// Title line with help right-aligned
+	note := m.refreshNote()
 	status := ""
 	if m.refreshStalled() {
 		status = fmt.Sprintf(" · refresh stalled %dm", int(time.Since(m.refreshStarted).Minutes()))
@@ -1055,14 +1085,14 @@ func (m model) View() string {
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
-	title := fmt.Sprintf("ccs · claude code search · %s%s", version, status)
+	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
 	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc"
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
 		titlePadding = 1
 	}
-	b.WriteString(fmt.Sprintf("  \033[1;36mccs\033[0m \033[90m· claude code search · %s\033[0m\033[33m%s\033[0m\033[90m%s%s\033[0m\n",
-		version, status, strings.Repeat(" ", titlePadding), help))
+	b.WriteString(fmt.Sprintf("  \033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m\033[90m%s%s\033[0m\n",
+		version, note, status, strings.Repeat(" ", titlePadding), help))
 
 	// Search line or delete confirmation
 	var sections []string
@@ -2394,6 +2424,7 @@ func main() {
 	// Scrolling is keyboard-only (arrows / Ctrl+J/K / PgUp/PgDn).
 	m := initialModel(items, filterQuery, claudeFlags)
 	m.live = readLiveSessions()
+	m.lastRefresh = time.Now()
 	if version != "dev" {
 		m.checkLatest = latestRelease
 		if exe, err := os.Executable(); err == nil {

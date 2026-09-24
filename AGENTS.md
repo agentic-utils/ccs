@@ -74,6 +74,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `formatTokens()` / `Conversation.ContextTokens` - CTX column: context size as of the last reply (input + cache reads + cache writes from its `usage`; zero-usage placeholder replies skipped)
 - `formatListItem()` - Formats a single list row; `●` live / `⚙` spawned are packed right into a 2-cell column (`colMarks`) just before the title, so titles stay aligned; `✍` trails a user-set name
 - `readLiveSessions()` / `liveSessionPIDs()` - SessionIDs open in a running claude, from `~/.claude/sessions/<pid>.json` where the pid is alive and its start time (`ps lstart`, local) matches the file's `procStart` (UTC), so a recycled pid doesn't count
+- `refreshNote()` - header shows what the background refresh is doing: `refreshing…`, `refreshed 20s ago`, or `refresh failed, list from 3m ago`
 - `refreshStalled()` - header shows "refresh stalled Nm" when a scan has run over 5 min (e.g. hung network mount); it can't be cancelled
 - `refreshTick()` / `applyRefresh()` - Background re-scan every `refreshInterval` (1 min), keeping the cursor on the same conversation; skipped while a delete/prune/rename prompt is open, and dropped if `m.gen` moved (a delete/prune/rename happened while the scan ran); search text is built once at parse and shared through `parseCache`, so unchanged conversations cost nothing on refresh
 - `parseCache` - Reuses parsed conversations whose file size+mtime are unchanged, so refreshes only reparse changed files

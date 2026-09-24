@@ -2418,3 +2418,36 @@ func TestUpdatePopupWaitsBehindPrompts(t *testing.T) {
 		t.Error("enter straight after the prompt closed must not start the update")
 	}
 }
+
+func TestRefreshNote(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	if m.refreshNote() != "" {
+		t.Error("no auto-refresh, no note")
+	}
+	m.reload = func() ([]listItem, error) { return nil, nil }
+	m.lastRefresh = time.Now().Add(-20 * time.Second)
+	if got := m.refreshNote(); got != " · refreshed 20s ago" {
+		t.Errorf("got %q", got)
+	}
+	m.lastRefresh = time.Now().Add(-3 * time.Minute)
+	if got := m.refreshNote(); got != " · refreshed 3m ago" {
+		t.Errorf("got %q", got)
+	}
+
+	res, _ := m.Update(refreshTickMsg{})
+	if m = res.(model); m.refreshNote() != " · refreshing…" {
+		t.Errorf("in-flight scan should say refreshing, got %q", m.refreshNote())
+	}
+	res, _ = m.Update(refreshMsg{err: os.ErrNotExist})
+	if m = res.(model); !strings.HasPrefix(m.refreshNote(), " · refresh failed") {
+		t.Errorf("failed scan should say so, got %q", m.refreshNote())
+	}
+	res, _ = m.Update(refreshMsg{items: []listItem{}})
+	if m = res.(model); m.refreshNote() != " · refreshed 0s ago" {
+		t.Errorf("successful scan resets the counter, got %q", m.refreshNote())
+	}
+	m.width, m.height = 160, 30
+	if !strings.Contains(m.View(), "refreshed 0s ago") {
+		t.Error("note should render in the header")
+	}
+}

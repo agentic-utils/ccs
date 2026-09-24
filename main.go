@@ -125,6 +125,7 @@ type model struct {
 	live            map[string]bool            // SessionIDs attached to a running claude process
 	reload          func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
 	gen             int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
+	refreshStarted  time.Time                  // when the in-flight scan began; zero when none
 
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
 	// upgrade installs tag and returns the binary to restart; nil means ccs
@@ -497,6 +498,7 @@ func readLiveSessions() map[string]bool {
 // liveSessionPIDs maps each live SessionID to the pid of its claude process.
 func liveSessionPIDs() map[string]int {
 	live := make(map[string]int)
+	starts := make(map[string]string)
 	files, _ := filepath.Glob(filepath.Join(getSessionsDir(), "*.json"))
 	for _, f := range files {
 		data, err := os.ReadFile(f)
@@ -506,6 +508,7 @@ func liveSessionPIDs() map[string]int {
 		var s struct {
 			Pid       int    `json:"pid"`
 			SessionID string `json:"sessionId"`
+			ProcStart string `json:"procStart"` // UTC, e.g. "Wed Sep 23 16:52:33 2026"
 		}
 		if json.Unmarshal(data, &s) != nil || s.SessionID == "" || s.Pid <= 0 {
 			continue
@@ -513,9 +516,63 @@ func liveSessionPIDs() map[string]int {
 		// Signal 0 probes the pid; EPERM still means the process exists.
 		if err := syscall.Kill(s.Pid, 0); err == nil || err == syscall.EPERM {
 			live[s.SessionID] = s.Pid
+			starts[s.SessionID] = s.ProcStart
+		}
+	}
+	// A pid recycled by an unrelated process started at a different time.
+	actual := processStartTimes(live)
+	for id, pid := range live {
+		if !sameStart(starts[id], actual[pid]) {
+			delete(live, id)
 		}
 	}
 	return live
+}
+
+// processStartTimes returns each pid's start time from one ps call. Pids ps
+// can't report are left out.
+var processStartTimes = func(live map[string]int) map[int]time.Time {
+	out := make(map[int]time.Time)
+	if len(live) == 0 {
+		return out
+	}
+	pids := make([]string, 0, len(live))
+	for _, pid := range live {
+		pids = append(pids, strconv.Itoa(pid))
+	}
+	cmd := exec.Command("ps", "-o", "pid=,lstart=", "-p", strings.Join(pids, ","))
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // fixed lstart layout, in local time
+	raw, _ := cmd.Output()
+	for _, line := range strings.Split(string(raw), "\n") {
+		pidStr, rest, ok := strings.Cut(strings.TrimSpace(line), " ")
+		pid, err := strconv.Atoi(pidStr)
+		if !ok || err != nil {
+			continue
+		}
+		if t, err := time.ParseInLocation(time.ANSIC, strings.Join(strings.Fields(rest), " "), time.Local); err == nil {
+			out[pid] = t
+		}
+	}
+	return out
+}
+
+// sameStart compares the session file's procStart (UTC) with the process's
+// actual start. Unknown on either side counts as a match, so a format change
+// or ps failure never hides a live session.
+func sameStart(recorded string, actual time.Time) bool {
+	want, err := time.Parse(time.ANSIC, strings.Join(strings.Fields(recorded), " "))
+	if err != nil || actual.IsZero() {
+		return true
+	}
+	d := actual.Sub(want)
+	return d > -2*time.Second && d < 2*time.Second
+}
+
+// refreshStalled reports a scan running far longer than normal (e.g. blocked
+// on a hung network mount under ~/.claude/projects). It can't be cancelled,
+// so the header just says so rather than showing a silently frozen list.
+func (m model) refreshStalled() bool {
+	return !m.refreshStarted.IsZero() && time.Since(m.refreshStarted) > 5*time.Minute
 }
 
 // isLive re-reads the session files so a prune/rename decision never trusts a
@@ -700,6 +757,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.ClearScreen
 
 	case refreshTickMsg:
+		m.refreshStarted = time.Now()
 		reload, gen := m.reload, m.gen
 		return m, func() tea.Msg {
 			items, err := reload()
@@ -707,6 +765,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case refreshMsg:
+		m.refreshStarted = time.Time{}
 		m.live = msg.live // liveness is independent of the list, never stale-dropped
 		// Delete/prune/rename prompts hold an index into m.filtered, so don't
 		// reshuffle it under them; and a scan that started before a delete,
@@ -976,6 +1035,9 @@ func (m model) View() string {
 
 	// Title line with help right-aligned
 	status := ""
+	if m.refreshStalled() {
+		status = fmt.Sprintf(" · refresh stalled %dm", int(time.Since(m.refreshStarted).Minutes()))
+	}
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}

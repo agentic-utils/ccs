@@ -1,3 +1,5 @@
 ccs
 dist/
 *.exe
+coverage.out
+.serena/

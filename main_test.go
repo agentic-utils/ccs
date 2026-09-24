@@ -2333,3 +2333,53 @@ func TestUpdatingHeaderShowsStep(t *testing.T) {
 		t.Errorf("header should show step and elapsed time")
 	}
 }
+
+func TestSameStart(t *testing.T) {
+	actual := time.Date(2026, 9, 23, 16, 52, 33, 0, time.UTC).In(time.FixedZone("NPT", 5*3600+45*60))
+	if !sameStart("Wed Sep 23 16:52:33 2026", actual) {
+		t.Error("same instant in different zones should match")
+	}
+	if sameStart("Wed Sep 23 10:00:00 2026", actual) {
+		t.Error("a different start time means a recycled pid")
+	}
+	if !sameStart("", actual) || !sameStart("Wed Sep 23 16:52:33 2026", time.Time{}) {
+		t.Error("unknown start on either side must not hide a live session")
+	}
+}
+
+func TestLiveSessionsDropsRecycledPid(t *testing.T) {
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	defer func() { getSessionsDir = old }()
+	oldPS := processStartTimes
+	defer func() { processStartTimes = oldPS }()
+	processStartTimes = func(map[string]int) map[int]time.Time {
+		return map[int]time.Time{os.Getpid(): time.Date(2026, 9, 23, 16, 52, 33, 0, time.UTC)}
+	}
+	write := func(name, id, start string) {
+		body := fmt.Sprintf(`{"pid":%d,"sessionId":%q,"procStart":%q}`, os.Getpid(), id, start)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.json", "current", "Wed Sep 23 16:52:33 2026")
+	write("b.json", "stale", "Mon Sep 21 09:00:00 2026") // same pid, earlier process
+	live := readLiveSessions()
+	if !live["current"] || live["stale"] {
+		t.Errorf("recycled pid should not count as live: %v", live)
+	}
+}
+
+func TestRefreshStalledShowsInHeader(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 140, 30
+	m.refreshStarted = time.Now().Add(-7 * time.Minute)
+	if !strings.Contains(m.View(), "refresh stalled 7m") {
+		t.Error("a long-running scan should be flagged in the header")
+	}
+	res, _ := m.Update(refreshMsg{})
+	if m = res.(model); m.refreshStalled() {
+		t.Error("a completed scan clears the stall")
+	}
+}

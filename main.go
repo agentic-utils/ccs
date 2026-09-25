@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -24,6 +25,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -123,14 +125,15 @@ type model struct {
 	fork            bool // exec the selected conversation with --fork-session
 	quitting        bool
 	claudeFlags     []string
-	confirmDelete   bool  // Are we in delete confirmation mode?
-	deleteIndex     int   // Index of item to delete
-	confirmPrune    bool  // Are we in prune confirmation mode?
-	pruneIndex      int   // Index of item to prune
-	pruneSaved      int64 // Bytes the pending prune would reclaim (measured on Ctrl+X)
-	renaming        bool  // Are we typing a new name?
-	resuming        bool  // an Enter/Ctrl+F open is in flight
-	renameIndex     int   // Index of item being renamed
+	confirmDelete   bool                 // Are we in delete confirmation mode?
+	deleteIndex     int                  // Index of item to delete
+	confirmPrune    bool                 // Are we in prune confirmation mode?
+	pruneIndex      int                  // Index of item to prune
+	pruneSaved      int64                // Bytes the pending prune would reclaim (measured on Ctrl+X)
+	renaming        bool                 // Are we typing a new name?
+	resuming        bool                 // an Enter/Ctrl+F open is in flight
+	opened          map[string]time.Time // sessions ccs opened in a tab, until their session file appears
+	renameIndex     int                  // Index of item being renamed
 	renameInput     textinput.Model
 	errorMsg        string                     // Show deletion/prune errors
 	preview         *previewCache              // memoised preview lines for the selected conversation
@@ -142,6 +145,7 @@ type model struct {
 	refreshStarted  time.Time                  // when the in-flight scan began; zero when none
 	lastRefresh     time.Time                  // when the list last matched disk (startup or a completed scan)
 	lastKick        time.Time                  // last full scan started early because an unknown session went live
+	kicked          map[string]bool            // unknown live sessions an early scan was already started for
 	refreshFailed   bool                       // the last scan errored; the list is from lastRefresh
 
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
@@ -214,7 +218,12 @@ func (u *upgrader) Install(tag string, step func(string)) (string, error) {
 	u.mu.Unlock()
 	if done != nil {
 		step("finishing download")
-		<-done
+		// install redoes whatever prepare didn't finish, so a stuck prepare
+		// only delays it.
+		select {
+		case <-done:
+		case <-time.After(2 * time.Minute):
+		}
 	}
 	return u.install(tag, step)
 }
@@ -378,9 +387,15 @@ func chooseUpgrader(exe string) *upgrader {
 // can take minutes. Falls back to it if the tap isn't a plain git checkout.
 func refreshTap(brew string, step func(string)) error {
 	step("refreshing tap")
-	tap, err := exec.Command(brew, "--repository", "agentic-utils/tap").Output()
-	if err == nil && exec.Command("git", "-C", strings.TrimSpace(string(tap)), "pull", "--ff-only", "--quiet").Run() == nil {
-		return nil
+	tap, err := runCommand(30*time.Second, nil, true, brew, "--repository", "agentic-utils/tap")
+	if err == nil {
+		// Never prompt: a credential or passphrase request fails the pull
+		// (falling back to brew update) instead of waiting on a hidden prompt.
+		_, err = runCommand(time.Minute, []string{"GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes"}, true,
+			"git", "-C", strings.TrimSpace(string(tap)), "pull", "--ff-only", "--quiet")
+		if err == nil {
+			return nil
+		}
 	}
 	step("brew update")
 	return runBrew(brew, "update", "--quiet")
@@ -389,9 +404,11 @@ func refreshTap(brew string, step func(string)) error {
 // runBrew runs brew without its own auto-update (we refresh the tap
 // ourselves), returning brew's last output line as the error.
 func runBrew(brew string, args ...string) error {
-	cmd := exec.Command(brew, args...)
-	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	env := []string{"HOMEBREW_NO_AUTO_UPDATE=1", "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes"}
+	if out, err := runCommand(10*time.Minute, env, true, brew, args...); err != nil {
+		if errors.Is(err, errTimedOut) {
+			return fmt.Errorf("brew %s: %w", args[0], err)
+		}
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 		return fmt.Errorf("brew %s: %s", args[0], lines[len(lines)-1])
 	}
@@ -432,6 +449,10 @@ func installBinary(exe string, bin []byte) error {
 	}
 	defer os.Remove(tmp.Name()) // no-op once renamed
 	if _, err := tmp.Write(bin); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil { // a crash mustn't leave a half-written ccs
 		tmp.Close()
 		return err
 	}
@@ -537,9 +558,13 @@ type resumeDoneMsg struct {
 type liveMsg struct {
 	live    map[string]bool
 	updated []Conversation // live conversations whose transcript grew
-	unknown bool           // a live session isn't in the list yet
+	unknown []string       // live sessions not in the list yet
 	gen     int
 }
+
+// openedGrace is how long a session ccs opened in a tab counts as live before
+// claude has written its session file.
+const openedGrace = 15 * time.Second
 
 // liveReads marks transcripts with a live-tick read in flight.
 var liveReads sync.Map
@@ -572,7 +597,9 @@ func (m model) liveCmd() tea.Cmd {
 		for id := range check {
 			conv, ok := byID[id]
 			if !ok {
-				msg.unknown = msg.unknown || live[id]
+				if live[id] {
+					msg.unknown = append(msg.unknown, id)
+				}
 				continue
 			}
 			// A read still stuck from an earlier tick (e.g. a hung mount)
@@ -595,7 +622,7 @@ func (m model) liveCmd() tea.Cmd {
 		go func() { wg.Wait(); close(done) }()
 		select {
 		case <-done:
-		case <-time.After(liveInterval): // deliver what's ready; stragglers land next tick
+		case <-time.After(liveInterval): // deliver what's ready; a straggler's cached result is picked up next tick
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -700,8 +727,10 @@ func readLiveSessions() map[string]bool {
 
 // liveSessionPIDs maps each live SessionID to the pid of its claude process.
 func liveSessionPIDs() map[string]int {
-	live := make(map[string]int)
-	starts := make(map[string]string)
+	type candidate struct {
+		id, start string
+	}
+	byPid := make(map[int][]candidate)
 	files, _ := filepath.Glob(filepath.Join(getSessionsDir(), "*.json"))
 	for _, f := range files {
 		data, err := os.ReadFile(f)
@@ -718,15 +747,22 @@ func liveSessionPIDs() map[string]int {
 		}
 		// Signal 0 probes the pid; EPERM still means the process exists.
 		if err := syscall.Kill(s.Pid, 0); err == nil || err == syscall.EPERM {
-			live[s.SessionID] = s.Pid
-			starts[s.SessionID] = s.ProcStart
+			byPid[s.Pid] = append(byPid[s.Pid], candidate{s.SessionID, s.ProcStart})
 		}
 	}
-	// A pid recycled by an unrelated process started at a different time.
-	actual := processStartTimes(live)
-	for id, pid := range live {
-		if !sameStart(starts[id], actual[pid]) {
-			delete(live, id)
+	// Check each file's process before mapping sessions: a stale file whose
+	// pid was recycled must not overwrite the live file for the same session.
+	pids := make(map[string]int, len(byPid))
+	for pid := range byPid {
+		pids[strconv.Itoa(pid)] = pid
+	}
+	actual := processStartTimes(pids)
+	live := make(map[string]int)
+	for pid, cs := range byPid {
+		for _, c := range cs {
+			if sameStart(c.start, actual[pid]) {
+				live[c.id] = pid
+			}
 		}
 	}
 	return live
@@ -829,7 +865,7 @@ func keepNewer(current, scanned []listItem) []listItem {
 	}
 	out := make([]listItem, len(scanned))
 	for i, item := range scanned {
-		if cur, ok := have[item.conv.SessionID]; ok && cur.conv.readAt.After(item.conv.readAt) {
+		if cur, ok := have[item.conv.SessionID]; ok && cur.conv.FilePath == item.conv.FilePath && cur.conv.readAt.After(item.conv.readAt) {
 			item = cur
 		}
 		out[i] = item
@@ -938,6 +974,8 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		textInput:   ti,
 		claudeFlags: claudeFlags,
 		preview:     &previewCache{},
+		opened:      make(map[string]time.Time),
+		kicked:      make(map[string]bool),
 		hits:        &hitCounter{byID: make(map[string]int)},
 	}
 	m.updateFilter()
@@ -956,7 +994,8 @@ func (m model) previewLines() []string {
 	if m.preview == nil { // model built without initialModel (e.g. tests)
 		return buildPreviewLines(conv, query)
 	}
-	key := fmt.Sprintf("%s\x00%d\x00%s", conv.SessionID, conv.Size, query)
+	// Preview lines depend only on the messages, so tool-only appends reuse it.
+	key := fmt.Sprintf("%s\x00%d\x00%s", conv.SessionID, len(conv.Messages), query)
 	if m.preview.key != key {
 		m.preview.key = key
 		m.preview.lines = buildPreviewLines(conv, query)
@@ -1028,7 +1067,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resuming = false
 		switch {
 		case msg.err != nil:
-			m.errorMsg = fmt.Sprintf("Opening a new tab timed out or failed (it may still have opened): %v", msg.err)
+			m.errorMsg = fmt.Sprintf("Opening a new tab timed out, it may still have opened - check before retrying (%v)", msg.err)
 		case msg.opened && !msg.fork:
 			// Live before claude writes its session file. Copied, not mutated:
 			// an in-flight live tick may be reading the old map.
@@ -1038,6 +1077,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			live[msg.conv.SessionID] = true
 			m.live = live
+			m.opened[msg.conv.SessionID] = time.Now()
+		case !msg.opened && m.updating:
+			m.errorMsg = "Update in progress - resume again once it finishes"
 		case !msg.opened:
 			conv := msg.conv
 			m.selected, m.fork, m.quitting = &conv, msg.fork, true
@@ -1057,15 +1099,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case liveMsg:
 		m.live = msg.live
+		// Keep sessions ccs just opened live until claude's own file shows up.
+		for id, t := range m.opened {
+			if msg.live[id] || time.Since(t) >= openedGrace {
+				delete(m.opened, id)
+				continue
+			}
+			if !m.live[id] {
+				m.live = maps.Clone(m.live)
+				if m.live == nil {
+					m.live = make(map[string]bool)
+				}
+				m.live[id] = true
+			}
+		}
 		if len(msg.updated) > 0 && msg.gen == m.gen && !m.prompting() {
 			m.applyLive(msg.updated)
 		}
 		cmds := []tea.Cmd{liveTick()}
 		// A session that went live but isn't listed (a brand-new conversation):
 		// scan now rather than at the next minute, at most every 15s.
-		if msg.unknown && m.refreshStarted.IsZero() && time.Since(m.lastKick) > 15*time.Second {
-			m.lastKick = time.Now()
-			cmds = append(cmds, m.startRefresh(true))
+		if len(msg.unknown) > 0 && m.refreshStarted.IsZero() && time.Since(m.lastKick) > 15*time.Second {
+			// Only for sessions an early scan hasn't already looked for: one
+			// the scan can't list (no messages yet, over the size limit) would
+			// otherwise trigger a scan every 15s forever.
+			fresh := false
+			for _, id := range msg.unknown {
+				if !m.kicked[id] {
+					m.kicked[id], fresh = true, true
+				}
+			}
+			if fresh {
+				m.lastKick = time.Now()
+				cmds = append(cmds, m.startRefresh(true))
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1216,6 +1283,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			if m.updating {
+				m.errorMsg = "Update in progress - quitting now could leave it half-installed"
+				return m, nil
+			}
 			m.quitting = true
 			return m, tea.Quit
 
@@ -1857,6 +1928,18 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 	if info.Size() == prev.Size {
 		return prev, nil
 	}
+	// A read that missed an earlier tick's deadline still cached its result;
+	// continue from it rather than re-reading the same bytes every tick.
+	parseCacheMu.Lock()
+	if cached, ok := parseCache[prev.FilePath]; ok && cached.conv.parsedBytes > prev.parsedBytes && cached.conv.readAt.After(prev.readAt) && cached.conv.parsedBytes <= info.Size() {
+		prev = cached.conv
+	}
+	parseCacheMu.Unlock()
+	if info.Size() == prev.Size {
+		c := *prev
+		c.readAt = readAt
+		return &c, nil
+	}
 	if info.Size() < prev.Size || prev.tailApplied || prev.parsedBytes > info.Size() {
 		return parseConversationFile(prev.FilePath, time.Time{}, 0)
 	}
@@ -1923,7 +2006,16 @@ func appendedSearchText(prev, c *Conversation) (string, string) {
 // line is still parsed (a finished file may lack the final newline); tail
 // reports whether it held a whole record, as opposed to a write in progress.
 func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, tail bool, err error) {
-	br := bufio.NewReaderSize(r, 1<<20)
+	size := 1 << 20
+	if f, ok := r.(*os.File); ok {
+		// Appends are often a few hundred bytes; don't allocate 1MB for them.
+		if info, err := f.Stat(); err == nil {
+			if pos, err := f.Seek(0, io.SeekCurrent); err == nil {
+				size = int(min(max(info.Size()-pos, 4096), 1<<20))
+			}
+		}
+	}
+	br := bufio.NewReaderSize(r, size)
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
@@ -2306,22 +2398,22 @@ func (m *model) pruneConversation() {
 	}
 	m.gen++
 
-	// Re-read the pruned file so its parse state (read position, size, read
-	// time) matches what's on disk; resuming from the old offset would skip
-	// lines appended later.
+	// Its parse state (read position) no longer matches the file. Rather than
+	// re-read it here on the UI goroutine, mark it so the next read is a full
+	// one (off the UI goroutine), and so the next scan's copy wins.
 	parseCacheMu.Lock()
 	delete(parseCache, conv.FilePath)
 	parseCacheMu.Unlock()
-	fresh, err := parseConversationFile(conv.FilePath, time.Time{}, 0)
-	if err != nil || fresh == nil {
-		m.errorMsg = fmt.Sprintf("Pruned, but re-reading failed: %v", err)
-		return
+	newSize := conv.Size
+	if info, e := os.Stat(conv.FilePath); e == nil {
+		newSize = info.Size()
 	}
-	item := buildItems([]Conversation{*fresh})[0]
 	for _, items := range [][]listItem{m.items, m.filtered} {
 		for i := range items {
 			if items[i].conv.SessionID == conv.SessionID {
-				items[i] = item
+				items[i].conv.Size = newSize
+				items[i].conv.tailApplied = true
+				items[i].conv.readAt = time.Time{}
 			}
 		}
 	}
@@ -2886,8 +2978,7 @@ func resumeInTmuxWindow(cwd string, args []string) (handled bool, err error) {
 	// -d leaves the current window (ccs) focused. tmux expands formats in -c,
 	// including #(command), so a '#' in the path must be escaped.
 	tmuxArgs := append([]string{"new-window", "-d", "-c", strings.ReplaceAll(cwd, "#", "##")}, args...)
-	_, err = runBounded(5*time.Second, nil, "tmux", tmuxArgs...)
-	return true, err
+	return tabResult(runBounded(5*time.Second, nil, "tmux", tmuxArgs...))
 }
 
 // resumeCmd opens conv off the UI goroutine. Liveness is checked afresh, so
@@ -2895,7 +2986,14 @@ func resumeInTmuxWindow(cwd string, args []string) (handled bool, err error) {
 // resumed a second time. Forks always open a new session.
 func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
 	if m.resuming {
+		m.errorMsg = "Still opening the last one..."
 		return nil // one at a time: a double Enter mustn't open two tabs
+	}
+	// Just opened in a tab but claude hasn't written its session file yet:
+	// there's nothing to focus, and resuming again would start a second copy.
+	if t, ok := m.opened[conv.SessionID]; ok && !fork && time.Since(t) < openedGrace {
+		m.errorMsg = "Already opening in another tab"
+		return nil
 	}
 	m.resuming = true
 	flags := slices.Clone(m.claudeFlags)
@@ -2916,6 +3014,18 @@ func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
 // runBounded runs an external command with a deadline, so a hung ps, tmux
 // server or unresponsive iTerm can't stall ccs indefinitely.
 func runBounded(timeout time.Duration, env []string, name string, args ...string) ([]byte, error) {
+	return runCommand(timeout, env, false, name, args...)
+}
+
+// errTimedOut marks a command that hit its deadline, as opposed to one that
+// failed: a timed-out tab open may still have opened, a failed one didn't.
+var errTimedOut = errors.New("timed out")
+
+// runCommand runs name with a deadline. detach puts it in its own session
+// with no controlling terminal, so it can't prompt (git credentials, ssh
+// passphrases) behind the TUI and swallow keystrokes. Output is stdout, or
+// stdout+stderr when detached (for error messages).
+func runCommand(timeout time.Duration, env []string, detach bool, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -2925,7 +3035,18 @@ func runBounded(timeout time.Duration, env []string, name string, args ...string
 	if env != nil {
 		cmd.Env = append(os.Environ(), env...)
 	}
-	return cmd.Output()
+	var out []byte
+	var err error
+	if detach {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		out, err = cmd.CombinedOutput()
+	} else {
+		out, err = cmd.Output()
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return out, fmt.Errorf("%s: %w after %s", name, errTimedOut, timeout)
+	}
+	return out, err
 }
 
 // focusSession brings the terminal running pid to the front: its tmux pane
@@ -2986,8 +3107,8 @@ func shellQuote(s string) string {
 // if we're not in iTerm or osascript failed, so the caller can exec in place.
 // ponytail: osascript, not the iTerm python API - no deps, no daemon.
 func resumeInITermTab(cwd string, args []string) (handled bool, err error) {
-	if os.Getenv("TERM_PROGRAM") != "iTerm.app" {
-		return false, nil
+	if os.Getenv("TERM_PROGRAM") != "iTerm.app" || !shellSafe(cwd) || slices.IndexFunc(args, func(a string) bool { return !shellSafe(a) }) >= 0 {
+		return false, nil // exec in place instead: no shell involved
 	}
 	quoted := make([]string, len(args))
 	for i, a := range args {
@@ -3004,6 +3125,23 @@ func resumeInITermTab(cwd string, args []string) (handled bool, err error) {
 		select oldTab
 	end tell
 end tell`, cmd)
-	_, err = runBounded(5*time.Second, nil, "osascript", "-e", script)
-	return true, err
+	return tabResult(runBounded(5*time.Second, nil, "osascript", "-e", script))
+}
+
+// tabResult maps a tab-open attempt to (handled, err): success is handled; a
+// timeout is handled with an error (it may have opened, so launching again
+// could run two claudes on one transcript); any other failure (Automation
+// denied, stale $TMUX) is unhandled, so the caller resumes in place.
+func tabResult(_ []byte, err error) (bool, error) {
+	if err == nil || errors.Is(err, errTimedOut) {
+		return true, err
+	}
+	return false, nil
+}
+
+// shellSafe reports whether s can go through shellQuote into a shell safely
+// whatever that shell is: fish treats backslash as an escape even inside
+// single quotes, and control characters break the AppleScript string.
+func shellSafe(s string) bool {
+	return !strings.ContainsFunc(s, func(r rune) bool { return r == '\\' || r < 0x20 || r == 0x7f || r == utf8.RuneError })
 }

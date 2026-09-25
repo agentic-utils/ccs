@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -2583,7 +2584,7 @@ func TestUnknownLiveSessionTriggersEarlyScanOnce(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	scans := 0
 	m.reload = func() ([]listItem, error) { scans++; return []listItem{}, nil }
-	res, cmd := m.Update(liveMsg{live: map[string]bool{"new": true}, unknown: true})
+	res, cmd := m.Update(liveMsg{live: map[string]bool{"new": true}, unknown: []string{"new"}})
 	m = res.(model)
 	if m.refreshStarted.IsZero() || cmd == nil {
 		t.Fatal("an unlisted live session should start a scan now")
@@ -2599,7 +2600,7 @@ func TestUnknownLiveSessionTriggersEarlyScanOnce(t *testing.T) {
 		t.Error("early scan must not add a second refresh schedule")
 	}
 	// And kicks are rate-limited.
-	res, _ = m.Update(liveMsg{live: map[string]bool{"new": true}, unknown: true})
+	res, _ = m.Update(liveMsg{live: map[string]bool{"new": true}, unknown: []string{"new"}})
 	if m = res.(model); !m.refreshStarted.IsZero() {
 		t.Error("a second kick within 15s should wait")
 	}
@@ -2810,5 +2811,108 @@ func TestDoubleEnterOpensOnce(t *testing.T) {
 	_, second := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if first == nil || second != nil {
 		t.Error("a second Enter while the first is opening must be ignored")
+	}
+}
+
+func TestTabResultOnlyTimeoutMeansMaybeOpened(t *testing.T) {
+	if h, err := tabResult(nil, nil); !h || err != nil {
+		t.Error("success is handled")
+	}
+	if h, err := tabResult(nil, fmt.Errorf("osascript: %w", errTimedOut)); !h || err == nil {
+		t.Error("a timeout is handled with an error: it may have opened")
+	}
+	if h, _ := tabResult(nil, fmt.Errorf("exit status 1")); h {
+		t.Error("a plain failure must fall back to resuming in place")
+	}
+	if _, err := runBounded(50*time.Millisecond, nil, "sleep", "5"); !errors.Is(err, errTimedOut) {
+		t.Errorf("runBounded should report its deadline, got %v", err)
+	}
+}
+
+func TestShellSafe(t *testing.T) {
+	for s, want := range map[string]bool{"/Users/me/proj": true, "/tmp/it's": true, `/r/a\`: false, "/tmp/a\x01b": false, "/tmp/\xff": false} {
+		if shellSafe(s) != want {
+			t.Errorf("shellSafe(%q) != %v", s, want)
+		}
+	}
+}
+
+func TestSecondEnterAfterTabOpenDoesNotLaunchAgain(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	res, _ := m.Update(resumeDoneMsg{conv: Conversation{SessionID: "s"}, opened: true})
+	m = res.(model)
+	// A live tick before claude writes its session file must keep it live.
+	res, _ = m.Update(liveMsg{live: map[string]bool{}})
+	if m = res.(model); !m.live["s"] {
+		t.Error("a session ccs just opened should stay live until its file appears")
+	}
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m = res.(model); cmd != nil {
+		t.Error("enter again must not start another resume")
+	}
+}
+
+func TestStaleSessionFileWithOtherPidDoesNotHideLiveOne(t *testing.T) {
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	defer func() { getSessionsDir = old }()
+	oldPS := processStartTimes
+	defer func() { processStartTimes = oldPS }()
+	me := os.Getpid()
+	start := time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC)
+	processStartTimes = func(map[string]int) map[int]time.Time {
+		return map[int]time.Time{me: start, 1: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	}
+	write := func(name string, pid int, when string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(fmt.Sprintf(`{"pid":%d,"sessionId":"S","procStart":%q}`, pid, when)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("0-live.json", me, "Fri Sep 25 10:00:00 2026")
+	write("9-stale.json", 1, "Mon Sep 21 09:00:00 2026") // crashed claude's leftover; pid 1 recycled
+	if pid := liveSessionPIDs()["S"]; pid != me {
+		t.Errorf("live session hidden by a stale file: got pid %d", pid)
+	}
+}
+
+func TestQuitBlockedDuringUpdate(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.updating = true
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m = res.(model); m.quitting || cmd != nil || m.errorMsg == "" {
+		t.Error("esc during an update must not quit")
+	}
+}
+
+func TestParseAppendedContinuesFromLateRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	line := func(s string) string {
+		return `{"type":"user","cwd":"/p","message":{"content":"` + s + `"},"timestamp":"t"}` + "\n"
+	}
+	if err := os.WriteFile(path, []byte(line("a")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listCopy, _ := parseConversationFile(path, time.Time{}, 0)
+	appendTo(t, path, line("b"))
+	late, _ := parseAppended(listCopy) // missed the deadline: result only in the cache
+	appendTo(t, path, line("c"))
+	c, err := parseAppended(listCopy) // next tick, still from the stale list copy
+	if err != nil || len(c.Messages) != 3 || c.parsedBytes <= late.parsedBytes {
+		t.Errorf("should continue from the late read: %d messages, %v", len(c.Messages), err)
+	}
+}
+
+func TestUnlistableLiveSessionScansOnce(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.reload = func() ([]listItem, error) { return []listItem{}, nil }
+	res, _ := m.Update(liveMsg{live: map[string]bool{"x": true}, unknown: []string{"x"}})
+	m = res.(model)
+	res, _ = m.Update(refreshMsg{items: []listItem{}, early: true})
+	m = res.(model)
+	m.lastKick = time.Time{} // even past the 15s limit
+	res, _ = m.Update(liveMsg{live: map[string]bool{"x": true}, unknown: []string{"x"}})
+	if m = res.(model); !m.refreshStarted.IsZero() {
+		t.Error("a session an early scan already looked for must not trigger scans forever")
 	}
 }

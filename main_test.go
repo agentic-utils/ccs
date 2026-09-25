@@ -1601,14 +1601,14 @@ func TestShellQuote(t *testing.T) {
 
 func TestResumeInITermTabSkipsOutsideITerm(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
-	if resumeInITermTab("/tmp", []string{"claude"}) {
+	if handled, _ := resumeInITermTab("/tmp", []string{"claude"}); handled {
 		t.Error("should not open a tab outside iTerm")
 	}
 }
 
 func TestResumeInTmuxWindowSkipsOutsideTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
-	if resumeInTmuxWindow("/tmp", []string{"claude"}) {
+	if handled, _ := resumeInTmuxWindow("/tmp", []string{"claude"}); handled {
 		t.Error("should not open a window outside tmux")
 	}
 }
@@ -1687,8 +1687,8 @@ func TestParseConversationFileReusesUnchanged(t *testing.T) {
 	os.WriteFile(path, []byte(line), 0o644)
 	a, _ := parseConversationFile(path, time.Time{}, 0)
 	b, _ := parseConversationFile(path, time.Time{}, 0)
-	if a != b {
-		t.Error("unchanged file should come from the cache")
+	if &a.Messages[0] != &b.Messages[0] || !b.readAt.After(a.readAt) && !b.readAt.Equal(a.readAt) {
+		t.Error("unchanged file should come from the cache (with a fresh read time)")
 	}
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	f.WriteString(line)
@@ -1998,7 +1998,12 @@ func TestCtrlFForksInPlaceOutsideTabbedTerminals(t *testing.T) {
 	flags := make([]string, 1, 4) // spare capacity: fork must not write into it
 	flags[0] = "--plan"
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", flags)
-	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = res.(model)
+	if cmd == nil {
+		t.Fatal("ctrl+f should start opening the fork")
+	}
+	res, _ = m.Update(cmd())
 	m = res.(model)
 	if m.selected == nil || !m.fork || !m.quitting {
 		t.Error("ctrl+f should select the conversation for a forked resume")
@@ -2601,9 +2606,10 @@ func TestUnknownLiveSessionTriggersEarlyScanOnce(t *testing.T) {
 }
 
 func TestStaleFullScanDoesNotRollBackLiveContent(t *testing.T) {
-	old := Conversation{SessionID: "b", FilePath: "/b", Size: 100, LastTimestamp: "2026-09-25T09:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}}
+	scanStart := time.Now()
+	old := Conversation{SessionID: "b", FilePath: "/b", Size: 100, LastTimestamp: "2026-09-25T09:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}, readAt: scanStart}
 	newer := old
-	newer.Size, newer.LastTimestamp = 200, "2026-09-25T11:00:00Z"
+	newer.Size, newer.LastTimestamp, newer.readAt = 200, "2026-09-25T11:00:00Z", scanStart.Add(time.Second)
 	newer.Messages = append(slices.Clone(old.Messages), Message{Role: "assistant", Text: "needle"})
 	a := Conversation{SessionID: "a", FilePath: "/a", Size: 10, LastTimestamp: "2026-09-25T10:00:00Z", Messages: []Message{{Role: "user", Text: "a"}}}
 
@@ -2713,5 +2719,96 @@ func TestUpdateCheckFailureShowsInHeader(t *testing.T) {
 	res, _ = m.Update(latestMsg{tag: "v0.0.1"})
 	if m = res.(model); strings.Contains(m.View(), "update check failed") {
 		t.Error("a later successful check clears it")
+	}
+}
+
+func TestExternallyPrunedFileIsShownNotResurrected(t *testing.T) {
+	// ccs prune ran in another terminal: the scan reads a smaller file later.
+	big := Conversation{SessionID: "s", FilePath: "/s", Size: 2000, LastTimestamp: "2026-09-25T09:00:00Z", Messages: []Message{{Role: "user", Text: "x"}}, readAt: time.Now()}
+	small := big
+	small.Size, small.readAt = 90, big.readAt.Add(time.Minute)
+	m := initialModel(buildItems([]Conversation{big}), "", nil)
+	res, _ := m.Update(refreshMsg{items: buildItems([]Conversation{small})})
+	if m = res.(model); m.items[0].conv.Size != 90 {
+		t.Errorf("a later read of a shrunk file must win, shown size %d", m.items[0].conv.Size)
+	}
+}
+
+func TestStaleLiveResultDoesNotRollBackScan(t *testing.T) {
+	now := time.Now()
+	scanned := Conversation{SessionID: "s", Size: 300, LastTimestamp: "2026-09-25T11:00:00Z", Messages: []Message{{Role: "user", Text: "new"}}, readAt: now}
+	liveOld := scanned
+	liveOld.Size, liveOld.readAt = 200, now.Add(-time.Second)
+	m := initialModel(buildItems([]Conversation{scanned}), "", nil)
+	m.applyLive([]Conversation{liveOld})
+	if m.items[0].conv.Size != 300 {
+		t.Error("a live read older than the list's copy must be ignored")
+	}
+}
+
+func TestOwnPruneResetsParseState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	body := `{"type":"user","cwd":"/p","message":{"content":"keep"},"timestamp":"t1"}` + "\n" +
+		`{"type":"file-history-snapshot","snapshot":{"data":"` + strings.Repeat("x", 3000) + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	conv, _ := parseConversationFile(path, time.Time{}, 0)
+	m := initialModel(buildItems([]Conversation{*conv}), "", nil)
+	m.pruneIndex = 0
+	m.pruneConversation()
+	if m.errorMsg != "" {
+		t.Fatal(m.errorMsg)
+	}
+	// Claude resumes and appends: the next live read must see it.
+	appendTo(t, path, `{"type":"user","cwd":"/p","message":{"content":"after prune"},"timestamp":"t2"}`+"\n")
+	c, err := parseAppended(&m.items[0].conv)
+	if err != nil || len(c.Messages) != 2 {
+		t.Errorf("message appended after a prune was missed: %+v, %v", c, err)
+	}
+}
+
+func TestAppendedSearchTextEqualsFullParseAcrossManyTicks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"Alpha"},"timestamp":"2026-09-25T10:00:00Z"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := parseConversationFile(path, time.Time{}, 0)
+	for i := 0; i < 5; i++ {
+		appendTo(t, path, fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"text","text":"Reply %d İ"}]},"timestamp":"2026-09-25T10:0%d:00Z"}`, i, i+1)+"\n")
+		appendTo(t, path, `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]},"timestamp":"x"}`+"\n")
+		c, _ = parseAppended(c)
+	}
+	full, _ := parseConversationUncached(path, mustStat(t, path))
+	if c.searchText != full.searchText || c.searchLower != full.searchLower {
+		t.Errorf("drift after appends:\n%q\n%q", c.searchLower, full.searchLower)
+	}
+}
+
+func TestTmuxCwdHashIsEscaped(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "args")
+	fake := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+log+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("TMUX", "fake")
+	if handled, err := resumeInTmuxWindow("/tmp/#(id)", []string{"claude"}); !handled || err != nil {
+		t.Fatal(handled, err)
+	}
+	got, _ := os.ReadFile(log)
+	if !strings.Contains(string(got), "/tmp/##(id)") {
+		t.Errorf("tmux -c must get '#' escaped, got args:\n%s", got)
+	}
+}
+
+func TestDoubleEnterOpensOnce(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	res, first := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(model)
+	_, second := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if first == nil || second != nil {
+		t.Error("a second Enter while the first is opening must be ignored")
 	}
 }

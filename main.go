@@ -62,6 +62,11 @@ type Conversation struct {
 	parsedBytes int64
 	sawUser     bool
 	tailApplied bool // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
+
+	// readAt is when this copy was read from disk (the stat before the read).
+	// Between a full scan and the live tick, the later read wins; file size
+	// can't decide it, since a prune legitimately shrinks a file.
+	readAt time.Time
 }
 
 // RawMessage represents the JSON structure in conversation files
@@ -124,6 +129,7 @@ type model struct {
 	pruneIndex      int   // Index of item to prune
 	pruneSaved      int64 // Bytes the pending prune would reclaim (measured on Ctrl+X)
 	renaming        bool  // Are we typing a new name?
+	resuming        bool  // an Enter/Ctrl+F open is in flight
 	renameIndex     int   // Index of item being renamed
 	renameInput     textinput.Model
 	errorMsg        string                     // Show deletion/prune errors
@@ -482,7 +488,8 @@ func binaryFromTarGz(archive []byte, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	tr := tar.NewReader(gz)
+	// Caps everything decompressed, including entries skipped on the way.
+	tr := tar.NewReader(io.LimitReader(gz, maxBinary+maxDownload))
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -518,12 +525,24 @@ type focusDoneMsg struct {
 	found bool
 }
 
+// resumeDoneMsg reports how Enter/Ctrl+F opened a conversation: in a new
+// tab/window (ccs stays up), or not at all (exec in place after quitting).
+type resumeDoneMsg struct {
+	conv   Conversation
+	fork   bool
+	opened bool
+	err    error
+}
+
 type liveMsg struct {
 	live    map[string]bool
 	updated []Conversation // live conversations whose transcript grew
 	unknown bool           // a live session isn't in the list yet
 	gen     int
 }
+
+// liveReads marks transcripts with a live-tick read in flight.
+var liveReads sync.Map
 
 func liveTick() tea.Cmd {
 	return tea.Tick(liveInterval, func(time.Time) tea.Msg { return liveTickMsg{} })
@@ -548,16 +567,39 @@ func (m model) liveCmd() tea.Cmd {
 		for id := range wasLive {
 			check[id] = true
 		}
+		var mu sync.Mutex
+		var wg sync.WaitGroup
 		for id := range check {
 			conv, ok := byID[id]
 			if !ok {
 				msg.unknown = msg.unknown || live[id]
 				continue
 			}
-			if c, err := parseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
-				msg.updated = append(msg.updated, *c)
+			// A read still stuck from an earlier tick (e.g. a hung mount)
+			// isn't started again; the rest carry on.
+			if _, busy := liveReads.LoadOrStore(conv.FilePath, true); busy {
+				continue
 			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer liveReads.Delete(conv.FilePath)
+				if c, err := parseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
+					mu.Lock()
+					msg.updated = append(msg.updated, *c)
+					mu.Unlock()
+				}
+			}()
 		}
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(liveInterval): // deliver what's ready; stragglers land next tick
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		msg.updated = slices.Clone(msg.updated)
 		return msg
 	}
 }
@@ -572,9 +614,14 @@ func (m *model) applyLive(updated []Conversation) {
 		byID[item.conv.SessionID] = item
 	}
 	items := make([]listItem, len(m.items))
+	newMessages := make(map[string]bool, len(updated))
 	for i, item := range m.items {
-		if u, ok := byID[item.conv.SessionID]; ok {
+		// A full scan may have read this file after the live tick did.
+		if u, ok := byID[item.conv.SessionID]; ok && !item.conv.readAt.After(u.conv.readAt) {
+			newMessages[item.conv.SessionID] = len(u.conv.Messages) != len(item.conv.Messages)
 			item = u
+		} else {
+			delete(byID, item.conv.SessionID)
 		}
 		items[i] = item
 	}
@@ -596,7 +643,8 @@ func (m *model) applyLive(updated []Conversation) {
 		match := shown[item.conv.SessionID]
 		if _, changed := byID[item.conv.SessionID]; changed {
 			match = query == "" || strings.Contains(item.searchLower, query)
-			if m.hits != nil {
+			// Most appends are tool calls: HITS only moves with new messages.
+			if m.hits != nil && newMessages[item.conv.SessionID] {
 				delete(m.hits.byID, item.conv.SessionID)
 			}
 		}
@@ -606,11 +654,17 @@ func (m *model) applyLive(updated []Conversation) {
 	}
 	m.items, m.filtered = items, filtered
 	m.cursor = min(m.cursor, max(0, len(filtered)-1))
+	found := false
 	for i, item := range filtered {
 		if item.conv.SessionID == selectedID {
-			m.cursor = i
+			m.cursor, found = i, true
 			break
 		}
+	}
+	// The selected preview can shrink (or be a different conversation), so a
+	// stored scroll offset past its end would make Ctrl+K seem stuck.
+	if _, changed := byID[selectedID]; changed || !found {
+		m.previewScroll = min(m.previewScroll, m.maxPreviewScroll())
 	}
 }
 
@@ -765,9 +819,9 @@ func (m *model) isLive(id string) bool {
 	return fresh[id]
 }
 
-// keepNewer returns scanned, but where the list already holds a newer copy of
-// a conversation (the live tick parsed more of its file after the scan read
-// it), keeps that copy, so a slow scan can't roll a live session back.
+// keepNewer returns scanned, but where the list holds a copy of a
+// conversation read from disk after the scan read it (the live tick got
+// there later), keeps that copy, so a slow scan can't roll it back.
 func keepNewer(current, scanned []listItem) []listItem {
 	have := make(map[string]listItem, len(current))
 	for _, item := range current {
@@ -775,7 +829,7 @@ func keepNewer(current, scanned []listItem) []listItem {
 	}
 	out := make([]listItem, len(scanned))
 	for i, item := range scanned {
-		if cur, ok := have[item.conv.SessionID]; ok && cur.conv.FilePath == item.conv.FilePath && cur.conv.Size > item.conv.Size {
+		if cur, ok := have[item.conv.SessionID]; ok && cur.conv.readAt.After(item.conv.readAt) {
 			item = cur
 		}
 		out[i] = item
@@ -970,7 +1024,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.startRefresh(false)
 
+	case resumeDoneMsg:
+		m.resuming = false
+		switch {
+		case msg.err != nil:
+			m.errorMsg = fmt.Sprintf("Opening a new tab timed out or failed (it may still have opened): %v", msg.err)
+		case msg.opened && !msg.fork:
+			// Live before claude writes its session file. Copied, not mutated:
+			// an in-flight live tick may be reading the old map.
+			live := maps.Clone(m.live)
+			if live == nil {
+				live = make(map[string]bool)
+			}
+			live[msg.conv.SessionID] = true
+			m.live = live
+		case !msg.opened:
+			conv := msg.conv
+			m.selected, m.fork, m.quitting = &conv, msg.fork, true
+			return m, tea.Quit
+		}
+		return m, nil
+
 	case focusDoneMsg:
+		m.resuming = false
 		if !msg.found {
 			m.errorMsg = "Session is open in claude but its terminal wasn't found - Ctrl+F forks it"
 		}
@@ -1148,47 +1224,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.quitting = true
 				return m, tea.Quit
 			}
-			conv := m.filtered[m.cursor].conv
-			// Already running: jump to it rather than resuming a second copy
-			// that would write to the same transcript. m.live is at most one
-			// live tick old; the lookup and focus run off the UI goroutine.
-			if m.live[conv.SessionID] {
-				id := conv.SessionID
-				return m, func() tea.Msg {
-					pid, ok := liveSessionPIDs()[id]
-					return focusDoneMsg{pid: pid, found: ok && focusSession(pid)}
-				}
-			}
-			// In iTerm the session opens in its own tab, so ccs stays up and
-			// you can resume another conversation.
-			if openResumeTab(conv, m.claudeFlags) {
-				// Live before claude has written its session file. Copied, not
-				// mutated: an in-flight live tick may be reading the old map.
-				live := maps.Clone(m.live)
-				if live == nil {
-					live = make(map[string]bool)
-				}
-				live[conv.SessionID] = true
-				m.live = live
-				return m, nil
-			}
-			m.selected = &conv
-			m.quitting = true
-			return m, tea.Quit
+			return m, m.resumeCmd(m.filtered[m.cursor].conv, false)
 
 		case "ctrl+f":
 			// Fork: resume into a new session id, leaving the original as is.
 			if len(m.filtered) == 0 {
 				return m, nil
 			}
-			conv := m.filtered[m.cursor].conv
-			if openResumeTab(conv, append(slices.Clone(m.claudeFlags), "--fork-session")) {
-				return m, nil
-			}
-			m.selected = &conv
-			m.fork = true
-			m.quitting = true
-			return m, tea.Quit
+			return m, m.resumeCmd(m.filtered[m.cursor].conv, true)
 
 		case "ctrl+d":
 			if len(m.filtered) > 0 {
@@ -1721,6 +1764,7 @@ func extractText(content json.RawMessage) string {
 }
 
 func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conversation, error) {
+	readAt := time.Now()
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -1744,9 +1788,14 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 	cached, ok := parseCache[path]
 	parseCacheMu.Unlock()
 	if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
-		return cached.conv, nil
+		c := *cached.conv // copy: the cached one is shared across goroutines
+		c.readAt = readAt
+		return &c, nil
 	}
 	conv, err := parseConversationUncached(path, info)
+	if conv != nil {
+		conv.readAt = readAt
+	}
 	if err == nil {
 		parseCacheMu.Lock()
 		parseCache[path] = parsedFile{info.Size(), info.ModTime(), conv}
@@ -1800,6 +1849,7 @@ func parseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 // a prune) or an unterminated last line was applied as a record. Returns prev
 // itself when the file hasn't grown.
 func parseAppended(prev *Conversation) (*Conversation, error) {
+	readAt := time.Now()
 	info, err := os.Stat(prev.FilePath)
 	if err != nil {
 		return nil, err
@@ -1807,7 +1857,7 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 	if info.Size() == prev.Size {
 		return prev, nil
 	}
-	if info.Size() < prev.Size || prev.tailApplied {
+	if info.Size() < prev.Size || prev.tailApplied || prev.parsedBytes > info.Size() {
 		return parseConversationFile(prev.FilePath, time.Time{}, 0)
 	}
 	file, err := os.Open(prev.FilePath)
@@ -1830,19 +1880,42 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 	c.parsedBytes = prev.parsedBytes + complete
 	c.Size = prev.parsedBytes + total
 	c.tailApplied = tail
+	c.readAt = readAt
 	finishParse(&c)
 	// Rebuilt exactly as a full parse would, and only when something it
 	// covers changed: most appends are tool calls with no searchable text.
-	if len(c.Messages) != len(prev.Messages) || c.Title != prev.Title || c.Cwd != prev.Cwd || c.FirstTimestamp != prev.FirstTimestamp {
-		c.searchText = searchTextOf(c)
-		c.searchLower = strings.ToLower(c.searchText)
-	}
+	c.searchText, c.searchLower = appendedSearchText(prev, &c)
 	if info, err := file.Stat(); err == nil {
 		parseCacheMu.Lock()
 		parseCache[c.FilePath] = parsedFile{c.Size, info.ModTime(), &c}
 		parseCacheMu.Unlock()
 	}
 	return &c, nil
+}
+
+// appendedSearchText returns c's search text, identical to searchTextOf(c).
+// When only messages were added it extends prev's instead: searchTextOf ends
+// with the last timestamp, so swap that suffix for the new messages and the
+// new timestamp, lowercasing just the new part. Anything else rebuilds.
+func appendedSearchText(prev, c *Conversation) (string, string) {
+	if len(c.Messages) == len(prev.Messages) && c.Title == prev.Title && c.Cwd == prev.Cwd && c.FirstTimestamp == prev.FirstTimestamp {
+		return prev.searchText, prev.searchLower
+	}
+	oldTail := " " + formatTimestamp(prev.LastTimestamp)
+	oldTailLower := strings.ToLower(oldTail)
+	if len(c.Messages) > len(prev.Messages) && c.Title == prev.Title && c.Cwd == prev.Cwd && c.FirstTimestamp == prev.FirstTimestamp &&
+		strings.HasSuffix(prev.searchText, oldTail) && strings.HasSuffix(prev.searchLower, oldTailLower) {
+		parts := make([]string, 0, len(c.Messages)-len(prev.Messages)+1)
+		for _, msg := range c.Messages[len(prev.Messages):] {
+			parts = append(parts, msg.Text)
+		}
+		parts = append(parts, formatTimestamp(c.LastTimestamp))
+		add := " " + strings.Join(parts, " ")
+		return strings.TrimSuffix(prev.searchText, oldTail) + add,
+			strings.TrimSuffix(prev.searchLower, oldTailLower) + strings.ToLower(add)
+	}
+	text := searchTextOf(*c)
+	return text, strings.ToLower(text)
 }
 
 // consumeLines parses JSONL records from r into conv. complete counts bytes
@@ -2141,13 +2214,14 @@ func (m *model) renameConversation(name string) {
 	parseCacheMu.Lock()
 	delete(parseCache, conv.FilePath)
 	parseCacheMu.Unlock()
+	c := conv
+	c.Title, c.IsCustomTitle = name, true
+	c.searchText = "" // rebuilt by buildItems, exactly as a full parse would
+	renamed := buildItems([]Conversation{c})[0]
 	for _, items := range [][]listItem{m.items, m.filtered} {
 		for i := range items {
 			if items[i].conv.SessionID == conv.SessionID {
-				c := items[i].conv
-				c.Title, c.IsCustomTitle = name, true
-				c.searchText = "" // rebuilt by buildItems, exactly as a full parse would
-				items[i] = buildItems([]Conversation{c})[0]
+				items[i] = renamed
 			}
 		}
 	}
@@ -2225,21 +2299,29 @@ func (m *model) pruneConversation() {
 	}
 	conv := m.filtered[m.pruneIndex].conv
 
-	st, err := pruneFile(conv.FilePath, true, pruneOpts{dropSnapshots: true, stripToolResults: true})
+	_, err := pruneFile(conv.FilePath, true, pruneOpts{dropSnapshots: true, stripToolResults: true})
 	if err != nil {
 		m.errorMsg = fmt.Sprintf("Prune failed: %v", err)
 		return
 	}
 	m.gen++
 
-	newSize := conv.Size - (st.bytesIn - st.bytesOut)
-	if info, e := os.Stat(conv.FilePath); e == nil {
-		newSize = info.Size()
+	// Re-read the pruned file so its parse state (read position, size, read
+	// time) matches what's on disk; resuming from the old offset would skip
+	// lines appended later.
+	parseCacheMu.Lock()
+	delete(parseCache, conv.FilePath)
+	parseCacheMu.Unlock()
+	fresh, err := parseConversationFile(conv.FilePath, time.Time{}, 0)
+	if err != nil || fresh == nil {
+		m.errorMsg = fmt.Sprintf("Pruned, but re-reading failed: %v", err)
+		return
 	}
+	item := buildItems([]Conversation{*fresh})[0]
 	for _, items := range [][]listItem{m.items, m.filtered} {
 		for i := range items {
 			if items[i].conv.SessionID == conv.SessionID {
-				items[i].conv.Size = newSize
+				items[i] = item
 			}
 		}
 	}
@@ -2261,13 +2343,14 @@ func buildItems(conversations []Conversation) []listItem {
 
 // searchTextOf joins everything a conversation can be found by.
 func searchTextOf(conv Conversation) string {
-	parts := []string{conv.SessionID, conv.Title, conv.Cwd,
-		formatTimestamp(conv.FirstTimestamp), formatTimestamp(conv.LastTimestamp)}
+	parts := []string{conv.SessionID, conv.Title, conv.Cwd, formatTimestamp(conv.FirstTimestamp)}
 	// Include assistant messages too so a conversation is findable by what
 	// Claude said, matching the HITS column and preview.
 	for _, msg := range conv.Messages {
 		parts = append(parts, msg.Text)
 	}
+	// Last, so new messages can be appended without rebuilding (parseAppended).
+	parts = append(parts, formatTimestamp(conv.LastTimestamp))
 	return strings.Join(parts, " ")
 }
 
@@ -2776,29 +2859,58 @@ func main() {
 
 // openResumeTab tries to resume conv in a new tmux window or iTerm tab. Returns
 // false when that isn't possible, leaving the caller to exec claude in place.
-func openResumeTab(conv Conversation, claudeFlags []string) bool {
+func openResumeTab(conv Conversation, claudeFlags []string) (bool, error) {
 	cwd := conv.Cwd
 	if cwd == "" || cwd == "unknown" {
 		cwd = "."
 	}
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {
-		return false
+		return false, nil
 	}
 	args := append([]string{claudePath, "--resume", conv.SessionID}, claudeFlags...)
 	// tmux first: inside tmux the iTerm tab would land outside the session.
-	return resumeInTmuxWindow(cwd, args) || resumeInITermTab(cwd, args)
+	if handled, err := resumeInTmuxWindow(cwd, args); handled {
+		return true, err
+	}
+	return resumeInITermTab(cwd, args)
 }
 
-// resumeInTmuxWindow opens args in a new background tmux window. Returns false
-// if we're not in tmux or tmux failed, so the caller can try the next option.
-func resumeInTmuxWindow(cwd string, args []string) bool {
+// resumeInTmuxWindow opens args in a new background tmux window. handled is
+// false outside tmux. An error after trying means the window may or may not
+// have opened, so the caller must not launch another copy.
+func resumeInTmuxWindow(cwd string, args []string) (handled bool, err error) {
 	if os.Getenv("TMUX") == "" {
-		return false
+		return false, nil
 	}
-	// -d leaves the current window (ccs) focused.
-	tmuxArgs := append([]string{"new-window", "-d", "-c", cwd}, args...)
-	return exec.Command("tmux", tmuxArgs...).Run() == nil
+	// -d leaves the current window (ccs) focused. tmux expands formats in -c,
+	// including #(command), so a '#' in the path must be escaped.
+	tmuxArgs := append([]string{"new-window", "-d", "-c", strings.ReplaceAll(cwd, "#", "##")}, args...)
+	_, err = runBounded(5*time.Second, nil, "tmux", tmuxArgs...)
+	return true, err
+}
+
+// resumeCmd opens conv off the UI goroutine. Liveness is checked afresh, so
+// a session resumed elsewhere since the last live tick is focused, not
+// resumed a second time. Forks always open a new session.
+func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
+	if m.resuming {
+		return nil // one at a time: a double Enter mustn't open two tabs
+	}
+	m.resuming = true
+	flags := slices.Clone(m.claudeFlags)
+	if fork {
+		flags = append(flags, "--fork-session")
+	}
+	return func() tea.Msg {
+		if !fork {
+			if pid, ok := liveSessionPIDs()[conv.SessionID]; ok {
+				return focusDoneMsg{pid: pid, found: focusSession(pid)}
+			}
+		}
+		opened, err := openResumeTab(conv, flags)
+		return resumeDoneMsg{conv: conv, fork: fork, opened: opened, err: err}
+	}
 }
 
 // runBounded runs an external command with a deadline, so a hung ps, tmux
@@ -2807,6 +2919,9 @@ func runBounded(timeout time.Duration, env []string, name string, args ...string
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	// Without this, a child that inherits the output pipe keeps Output()
+	// waiting past the deadline.
+	cmd.WaitDelay = time.Second
 	if env != nil {
 		cmd.Env = append(os.Environ(), env...)
 	}
@@ -2870,9 +2985,9 @@ func shellQuote(s string) string {
 // resumeInITermTab opens the resume command in a new iTerm tab. Returns false
 // if we're not in iTerm or osascript failed, so the caller can exec in place.
 // ponytail: osascript, not the iTerm python API - no deps, no daemon.
-func resumeInITermTab(cwd string, args []string) bool {
+func resumeInITermTab(cwd string, args []string) (handled bool, err error) {
 	if os.Getenv("TERM_PROGRAM") != "iTerm.app" {
-		return false
+		return false, nil
 	}
 	quoted := make([]string, len(args))
 	for i, a := range args {
@@ -2889,5 +3004,6 @@ func resumeInITermTab(cwd string, args []string) bool {
 		select oldTab
 	end tell
 end tell`, cmd)
-	return exec.Command("osascript", "-e", script).Run() == nil
+	_, err = runBounded(5*time.Second, nil, "osascript", "-e", script)
+	return true, err
 }

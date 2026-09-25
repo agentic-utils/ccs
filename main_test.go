@@ -2916,3 +2916,45 @@ func TestUnlistableLiveSessionScansOnce(t *testing.T) {
 		t.Error("a session an early scan already looked for must not trigger scans forever")
 	}
 }
+
+func TestCachedEmptyFileDoesNotCrash(t *testing.T) {
+	// A transcript with no messages yet (e.g. a claude opened but unused) is
+	// cached as "no conversation"; reading it from the cache must not panic.
+	path := filepath.Join(t.TempDir(), "empty.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"permission-mode","mode":"default"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if c, err := parseConversationFile(path, time.Time{}, 0); c != nil || err != nil {
+			t.Fatalf("pass %d: want no conversation, got %v %v", i, c, err)
+		}
+	}
+	// And the live tick's cache lookup for the same path is safe too.
+	prev := &Conversation{SessionID: "empty", FilePath: path, Size: 1}
+	if _, err := parseAppended(prev); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoverWorkerKeepsProcessAlive(t *testing.T) {
+	old := workerPanicLog
+	workerPanicLog = filepath.Join(t.TempDir(), "panic.log")
+	defer func() { workerPanicLog = old; workerPanicked.Store(false) }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer recoverWorker()
+		var p *Conversation
+		_ = p.Size // nil dereference
+	}()
+	<-done
+	logged, _ := os.ReadFile(workerPanicLog)
+	if !workerPanicked.Load() || !strings.Contains(string(logged), "nil pointer") {
+		t.Errorf("panic should be recovered and logged, got %q", logged)
+	}
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 200, 30
+	if !strings.Contains(m.View(), "internal error") {
+		t.Error("header should mention the logged error")
+	}
+}

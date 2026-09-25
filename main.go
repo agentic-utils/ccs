@@ -18,11 +18,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -207,8 +209,9 @@ func (u *upgrader) Prepare(tag string) {
 	done := make(chan struct{})
 	u.pending[tag] = done
 	go func() {
+		defer close(done)
+		defer recoverWorker()
 		u.prepare(tag) // failures are retried by install
-		close(done)
 	}()
 }
 
@@ -611,6 +614,7 @@ func (m model) liveCmd() tea.Cmd {
 			go func() {
 				defer wg.Done()
 				defer liveReads.Delete(conv.FilePath)
+				defer recoverWorker()
 				if c, err := parseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
 					mu.Lock()
 					msg.updated = append(msg.updated, *c)
@@ -1403,6 +1407,9 @@ func (m model) View() string {
 
 	// Title line with help right-aligned
 	note := m.refreshNote()
+	if workerPanicked.Load() {
+		note += " · internal error, logged to " + workerPanicLog
+	}
 	if m.updateCheckFailed && m.updateTo == "" {
 		note += " · update check failed"
 	}
@@ -1859,6 +1866,9 @@ func parseConversationFile(path string, cutoff time.Time, maxSize int64) (*Conve
 	cached, ok := parseCache[path]
 	parseCacheMu.Unlock()
 	if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
+		if cached.conv == nil { // cached as "no conversation" (no messages yet)
+			return nil, nil
+		}
 		c := *cached.conv // copy: the cached one is shared across goroutines
 		c.readAt = readAt
 		return &c, nil
@@ -1931,7 +1941,7 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 	// A read that missed an earlier tick's deadline still cached its result;
 	// continue from it rather than re-reading the same bytes every tick.
 	parseCacheMu.Lock()
-	if cached, ok := parseCache[prev.FilePath]; ok && cached.conv.parsedBytes > prev.parsedBytes && cached.conv.readAt.After(prev.readAt) && cached.conv.parsedBytes <= info.Size() {
+	if cached, ok := parseCache[prev.FilePath]; ok && cached.conv != nil && cached.conv.parsedBytes > prev.parsedBytes && cached.conv.readAt.After(prev.readAt) && cached.conv.parsedBytes <= info.Size() {
 		prev = cached.conv
 	}
 	parseCacheMu.Unlock()
@@ -2090,6 +2100,40 @@ func finishParse(conv *Conversation) {
 	}
 }
 
+// parseForScan parses one file for a full scan. A panic skips that file
+// rather than killing ccs from a worker goroutine.
+func parseForScan(path string, cutoff time.Time, maxSize int64) (conv *Conversation) {
+	defer recoverWorker()
+	conv, err := parseConversationFile(path, cutoff, maxSize)
+	if err != nil {
+		return nil
+	}
+	return conv
+}
+
+// workerPanicLog is where recoverWorker records panics; workerPanicked makes
+// the header say so.
+var (
+	workerPanicLog = filepath.Join(os.TempDir(), "ccs-panic.log")
+	workerPanicked atomic.Bool
+)
+
+// recoverWorker, deferred in goroutines ccs starts itself, stops a panic there
+// from killing the process. bubbletea only recovers its own event loop, so an
+// unrecovered worker panic exits without restoring the terminal and leaves it
+// garbled. The stack is appended to workerPanicLog.
+func recoverWorker() {
+	r := recover()
+	if r == nil {
+		return
+	}
+	workerPanicked.Store(true)
+	if f, err := os.OpenFile(workerPanicLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+		fmt.Fprintf(f, "%s ccs %s: panic: %v\n%s\n", time.Now().Format(time.RFC3339), version, r, debug.Stack())
+		f.Close()
+	}
+}
+
 func getConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]Conversation, error) {
 	projectsDir := getProjectsDir()
 	// Walk swallows a root error, so a vanished dir would read as "no
@@ -2133,8 +2177,7 @@ func getConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 		go func() {
 			defer wg.Done()
 			for path := range jobs {
-				conv, err := parseConversationFile(path, cutoff, maxSize)
-				if err == nil && conv != nil {
+				if conv := parseForScan(path, cutoff, maxSize); conv != nil {
 					results <- conv
 				}
 			}

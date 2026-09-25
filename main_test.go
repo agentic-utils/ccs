@@ -2451,3 +2451,144 @@ func TestRefreshNote(t *testing.T) {
 		t.Error("note should render in the header")
 	}
 }
+
+func appendTo(t *testing.T, path, s string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseAppendedReadsOnlyNewLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	first := `{"type":"user","cwd":"/p","message":{"content":"hello"},"timestamp":"2026-09-25T10:00:00Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, err := parseConversationFile(path, time.Time{}, 0)
+	if err != nil || prev == nil {
+		t.Fatal(prev, err)
+	}
+	if same, _ := parseAppended(prev); same != prev {
+		t.Error("unchanged file should return prev as is")
+	}
+
+	appendTo(t, path, `{"type":"assistant","message":{"content":[{"type":"text","text":"needle reply"}],"usage":{"input_tokens":5,"cache_read_input_tokens":995}},"timestamp":"2026-09-25T10:01:00Z"}`+"\n")
+	c, err := parseAppended(prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Messages) != 2 || c.ContextTokens != 1000 || c.LastTimestamp != "2026-09-25T10:01:00Z" || c.Cwd != "/p" {
+		t.Errorf("appended parse wrong: %+v", c)
+	}
+	if !strings.Contains(c.searchLower, "needle reply") || !strings.Contains(c.searchLower, "hello") {
+		t.Error("search text should cover old and new messages")
+	}
+	if len(prev.Messages) != 1 {
+		t.Error("prev must not be modified")
+	}
+	full, _ := parseConversationUncached(path, mustStat(t, path))
+	if full.searchText == "" || len(full.Messages) != len(c.Messages) || full.parsedBytes != c.parsedBytes {
+		t.Errorf("incremental and full parse disagree: %d/%d msgs, %d/%d bytes", len(c.Messages), len(full.Messages), c.parsedBytes, full.parsedBytes)
+	}
+
+	// A title arriving later rebuilds the search text.
+	appendTo(t, path, `{"type":"custom-title","customTitle":"Renamed"}`+"\n")
+	c2, _ := parseAppended(c)
+	if c2.Title != "Renamed" || !strings.Contains(c2.searchLower, "renamed") {
+		t.Errorf("title update missed: %q", c2.Title)
+	}
+
+	// A shrunk file (e.g. pruned) is reparsed in full.
+	if err := os.WriteFile(path, []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c3, _ := parseAppended(c2)
+	if c3 == nil || len(c3.Messages) != 1 {
+		t.Errorf("shrunk file should fully reparse, got %+v", c3)
+	}
+}
+
+func TestParseAppendedUnterminatedTailNoDuplicates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	// Ends mid-line: the last record is parsed but the next parse must be full.
+	body := `{"type":"user","cwd":"/p","message":{"content":"a"},"timestamp":"t1"}` + "\n" +
+		`{"type":"user","cwd":"/p","message":{"content":"b"},"timestamp":"t2"}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := parseConversationFile(path, time.Time{}, 0)
+	appendTo(t, path, "\n"+`{"type":"user","cwd":"/p","message":{"content":"c"},"timestamp":"t3"}`+"\n")
+	c, _ := parseAppended(prev)
+	if len(c.Messages) != 3 {
+		t.Errorf("want a, b, c exactly once, got %d messages", len(c.Messages))
+	}
+}
+
+func mustStat(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+func TestLiveMsgUpdatesAndResortsKeepingCursor(t *testing.T) {
+	mk := func(id, ts string) Conversation {
+		return Conversation{SessionID: id, LastTimestamp: ts, Messages: []Message{{Role: "user", Text: id}}}
+	}
+	m := initialModel(buildItems([]Conversation{mk("a", "2026-09-25T10:00:00Z"), mk("b", "2026-09-25T09:00:00Z")}), "", nil)
+	m.cursor = 1 // on b
+	grown := mk("b", "2026-09-25T11:00:00Z")
+	grown.Messages = append(grown.Messages, Message{Role: "assistant", Text: "new"})
+	res, cmd := m.Update(liveMsg{live: map[string]bool{"b": true}, updated: []Conversation{grown}})
+	m = res.(model)
+	if cmd == nil || !m.live["b"] {
+		t.Fatal("live tick should apply liveness and reschedule")
+	}
+	if m.items[0].conv.SessionID != "b" || len(m.items[0].conv.Messages) != 2 {
+		t.Errorf("updated session should move to the top with its new message: %+v", m.items[0].conv)
+	}
+	if m.filtered[m.cursor].conv.SessionID != "b" {
+		t.Error("cursor should follow the same conversation")
+	}
+
+	// Content updates wait while a prompt is open; liveness still applies.
+	m.confirmDelete = true
+	res, _ = m.Update(liveMsg{live: map[string]bool{}, updated: []Conversation{mk("a", "2026-09-25T12:00:00Z")}})
+	if m = res.(model); m.items[0].conv.SessionID != "b" || m.live["b"] {
+		t.Error("prompt open: no reshuffle, but liveness should update")
+	}
+}
+
+func TestUnknownLiveSessionTriggersEarlyScanOnce(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	scans := 0
+	m.reload = func() ([]listItem, error) { scans++; return []listItem{}, nil }
+	res, cmd := m.Update(liveMsg{live: map[string]bool{"new": true}, unknown: true})
+	m = res.(model)
+	if m.refreshStarted.IsZero() || cmd == nil {
+		t.Fatal("an unlisted live session should start a scan now")
+	}
+	// The scheduled tick arriving mid-scan doesn't start a second scan.
+	res, _ = m.Update(refreshTickMsg{})
+	if m = res.(model); scans != 0 {
+		t.Error("tick during an early scan should only reschedule")
+	}
+	// The early scan's result doesn't start its own one-minute chain.
+	res, cmd = m.Update(refreshMsg{items: []listItem{}, early: true})
+	if m = res.(model); cmd != nil {
+		t.Error("early scan must not add a second refresh schedule")
+	}
+	// And kicks are rate-limited.
+	res, _ = m.Update(liveMsg{live: map[string]bool{"new": true}, unknown: true})
+	if m = res.(model); !m.refreshStarted.IsZero() {
+		t.Error("a second kick within 15s should wait")
+	}
+}

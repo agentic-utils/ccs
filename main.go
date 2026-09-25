@@ -5,11 +5,13 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -59,6 +61,7 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	parsedBytes int64
 	sawUser     bool
+	tailApplied bool // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
 }
 
 // RawMessage represents the JSON structure in conversation files
@@ -138,16 +141,18 @@ type model struct {
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
 	// upgrade installs tag and returns the binary to restart; nil means ccs
 	// can't update this install itself (e.g. Nix), so only notify.
-	checkLatest   func() (string, error)
-	upgrade       *upgrader
-	progress      *updateProgress // step + start time, written by the upgrade goroutine
-	updateTo      string          // newer release tag found, "" if none
-	updateShownAt time.Time       // popup ignores keys for a moment so in-flight typing can't answer it
-	updateOpen    bool
-	updateHeld    bool // popup waited behind another prompt; restart its key grace when it shows
-	updating      bool
-	dismissed     string // tag the user said "later" to
-	restart       string // after an upgrade: binary to exec once the TUI exits
+	checkLatest       func() (string, error)
+	upgrade           *upgrader
+	progress          *updateProgress // step + start time, written by the upgrade goroutine
+	updateTo          string          // newer release tag found, "" if none
+	updateShownAt     time.Time       // popup ignores keys for a moment so in-flight typing can't answer it
+	updateOpen        bool
+	updateErr         string // last install failure, shown in the popup with a retry
+	updateCheckFailed bool
+	updateHeld        bool // popup waited behind another prompt; restart its key grace when it shows
+	updating          bool
+	dismissed         string // tag the user said "later" to
+	restart           string // after an upgrade: binary to exec once the TUI exits
 }
 
 // updateCheckInterval is how often ccs asks GitHub for a newer release. The
@@ -228,7 +233,10 @@ func (p *updateProgress) String() string {
 	return fmt.Sprintf("%s (%ds)", p.step, int(time.Since(p.started).Seconds()))
 }
 
-type latestMsg struct{ tag string }
+type latestMsg struct {
+	tag string
+	err error
+}
 type upgradeDoneMsg struct {
 	path string
 	err  error
@@ -237,8 +245,8 @@ type upgradeDoneMsg struct {
 func (m model) checkUpdateCmd() tea.Cmd {
 	check := m.checkLatest
 	return func() tea.Msg {
-		tag, _ := check() // a failed check just means no popup this time
-		return latestMsg{tag}
+		tag, err := check()
+		return latestMsg{tag, err}
 	}
 }
 
@@ -326,6 +334,10 @@ func chooseUpgrader(exe string) *upgrader {
 					return "", err
 				}
 				// brew cleans up the old keg, so restart via the linked binary on PATH.
+				// Restart the ccs this brew manages, not whatever ccs is first on PATH.
+				if exe := filepath.Join(filepath.Dir(brew), "ccs"); fileExists(exe) {
+					return exe, nil
+				}
 				return exec.LookPath("ccs")
 			},
 		}
@@ -426,6 +438,18 @@ func installBinary(exe string, bin []byte) error {
 	return os.Rename(tmp.Name(), exe)
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// Size caps for self-update downloads: generous for a ~7MB release, but a
+// bogus or hostile asset can't exhaust memory before the user says yes.
+const (
+	maxDownload = 100 << 20
+	maxBinary   = 200 << 20
+)
+
 func download(url string) ([]byte, error) {
 	client := http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Get(url)
@@ -436,7 +460,11 @@ func download(url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download %s: %s", url, resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
+	if err == nil && len(body) > maxDownload {
+		return nil, fmt.Errorf("download %s: larger than %dMB", url, maxDownload>>20)
+	}
+	return body, err
 }
 
 // checksumFor finds name's sha256 in a checksums.txt ("<hex>  <name>" lines).
@@ -464,7 +492,10 @@ func binaryFromTarGz(archive []byte, name string) ([]byte, error) {
 			return nil, err
 		}
 		if h.Typeflag == tar.TypeReg && filepath.Base(h.Name) == name {
-			return io.ReadAll(tr)
+			if h.Size > maxBinary {
+				return nil, fmt.Errorf("%s in release archive is %dMB, over the %dMB limit", name, h.Size>>20, maxBinary>>20)
+			}
+			return io.ReadAll(io.LimitReader(tr, maxBinary))
 		}
 	}
 }
@@ -481,6 +512,11 @@ type refreshTickMsg struct{}
 const liveInterval = 2 * time.Second
 
 type liveTickMsg struct{}
+
+type focusDoneMsg struct {
+	pid   int
+	found bool
+}
 
 type liveMsg struct {
 	live    map[string]bool
@@ -501,7 +537,7 @@ func (m model) liveCmd() tea.Cmd {
 	for _, item := range m.items {
 		byID[item.conv.SessionID] = item.conv
 	}
-	wasLive, gen := m.live, m.gen
+	wasLive, gen := maps.Clone(m.live), m.gen
 	return func() tea.Msg {
 		live := readLiveSessions()
 		msg := liveMsg{live: live, gen: gen}
@@ -527,23 +563,55 @@ func (m model) liveCmd() tea.Cmd {
 }
 
 // applyLive swaps updated conversations into the list, re-sorted by last
-// activity, keeping the cursor on the same conversation.
+// activity, keeping the cursor on the same conversation. Unlike a full
+// refresh it only re-matches and re-counts the changed rows, so a streaming
+// session doesn't rebuild every cache on the UI goroutine each tick.
 func (m *model) applyLive(updated []Conversation) {
-	byID := make(map[string]Conversation, len(updated))
-	for _, c := range updated {
-		byID[c.SessionID] = c
+	byID := make(map[string]listItem, len(updated))
+	for _, item := range buildItems(updated) {
+		byID[item.conv.SessionID] = item
 	}
 	items := make([]listItem, len(m.items))
 	for i, item := range m.items {
-		if c, ok := byID[item.conv.SessionID]; ok {
-			item = buildItems([]Conversation{c})[0]
+		if u, ok := byID[item.conv.SessionID]; ok {
+			item = u
 		}
 		items[i] = item
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].conv.LastTimestamp > items[j].conv.LastTimestamp
 	})
-	m.applyRefresh(refreshMsg{items: items, live: m.live})
+
+	var selectedID string
+	if len(m.filtered) > 0 {
+		selectedID = m.filtered[m.cursor].conv.SessionID
+	}
+	shown := make(map[string]bool, len(m.filtered))
+	for _, item := range m.filtered {
+		shown[item.conv.SessionID] = true
+	}
+	query := strings.ToLower(m.textInput.Value())
+	filtered := make([]listItem, 0, len(m.filtered)+len(updated))
+	for _, item := range items {
+		match := shown[item.conv.SessionID]
+		if _, changed := byID[item.conv.SessionID]; changed {
+			match = query == "" || strings.Contains(item.searchLower, query)
+			if m.hits != nil {
+				delete(m.hits.byID, item.conv.SessionID)
+			}
+		}
+		if match {
+			filtered = append(filtered, item)
+		}
+	}
+	m.items, m.filtered = items, filtered
+	m.cursor = min(m.cursor, max(0, len(filtered)-1))
+	for i, item := range filtered {
+		if item.conv.SessionID == selectedID {
+			m.cursor = i
+			break
+		}
+	}
 }
 
 type refreshMsg struct {
@@ -621,16 +689,16 @@ var processStartTimes = func(live map[string]int) map[int]time.Time {
 	for _, pid := range live {
 		pids = append(pids, strconv.Itoa(pid))
 	}
-	cmd := exec.Command("ps", "-o", "pid=,lstart=", "-p", strings.Join(pids, ","))
-	cmd.Env = append(os.Environ(), "LC_ALL=C") // fixed lstart layout, in local time
-	raw, _ := cmd.Output()
+	// Fixed lstart layout, in UTC like procStart: local time is ambiguous in
+	// the hour clocks go back.
+	raw, _ := runBounded(2*time.Second, []string{"LC_ALL=C", "TZ=UTC"}, "ps", "-o", "pid=,lstart=", "-p", strings.Join(pids, ","))
 	for _, line := range strings.Split(string(raw), "\n") {
 		pidStr, rest, ok := strings.Cut(strings.TrimSpace(line), " ")
 		pid, err := strconv.Atoi(pidStr)
 		if !ok || err != nil {
 			continue
 		}
-		if t, err := time.ParseInLocation(time.ANSIC, strings.Join(strings.Fields(rest), " "), time.Local); err == nil {
+		if t, err := time.Parse(time.ANSIC, strings.Join(strings.Fields(rest), " ")); err == nil {
 			out[pid] = t
 		}
 	}
@@ -695,6 +763,27 @@ func (m *model) isLive(id string) bool {
 	}
 	m.live = fresh
 	return fresh[id]
+}
+
+// keepNewer returns scanned, but where the list already holds a newer copy of
+// a conversation (the live tick parsed more of its file after the scan read
+// it), keeps that copy, so a slow scan can't roll a live session back.
+func keepNewer(current, scanned []listItem) []listItem {
+	have := make(map[string]listItem, len(current))
+	for _, item := range current {
+		have[item.conv.SessionID] = item
+	}
+	out := make([]listItem, len(scanned))
+	for i, item := range scanned {
+		if cur, ok := have[item.conv.SessionID]; ok && cur.conv.FilePath == item.conv.FilePath && cur.conv.Size > item.conv.Size {
+			item = cur
+		}
+		out[i] = item
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].conv.LastTimestamp > out[j].conv.LastTimestamp
+	})
+	return out
 }
 
 // startRefresh begins a full scan off the UI goroutine.
@@ -813,7 +902,7 @@ func (m model) previewLines() []string {
 	if m.preview == nil { // model built without initialModel (e.g. tests)
 		return buildPreviewLines(conv, query)
 	}
-	key := conv.SessionID + "\x00" + query
+	key := fmt.Sprintf("%s\x00%d\x00%s", conv.SessionID, conv.Size, query)
 	if m.preview.key != key {
 		m.preview.key = key
 		m.preview.lines = buildPreviewLines(conv, query)
@@ -881,6 +970,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.startRefresh(false)
 
+	case focusDoneMsg:
+		if !msg.found {
+			m.errorMsg = "Session is open in claude but its terminal wasn't found - Ctrl+F forks it"
+		}
+		return m, nil
+
 	case liveTickMsg:
 		return m, m.liveCmd()
 
@@ -901,15 +996,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		m.refreshStarted = time.Time{}
 		m.refreshFailed = msg.err != nil
-		if msg.err == nil {
-			m.lastRefresh = time.Now()
-		}
 		m.live = msg.live // liveness is independent of the list, never stale-dropped
 		// Delete/prune/rename prompts hold an index into m.filtered, so don't
 		// reshuffle it under them; and a scan that started before a delete,
 		// prune or rename would undo it. The next tick catches up.
-		if msg.gen == m.gen && !m.prompting() {
-			m.applyRefresh(msg)
+		if msg.gen == m.gen && !m.prompting() && msg.err == nil {
+			m.applyRefresh(refreshMsg{items: keepNewer(m.items, msg.items), live: msg.live})
+			m.lastRefresh = time.Now()
 		}
 		if msg.early {
 			return m, nil // the one-minute chain is still ticking on its own
@@ -920,6 +1013,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.checkUpdateCmd()
 
 	case latestMsg:
+		m.updateCheckFailed = msg.err != nil
 		if newerVersion(msg.tag, version) && msg.tag != m.dismissed && !m.updating {
 			if msg.tag != m.updateTo {
 				m.updateOpen = true
@@ -941,7 +1035,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case upgradeDoneMsg:
 		m.updating = false
 		if msg.err != nil {
-			m.errorMsg = fmt.Sprintf("Update failed: %v", msg.err)
+			// Keep the offer open with the reason, so the failure can't vanish
+			// on the next keypress and Enter retries.
+			m.updateErr = msg.err.Error()
+			m.updateOpen = true
+			m.updateShownAt = time.Now()
 			return m, nil
 		}
 		m.restart = msg.path
@@ -968,6 +1066,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.updating = true
+				m.updateErr = ""
 				m.progress = &updateProgress{step: "starting", started: time.Now()}
 				upgrade, tag, progress := m.upgrade, m.updateTo, m.progress
 				return m, tea.Batch(func() tea.Msg {
@@ -1051,20 +1150,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			conv := m.filtered[m.cursor].conv
 			// Already running: jump to it rather than resuming a second copy
-			// that would write to the same transcript.
-			if pid, ok := liveSessionPIDs()[conv.SessionID]; ok {
-				if !focusSession(pid) {
-					m.errorMsg = fmt.Sprintf("Session is open in claude (pid %d) but its terminal wasn't found - Ctrl+F forks it", pid)
+			// that would write to the same transcript. m.live is at most one
+			// live tick old; the lookup and focus run off the UI goroutine.
+			if m.live[conv.SessionID] {
+				id := conv.SessionID
+				return m, func() tea.Msg {
+					pid, ok := liveSessionPIDs()[id]
+					return focusDoneMsg{pid: pid, found: ok && focusSession(pid)}
 				}
-				return m, nil
 			}
 			// In iTerm the session opens in its own tab, so ccs stays up and
 			// you can resume another conversation.
 			if openResumeTab(conv, m.claudeFlags) {
-				if m.live == nil {
-					m.live = make(map[string]bool)
+				// Live before claude has written its session file. Copied, not
+				// mutated: an in-flight live tick may be reading the old map.
+				live := maps.Clone(m.live)
+				if live == nil {
+					live = make(map[string]bool)
 				}
-				m.live[conv.SessionID] = true // before claude has written its session file
+				live[conv.SessionID] = true
+				m.live = live
 				return m, nil
 			}
 			m.selected = &conv
@@ -1184,6 +1289,9 @@ func (m model) View() string {
 
 	// Title line with help right-aligned
 	note := m.refreshNote()
+	if m.updateCheckFailed && m.updateTo == "" {
+		note += " · update check failed"
+	}
 	status := ""
 	if m.refreshStalled() {
 		status = fmt.Sprintf(" · refresh stalled %dm", int(time.Since(m.refreshStarted).Minutes()))
@@ -1298,7 +1406,12 @@ func (m model) View() string {
 // updatePopup renders the update offer in place of the preview pane.
 func (m model) updatePopup() string {
 	body := fmt.Sprintf("ccs %s is available (you have v%s).\n\n", m.updateTo, version)
-	if m.upgrade != nil {
+	if m.updateErr != "" {
+		body = fmt.Sprintf("Updating to %s failed:\n%s\n\n", m.updateTo, truncate(m.updateErr, 60))
+	}
+	if m.upgrade != nil && m.updateErr != "" {
+		body += "Enter: retry    Esc: later"
+	} else if m.upgrade != nil {
 		body += "Enter: update and restart    Esc: later"
 	} else {
 		body += "Update with your package manager.    Esc: close"
@@ -1666,11 +1779,11 @@ func parseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 		return nil, err
 	}
 	defer file.Close()
-	complete, total, err := consumeLines(conv, file)
+	complete, total, tail, err := consumeLines(conv, file)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	conv.parsedBytes, conv.Size = complete, total
+	conv.parsedBytes, conv.Size, conv.tailApplied = complete, total, tail
 	if len(conv.Messages) == 0 {
 		return nil, nil
 	}
@@ -1682,9 +1795,10 @@ func parseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 
 // parseAppended brings prev up to date with its file, parsing only the lines
 // appended since prev was parsed, so a live 100MB transcript costs only its
-// new lines. Falls back to a full parse when that isn't safe (the file shrank,
-// e.g. after a prune, or prev ended mid-line). Returns prev itself when the
-// file hasn't grown.
+// new lines. A line caught mid-write wasn't applied, so parsing resumes at it.
+// Falls back to a full parse when resuming isn't safe: the file shrank (e.g.
+// a prune) or an unterminated last line was applied as a record. Returns prev
+// itself when the file hasn't grown.
 func parseAppended(prev *Conversation) (*Conversation, error) {
 	info, err := os.Stat(prev.FilePath)
 	if err != nil {
@@ -1693,7 +1807,7 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 	if info.Size() == prev.Size {
 		return prev, nil
 	}
-	if info.Size() < prev.Size || prev.parsedBytes != prev.Size {
+	if info.Size() < prev.Size || prev.tailApplied {
 		return parseConversationFile(prev.FilePath, time.Time{}, 0)
 	}
 	file, err := os.Open(prev.FilePath)
@@ -1709,25 +1823,19 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 	if c.Cwd == "unknown" {
 		c.Cwd = ""
 	}
-	oldTitle, oldN := c.Title, len(c.Messages)
-	complete, total, err := consumeLines(&c, file)
+	complete, total, tail, err := consumeLines(&c, file)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", prev.FilePath, err)
 	}
 	c.parsedBytes = prev.parsedBytes + complete
 	c.Size = prev.parsedBytes + total
+	c.tailApplied = tail
 	finishParse(&c)
-	if c.Title != oldTitle {
+	// Rebuilt exactly as a full parse would, and only when something it
+	// covers changed: most appends are tool calls with no searchable text.
+	if len(c.Messages) != len(prev.Messages) || c.Title != prev.Title || c.Cwd != prev.Cwd || c.FirstTimestamp != prev.FirstTimestamp {
 		c.searchText = searchTextOf(c)
 		c.searchLower = strings.ToLower(c.searchText)
-	} else {
-		parts := []string{formatTimestamp(c.LastTimestamp)}
-		for _, msg := range c.Messages[oldN:] {
-			parts = append(parts, msg.Text)
-		}
-		more := " " + strings.Join(parts, " ")
-		c.searchText += more
-		c.searchLower += strings.ToLower(more)
 	}
 	if info, err := file.Stat(); err == nil {
 		parseCacheMu.Lock()
@@ -1738,33 +1846,36 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 }
 
 // consumeLines parses JSONL records from r into conv. complete counts bytes
-// up to the last newline; total includes a trailing unterminated line, which
-// is still parsed (a finished file may lack the final newline) but makes the
-// next parse of this file a full one.
-func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, err error) {
+// up to the last newline; total includes a trailing unterminated line. That
+// line is still parsed (a finished file may lack the final newline); tail
+// reports whether it held a whole record, as opposed to a write in progress.
+func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, tail bool, err error) {
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
 			total += int64(len(line))
+			applied := parseLine(conv, line)
 			if line[len(line)-1] == '\n' {
 				complete = total
+			} else {
+				tail = applied
 			}
-			parseLine(conv, line)
 		}
 		if err == io.EOF {
-			return complete, total, nil
+			return complete, total, tail, nil
 		}
 		if err != nil {
-			return complete, total, err
+			return complete, total, tail, err
 		}
 	}
 }
 
-func parseLine(conv *Conversation, line []byte) {
+// parseLine applies one JSONL record to conv; false if it isn't valid JSON.
+func parseLine(conv *Conversation, line []byte) bool {
 	var raw RawMessage
 	if err := json.Unmarshal(line, &raw); err != nil {
-		return
+		return false
 	}
 	switch raw.Type {
 	case "custom-title":
@@ -1802,6 +1913,7 @@ func parseLine(conv *Conversation, line []byte) {
 			conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: text, Ts: raw.Timestamp})
 		}
 	}
+	return true
 }
 
 func finishParse(conv *Conversation) {
@@ -2024,13 +2136,18 @@ func (m *model) renameConversation(name string) {
 		return
 	}
 	m.gen++
+	// The file grew, so the next live tick or scan reparses it; drop the
+	// cached copy rather than let anything build on it.
+	parseCacheMu.Lock()
+	delete(parseCache, conv.FilePath)
+	parseCacheMu.Unlock()
 	for _, items := range [][]listItem{m.items, m.filtered} {
 		for i := range items {
 			if items[i].conv.SessionID == conv.SessionID {
-				items[i].conv.Title = name
-				items[i].conv.IsCustomTitle = true
-				items[i].searchText += " " + name
-				items[i].searchLower += " " + strings.ToLower(name)
+				c := items[i].conv
+				c.Title, c.IsCustomTitle = name, true
+				c.searchText = "" // rebuilt by buildItems, exactly as a full parse would
+				items[i] = buildItems([]Conversation{c})[0]
 			}
 		}
 	}
@@ -2684,19 +2801,32 @@ func resumeInTmuxWindow(cwd string, args []string) bool {
 	return exec.Command("tmux", tmuxArgs...).Run() == nil
 }
 
+// runBounded runs an external command with a deadline, so a hung ps, tmux
+// server or unresponsive iTerm can't stall ccs indefinitely.
+func runBounded(timeout time.Duration, env []string, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	return cmd.Output()
+}
+
 // focusSession brings the terminal running pid to the front: its tmux pane
 // when ccs is in tmux, else its iTerm tab. Matched by the process's tty.
 func focusSession(pid int) bool {
-	out, err := exec.Command("ps", "-o", "tty=", "-p", strconv.Itoa(pid)).Output()
+	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
 	tty := strings.TrimSpace(string(out))
 	if err != nil || tty == "" || tty == "??" {
 		return false
 	}
 	tty = "/dev/" + tty
 	if os.Getenv("TMUX") != "" {
-		panes, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}").Output()
+		panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
 		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
-			return exec.Command("tmux", "switch-client", "-t", target, ";", "select-window", "-t", target, ";", "select-pane", "-t", target).Run() == nil
+			_, err := runBounded(5*time.Second, nil, "tmux", "switch-client", "-t", target, ";", "select-window", "-t", target, ";", "select-pane", "-t", target)
+			return err == nil
 		}
 	}
 	if os.Getenv("TERM_PROGRAM") != "iTerm.app" {
@@ -2717,7 +2847,7 @@ func focusSession(pid int) bool {
 		end repeat
 	end repeat
 end tell`, tty)
-	out, err = exec.Command("osascript", "-e", script).Output()
+	out, err = runBounded(5*time.Second, nil, "osascript", "-e", script)
 	return err == nil && strings.TrimSpace(string(out)) == "found"
 }
 

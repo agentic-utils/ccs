@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1979,12 +1980,14 @@ func TestEnterOnLiveSessionFocusesInsteadOfResuming(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "") // no terminal to focus in the test
 
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.live = map[string]bool{"s": true}
 	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(model)
-	if m.selected != nil || m.quitting || cmd != nil {
-		t.Error("enter on a live session must not resume a second copy")
+	if m.selected != nil || m.quitting || cmd == nil {
+		t.Fatal("enter on a live session must focus it (in the background), not resume a second copy")
 	}
-	if !strings.Contains(m.errorMsg, "Ctrl+F") {
+	res, _ = m.Update(cmd())
+	if m = res.(model); !strings.Contains(m.errorMsg, "Ctrl+F") {
 		t.Errorf("unfocusable live session should point at fork, got %q", m.errorMsg)
 	}
 }
@@ -2091,7 +2094,7 @@ func TestUpdatePopupFlow(t *testing.T) {
 		return "/bin/ccs", nil
 	}}
 
-	res, cmd := m.Update(latestMsg{"v0.25.0"})
+	res, cmd := m.Update(latestMsg{tag: "v0.25.0"})
 	m = res.(model)
 	if !m.updateOpen || cmd == nil {
 		t.Fatal("newer release should open the popup and schedule the next check")
@@ -2123,18 +2126,18 @@ func TestUpdatePopupLaterAndFailure(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", fmt.Errorf("network down") }}
 
-	res, _ := m.Update(latestMsg{"v0.25.0"})
+	res, _ := m.Update(latestMsg{tag: "v0.25.0"})
 	m = res.(model)
 	m.updateShownAt = time.Now().Add(-2 * updateKeyGrace)
 	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m = res.(model); m.updateOpen || m.quitting {
 		t.Fatal("esc should dismiss the popup, not quit ccs")
 	}
-	res, _ = m.Update(latestMsg{"v0.25.0"})
+	res, _ = m.Update(latestMsg{tag: "v0.25.0"})
 	if m = res.(model); m.updateOpen {
 		t.Error("a dismissed version should not pop up again this session")
 	}
-	res, _ = m.Update(latestMsg{"v0.26.0"})
+	res, _ = m.Update(latestMsg{tag: "v0.26.0"})
 	if m = res.(model); !m.updateOpen {
 		t.Error("an even newer version should pop up again")
 	}
@@ -2143,8 +2146,12 @@ func TestUpdatePopupLaterAndFailure(t *testing.T) {
 	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(model)
 	res, _ = m.Update(firstOfBatch(cmd))
-	if m = res.(model); m.restart != "" || !strings.Contains(m.errorMsg, "network down") {
-		t.Errorf("failed upgrade should show an error and not restart, got %q", m.errorMsg)
+	if m = res.(model); m.restart != "" || !m.updateOpen || !strings.Contains(m.updateErr, "network down") {
+		t.Errorf("failed upgrade should reopen the popup with the error, got open=%v err=%q", m.updateOpen, m.updateErr)
+	}
+	m.width, m.height = 100, 30
+	if v := m.View(); !strings.Contains(v, "network down") || !strings.Contains(v, "retry") {
+		t.Error("popup should show the failure and offer a retry")
 	}
 }
 
@@ -2153,7 +2160,7 @@ func TestUpdatePopupWithoutBrew(t *testing.T) {
 	version = "0.24.1"
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 100, 30
-	res, _ := m.Update(latestMsg{"v0.25.0"})
+	res, _ := m.Update(latestMsg{tag: "v0.25.0"})
 	m = res.(model)
 	if !strings.Contains(m.View(), "package manager") {
 		t.Error("non-Homebrew installs should be told to update themselves")
@@ -2395,7 +2402,7 @@ func TestUpdatePopupWaitsBehindPrompts(t *testing.T) {
 	m.renameInput = textinput.New()
 	m.renameInput.Focus()
 
-	res, _ := m.Update(latestMsg{"v0.27.2"})
+	res, _ := m.Update(latestMsg{tag: "v0.27.2"})
 	m = res.(model)
 	m.updateShownAt = time.Now().Add(-time.Hour) // grace long gone
 	if strings.Contains(m.View(), "is available") {
@@ -2590,5 +2597,121 @@ func TestUnknownLiveSessionTriggersEarlyScanOnce(t *testing.T) {
 	res, _ = m.Update(liveMsg{live: map[string]bool{"new": true}, unknown: true})
 	if m = res.(model); !m.refreshStarted.IsZero() {
 		t.Error("a second kick within 15s should wait")
+	}
+}
+
+func TestStaleFullScanDoesNotRollBackLiveContent(t *testing.T) {
+	old := Conversation{SessionID: "b", FilePath: "/b", Size: 100, LastTimestamp: "2026-09-25T09:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}}
+	newer := old
+	newer.Size, newer.LastTimestamp = 200, "2026-09-25T11:00:00Z"
+	newer.Messages = append(slices.Clone(old.Messages), Message{Role: "assistant", Text: "needle"})
+	a := Conversation{SessionID: "a", FilePath: "/a", Size: 10, LastTimestamp: "2026-09-25T10:00:00Z", Messages: []Message{{Role: "user", Text: "a"}}}
+
+	m := initialModel(buildItems([]Conversation{newer, a}), "needle", nil)
+	if len(m.filtered) != 1 || m.filtered[0].conv.SessionID != "b" {
+		t.Fatal("setup: b should match the query")
+	}
+	// A scan that read b before its latest reply lands afterwards.
+	res, _ := m.Update(refreshMsg{items: buildItems([]Conversation{a, old})})
+	m = res.(model)
+	if len(m.filtered) != 1 || m.filtered[m.cursor].conv.SessionID != "b" || m.filtered[0].conv.Size != 200 {
+		t.Errorf("stale scan rolled b back or moved the selection: %+v", m.filtered)
+	}
+}
+
+func TestParseAppendedResumesAfterLineCaughtMidWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	line := func(text string) string {
+		return `{"type":"user","cwd":"/p","message":{"content":"` + text + `"},"timestamp":"t"}` + "\n"
+	}
+	partial := line("beta")[:20] // a write in progress: not valid JSON yet
+	if err := os.WriteFile(path, []byte(line("alpha")+partial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev, _ := parseConversationFile(path, time.Time{}, 0)
+	if prev.tailApplied || prev.parsedBytes == prev.Size {
+		t.Fatal("setup: partial tail should be read but not applied")
+	}
+	appendTo(t, path, line("beta")[20:])
+	c, err := parseAppended(prev)
+	if err != nil || len(c.Messages) != 2 || c.Messages[1].Text != "beta" {
+		t.Fatalf("should resume at the partial line, got %+v, %v", c, err)
+	}
+	full, _ := parseConversationUncached(path, mustStat(t, path))
+	if c.searchText != full.searchText {
+		t.Errorf("incremental search text differs from a full parse:\n%q\n%q", c.searchText, full.searchText)
+	}
+}
+
+func TestParseAppendedSearchTextMatchesFullParse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	// Starts with no cwd; a later meta line supplies it. Messages arrive over
+	// two ticks, so a phrase spans them.
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"alpha"},"timestamp":"2026-09-25T10:00:00Z"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := parseConversationFile(path, time.Time{}, 0)
+	appendTo(t, path, `{"type":"user","isMeta":true,"cwd":"/newproject","message":{"content":"x"},"timestamp":"2026-09-25T10:01:00Z"}`+"\n")
+	c, _ = parseAppended(c)
+	appendTo(t, path, `{"type":"assistant","message":{"content":[{"type":"text","text":"beta"}]},"timestamp":"2026-09-25T10:02:00Z"}`+"\n")
+	c, _ = parseAppended(c)
+	full, _ := parseConversationUncached(path, mustStat(t, path))
+	if c.searchText != full.searchText || !strings.Contains(c.searchLower, "/newproject") {
+		t.Errorf("drift from full parse:\n%q\n%q", c.searchText, full.searchText)
+	}
+}
+
+func TestRenameRebuildsSearchTextAndDropsCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"t"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	conv, _ := parseConversationFile(path, time.Time{}, 0)
+	m := initialModel(buildItems([]Conversation{*conv}), "", nil)
+	m.renameIndex = 0
+	m.renameConversation("Shiny Name")
+	if !strings.Contains(m.items[0].conv.searchLower, "shiny name") || !strings.Contains(m.items[0].searchLower, "shiny name") {
+		t.Error("rename should rebuild the conversation's own search text")
+	}
+	parseCacheMu.Lock()
+	_, cached := parseCache[path]
+	parseCacheMu.Unlock()
+	if cached {
+		t.Error("rename should drop the stale parse cache entry")
+	}
+	// The next live read builds on the renamed conversation and keeps the name searchable.
+	c, err := parseAppended(&m.items[0].conv)
+	if err != nil || !strings.Contains(c.searchLower, "shiny name") {
+		t.Errorf("renamed session lost its name from search: %v", err)
+	}
+}
+
+func TestApplyLiveKeepsUnrelatedCaches(t *testing.T) {
+	sel := Conversation{SessionID: "sel", Size: 1, LastTimestamp: "2026-09-25T09:00:00Z", Messages: []Message{{Role: "user", Text: "selected"}}}
+	other := Conversation{SessionID: "other", Size: 1, LastTimestamp: "2026-09-25T08:00:00Z", Messages: []Message{{Role: "user", Text: "other"}}}
+	m := initialModel(buildItems([]Conversation{sel, other}), "", nil)
+	lines := m.previewLines()
+	grown := other
+	grown.Size = 2
+	grown.Messages = append(slices.Clone(other.Messages), Message{Role: "assistant", Text: "more"})
+	m.applyLive([]Conversation{grown})
+	if m.filtered[m.cursor].conv.SessionID != "sel" {
+		t.Fatal("cursor moved")
+	}
+	if got := m.previewLines(); &got[0] != &lines[0] {
+		t.Error("selected preview should not be rebuilt when another session changed")
+	}
+}
+
+func TestUpdateCheckFailureShowsInHeader(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 160, 30
+	res, _ := m.Update(latestMsg{err: fmt.Errorf("dns")})
+	if m = res.(model); !strings.Contains(m.View(), "update check failed") {
+		t.Error("a failed update check should be visible")
+	}
+	res, _ = m.Update(latestMsg{tag: "v0.0.1"})
+	if m = res.(model); strings.Contains(m.View(), "update check failed") {
+		t.Error("a later successful check clears it")
 	}
 }

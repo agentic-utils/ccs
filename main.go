@@ -54,6 +54,11 @@ type Conversation struct {
 	// Built once at parse and shared through parseCache, so a refresh
 	// doesn't rebuild the search text of unchanged conversations.
 	searchText, searchLower string
+
+	// Incremental parsing state: bytes consumed up to the last complete line,
+	// and whether a user line was seen (it decides Spawned).
+	parsedBytes int64
+	sawUser     bool
 }
 
 // RawMessage represents the JSON structure in conversation files
@@ -127,6 +132,7 @@ type model struct {
 	gen             int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
 	refreshStarted  time.Time                  // when the in-flight scan began; zero when none
 	lastRefresh     time.Time                  // when the list last matched disk (startup or a completed scan)
+	lastKick        time.Time                  // last full scan started early because an unknown session went live
 	refreshFailed   bool                       // the last scan errored; the list is from lastRefresh
 
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
@@ -469,11 +475,83 @@ const refreshInterval = time.Minute
 
 type refreshTickMsg struct{}
 
+// liveInterval is how often ccs re-reads which sessions are live and picks
+// up new lines in live (and just-exited) sessions. Cheap: ~10 small files
+// plus one stat per live transcript, and only appended lines are parsed.
+const liveInterval = 2 * time.Second
+
+type liveTickMsg struct{}
+
+type liveMsg struct {
+	live    map[string]bool
+	updated []Conversation // live conversations whose transcript grew
+	unknown bool           // a live session isn't in the list yet
+	gen     int
+}
+
+func liveTick() tea.Cmd {
+	return tea.Tick(liveInterval, func(time.Time) tea.Msg { return liveTickMsg{} })
+}
+
+// liveCmd refreshes liveness and the content of live sessions off the UI
+// goroutine. Sessions that were live last tick are checked too, so a
+// session's final lines land promptly after claude exits.
+func (m model) liveCmd() tea.Cmd {
+	byID := make(map[string]Conversation, len(m.live))
+	for _, item := range m.items {
+		byID[item.conv.SessionID] = item.conv
+	}
+	wasLive, gen := m.live, m.gen
+	return func() tea.Msg {
+		live := readLiveSessions()
+		msg := liveMsg{live: live, gen: gen}
+		check := make(map[string]bool, len(live)+len(wasLive))
+		for id := range live {
+			check[id] = true
+		}
+		for id := range wasLive {
+			check[id] = true
+		}
+		for id := range check {
+			conv, ok := byID[id]
+			if !ok {
+				msg.unknown = msg.unknown || live[id]
+				continue
+			}
+			if c, err := parseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
+				msg.updated = append(msg.updated, *c)
+			}
+		}
+		return msg
+	}
+}
+
+// applyLive swaps updated conversations into the list, re-sorted by last
+// activity, keeping the cursor on the same conversation.
+func (m *model) applyLive(updated []Conversation) {
+	byID := make(map[string]Conversation, len(updated))
+	for _, c := range updated {
+		byID[c.SessionID] = c
+	}
+	items := make([]listItem, len(m.items))
+	for i, item := range m.items {
+		if c, ok := byID[item.conv.SessionID]; ok {
+			item = buildItems([]Conversation{c})[0]
+		}
+		items[i] = item
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].conv.LastTimestamp > items[j].conv.LastTimestamp
+	})
+	m.applyRefresh(refreshMsg{items: items, live: m.live})
+}
+
 type refreshMsg struct {
 	items []listItem
 	err   error // scan failed: keep the current list
 	live  map[string]bool
-	gen   int // m.gen when the scan started
+	gen   int  // m.gen when the scan started
+	early bool // started by the live tick, outside the one-minute schedule
 }
 
 func refreshTick() tea.Cmd {
@@ -617,6 +695,16 @@ func (m *model) isLive(id string) bool {
 	}
 	m.live = fresh
 	return fresh[id]
+}
+
+// startRefresh begins a full scan off the UI goroutine.
+func (m *model) startRefresh(early bool) tea.Cmd {
+	m.refreshStarted = time.Now()
+	reload, gen := m.reload, m.gen
+	return func() tea.Msg {
+		items, err := reload()
+		return refreshMsg{items: items, err: err, live: readLiveSessions(), gen: gen, early: early}
+	}
 }
 
 // applyRefresh swaps in freshly loaded items, keeping the cursor on the same
@@ -766,7 +854,7 @@ func (m *model) updateFilter() {
 func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{textinput.Blink}
 	if m.reload != nil {
-		cmds = append(cmds, refreshTick())
+		cmds = append(cmds, refreshTick(), liveTick())
 	}
 	if m.checkLatest != nil {
 		cmds = append(cmds, m.checkUpdateCmd())
@@ -788,12 +876,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.ClearScreen
 
 	case refreshTickMsg:
-		m.refreshStarted = time.Now()
-		reload, gen := m.reload, m.gen
-		return m, func() tea.Msg {
-			items, err := reload()
-			return refreshMsg{items: items, err: err, live: readLiveSessions(), gen: gen}
+		if !m.refreshStarted.IsZero() { // an early scan is running; keep the schedule
+			return m, refreshTick()
 		}
+		return m, m.startRefresh(false)
+
+	case liveTickMsg:
+		return m, m.liveCmd()
+
+	case liveMsg:
+		m.live = msg.live
+		if len(msg.updated) > 0 && msg.gen == m.gen && !m.prompting() {
+			m.applyLive(msg.updated)
+		}
+		cmds := []tea.Cmd{liveTick()}
+		// A session that went live but isn't listed (a brand-new conversation):
+		// scan now rather than at the next minute, at most every 15s.
+		if msg.unknown && m.refreshStarted.IsZero() && time.Since(m.lastKick) > 15*time.Second {
+			m.lastKick = time.Now()
+			cmds = append(cmds, m.startRefresh(true))
+		}
+		return m, tea.Batch(cmds...)
 
 	case refreshMsg:
 		m.refreshStarted = time.Time{}
@@ -807,6 +910,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// prune or rename would undo it. The next tick catches up.
 		if msg.gen == m.gen && !m.prompting() {
 			m.applyRefresh(msg)
+		}
+		if msg.early {
+			return m, nil // the one-minute chain is still ticking on its own
 		}
 		return m, refreshTick()
 
@@ -1551,100 +1657,160 @@ var (
 )
 
 func parseConversationUncached(path string, info os.FileInfo) (*Conversation, error) {
-	sessionID := strings.TrimSuffix(info.Name(), ".jsonl")
 	conv := &Conversation{
-		SessionID: sessionID,
+		SessionID: strings.TrimSuffix(info.Name(), ".jsonl"),
 		FilePath:  path,
-		Size:      info.Size(),
 	}
-
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-
-	seenUser := false
-	scanner := bufio.NewScanner(file)
-	// A single JSONL line holds a whole turn - a big tool result or a base64
-	// image can be tens of MB. ponytail: 64MB ceiling; if a line ever exceeds
-	// it the scanner.Err() check below skips the file rather than silently
-	// truncating the parse.
-	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
-
-	for scanner.Scan() {
-		lineBytes := scanner.Bytes()
-
-		var raw RawMessage
-		if err := json.Unmarshal(lineBytes, &raw); err != nil {
-			continue
-		}
-
-		if raw.Type == "custom-title" {
-			conv.Title = raw.CustomTitle // user-set name wins over ai-title
-			conv.IsCustomTitle = raw.CustomTitle != ""
-		} else if raw.Type == "ai-title" {
-			if conv.Title == "" {
-				conv.Title = raw.AiTitle
-			}
-		} else if raw.Type == "user" {
-			if !seenUser {
-				// The first user line says how the session was started.
-				seenUser = true
-				conv.Spawned = raw.Entrypoint == "sdk-cli" || raw.TeamName != ""
-			}
-			if conv.Cwd == "" {
-				conv.Cwd = raw.Cwd
-			}
-			// isMeta lines are harness-injected (e.g. the local-command caveat).
-			if text := extractText(raw.Message.Content); !raw.IsMeta && strings.TrimSpace(text) != "" {
-				if conv.FirstTimestamp == "" {
-					conv.FirstTimestamp = raw.Timestamp
-				}
-				conv.Messages = append(conv.Messages, Message{
-					Role: "user",
-					Text: text,
-					Ts:   raw.Timestamp,
-				})
-			}
-		} else if raw.Type == "assistant" {
-			// Each reply's usage counts the whole conversation it was sent, so
-			// the last one is the current context. Zero-usage lines are
-			// placeholders (e.g. API errors) and would read as an empty context.
-			u := raw.Message.Usage
-			if ctx := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens; ctx > 0 {
-				conv.ContextTokens = ctx
-			}
-			text := extractText(raw.Message.Content)
-			if strings.TrimSpace(text) != "" {
-				conv.Messages = append(conv.Messages, Message{
-					Role: "assistant",
-					Text: text,
-					Ts:   raw.Timestamp,
-				})
-			}
-		}
-	}
-
-	// A scan error (e.g. a line over the buffer cap) leaves the parse partial.
-	// Surface it instead of trusting a silently-truncated conversation.
-	if err := scanner.Err(); err != nil {
+	complete, total, err := consumeLines(conv, file)
+	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-
+	conv.parsedBytes, conv.Size = complete, total
 	if len(conv.Messages) == 0 {
 		return nil, nil
 	}
+	finishParse(conv)
+	conv.searchText = searchTextOf(*conv)
+	conv.searchLower = strings.ToLower(conv.searchText)
+	return conv, nil
+}
 
-	conv.LastTimestamp = conv.Messages[len(conv.Messages)-1].Ts
+// parseAppended brings prev up to date with its file, parsing only the lines
+// appended since prev was parsed, so a live 100MB transcript costs only its
+// new lines. Falls back to a full parse when that isn't safe (the file shrank,
+// e.g. after a prune, or prev ended mid-line). Returns prev itself when the
+// file hasn't grown.
+func parseAppended(prev *Conversation) (*Conversation, error) {
+	info, err := os.Stat(prev.FilePath)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() == prev.Size {
+		return prev, nil
+	}
+	if info.Size() < prev.Size || prev.parsedBytes != prev.Size {
+		return parseConversationFile(prev.FilePath, time.Time{}, 0)
+	}
+	file, err := os.Open(prev.FilePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if _, err := file.Seek(prev.parsedBytes, io.SeekStart); err != nil {
+		return nil, err
+	}
+	c := *prev
+	c.Messages = slices.Clip(prev.Messages) // appends must not write into prev's array
+	if c.Cwd == "unknown" {
+		c.Cwd = ""
+	}
+	oldTitle, oldN := c.Title, len(c.Messages)
+	complete, total, err := consumeLines(&c, file)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", prev.FilePath, err)
+	}
+	c.parsedBytes = prev.parsedBytes + complete
+	c.Size = prev.parsedBytes + total
+	finishParse(&c)
+	if c.Title != oldTitle {
+		c.searchText = searchTextOf(c)
+		c.searchLower = strings.ToLower(c.searchText)
+	} else {
+		parts := []string{formatTimestamp(c.LastTimestamp)}
+		for _, msg := range c.Messages[oldN:] {
+			parts = append(parts, msg.Text)
+		}
+		more := " " + strings.Join(parts, " ")
+		c.searchText += more
+		c.searchLower += strings.ToLower(more)
+	}
+	if info, err := file.Stat(); err == nil {
+		parseCacheMu.Lock()
+		parseCache[c.FilePath] = parsedFile{c.Size, info.ModTime(), &c}
+		parseCacheMu.Unlock()
+	}
+	return &c, nil
+}
 
+// consumeLines parses JSONL records from r into conv. complete counts bytes
+// up to the last newline; total includes a trailing unterminated line, which
+// is still parsed (a finished file may lack the final newline) but makes the
+// next parse of this file a full one.
+func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, err error) {
+	br := bufio.NewReaderSize(r, 1<<20)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			total += int64(len(line))
+			if line[len(line)-1] == '\n' {
+				complete = total
+			}
+			parseLine(conv, line)
+		}
+		if err == io.EOF {
+			return complete, total, nil
+		}
+		if err != nil {
+			return complete, total, err
+		}
+	}
+}
+
+func parseLine(conv *Conversation, line []byte) {
+	var raw RawMessage
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return
+	}
+	switch raw.Type {
+	case "custom-title":
+		conv.Title = raw.CustomTitle // user-set name wins over ai-title
+		conv.IsCustomTitle = raw.CustomTitle != ""
+	case "ai-title":
+		if conv.Title == "" {
+			conv.Title = raw.AiTitle
+		}
+	case "user":
+		if !conv.sawUser {
+			// The first user line says how the session was started.
+			conv.sawUser = true
+			conv.Spawned = raw.Entrypoint == "sdk-cli" || raw.TeamName != ""
+		}
+		if conv.Cwd == "" {
+			conv.Cwd = raw.Cwd
+		}
+		// isMeta lines are harness-injected (e.g. the local-command caveat).
+		if text := extractText(raw.Message.Content); !raw.IsMeta && strings.TrimSpace(text) != "" {
+			if conv.FirstTimestamp == "" {
+				conv.FirstTimestamp = raw.Timestamp
+			}
+			conv.Messages = append(conv.Messages, Message{Role: "user", Text: text, Ts: raw.Timestamp})
+		}
+	case "assistant":
+		// Each reply's usage counts the whole conversation it was sent, so
+		// the last one is the current context. Zero-usage lines are
+		// placeholders (e.g. API errors) and would read as an empty context.
+		u := raw.Message.Usage
+		if ctx := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens; ctx > 0 {
+			conv.ContextTokens = ctx
+		}
+		if text := extractText(raw.Message.Content); strings.TrimSpace(text) != "" {
+			conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: text, Ts: raw.Timestamp})
+		}
+	}
+}
+
+func finishParse(conv *Conversation) {
+	if len(conv.Messages) > 0 {
+		conv.LastTimestamp = conv.Messages[len(conv.Messages)-1].Ts
+	}
 	if conv.Cwd == "" {
 		conv.Cwd = "unknown"
 	}
-	conv.searchText = searchTextOf(*conv)
-	conv.searchLower = strings.ToLower(conv.searchText)
-
-	return conv, nil
 }
 
 func getConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]Conversation, error) {

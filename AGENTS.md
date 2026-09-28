@@ -98,7 +98,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 ### TUI Layout
 
 ```
-  ccs · claude code search    Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc
+  ccs · claude code search    Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Exit:Ctrl+C
   > type to search...                                                     (N/total)
 
   WHEN      PROJECT               TOPIC                    SIZE   CTX  MSGS  HITS

@@ -167,9 +167,13 @@ type model struct {
 	restart           string // after an upgrade: binary to exec once the TUI exits
 }
 
-// updateCheckInterval is how often ccs asks GitHub for a newer release. The
-// unauthenticated API allows 60 requests/hour per IP, so not every refresh.
-const updateCheckInterval = time.Hour
+// How often ccs asks GitHub for a newer release (one ~5KB HEAD request to the
+// releases/latest redirect), and how long it waits after a failed check, so
+// a throttled or offline check doesn't retry every interval from a shared IP.
+const (
+	updateCheckInterval = 2 * time.Minute
+	updateCheckBackoff  = 10 * time.Minute
+)
 
 func updatingTick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return updatingTickMsg{} })
@@ -1171,7 +1175,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.upgrade.Prepare(msg.tag) // download now so Enter only has to install
 			}
 		}
-		return m, tea.Tick(updateCheckInterval, func(time.Time) tea.Msg { return updateCheckTickMsg{} })
+		next := updateCheckInterval
+		if msg.err != nil {
+			next = updateCheckBackoff
+		}
+		return m, tea.Tick(next, func(time.Time) tea.Msg { return updateCheckTickMsg{} })
 
 	case updatingTickMsg:
 		if m.updating {

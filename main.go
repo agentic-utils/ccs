@@ -1286,7 +1286,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+c", "esc":
+		case "esc":
+			// Esc only ever clears the search; Ctrl+C quits.
+			if m.textInput.Value() != "" {
+				m.textInput.SetValue("")
+				m.updateFilter()
+			}
+			return m, nil
+
+		case "ctrl+c":
 			if m.updating {
 				m.errorMsg = "Update in progress - quitting now could leave it half-installed"
 				return m, nil
@@ -1421,7 +1429,7 @@ func (m model) View() string {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
 	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
-	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Exit:Esc"
+	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Exit:Ctrl+C"
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
 		titlePadding = 1
@@ -2803,7 +2811,8 @@ Key bindings:
   Ctrl+X          Prune conversation - shrink it losslessly (with confirmation)
   Ctrl+J/K        Scroll preview
   Ctrl+U          Clear search
-  Esc, Ctrl+C     Quit
+  Esc             Clear the search
+  Ctrl+C          Quit
 
 `, version)
 }

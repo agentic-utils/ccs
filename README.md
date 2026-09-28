@@ -87,7 +87,8 @@ ccs buyer -- --plan
 - `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
 - `Ctrl+J/K` - Scroll preview
 - `Ctrl+U` - Clear search
-- `Esc` / `Ctrl+C` - Quit
+- `Esc` - Clear the search
+- `Ctrl+C` - Quit
 
 ## Pruning
 

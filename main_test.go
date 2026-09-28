@@ -2879,9 +2879,9 @@ func TestStaleSessionFileWithOtherPidDoesNotHideLiveOne(t *testing.T) {
 func TestQuitBlockedDuringUpdate(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.updating = true
-	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if m = res.(model); m.quitting || cmd != nil || m.errorMsg == "" {
-		t.Error("esc during an update must not quit")
+		t.Error("ctrl+c during an update must not quit")
 	}
 }
 
@@ -2956,5 +2956,33 @@ func TestRecoverWorkerKeepsProcessAlive(t *testing.T) {
 	m.width, m.height = 200, 30
 	if !strings.Contains(m.View(), "internal error") {
 		t.Error("header should mention the logged error")
+	}
+}
+
+func TestEscOnlyClearsSearch(t *testing.T) {
+	items := buildItems([]Conversation{
+		{SessionID: "a", Messages: []Message{{Role: "user", Text: "apple"}}},
+		{SessionID: "b", Messages: []Message{{Role: "user", Text: "banana"}}},
+	})
+	m := initialModel(items, "apple", nil)
+	if len(m.filtered) != 1 {
+		t.Fatal("setup: query should filter")
+	}
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = res.(model)
+	if m.quitting || cmd != nil || m.textInput.Value() != "" || len(m.filtered) != 2 {
+		t.Fatalf("esc should clear the search and show everything")
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m = res.(model); m.quitting {
+		t.Error("esc never quits, even on an empty search box")
+	}
+}
+
+func TestCtrlCQuitsEvenWithSearch(t *testing.T) {
+	m := initialModel(nil, "something", nil)
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if m = res.(model); !m.quitting {
+		t.Error("ctrl+c should quit straight away")
 	}
 }

@@ -3072,14 +3072,20 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 
 		msg := conv.Messages[i]
 		ts := formatTimestamp(msg.Ts)
+		day, clock, _ := strings.Cut(ts, " ")
+		newDay := day != "" && day != lastDay
+		if newDay { // the date gets its own row, once per day
+			msgLines = append(msgLines, "\033[90m    ── "+day+" ──\033[0m", "")
+			lastDay = day
+		}
 		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
 			// A message sent from another session or ccs, not typed here.
 			marker := "   "
 			if matchSet[i] {
 				marker = ">>>"
 			}
-			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s %s From %s:\033[0m", marker, ts, from))
-			msgLines = append(msgLines, renderBody(body, query, width)...)
+			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s From %s\033[0m", marker, from))
+			msgLines = append(msgLines, timeGutter(renderBody(body, query, max(width-gutterExtra, 0)), clock)...)
 			msgLines = append(msgLines, "")
 			lastShown, lastRole = i, ""
 			continue
@@ -3091,21 +3097,19 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 			if matchSet[i] {
 				marker = ">>>"
 			}
-			line := fmt.Sprintf("%s ▸ %s", ts, tag)
+			line := "▸ " + tag
 			if summary != "" {
 				line += " · " + summary
 			}
 			if width > 0 {
-				line = truncate(line, width-5) // truncate squeezes spaces, so add the marker after
+				line = truncate(line, width-4-gutterExtra) // truncate squeezes spaces, so add the gutter after
 			}
-			msgLines = append(msgLines, "\033[90m"+marker+" "+highlight(line, query)+"\033[0m", "")
-			lastShown, lastRole = i, ""
+			if lastRole == "harness" && lastShown == i-1 {
+				msgLines = msgLines[:len(msgLines)-1] // consecutive notes stack without blank lines
+			}
+			msgLines = append(msgLines, "\033[90m"+marker+" "+fmt.Sprintf("%-5s", clock)+" "+highlight(line, query)+"\033[0m", "")
+			lastShown, lastRole = i, "harness"
 			continue
-		}
-		day, clock, _ := strings.Cut(ts, " ")
-		newDay := day != "" && day != lastDay
-		if newDay { // the date gets its own row, once per day
-			msgLines = append(msgLines, "\033[90m    ── "+day+" ──\033[0m", "")
 		}
 		if msg.Role != lastRole || newDay || matchSet[i] {
 			name, colour, marker := "Claude", "34", "   "
@@ -3118,9 +3122,6 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 			msgLines = append(msgLines, fmt.Sprintf("\033[%sm%s %s\033[0m", colour, marker, name))
 		}
 		lastRole = msg.Role
-		if day != "" {
-			lastDay = day
-		}
 		msgLines = append(msgLines, timeGutter(renderBody(msg.Text, query, max(width-gutterExtra, 0)), clock)...)
 		msgLines = append(msgLines, "")
 

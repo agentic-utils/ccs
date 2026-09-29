@@ -45,17 +45,22 @@ type Message struct {
 
 // Conversation represents a parsed conversation
 type Conversation struct {
-	SessionID      string    `json:"session_id"`
-	Title          string    `json:"title"`           // custom-title (user-set) or ai-title
-	IsCustomTitle  bool      `json:"is_custom_title"` // true only when Title came from a user-set custom-title
-	Spawned        bool      `json:"spawned"`         // started by a script/another session (sdk-cli) or a team lead, not typed by you
-	Cwd            string    `json:"cwd"`
-	FirstTimestamp string    `json:"first_timestamp"`
-	LastTimestamp  string    `json:"last_timestamp"`
-	Messages       []Message `json:"messages"`
-	FilePath       string    `json:"file_path"`      // Full path to the .jsonl file
-	Size           int64     `json:"size"`           // .jsonl file size in bytes
-	ContextTokens  int       `json:"context_tokens"` // conversation size as of the last reply (input + cache reads/writes)
+	SessionID      string     `json:"session_id"`
+	Title          string     `json:"title"`           // custom-title (user-set) or ai-title
+	IsCustomTitle  bool       `json:"is_custom_title"` // true only when Title came from a user-set custom-title
+	Spawned        bool       `json:"spawned"`         // started by a script/another session (sdk-cli) or a team lead, not typed by you
+	Cwd            string     `json:"cwd"`
+	FirstTimestamp string     `json:"first_timestamp"`
+	LastTimestamp  string     `json:"last_timestamp"`
+	Messages       []Message  `json:"messages"`
+	FilePath       string     `json:"file_path"`      // Full path to the .jsonl file
+	Size           int64      `json:"size"`           // .jsonl file size in bytes
+	ContextTokens  int        `json:"context_tokens"` // conversation size as of the last reply (input + cache reads/writes)
+	PeakContext    int        `json:"peak_context"`   // largest context seen; over 200k proves a 1M window
+	Model          string     `json:"model"`          // model of the last real reply
+	LastError      string     `json:"last_error"`     // latest surfaced API error, cleared by a later successful reply
+	LastErrorTs    string     `json:"last_error_ts"`
+	Usage          tokenUsage `json:"usage"` // summed over replies (main transcript, not subagents)
 
 	// Built once at parse and shared through parseCache, so a refresh
 	// doesn't rebuild the search text of unchanged conversations.
@@ -65,7 +70,8 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	parsedBytes int64
 	sawUser     bool
-	tailApplied bool // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
+	lastUsageID string // one reply spans several lines with the same id and usage; count it once
+	tailApplied bool   // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
 
 	// readAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -78,19 +84,81 @@ type RawMessage struct {
 	Type    string `json:"type"`
 	Cwd     string `json:"cwd"`
 	Message struct {
+		ID      string          `json:"id"`
+		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 		Usage   struct {
 			InputTokens              int `json:"input_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreation            struct {
+				Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
+				Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+			} `json:"cache_creation"`
 		} `json:"usage"`
 	} `json:"message"`
-	Timestamp   string `json:"timestamp"`
-	IsMeta      bool   `json:"isMeta"`     // harness-injected (e.g. the local-command caveat), not typed
-	Entrypoint  string `json:"entrypoint"` // cli / claude-desktop = interactive, sdk-cli = claude -p or SDK
-	TeamName    string `json:"teamName"`   // set on teammate transcripts spawned by a team lead
-	CustomTitle string `json:"customTitle"`
-	AiTitle     string `json:"aiTitle"`
+	IsAPIError     bool   `json:"isApiErrorMessage"` // a surfaced API failure (synthetic reply)
+	APIErrorStatus int    `json:"apiErrorStatus"`
+	Error          string `json:"error"`
+	Timestamp      string `json:"timestamp"`
+	IsMeta         bool   `json:"isMeta"`     // harness-injected (e.g. the local-command caveat), not typed
+	Entrypoint     string `json:"entrypoint"` // cli / claude-desktop = interactive, sdk-cli = claude -p or SDK
+	TeamName       string `json:"teamName"`   // set on teammate transcripts spawned by a team lead
+	CustomTitle    string `json:"customTitle"`
+	AiTitle        string `json:"aiTitle"`
+}
+
+// tokenUsage sums a conversation's per-reply usage.
+type tokenUsage struct {
+	Input, Cache5m, Cache1h, CacheRead, Output int64
+}
+
+// effective is the usage in base-input-token equivalents, using Anthropic's
+// price multipliers: 5m cache write 1.25x, 1h write 2x, cache read 0.1x,
+// output 5x (same definition as claude-dashboard).
+func (u tokenUsage) effective() float64 {
+	return float64(u.Input) + 1.25*float64(u.Cache5m) + 2*float64(u.Cache1h) + 0.1*float64(u.CacheRead) + 5*float64(u.Output)
+}
+
+// pricePerMTok converts effective tokens to an estimated cost: the base input
+// price, $5/MTok (Opus-class; claude-dashboard's default).
+const pricePerMTok = 5.0
+
+// contextWindow is the context a model can hold. The 1M window is a per-request
+// option not recorded in transcripts, so grade against capability: Haiku caps
+// at 200k, other Claude models can do 1M, and a context over 200k proves 1M.
+func contextWindow(model string, peak int) int {
+	m := strings.ToLower(model)
+	switch {
+	case peak > 200_000:
+		return 1_000_000
+	case strings.Contains(m, "haiku") || m == "":
+		return 200_000
+	case strings.Contains(m, "opus"), strings.Contains(m, "sonnet"), strings.Contains(m, "fable"):
+		return 1_000_000
+	}
+	return 200_000
+}
+
+// ctxColour grades a context size against its window like claude-dashboard's
+// traffic light: green, yellow, amber, red, then flashing red near the limit.
+func ctxColour(size, window int) (code string, flash bool) {
+	g, y, a, r := 100_000, 125_000, 150_000, 175_000
+	if window >= 1_000_000 {
+		g, y, a, r = 150_000, 300_000, 450_000, 600_000
+	}
+	switch {
+	case size > r:
+		return "1;31", true
+	case size > a:
+		return "31", false
+	case size > y:
+		return "38;5;208", false
+	case size > g:
+		return "33", false
+	}
+	return "32", false
 }
 
 // TextContent for parsing content arrays
@@ -1573,7 +1641,7 @@ const (
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " / "> " on each row
 	numGaps    = 6
-	colMarks   = 3 // status icons (● ⚙) packed right, then a space
+	colMarks   = 4 // status icons (● ⚙ !) packed right, then a space
 )
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
@@ -1601,7 +1669,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	for _, s := range []struct {
 		on           bool
 		glyph, color string
-	}{{m.live[item.conv.SessionID], "●", "32"}, {item.conv.Spawned, "⚙", "90"}} {
+	}{{m.live[item.conv.SessionID], "●", "32"}, {item.conv.Spawned, "⚙", "90"}, {item.conv.LastError != "", "!", "1;31"}} {
 		if !s.on {
 			continue
 		}
@@ -1638,7 +1706,12 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[35m%*s\033[0m  \033[34m%*s\033[0m  %*d  \033[36m%*d\033[0m",
+	// CTX is coloured by how full the context is (see ctxColour).
+	ctxCode, flash := ctxColour(item.conv.ContextTokens, contextWindow(item.conv.Model, item.conv.PeakContext))
+	if flash && time.Now().Unix()%2 == 1 {
+		ctxCode = "2;31" // flashing: dim every other second
+	}
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d  \033[36m%*d\033[0m",
 		colWhen, when, colProject, project, topic, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
 }
 
@@ -1758,6 +1831,7 @@ func (m model) renderPreview(item listItem, height int) string {
 		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
 	}
 	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
+	header = append(header, sessionStats(conv)...)
 	header = append(header, "")
 
 	msgLines := m.previewLines() // memoised; item is always the selected conversation
@@ -1777,6 +1851,36 @@ func (m model) renderPreview(item listItem, height int) string {
 	// Combine header + scrolled messages
 	allLines := append(header, visibleMsgLines...)
 	return strings.Join(allLines, "\n")
+}
+
+// sessionStats is the preview header's model, token and error lines.
+func sessionStats(conv Conversation) []string {
+	var lines []string
+	if conv.Model != "" || conv.ContextTokens > 0 {
+		window := contextWindow(conv.Model, conv.PeakContext)
+		code, _ := ctxColour(conv.ContextTokens, window)
+		model := conv.Model
+		if model == "" {
+			model = "unknown"
+		}
+		lines = append(lines, fmt.Sprintf("\033[1;33mModel:\033[0m   %s · context \033[%sm%s\033[0m of %s (%d%%)",
+			model, code, formatTokens(conv.ContextTokens), formatTokens(window), conv.ContextTokens*100/window))
+	}
+	if u := conv.Usage; u != (tokenUsage{}) {
+		eff := u.effective()
+		tok := func(n int64) string { // formatTokens leaves 0 blank, for the list
+			if n <= 0 {
+				return "0"
+			}
+			return formatTokens(int(n))
+		}
+		lines = append(lines, fmt.Sprintf("\033[1;33mTokens:\033[0m  in %s · out %s · cache read %s · cache write %s · effective %s (~$%.2f at API prices)",
+			tok(u.Input), tok(u.Output), tok(u.CacheRead), tok(u.Cache5m+u.Cache1h), tok(int64(eff)), eff*pricePerMTok/1e6))
+	}
+	if conv.LastError != "" {
+		lines = append(lines, fmt.Sprintf("\033[1;33mError:\033[0m   \033[1;31m%s\033[0m %s", conv.LastError, formatAgo(conv.LastErrorTs, time.Now())))
+	}
+	return lines
 }
 
 func highlight(text, query string) string {
@@ -2093,12 +2197,34 @@ func parseLine(conv *Conversation, line []byte) bool {
 			conv.Messages = append(conv.Messages, Message{Role: "user", Text: text, Ts: raw.Timestamp})
 		}
 	case "assistant":
+		if raw.IsAPIError {
+			conv.LastError = strings.TrimSpace(fmt.Sprintf("%s %s", strconv.Itoa(raw.APIErrorStatus), raw.Error))
+			conv.LastErrorTs = raw.Timestamp
+		}
 		// Each reply's usage counts the whole conversation it was sent, so
 		// the last one is the current context. Zero-usage lines are
 		// placeholders (e.g. API errors) and would read as an empty context.
 		u := raw.Message.Usage
 		if ctx := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens; ctx > 0 {
 			conv.ContextTokens = ctx
+			conv.PeakContext = max(conv.PeakContext, ctx)
+			conv.LastError, conv.LastErrorTs = "", "" // a later successful reply clears it
+			if raw.Message.Model != "" && raw.Message.Model != "<synthetic>" {
+				conv.Model = raw.Message.Model
+			}
+			// Consecutive lines of one reply repeat its id and usage.
+			if raw.Message.ID == "" || raw.Message.ID != conv.lastUsageID {
+				conv.lastUsageID = raw.Message.ID
+				c5, c1 := u.CacheCreation.Ephemeral5m, u.CacheCreation.Ephemeral1h
+				if c5+c1 == 0 { // older replies don't split cache writes: count them as 5m
+					c5 = u.CacheCreationInputTokens
+				}
+				conv.Usage.Input += int64(u.InputTokens)
+				conv.Usage.Cache5m += int64(c5)
+				conv.Usage.Cache1h += int64(c1)
+				conv.Usage.CacheRead += int64(u.CacheReadInputTokens)
+				conv.Usage.Output += int64(u.OutputTokens)
+			}
 		}
 		if text := extractText(raw.Message.Content); strings.TrimSpace(text) != "" {
 			conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: text, Ts: raw.Timestamp})
@@ -2273,6 +2399,8 @@ func formatTokens(n int) string {
 	switch {
 	case n <= 0:
 		return ""
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.1fB", float64(n)/1e9)
 	case n >= 1_000_000:
 		return fmt.Sprintf("%.1fM", float64(n)/1e6)
 	case n >= 1000:

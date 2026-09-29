@@ -2042,7 +2042,7 @@ func TestFormatAgo(t *testing.T) {
 }
 
 func TestFormatTokens(t *testing.T) {
-	for n, want := range map[int]string{0: "", 950: "950", 12_345: "12k", 281_080: "281k", 1_234_567: "1.2M", 99_900_000: "99.9M"} {
+	for n, want := range map[int]string{0: "", 950: "950", 12_345: "12k", 281_080: "281k", 1_234_567: "1.2M", 99_900_000: "99.9M", 4_096_900_000: "4.1B"} {
 		if got := formatTokens(n); got != want || len(got) > colCtx {
 			t.Errorf("formatTokens(%d) = %q, want %q", n, got, want)
 		}
@@ -2984,5 +2984,74 @@ func TestCtrlCQuitsEvenWithSearch(t *testing.T) {
 	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if m = res.(model); !m.quitting {
 		t.Error("ctrl+c should quit straight away")
+	}
+}
+
+func TestParseUsageModelAndErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	reply := func(id string, in, c5, c1, read, out int) string {
+		return fmt.Sprintf(`{"type":"assistant","message":{"id":%q,"model":"claude-opus-5-5","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":%d,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d,"output_tokens":%d,"cache_creation":{"ephemeral_5m_input_tokens":%d,"ephemeral_1h_input_tokens":%d}}},"timestamp":"2026-09-29T10:00:00Z"}`,
+			id, in, c5+c1, read, out, c5, c1) + "\n"
+	}
+	body := `{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"2026-09-29T09:59:00Z"}` + "\n" +
+		reply("m1", 10, 100, 1000, 0, 50) +
+		reply("m1", 10, 100, 1000, 0, 50) + // same reply, second content block: counted once
+		reply("m2", 5, 0, 200, 300_000, 70) +
+		`{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":429,"error":"rate_limit","message":{"id":"e1","model":"<synthetic>","content":[{"type":"text","text":"API Error"}],"usage":{"input_tokens":0,"output_tokens":0}},"timestamp":"2026-09-29T10:05:00Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := parseConversationFile(path, time.Time{}, 0)
+	if err != nil || c == nil {
+		t.Fatal(c, err)
+	}
+	want := tokenUsage{Input: 15, Cache5m: 100, Cache1h: 1200, CacheRead: 300_000, Output: 120}
+	if c.Usage != want {
+		t.Errorf("usage = %+v, want %+v", c.Usage, want)
+	}
+	if c.Model != "claude-opus-5-5" || c.PeakContext != 300_205 || c.LastError != "429 rate_limit" {
+		t.Errorf("model=%q peak=%d err=%q", c.Model, c.PeakContext, c.LastError)
+	}
+	// A successful reply afterwards clears the error.
+	appendTo(t, path, reply("m3", 1, 0, 0, 300_300, 5))
+	c2, _ := parseAppended(c)
+	if c2.LastError != "" {
+		t.Errorf("error should clear after a successful reply, got %q", c2.LastError)
+	}
+}
+
+func TestContextWindowAndColour(t *testing.T) {
+	if contextWindow("claude-haiku-4-5", 0) != 200_000 || contextWindow("claude-opus-5-5", 0) != 1_000_000 || contextWindow("", 250_000) != 1_000_000 {
+		t.Error("context window inference wrong")
+	}
+	for _, c := range []struct {
+		size, window int
+		code         string
+		flash        bool
+	}{
+		{50_000, 200_000, "32", false}, {110_000, 200_000, "33", false}, {140_000, 200_000, "38;5;208", false},
+		{160_000, 200_000, "31", false}, {190_000, 200_000, "1;31", true}, {190_000, 1_000_000, "33", false},
+		{700_000, 1_000_000, "1;31", true},
+	} {
+		if code, flash := ctxColour(c.size, c.window); code != c.code || flash != c.flash {
+			t.Errorf("ctxColour(%d, %d) = %q %v, want %q %v", c.size, c.window, code, flash, c.code, c.flash)
+		}
+	}
+}
+
+func TestSessionStatsAndErrorIcon(t *testing.T) {
+	conv := Conversation{SessionID: "s", Title: "T", Model: "claude-opus-5-5", ContextTokens: 281_000, PeakContext: 281_000,
+		Usage: tokenUsage{Input: 1000, Output: 1000, CacheRead: 1_000_000}, LastError: "429 rate_limit", LastErrorTs: time.Now().Format(time.RFC3339),
+		Messages: []Message{{Role: "user", Text: "x"}}}
+	stats := strings.Join(sessionStats(conv), "\n")
+	for _, want := range []string{"claude-opus-5-5", "281k", "of 1.0M", "28%", "effective 106k", "~$0.53 at API prices", "429 rate_limit"} {
+		if !strings.Contains(stats, want) {
+			t.Errorf("stats missing %q:\n%s", want, stats)
+		}
+	}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.width = 140
+	if !strings.Contains(m.formatListItem(m.items[0], true), "! T") {
+		t.Error("a session whose last action errored should show ! in the list")
 	}
 }

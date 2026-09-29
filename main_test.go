@@ -4428,22 +4428,33 @@ func TestHelpPopup(t *testing.T) {
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 120, 40
 	v := strip2(m.View())
-	if !strings.Contains(v, "⏎ resume  ^S msg  ⇥ usage  ^G help") || strings.Contains(v, "prune") {
+	if !strings.Contains(v, "⏎ resume  ^S msg  ⇥ usage  ^G help  ^C quit") || strings.Contains(v, "prune") {
 		t.Errorf("header should list only the essentials:\n%s", v)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
 	v = strip2(m.View())
-	for _, s := range shortcuts {
+	for _, s := range m.shortcuts() {
 		if !strings.Contains(v, s[0]) || !strings.Contains(v, s[1]) {
 			t.Errorf("popup missing %q %q:\n%s", s[0], s[1], v)
 		}
 	}
+	// Only what applies: one idle conversation, no search typed.
+	if !strings.Contains(v, "resume") || !strings.Contains(v, "rename") || strings.Contains(v, "message it") ||
+		strings.Contains(v, "clear the search") || strings.Contains(v, "move through the list") {
+		t.Errorf("popup should list only the keys that apply:\n%s", v)
+	}
+	m.showUsage = true
+	v = strip2(m.View())
+	if !strings.Contains(v, "back to the list") || strings.Contains(v, "fork") || !strings.Contains(v, "changelog") {
+		t.Errorf("usage screen help should list only its keys:\n%s", v)
+	}
+	m.showUsage = false
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if !m.helpOpen || m.textInput.Value() != "" {
 		t.Error("popup should own the keyboard while open")
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
-	if m.helpOpen || strings.Contains(strip2(m.View()), "this help") {
+	if m.helpOpen || strings.Contains(strip2(m.View()), "changelog") {
 		t.Error("esc should close the popup")
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})

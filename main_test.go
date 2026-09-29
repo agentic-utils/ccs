@@ -4,12 +4,16 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -3287,5 +3291,98 @@ func TestUsageScreenToggleAndPanels(t *testing.T) {
 	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if m = res.(model); m.showUsage {
 		t.Error("tab again returns to the session list")
+	}
+}
+
+func TestDownloadFallsBackPastStalledAddress(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "payload") }))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+
+	// An address that accepts TCP but never answers the TLS handshake.
+	stall, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stall.Close()
+	go func() {
+		for {
+			c, err := stall.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+
+	oldResolve, oldDial, oldTLS, oldTimeout := resolveHost, dialAddr, downloadTLSConfig, addrAttemptTimeout
+	defer func() {
+		resolveHost, dialAddr, downloadTLSConfig, addrAttemptTimeout = oldResolve, oldDial, oldTLS, oldTimeout
+	}()
+	failedAddrs.Range(func(k, _ any) bool { failedAddrs.Delete(k); return true })
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	downloadTLSConfig = &tls.Config{RootCAs: pool}
+	addrAttemptTimeout = 300 * time.Millisecond
+	resolveHost = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1", "192.0.2.2"}, nil }
+	var tried []string
+	dialAddr = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		tried = append(tried, addr)
+		if strings.HasPrefix(addr, "192.0.2.1:") {
+			return (&net.Dialer{}).DialContext(ctx, network, stall.Addr().String())
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, "127.0.0.1:"+port)
+	}
+	downloadTransport.CloseIdleConnections()
+
+	start := time.Now()
+	body, err := download("https://example.com:" + port + "/x")
+	if err != nil || string(body) != "payload" {
+		t.Fatalf("download = %q, %v", body, err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("fallback took %v; the stalled address should cost ~one attempt limit", d)
+	}
+	if _, bad := failedAddrs.Load("192.0.2.1"); !bad {
+		t.Error("the stalled address should be remembered as failed")
+	}
+	// Next time the failed address goes last.
+	tried = nil
+	downloadTransport.CloseIdleConnections()
+	if _, err := download("https://example.com:" + port + "/x"); err != nil {
+		t.Fatal(err)
+	}
+	if len(tried) == 0 || !strings.HasPrefix(tried[0], "192.0.2.2:") {
+		t.Errorf("known-bad address should be tried last, got %v", tried)
+	}
+}
+
+func TestSeedFile(t *testing.T) {
+	fakeRelease(t, "v1.0.0", []byte("bin"), false)
+	url := releaseDownloadURL + "/v1.0.0/checksums.txt"
+	body, err := download(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256Hex(body)
+	path := filepath.Join(t.TempDir(), "cached.tar.gz")
+
+	if err := seedFile(path, url, want); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); sha256Hex(got) != want {
+		t.Fatal("seeded file has the wrong content")
+	}
+	// Already valid: no download (an unreachable URL proves it isn't fetched).
+	if err := seedFile(path, "http://127.0.0.1:1/unreachable", want); err != nil {
+		t.Errorf("valid cache should be kept without downloading: %v", err)
+	}
+	// Checksum mismatch: error, and nothing replaces the cache file.
+	other := filepath.Join(t.TempDir(), "other.tar.gz")
+	if err := seedFile(other, url, strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Errorf("want checksum mismatch, got %v", err)
+	}
+	if fileExists(other) {
+		t.Error("a mismatched download must not be written to the cache")
 	}
 }

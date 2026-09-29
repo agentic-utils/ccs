@@ -475,7 +475,7 @@ func parseChangelog(r io.Reader, current, tag string) ([]string, error) {
 			text := strings.TrimSpace(html.UnescapeString(anyTag.ReplaceAllString(li[1], "")))
 			text = commitHash.ReplaceAllString(text, "")
 			if text != "" && !strings.HasPrefix(text, "Merge ") {
-				out = append(out, "  "+text)
+				out = append(out, "  • "+text)
 			}
 		}
 	}
@@ -2578,8 +2578,8 @@ func (m model) View() string {
 
 // Compact key labels, shared by every hint so they stay consistent.
 const (
-	keyEnter = "⏎"
-	keyTab   = "⇥"
+	keyEnter = "enter" // words, not ⏎ ⇥: those draw wider than a cell in some fonts
+	keyTab   = "tab"
 	keyEsc   = "esc"
 )
 
@@ -2620,11 +2620,12 @@ func (m model) shortcuts() [][2]string {
 	return out
 }
 
-// hints renders key/label pairs as "⏎ resume  ^S msg".
+// hints renders key/label pairs as "enter resume  ^S msg", keys in bold so
+// "enter update" reads as key then action.
 func hints(pairs ...string) string {
 	parts := make([]string, 0, len(pairs)/2)
 	for i := 0; i+1 < len(pairs); i += 2 {
-		parts = append(parts, pairs[i]+" "+pairs[i+1])
+		parts = append(parts, "\033[1m"+pairs[i]+"\033[22m "+pairs[i+1])
 	}
 	return strings.Join(parts, "  ")
 }
@@ -2870,7 +2871,7 @@ func (m model) viewScreen() string {
 func (m model) updatePopup() string {
 	body := fmt.Sprintf("ccs %s is available (you have v%s).\n\n", m.updateTo, version)
 	if len(m.changelog) > 0 {
-		body += "What's new:\n" + m.changelogBlock() + "\n\n"
+		body += m.changelogBlock() + "\n\n"
 	}
 	if m.updateErr != "" {
 		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, truncate(m.updateErr, 60), updateLogPath)

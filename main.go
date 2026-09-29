@@ -302,6 +302,7 @@ type model struct {
 
 	// Account switcher (Ctrl+O), backed by the cswap CLI.
 	acctOpen    bool
+	helpOpen    bool // Ctrl+G shortcut list
 	accts       []cswapAccount
 	acctCursor  int
 	acctBusy    bool   // a cswap command is running
@@ -1231,7 +1232,7 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.showUsage || m.prompting() || m.updateOpen || m.acctOpen || msg.Action != tea.MouseActionPress {
+	if m.showUsage || m.prompting() || m.updateOpen || m.acctOpen || m.helpOpen || msg.Action != tea.MouseActionPress {
 		return m
 	}
 	if msg.Button == tea.MouseButtonLeft && msg.Y == 1 && cswapPath() != "" {
@@ -2006,7 +2007,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case focusDoneMsg:
 		m.resuming = false
 		if !msg.found {
-			m.errorMsg = "Session is open in claude but its terminal wasn't found - Ctrl+F forks it"
+			m.errorMsg = "Session is open in claude but its terminal wasn't found - ^F forks it"
 		}
 		return m, nil
 
@@ -2234,8 +2235,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyRunes && mouseLeak.MatchString(string(msg.Runes)) {
 			return m, nil // a fragmented mouse report, not typing
 		}
+		if m.helpOpen { // owns the keyboard until closed
+			switch msg.String() {
+			case "ctrl+g", "esc":
+				m.helpOpen = false
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if m.acctOpen {
 			return m.acctKey(msg)
+		}
+		if msg.String() == "ctrl+g" && !m.prompting() {
+			m.helpOpen = true
+			return m, nil
 		}
 		if msg.String() == "ctrl+o" && !m.prompting() {
 			return m.openAccounts()
@@ -2499,7 +2514,58 @@ func (m model) View() string {
 	if m.acctOpen { // owns the keyboard, so it's drawn on top
 		screen = overlayCentre(screen, m.acctPopup(), m.width, m.height)
 	}
+	if m.helpOpen {
+		screen = overlayCentre(screen, helpPopup(), m.width, m.height)
+	}
 	return screen
+}
+
+// Compact key labels, shared by every hint so they stay consistent.
+const (
+	keyEnter = "⏎"
+	keyTab   = "⇥"
+	keyEsc   = "esc"
+)
+
+// shortcuts is every key ccs has, for the Ctrl+G popup (and the docs).
+var shortcuts = [][2]string{
+	{keyEnter, "resume, or focus a live session"},
+	{"^S", "message the live session"},
+	{"^F", "fork"},
+	{"^R", "rename"},
+	{"^D", "delete"},
+	{"^X", "prune"},
+	{"^J/K", "scroll the conversation"},
+	{"↑↓ ^P/N", "move through the list"},
+	{"^O", "switch account"},
+	{keyTab, "usage"},
+	{keyEsc + " ^U", "clear the search"},
+	{"^G", "this help"},
+	{"^C", "quit"},
+}
+
+// hints renders key/label pairs as "⏎ resume  ^S msg".
+func hints(pairs ...string) string {
+	parts := make([]string, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		parts = append(parts, pairs[i]+" "+pairs[i+1])
+	}
+	return strings.Join(parts, "  ")
+}
+
+// helpPopup lists every shortcut; Ctrl+G or Esc closes it.
+func helpPopup() string {
+	var b strings.Builder
+	b.WriteString("\033[1mshortcuts\033[0m\n\n")
+	for _, s := range shortcuts {
+		fmt.Fprintf(&b, "\033[33m%-8s\033[0m %s\n", s[0], s[1])
+	}
+	b.WriteString("\n\033[90m" + hints("^G/"+keyEsc, "close") + "\033[0m")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 3).
+		Render(b.String())
 }
 
 // overlayCentre draws box over the middle of screen, keeping what's visible
@@ -2558,13 +2624,13 @@ func (m model) viewScreen() string {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
 	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
-	help := "Resume:Enter Message:Ctrl+S Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Account:Ctrl+O Exit:Ctrl+C"
-	if m.showUsage { // only Tab and Ctrl+C do anything there
-		help = "Back:Tab Account:Ctrl+O Exit:Ctrl+C"
+	help := hints(keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help")
+	if m.showUsage { // only Tab, account, help and quit do anything there
+		help = hints(keyTab, "back", "^O", "account", "^G", "help", "^C", "quit")
 	} else if m.chatFocus {
-		help = "Send:Enter Search:Esc Scroll:Ctrl+J/K Exit:Ctrl+C"
+		help = hints(keyEnter, "send", keyEsc, "search", "^J/K", "scroll", "^G", "help")
 	}
-	titlePadding := tableWidth - 2 - len(title) - len(help)
+	titlePadding := tableWidth - 2 - lipgloss.Width(title) - lipgloss.Width(help)
 	if titlePadding < 1 {
 		titlePadding = 1
 	}
@@ -2575,7 +2641,7 @@ func (m model) viewScreen() string {
 	var sections []string
 	var inputSection string
 	if m.renaming {
-		sections = append(sections, "  "+m.renameInput.View()+"  \033[90mEnter:save Esc:cancel\033[0m")
+		sections = append(sections, "  "+m.renameInput.View()+"  \033[90m"+hints(keyEnter, "save", keyEsc, "cancel")+"\033[0m")
 	} else if m.confirmPrune {
 		conv := m.filtered[m.pruneIndex].conv
 		inputSection = lipgloss.NewStyle().
@@ -2595,7 +2661,7 @@ func (m model) viewScreen() string {
 			Render(fmt.Sprintf("Delete conversation \"%s\"?%s [y/N]", truncate(topic, 50), liveWarning))
 		sections = append(sections, "  "+inputSection)
 	} else if m.showUsage {
-		sections = append(sections, "  \033[1;36mUsage\033[0m \033[90m· last 12h · Tab to go back\033[0m")
+		sections = append(sections, "  \033[1;36mUsage\033[0m \033[90m· last 12h · "+keyTab+" back\033[0m")
 	} else {
 		prefix, usage, count := m.searchRowParts()
 		inputSection = prefix + usage + "\033[90m" + count + "\033[0m"
@@ -2686,11 +2752,11 @@ func (m model) updatePopup() string {
 		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, truncate(m.updateErr, 60), updateLogPath)
 	}
 	if m.upgrade != nil && m.updateErr != "" {
-		body += "Enter: retry    Esc: later"
+		body += hints(keyEnter, "retry", keyEsc, "later")
 	} else if m.upgrade != nil {
-		body += "Enter: update and restart    Esc: later"
+		body += hints(keyEnter, "update and restart", keyEsc, "later")
 	} else {
-		body += "Update with your package manager.    Esc: close"
+		body += "Update with your package manager.    " + hints(keyEsc, "close")
 	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -4266,6 +4332,7 @@ Key bindings:
   Ctrl+J/K        Scroll preview
   Ctrl+U          Clear search
   Esc             Clear the search
+  Ctrl+G          Show all shortcuts
   Ctrl+C          Quit
 
 `, version)
@@ -5548,7 +5615,7 @@ func (m model) acctPopup() string {
 	if m.acctMsg != "" {
 		b.WriteString("\n" + m.acctMsg + "\n")
 	}
-	b.WriteString("\n\033[90m1-9 / ↑↓ Enter: switch    +: add current login    Esc: close\033[0m")
+	b.WriteString("\n\033[90m" + hints("1-9 / ↑↓ "+keyEnter, "switch", "+", "add current login", keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).

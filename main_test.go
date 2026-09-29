@@ -2012,7 +2012,7 @@ func TestEnterOnLiveSessionFocusesInsteadOfResuming(t *testing.T) {
 		t.Fatal("enter on a live session must focus it (in the background), not resume a second copy")
 	}
 	res, _ = m.Update(firstOfBatch(cmd)) // the fast refresh for the live selection rides along
-	if m = res.(model); !strings.Contains(m.errorMsg, "Ctrl+F") {
+	if m = res.(model); !strings.Contains(m.errorMsg, "^F") {
 		t.Errorf("unfocusable live session should point at fork, got %q", m.errorMsg)
 	}
 }
@@ -3425,10 +3425,10 @@ func TestAllowanceInSearchRowAndUsageScreenHidesSearch(t *testing.T) {
 	}
 	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = res.(model)
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "Tab to go back") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "⇥ back") {
 		t.Error("the usage screen should replace the search box with a back hint")
 	}
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "Fork:Ctrl+F") || !strings.Contains(v, "Back:Tab Account:Ctrl+O Exit:Ctrl+C") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "⇥ back  ^O account  ^G help  ^C quit") {
 		t.Error("the usage screen header should list only its own keys")
 	}
 }
@@ -4421,5 +4421,34 @@ func TestPreviewSpeakerRuns(t *testing.T) {
 	plain = strip2(strings.Join(buildPreviewLines(conv, "reply", 80), "\n"))
 	if !strings.Contains(plain, ">>> Claude") {
 		t.Errorf("a match should be marked:\n%s", plain)
+	}
+}
+
+func TestHelpPopup(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 120, 40
+	v := strip2(m.View())
+	if !strings.Contains(v, "⏎ resume  ^S msg  ⇥ usage  ^G help") || strings.Contains(v, "prune") {
+		t.Errorf("header should list only the essentials:\n%s", v)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	v = strip2(m.View())
+	for _, s := range shortcuts {
+		if !strings.Contains(v, s[0]) || !strings.Contains(v, s[1]) {
+			t.Errorf("popup missing %q %q:\n%s", s[0], s[1], v)
+		}
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if !m.helpOpen || m.textInput.Value() != "" {
+		t.Error("popup should own the keyboard while open")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.helpOpen || strings.Contains(strip2(m.View()), "this help") {
+		t.Error("esc should close the popup")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	if m.helpOpen {
+		t.Error("ctrl+g should toggle the popup")
 	}
 }

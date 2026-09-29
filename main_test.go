@@ -4452,3 +4452,48 @@ func TestHelpPopup(t *testing.T) {
 		t.Error("ctrl+g should toggle the popup")
 	}
 }
+
+func TestChangelogPopup(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.2.0"
+	var lines []string
+	for v := 30; v > 0; v-- {
+		lines = append(lines, fmt.Sprintf("v0.%d.0", v), fmt.Sprintf("  feat: thing %d", v))
+	}
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 100, 30
+	m.fetchNotes = func() ([]string, error) { return lines, nil }
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyCtrlL})
+	if !m.notesOpen || cmd == nil {
+		t.Fatal("Ctrl+L should open the changelog and fetch it")
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "fetching…") {
+		t.Errorf("should say it's fetching:\n%s", v)
+	}
+	nm, _ := m.Update(cmd())
+	m = nm.(model)
+	v := strip2(m.View())
+	if !strings.Contains(v, "v0.30.0 (new)") || !strings.Contains(v, "feat: thing 30") || strings.Contains(v, "thing 1\n") {
+		t.Errorf("should show the newest releases first, marked:\n%s", v)
+	}
+	for range 100 {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if want := len(lines) - m.notesRows(); m.notesScroll != want {
+		t.Errorf("scroll should stop at the end: %d, want %d", m.notesScroll, want)
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "v0.2.0 (installed)") || !strings.Contains(v, "feat: thing 1") {
+		t.Errorf("scrolled to the end should show the oldest, installed marked:\n%s", v)
+	}
+	nm, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	if nm.(model).notesScroll != m.notesScroll-3 {
+		t.Error("the wheel should scroll the changelog")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.notesOpen {
+		t.Error("esc should close it")
+	}
+	if m, cmd = key(m, tea.KeyMsg{Type: tea.KeyCtrlL}); cmd != nil || !m.notesOpen || m.notesScroll != 0 {
+		t.Error("reopening should reuse the fetched changelog, from the top")
+	}
+}

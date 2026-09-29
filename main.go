@@ -272,12 +272,18 @@ type model struct {
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
 	// upgrade installs tag and returns the binary to restart; nil means ccs
 	// can't update this install itself (e.g. Nix), so only notify.
-	checkLatest       func() (string, error)
-	upgrade           *upgrader
-	progress          *updateProgress // step + start time, written by the upgrade goroutine
-	updateTo          string          // newer release tag found, "" if none
-	changelog         []string        // what changed from this version up to updateTo, for the popup
-	fetchChangelog    func(to string) ([]string, error)
+	checkLatest    func() (string, error)
+	upgrade        *upgrader
+	progress       *updateProgress // step + start time, written by the upgrade goroutine
+	updateTo       string          // newer release tag found, "" if none
+	changelog      []string        // what changed from this version up to updateTo, for the popup
+	fetchChangelog func(to string) ([]string, error)
+	// Ctrl+L changelog: every release in the feed, scrollable.
+	notesOpen         bool
+	notes             []string // nil until fetched
+	notesErr          string
+	notesScroll       int
+	fetchNotes        func() ([]string, error)
 	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
 	updateErr         string // last install failure, shown in the popup with a retry
@@ -404,6 +410,10 @@ type latestMsg struct {
 	tag string
 	err error
 }
+type notesMsg struct {
+	lines []string
+	err   error
+}
 type changelogMsg struct {
 	tag   string
 	lines []string
@@ -421,10 +431,10 @@ func (m model) checkUpdateCmd() tea.Cmd {
 	}
 }
 
-// releaseChangelog lists what changed in every release after this version up
-// to tag, newest first, from the releases Atom feed (like latestRelease, not the
+// releaseChangelog lists what changed in every release after from up to tag,
+// newest first, from the releases Atom feed (like latestRelease, not the
 // rate-limited REST API). The feed holds the latest 10 releases.
-func releaseChangelog(tag string) ([]string, error) {
+func releaseChangelog(from, tag string) ([]string, error) {
 	client := http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get("https://github.com/agentic-utils/ccs/releases.atom")
 	if err != nil {
@@ -434,7 +444,7 @@ func releaseChangelog(tag string) ([]string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("releases feed: %s", resp.Status)
 	}
-	return parseChangelog(io.LimitReader(resp.Body, 1<<20), version, tag)
+	return parseChangelog(io.LimitReader(resp.Body, 1<<20), from, tag)
 }
 
 var (
@@ -1232,6 +1242,14 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
+	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
+		if msg.Button == tea.MouseButtonWheelUp {
+			m.scrollNotes(-3)
+		} else if msg.Button == tea.MouseButtonWheelDown {
+			m.scrollNotes(3)
+		}
+		return m
+	}
 	if m.showUsage || m.prompting() || m.updateOpen || m.acctOpen || m.helpOpen || msg.Action != tea.MouseActionPress {
 		return m
 	}
@@ -2165,6 +2183,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(fetch, tea.Tick(next, func(time.Time) tea.Msg { return updateCheckTickMsg{} }))
 
+	case notesMsg:
+		if msg.err != nil {
+			m.notesErr = msg.err.Error()
+		} else {
+			m.notes = msg.lines
+		}
+		return m, nil
+
 	case changelogMsg:
 		if msg.tag == m.updateTo {
 			m.changelog = msg.lines
@@ -2234,6 +2260,33 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyRunes && mouseLeak.MatchString(string(msg.Runes)) {
 			return m, nil // a fragmented mouse report, not typing
+		}
+		if m.notesOpen { // owns the keyboard until closed
+			switch msg.String() {
+			case "ctrl+l", "esc":
+				m.notesOpen = false
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			case "up", "ctrl+p", "ctrl+k":
+				m.scrollNotes(-1)
+			case "down", "ctrl+n", "ctrl+j":
+				m.scrollNotes(1)
+			case "pgup":
+				m.scrollNotes(-m.notesRows())
+			case "pgdown", " ":
+				m.scrollNotes(m.notesRows())
+			}
+			return m, nil
+		}
+		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen {
+			m.helpOpen, m.notesOpen, m.notesScroll = false, true, 0
+			if m.notes == nil && m.fetchNotes != nil {
+				m.notesErr = ""
+				f := m.fetchNotes
+				return m, func() tea.Msg { lines, err := f(); return notesMsg{lines, err} }
+			}
+			return m, nil
 		}
 		if m.helpOpen { // owns the keyboard until closed
 			switch msg.String() {
@@ -2517,6 +2570,9 @@ func (m model) View() string {
 	if m.helpOpen {
 		screen = overlayCentre(screen, helpPopup(), m.width, m.height)
 	}
+	if m.notesOpen {
+		screen = overlayCentre(screen, m.notesPopup(), m.width, m.height)
+	}
 	return screen
 }
 
@@ -2540,6 +2596,7 @@ var shortcuts = [][2]string{
 	{"^O", "switch account"},
 	{keyTab, "usage"},
 	{keyEsc + " ^U", "clear the search"},
+	{"^L", "changelog"},
 	{"^G", "this help"},
 	{"^C", "quit"},
 }
@@ -2551,6 +2608,54 @@ func hints(pairs ...string) string {
 		parts = append(parts, pairs[i]+" "+pairs[i+1])
 	}
 	return strings.Join(parts, "  ")
+}
+
+// notesRows is how many changelog lines the popup shows at once.
+func (m model) notesRows() int { return max(m.height-10, 3) }
+
+func (m *model) scrollNotes(by int) {
+	m.notesScroll = min(max(m.notesScroll+by, 0), max(len(m.notes)-m.notesRows(), 0))
+}
+
+// notesPopup is the Ctrl+L changelog: every release in the feed, newest first,
+// the installed one and any newer marked, scrolled by notesScroll.
+func (m model) notesPopup() string {
+	width := min(max(m.width-12, 30), 90)
+	var body []string
+	switch {
+	case m.notesErr != "":
+		body = []string{"couldn't fetch the changelog: " + truncate(m.notesErr, width-30)}
+	case m.notes == nil:
+		body = []string{"fetching…"}
+	default:
+		end := min(m.notesScroll+m.notesRows(), len(m.notes))
+		for _, l := range m.notes[m.notesScroll:end] {
+			if strings.HasPrefix(l, " ") {
+				body = append(body, ansi.Truncate(l, width, "…"))
+				continue
+			}
+			mark := ""
+			if newerVersion(l, version) {
+				mark = " \033[32m(new)\033[0m"
+			} else if strings.TrimPrefix(l, "v") == version {
+				mark = " \033[90m(installed)\033[0m"
+			}
+			body = append(body, "\033[1m"+l+"\033[22m"+mark)
+		}
+	}
+	for len(body) < min(m.notesRows(), max(len(m.notes), 1)) {
+		body = append(body, "") // a steady height while scrolling
+	}
+	pos := ""
+	if len(m.notes) > m.notesRows() {
+		pos = fmt.Sprintf("  %d–%d of %d", m.notesScroll+1, min(m.notesScroll+m.notesRows(), len(m.notes)), len(m.notes))
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 3).
+		Render("\033[1mchangelog\033[0m\n\n" + strings.Join(body, "\n") +
+			"\n\n\033[90m" + hints("↑↓", "scroll", "^L/"+keyEsc, "close") + pos + "\033[0m")
 }
 
 // helpPopup lists every shortcut; Ctrl+G or Esc closes it.
@@ -2754,7 +2859,7 @@ func (m model) updatePopup() string {
 	if m.upgrade != nil && m.updateErr != "" {
 		body += hints(keyEnter, "retry", keyEsc, "later")
 	} else if m.upgrade != nil {
-		body += hints(keyEnter, "update and restart", keyEsc, "later")
+		body += hints(keyEnter, "update and restart", keyEsc, "later", "^L", "changelog")
 	} else {
 		body += "Update with your package manager.    " + hints(keyEsc, "close")
 	}
@@ -4333,6 +4438,7 @@ Key bindings:
   Ctrl+U          Clear search
   Esc             Clear the search
   Ctrl+G          Show all shortcuts
+  Ctrl+L          Changelog
   Ctrl+C          Quit
 
 `, version)
@@ -4468,7 +4574,8 @@ func main() {
 	m.lastRefresh = time.Now()
 	if version != "dev" {
 		m.checkLatest = latestRelease
-		m.fetchChangelog = releaseChangelog
+		m.fetchChangelog = func(tag string) ([]string, error) { return releaseChangelog(version, tag) }
+		m.fetchNotes = func() ([]string, error) { return releaseChangelog("0.0.0", "v99999.0.0") }
 		m.allowanceEnabled = true
 		if exe, err := os.Executable(); err == nil {
 			m.upgrade = chooseUpgrader(exe)

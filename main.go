@@ -2193,26 +2193,39 @@ func buildPreviewLines(conv Conversation, query string) []string {
 
 // maxPreviewScroll is the furthest the preview of the current selection can
 // scroll - one line short of the rendered message-line count.
+// It stops when the last line reaches the bottom of the preview, not the top,
+// so scrolling never runs into empty space.
 func (m model) maxPreviewScroll() int {
 	if len(m.filtered) == 0 {
 		return 0
 	}
-	return max(0, len(m.previewLines())-1)
+	return max(0, len(m.previewLines())-m.previewMessageRows(m.filtered[m.cursor].conv))
+}
+
+// previewMessageRows is how many message lines fit below the preview's fixed
+// header, matching what View gives renderPreview.
+func (m model) previewMessageRows(conv Conversation) int {
+	_, _, previewTop := m.listLayout()
+	return max(m.height-previewTop-len(previewHeader(conv, m.textInput.Value())), 1)
+}
+
+// previewHeader is the preview's fixed header (always visible above the
+// scrolling messages).
+func previewHeader(conv Conversation, query string) []string {
+	header := []string{"\033[1;33mProject:\033[0m " + highlight(conv.Cwd, query)}
+	if conv.Title != "" {
+		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
+	}
+	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
+	header = append(header, sessionStats(conv)...)
+	return append(header, "")
 }
 
 func (m model) renderPreview(item listItem, height int) string {
 	query := m.textInput.Value()
 	conv := item.conv
 
-	// Fixed header (always visible)
-	var header []string
-	header = append(header, "\033[1;33mProject:\033[0m "+highlight(conv.Cwd, query))
-	if conv.Title != "" {
-		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
-	}
-	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
-	header = append(header, sessionStats(conv)...)
-	header = append(header, "")
+	header := previewHeader(conv, query) // fixed, always visible
 
 	msgLines := m.previewLines() // memoised; item is always the selected conversation
 
@@ -2224,7 +2237,7 @@ func (m model) renderPreview(item listItem, height int) string {
 	if msgHeight < 1 {
 		msgHeight = 1
 	}
-	scroll := min(m.previewScroll, max(0, len(msgLines)-1))
+	scroll := min(m.previewScroll, max(0, len(msgLines)-msgHeight))
 	end := min(scroll+msgHeight, len(msgLines))
 	visibleMsgLines := msgLines[scroll:end]
 

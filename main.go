@@ -65,6 +65,8 @@ type Conversation struct {
 	ContextTokens  int        `json:"context_tokens"` // conversation size as of the last reply (input + cache reads/writes)
 	PeakContext    int        `json:"peak_context"`   // largest context seen; over 200k proves a 1M window
 	Model          string     `json:"model"`          // model of the last real reply
+	ActiveModel    string     `json:"active_model"`   // the model in use now: last reply's, or a later /model switch
+	Model1M        bool       `json:"model_1m"`       // the last /model switch chose a 1M-context model
 	LastError      string     `json:"last_error"`     // latest surfaced API error, cleared by a later successful reply
 	LastErrorTs    string     `json:"last_error_ts"`
 	Usage          tokenUsage `json:"usage"` // summed over replies (main transcript, not subagents)
@@ -138,7 +140,7 @@ const pricePerMTok = 5.0
 func contextWindow(model string, peak int) int {
 	m := strings.ToLower(model)
 	switch {
-	case peak > 200_000:
+	case peak > 200_000, strings.Contains(m, "1m context"):
 		return 1_000_000
 	case strings.Contains(m, "haiku") || m == "":
 		return 200_000
@@ -166,6 +168,35 @@ func ctxColour(size, window int) (code string, flash bool) {
 		return "33", false
 	}
 	return "32", false
+}
+
+// modelSwitch matches /model's logged result, e.g. "Set model to Opus 5
+// (1M context) and saved as your default"; ansiCodes strips its styling.
+var (
+	modelSwitch = regexp.MustCompile(`Set model to (.+?)(?: and saved|</local-command-stdout>|$)`)
+	ansiCodes   = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	modelParts  = regexp.MustCompile(`(?i)(opus|sonnet|haiku|fable)[- ]?(\d+)(?:[-.](\d{1,2}))?\b`)
+)
+
+// shortModel renders a model for the list: "claude-opus-5-5" or "Opus 5.5
+// (1M context)" become "opus 5.5", with "1M" added when the session is known
+// to run the 1M-context version.
+func shortModel(conv Conversation) string {
+	name := conv.ActiveModel
+	if name == "" {
+		return ""
+	}
+	short := strings.ToLower(name)
+	if m := modelParts.FindStringSubmatch(name); m != nil {
+		short = strings.ToLower(m[1]) + " " + m[2]
+		if m[3] != "" {
+			short += "." + m[3]
+		}
+	}
+	if conv.Model1M || conv.PeakContext > 200_000 {
+		short += " 1M"
+	}
+	return short
 }
 
 // TextContent for parsing content arrays
@@ -1906,8 +1937,8 @@ func (m model) viewScreen() string {
 	previewHeight := m.height - listHeight - 6 // 6 for title + search + blank + header + borders
 
 	// Column headers
-	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s\033[0m\n",
-		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", colHits, "HITS"))
+	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %-*s  %*s  %*s  %*s  %*s\033[0m\n",
+		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colModel, "MODEL", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", colHits, "HITS"))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -1975,19 +2006,20 @@ func (m model) updatePopup() string {
 const (
 	colWhen    = 8 // longest is "12mo ago"
 	colProject = 22
+	colModel   = 12
 	colCtx     = 5
 	colMsgs    = 5
 	colHits    = 4
 	colSize    = 6
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " / "> " on each row
-	numGaps    = 6
+	numGaps    = 7
 	colMarks   = 4 // status icons (● ⚙ !) packed right, then a space
 )
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
 func (m model) topicColWidth() int {
-	used := listIndent + colWhen + colProject + colCtx + colMsgs + colHits + colSize + numGaps*colGap
+	used := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colHits + colSize + numGaps*colGap
 	if w := m.width - used; w > 10 {
 		return w
 	}
@@ -2039,21 +2071,22 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	when := formatAgo(item.conv.LastTimestamp, time.Now())
 
 	ctx := formatTokens(item.conv.ContextTokens)
+	model := truncate(shortModel(item.conv), colModel)
 
-	// Format: when | project | topic | size | ctx | msgs | hits (aligned columns)
+	// Format: when | project | topic | model | size | ctx | msgs | hits (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %*s  %*s  %*d  %*d",
-			colWhen, when, colProject, project, marks, tw-colMarks, topic, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
+		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %-*s  %*s  %*s  %*d  %*d",
+			colWhen, when, colProject, project, marks, tw-colMarks, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
 	// CTX is coloured by how full the context is (see ctxColour).
-	ctxCode, flash := ctxColour(item.conv.ContextTokens, contextWindow(item.conv.Model, item.conv.PeakContext))
+	ctxCode, flash := ctxColour(item.conv.ContextTokens, contextWindow(item.conv.ActiveModel, item.conv.PeakContext))
 	if flash && time.Now().Unix()%2 == 1 {
 		ctxCode = "2;31" // flashing: dim every other second
 	}
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d  \033[36m%*d\033[0m",
-		colWhen, when, colProject, project, topic, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[37m%-*s\033[0m  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d  \033[36m%*d\033[0m",
+		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
 }
 
 // buildPreviewLines builds the scrollable message lines of a conversation
@@ -2203,12 +2236,15 @@ func (m model) renderPreview(item listItem, height int) string {
 // sessionStats is the preview header's model, token and error lines.
 func sessionStats(conv Conversation) []string {
 	var lines []string
-	if conv.Model != "" || conv.ContextTokens > 0 {
-		window := contextWindow(conv.Model, conv.PeakContext)
+	if conv.ActiveModel != "" || conv.ContextTokens > 0 {
+		window := contextWindow(conv.ActiveModel, conv.PeakContext)
 		code, _ := ctxColour(conv.ContextTokens, window)
-		model := conv.Model
+		model := conv.ActiveModel
 		if model == "" {
 			model = "unknown"
+		}
+		if conv.Model != "" && conv.Model != conv.ActiveModel { // switched with /model since the last reply
+			model += " \033[90m(switched; last reply " + conv.Model + ")\033[0m"
 		}
 		lines = append(lines, fmt.Sprintf("\033[1;33mModel:\033[0m   %s · context \033[%sm%s\033[0m of %s (%d%%)",
 			model, code, formatTokens(conv.ContextTokens), formatTokens(window), conv.ContextTokens*100/window))
@@ -2537,7 +2573,14 @@ func parseLine(conv *Conversation, line []byte) bool {
 			conv.Cwd = raw.Cwd
 		}
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
-		if text := extractText(raw.Message.Content); !raw.IsMeta && strings.TrimSpace(text) != "" {
+		text := extractText(raw.Message.Content)
+		// "/model" logs its result as command output; a switch after the last
+		// reply is the model the session will use next.
+		if m := modelSwitch.FindStringSubmatch(ansiCodes.ReplaceAllString(text, "")); m != nil {
+			name := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(m[1], "`", ""), "(default)", ""))
+			conv.ActiveModel, conv.Model1M = name, strings.Contains(name, "1M")
+		}
+		if !raw.IsMeta && strings.TrimSpace(text) != "" {
 			if conv.FirstTimestamp == "" {
 				conv.FirstTimestamp = raw.Timestamp
 			}
@@ -2558,6 +2601,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 			conv.LastError, conv.LastErrorTs = "", "" // a later successful reply clears it
 			if raw.Message.Model != "" && raw.Message.Model != "<synthetic>" {
 				conv.Model = raw.Message.Model
+				conv.ActiveModel = raw.Message.Model
 			}
 			// Consecutive lines of one reply repeat its id and usage.
 			if raw.Message.ID == "" || raw.Message.ID != conv.lastUsageID {

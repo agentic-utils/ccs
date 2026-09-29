@@ -848,7 +848,7 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 }
 
 func TestTopicColWidthFlexes(t *testing.T) {
-	fixed := listIndent + colWhen + colProject + colCtx + colMsgs + colHits + colSize + numGaps*colGap
+	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colHits + colSize + numGaps*colGap
 	for _, w := range []int{100, 120, 200} {
 		m := model{width: w}
 		if got, want := m.topicColWidth(), w-fixed; got != want {
@@ -3637,5 +3637,56 @@ func BenchmarkFullPreview7500(b *testing.B) {
 	}
 	for i := 0; i < b.N; i++ {
 		buildPreviewLines(conv, "")
+	}
+}
+
+func TestActiveModelFromRepliesAndSwitches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	reply := func(model string) string {
+		return `{"type":"assistant","message":{"id":"` + model + `","model":"` + model + `","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10}},"timestamp":"2026-09-29T10:00:00Z"}` + "\n"
+	}
+	sw := func(stdout string) string {
+		b, _ := json.Marshal("<local-command-stdout>" + stdout + "</local-command-stdout>")
+		return `{"type":"user","cwd":"/p","message":{"content":` + string(b) + `},"timestamp":"2026-09-29T10:01:00Z"}` + "\n"
+	}
+	body := `{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"2026-09-29T09:59:00Z"}` + "\n" + reply("claude-sonnet-5")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := parseConversationFile(path, time.Time{}, 0)
+	if c.ActiveModel != "claude-sonnet-5" || shortModel(*c) != "sonnet 5" {
+		t.Errorf("from a reply: %q / %q", c.ActiveModel, shortModel(*c))
+	}
+	// /model after the last reply: that's the active model now.
+	appendTo(t, path, sw("Set model to \x1b[1mOpus 5.5 (1M context) (default)\x1b[22m and saved as your default for new sessions"))
+	c, _ = parseAppended(c)
+	if c.ActiveModel != "Opus 5.5 (1M context)" || !c.Model1M || shortModel(*c) != "opus 5.5 1M" {
+		t.Errorf("after /model: %q 1M=%v short=%q", c.ActiveModel, c.Model1M, shortModel(*c))
+	}
+	if !strings.Contains(strings.Join(sessionStats(*c), "\n"), "switched; last reply claude-sonnet-5") {
+		t.Error("preview should say the model was switched since the last reply")
+	}
+	// A reply from the new model takes over, keeping the known 1M window.
+	appendTo(t, path, reply("claude-opus-5-5"))
+	c, _ = parseAppended(c)
+	if c.ActiveModel != "claude-opus-5-5" || shortModel(*c) != "opus 5.5 1M" || contextWindow(c.ActiveModel, c.PeakContext) != 1_000_000 {
+		t.Errorf("after the next reply: %q short=%q", c.ActiveModel, shortModel(*c))
+	}
+	// The backtick form some versions log.
+	appendTo(t, path, sw("Set model to `Haiku 4.5` and saved as your default for new sessions"))
+	c, _ = parseAppended(c)
+	if c.ActiveModel != "Haiku 4.5" || c.Model1M || shortModel(*c) != "haiku 4.5" {
+		t.Errorf("backtick form: %q 1M=%v short=%q", c.ActiveModel, c.Model1M, shortModel(*c))
+	}
+}
+
+func TestShortModelNames(t *testing.T) {
+	for name, want := range map[string]string{
+		"claude-opus-5-5": "opus 5.5", "claude-haiku-4-5-20251001": "haiku 4.5", "claude-fable-5-1": "fable 5.1",
+		"Fable 5": "fable 5", "Opus 4.8 (1M context)": "opus 4.8", "something-else": "something-else",
+	} {
+		if got := shortModel(Conversation{ActiveModel: name}); got != want {
+			t.Errorf("shortModel(%q) = %q, want %q", name, got, want)
+		}
 	}
 }

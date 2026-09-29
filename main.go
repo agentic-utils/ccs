@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -1085,6 +1086,63 @@ func (m model) refreshNote() string {
 	return " · refreshed " + when + " ago"
 }
 
+// mouseLeak matches a mouse report that arrived split and was read as typed
+// text (e.g. "[<65;40;12M" or "<64;10;5"), so it never reaches the search.
+var mouseLeak = regexp.MustCompile(`^\x1b?\[?<\d+(;\d+){1,2}[Mm]?$|\[<\d+;\d+;\d+[Mm]`)
+
+// listLayout returns the screen rows View puts the session list and the
+// preview on: list rows start at listTop, listHeight of them, and the
+// preview starts at previewTop. Must match View.
+func (m model) listLayout() (listTop, listHeight, previewTop int) {
+	sections := 1
+	if m.errorMsg != "" {
+		sections++
+	}
+	listHeight = max(m.height*30/100, 3)
+	listTop = sections + 4 // title, sections, blank, column header, rule
+	return listTop, listHeight, listTop + listHeight + 1
+}
+
+// handleMouse sends the wheel to whatever is under the pointer: the
+// conversation preview scrolls, the list moves its selection. A click on a
+// list row selects it.
+func (m model) handleMouse(msg tea.MouseMsg) model {
+	if m.showUsage || m.prompting() || m.updateOpen || msg.Action != tea.MouseActionPress {
+		return m
+	}
+	listTop, listHeight, previewTop := m.listLayout()
+	onPreview := msg.Y >= previewTop
+	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		up := msg.Button == tea.MouseButtonWheelUp
+		switch {
+		case onPreview && up:
+			m.previewScroll = max(0, m.previewScroll-3)
+		case onPreview:
+			m.previewScroll = min(m.previewScroll+3, m.maxPreviewScroll())
+		case up && m.cursor > 0:
+			m.cursor--
+			m.previewScroll = 0
+		case !up && m.cursor < len(m.filtered)-1:
+			m.cursor++
+			m.previewScroll = 0
+		}
+	case tea.MouseButtonLeft:
+		if msg.Y < listTop || msg.Y >= listTop+listHeight {
+			return m
+		}
+		start := 0 // same scroll offset View uses
+		if m.cursor >= listHeight {
+			start = m.cursor - listHeight + 1
+		}
+		if i := start + msg.Y - listTop; i < len(m.filtered) && i != m.cursor {
+			m.cursor = i
+			m.previewScroll = 0
+		}
+	}
+	return m
+}
+
 // prompting reports an open rename, delete or prune prompt.
 func (m model) prompting() bool {
 	return m.renaming || m.confirmDelete || m.confirmPrune
@@ -1477,7 +1535,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 
+	case tea.MouseMsg:
+		return m.handleMouse(msg), nil
+
 	case tea.KeyMsg:
+		if msg.Type == tea.KeyRunes && mouseLeak.MatchString(string(msg.Runes)) {
+			return m, nil // a fragmented mouse report, not typing
+		}
 		// The popup waits behind rename/delete/prune prompts, so it never takes
 		// their keys; once they close, it gets a fresh grace period.
 		if m.updateOpen && m.prompting() {
@@ -2004,8 +2068,14 @@ func buildPreviewLines(conv Conversation, query string) []string {
 		}
 	}
 
-	// Build set of indices to show
+	// Build set of indices to show. Without a search, the whole conversation
+	// (scrolling reads it end to end); with one, the matches in context.
 	showSet := make(map[int]bool)
+	if query == "" {
+		for i := range conv.Messages {
+			showSet[i] = true
+		}
+	}
 
 	// Always show first 2 and last 2 messages
 	for i := 0; i < 2 && i < len(conv.Messages); i++ {
@@ -3338,10 +3408,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Run TUI. Mouse reporting is intentionally NOT enabled: under a heavy
-	// frame the terminal emits mouse-wheel reports faster than bubbletea reads
-	// them, and the fragmented sequences leak into the search box as text.
-	// Scrolling is keyboard-only (arrows / Ctrl+J/K / PgUp/PgDn).
+	// Run TUI with mouse reporting, so the wheel scrolls whatever is under the
+	// pointer (see listLayout). A report that arrives fragmented can reach
+	// Update as typed text; mouseLeak drops those before the search box.
 	m := initialModel(items, filterQuery, claudeFlags)
 	m.live = readLiveSessions()
 	m.lastRefresh = time.Now()
@@ -3360,7 +3429,7 @@ func main() {
 		}
 		return buildItems(convs), nil
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	finalModel, err := p.Run()
 	if err != nil {

@@ -103,6 +103,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `fetchAllowance()` / `keychainRead` - ALLOWANCE panel: Claude Code's OAuth token read-only (`/usr/bin/security find-generic-password` for `keychainService()`, which hashes CLAUDE_CONFIG_DIR like Claude Code, else `.credentials.json`), then GET `api/oauth/usage` (`limits`: `session`, `weekly_all`). An expired/missing token or a 401 shows "open claude to refresh the allowance"; ccs never refreshes or writes the credential. At most once a minute, only while the usage screen is open
 - `View()` / `viewScreen()` / `overlayCentre()` - `viewScreen` draws the current screen (list or usage); `View` then overlays popups (the update offer) centred on top, ANSI-aware so the screen stays visible around them. Screens never draw popups themselves, so any new screen gets them for free
 - `uiState` / `restore()` / `restoreEnv` - before the post-update restart, `uiState()` (screen name, search text and cursor position, selected SessionID, preview scroll) goes into `CCS_RESTORE_STATE` for the new process only; `main` reads it once, unsets it, and `restore()` puts the user back (a missing conversation is skipped). A new screen needs a case in `screenName()` and `restore()`
+- Message box (`chat*`, `deliverMessage()`) - when the selected conversation is live, its preview gets a status line and a one-line message box. Focus moves to the box only when the user moves the selection onto a live session (`selectionMoved`: keys, wheel, click), never through search filtering; Esc or clicking the search row returns it. Enter sends via `sendViaSocket` (the session file's `messagingSocketPath`: newline-delimited JSON, an `auth` line with the `peerToken` from `<pid>.<sha256(socket path as written)>.key`, then a `user` message wrapped in `<cross-session-message from-name="ccs">`); only if the socket can't be reached at all (`errNotConnected`) does it type into the terminal instead (`typeIntoSession`: tmux `send-keys -l`, or iTerm `write text`; control characters refused). Never both. The socket gives no acknowledgement, so a message is only called delivered once `checkDelivered` sees it in the transcript. Messages from ccs or other sessions (`peerMessage`, kept even though marked meta) show in the preview as `From <name>:`. While a live session is selected, `chatTickCmd` checks its transcript and busy/idle status every `chatFastRefresh` (250ms); an idle frame stays static, and `◌ working… Ns` only ticks while busy
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `pruneConversation()` - Prunes the selected conversation in place (Ctrl+X) and refreshes its size
 - `getTopic()` - Title, else first real user message (skips tag-wrapped harness text, shows `/cmd` or `! cmd` for command-only sessions), else session id
@@ -114,7 +115,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 ### TUI Layout
 
 ```
-  ccs · claude code search    Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C
+  ccs · claude code search    Resume:Enter Message:Ctrl+S Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C
   > type to search...                                                     (N/total)
 
   WHEN      PROJECT               TOPIC                    MODEL          SIZE   CTX  MSGS  HITS
@@ -133,6 +134,8 @@ Session: abc123...
 ```
 
 ## Conventions
+
+- Every interaction must be possible from the keyboard; the mouse (click, wheel) is only ever a shortcut for something a key already does
 
 - Use conventional commits (feat:, fix:, docs:, etc.)
 - Run tests before releasing

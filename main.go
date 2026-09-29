@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
@@ -243,18 +244,28 @@ type model struct {
 	opened          map[string]time.Time // sessions ccs opened in a tab, until their session file appears
 	renameIndex     int                  // Index of item being renamed
 	renameInput     textinput.Model
-	errorMsg        string                     // Show deletion/prune errors
-	preview         *previewCache              // memoised preview lines for the selected conversation
-	hits            *hitCounter                // memoised per-query hit counts, keyed by SessionID
-	lastFilterQuery string                     // lowercased query the current m.filtered was built from
-	live            map[string]bool            // SessionIDs attached to a running claude process
-	reload          func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
-	gen             int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
-	refreshStarted  time.Time                  // when the in-flight scan began; zero when none
-	lastRefresh     time.Time                  // when the list last matched disk (startup or a completed scan)
-	lastKick        time.Time                  // last full scan started early because an unknown session went live
-	kicked          map[string]bool            // unknown live sessions an early scan was already started for
-	refreshFailed   bool                       // the last scan errored; the list is from lastRefresh
+	errorMsg        string          // Show deletion/prune errors
+	preview         *previewCache   // memoised preview lines for the selected conversation
+	hits            *hitCounter     // memoised per-query hit counts, keyed by SessionID
+	lastFilterQuery string          // lowercased query the current m.filtered was built from
+	live            map[string]bool // SessionIDs attached to a running claude process
+	livePIDs        map[string]int  // live SessionID -> claude pid (for its session file and socket)
+
+	// Message box for the selected live session (see chat*).
+	chatFocus      bool // typing goes to the message box, not the search
+	chatInput      textinput.Model
+	chatTickOn     bool                   // the fast refresh for the selected live session is running
+	chatStatus     map[string]sessionStat // busy/idle per live session, from its session file
+	pending        map[string]string      // text sent but not yet seen in the transcript, by SessionID
+	sendNote       map[string]string      // outcome of the last send, by SessionID
+	sending        bool
+	reload         func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
+	gen            int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
+	refreshStarted time.Time                  // when the in-flight scan began; zero when none
+	lastRefresh    time.Time                  // when the list last matched disk (startup or a completed scan)
+	lastKick       time.Time                  // last full scan started early because an unknown session went live
+	kicked         map[string]bool            // unknown live sessions an early scan was already started for
+	refreshFailed  bool                       // the last scan errored; the list is from lastRefresh
 
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
 	// upgrade installs tag and returns the binary to restart; nil means ccs
@@ -841,6 +852,7 @@ type resumeDoneMsg struct {
 
 type liveMsg struct {
 	live    map[string]bool
+	pids    map[string]int
 	updated []Conversation // live conversations whose transcript grew
 	unknown []string       // live sessions not in the list yet
 	gen     int
@@ -867,8 +879,12 @@ func (m model) liveCmd() tea.Cmd {
 	}
 	wasLive, gen := maps.Clone(m.live), m.gen
 	return func() tea.Msg {
-		live := readLiveSessions()
-		msg := liveMsg{live: live, gen: gen}
+		pids := liveSessionPIDs()
+		live := make(map[string]bool, len(pids))
+		for id := range pids {
+			live[id] = true
+		}
+		msg := liveMsg{live: live, pids: pids, gen: gen}
 		check := make(map[string]bool, len(live)+len(wasLive))
 		for id := range live {
 			check[id] = true
@@ -1163,11 +1179,21 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		case up && m.cursor > 0:
 			m.cursor--
 			m.previewScroll = 0
+			m.selectionMoved()
 		case !up && m.cursor < len(m.filtered)-1:
 			m.cursor++
 			m.previewScroll = 0
+			m.selectionMoved()
 		}
 	case tea.MouseButtonLeft:
+		if msg.Y == 1 { // the search row
+			m.chatFocus = false
+			return m
+		}
+		if m.chatRows() > 0 && msg.Y >= m.height-3 { // the message box
+			m.chatFocus = true
+			return m
+		}
 		if msg.Y < listTop || msg.Y >= listTop+listHeight {
 			return m
 		}
@@ -1178,9 +1204,381 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		if i := start + msg.Y - listTop; i < len(m.filtered) && i != m.cursor {
 			m.cursor = i
 			m.previewScroll = 0
+			m.selectionMoved()
 		}
 	}
 	return m
+}
+
+// ============================================================================
+// Message box: talk to the selected live session from ccs
+// ============================================================================
+
+// chatFastRefresh is how often the selected live session's transcript and
+// busy/idle status are checked (one stat and one small file read).
+const chatFastRefresh = 250 * time.Millisecond
+
+type chatTickMsg struct{}
+
+type chatTickResult struct {
+	id   string
+	conv *Conversation // set when the transcript grew
+	stat sessionStat
+	gen  int
+}
+
+type sendDoneMsg struct {
+	id   string
+	note string
+	err  error
+}
+
+// sessionStat is what a live session's file says about it right now.
+type sessionStat struct {
+	status string // "busy" or "idle"
+	since  time.Time
+	name   string
+}
+
+// sessionFile is the part of ~/.claude/sessions/<pid>.json ccs uses.
+type sessionFile struct {
+	SessionID       string `json:"sessionId"`
+	Name            string `json:"name"`
+	Status          string `json:"status"`
+	StatusUpdatedAt int64  `json:"statusUpdatedAt"` // epoch ms
+	Socket          string `json:"messagingSocketPath"`
+}
+
+func readSessionFile(pid int) (sessionFile, error) {
+	var f sessionFile
+	data, err := os.ReadFile(filepath.Join(getSessionsDir(), strconv.Itoa(pid)+".json"))
+	if err != nil {
+		return f, err
+	}
+	return f, json.Unmarshal(data, &f)
+}
+
+func (m model) selectedLive() bool {
+	return len(m.filtered) > 0 && m.live[m.filtered[m.cursor].conv.SessionID]
+}
+
+// selectionMoved runs when the user moves the selection (keys, wheel,
+// click): landing on a live session puts typing in its message box. Never
+// called for list changes caused by typing a search, so a search can't end
+// up in the message box.
+func (m *model) selectionMoved() {
+	m.chatFocus = m.selectedLive() && !m.showUsage
+}
+
+// chatRows is the height the message area takes under the preview: a status
+// line and the bordered box. Zero unless a live session is selected.
+func (m model) chatRows() int {
+	if m.showUsage || !m.selectedLive() {
+		return 0
+	}
+	return 4
+}
+
+// ensureChatTick starts the fast refresh while a live session is selected.
+// Each tick reschedules through Update, so it stops by itself otherwise.
+func (m *model) ensureChatTick() tea.Cmd {
+	if m.chatTickOn || m.quitting || m.showUsage || !m.selectedLive() {
+		return nil
+	}
+	m.chatTickOn = true
+	return tea.Tick(chatFastRefresh, func(time.Time) tea.Msg { return chatTickMsg{} })
+}
+
+// chatTickCmd reads the selected live session's status and any new
+// transcript lines off the UI goroutine.
+func (m model) chatTickCmd() tea.Cmd {
+	if !m.selectedLive() {
+		return func() tea.Msg { return chatTickResult{} }
+	}
+	conv, gen := m.filtered[m.cursor].conv, m.gen
+	pid := m.livePIDs[conv.SessionID]
+	return func() (msg tea.Msg) {
+		res := chatTickResult{id: conv.SessionID, gen: gen}
+		defer func() {
+			if r := recover(); r != nil {
+				recoverWorkerValue(r)
+				msg = res
+			}
+		}()
+		if f, err := readSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
+			res.stat = sessionStat{status: f.Status, since: time.UnixMilli(f.StatusUpdatedAt), name: f.Name}
+		}
+		if _, busy := liveReads.LoadOrStore(conv.FilePath, true); !busy {
+			defer liveReads.Delete(conv.FilePath)
+			if c, err := parseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
+				res.conv = c
+			}
+		}
+		return res
+	}
+}
+
+// sessionName is how the status line names a session: its Claude Code name,
+// else its title, else its topic.
+func (m model) sessionName(conv Conversation) string {
+	if st, ok := m.chatStatus[conv.SessionID]; ok && st.name != "" {
+		return st.name
+	}
+	if conv.Title != "" {
+		return truncate(conv.Title, 30)
+	}
+	return truncate(getTopic(conv), 30)
+}
+
+// chatView draws the status line and message box for the selected session.
+func (m model) chatView() string {
+	conv := m.filtered[m.cursor].conv
+	id, name := conv.SessionID, m.sessionName(conv)
+	left := ""
+	switch {
+	case m.pending[id] != "" && m.sending:
+		left = "\033[90m  You · sending… " + truncate(m.pending[id], max(m.width-40, 10)) + "\033[0m"
+	case m.pending[id] != "":
+		left = "\033[90m  You · " + truncate(m.pending[id], max(m.width-60, 10)) + " · not in the conversation yet\033[0m"
+	case m.sendNote[id] != "":
+		left = "  " + m.sendNote[id]
+	}
+	right := ""
+	if st := m.chatStatus[id]; st.status == "busy" {
+		right = fmt.Sprintf("\033[33m◌ working… %ds\033[0m  ", int(time.Since(st.since).Seconds()))
+	}
+	status := left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
+
+	in := m.chatInput
+	in.Placeholder = "message " + name + "…"
+	in.Width = max(m.width-8, 10)
+	if !m.chatFocus {
+		in.Blur() // no cursor while typing goes to the search
+	}
+	border := lipgloss.Color("240")
+	if m.chatFocus {
+		border = lipgloss.Color("62")
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Width(max(m.width-2, 10)).Render(in.View())
+	return status + "\n" + box
+}
+
+// sendCmd sends the message box's text to the selected live session.
+func (m *model) sendCmd() tea.Cmd {
+	text := strings.TrimSpace(m.chatInput.Value())
+	if text == "" || m.sending || !m.selectedLive() {
+		return nil
+	}
+	conv := m.filtered[m.cursor].conv
+	id, name, pid := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID]
+	if m.pending == nil {
+		m.pending = make(map[string]string)
+	}
+	m.pending[id] = text
+	delete(m.sendNote, id)
+	m.sending = true
+	m.chatInput.SetValue("")
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				recoverWorkerValue(r)
+				msg = sendDoneMsg{id: id, note: "✗ Internal error, logged to " + workerPanicLog, err: errors.New("panic")}
+			}
+		}()
+		note, err := deliverMessage(pid, id, name, text)
+		return sendDoneMsg{id: id, note: note, err: err}
+	}
+}
+
+// errNotConnected means the socket couldn't be reached at all, so nothing
+// was sent and the terminal fallback is safe.
+var errNotConnected = errors.New("not connected")
+
+// deliverMessage sends text to a live session: through its message socket
+// if it can be reached, else typed into its terminal. Never both: once the
+// socket accepted a connection, a later error isn't retried another way.
+func deliverMessage(pid int, id, name, text string) (string, error) {
+	f, err := readSessionFile(pid)
+	if err != nil || f.SessionID != id {
+		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("session file: %v", err)
+	}
+	if f.Socket != "" {
+		err := sendViaSocket(f.Socket, peerToken(pid, f.Socket), text)
+		if err == nil {
+			return "✓ Sent to " + name + " via its message socket (as a message from ccs)", nil
+		}
+		if !errors.Is(err, errNotConnected) {
+			return "✗ Sending to " + name + " may have failed: " + err.Error(), err
+		}
+	}
+	where, err := typeIntoSession(pid, text)
+	switch {
+	case where == "":
+		return "✗ Couldn't reach " + name + ": its message socket isn't reachable and it isn't in iTerm or tmux", errors.New("unreachable")
+	case errors.Is(err, errTimedOut):
+		return "⚠ Typing into " + name + "'s " + where + " timed out; it may have been typed", err
+	case err != nil:
+		return "✗ Couldn't type into " + name + "'s " + where + ": " + err.Error(), err
+	}
+	return "✓ Typed into " + name + "'s " + where + " (as you)", nil
+}
+
+// sendViaSocket writes one message to a Claude Code session's message
+// socket: newline-delimited JSON, an auth line with the session's peer token
+// first, then the message wrapped so the session sees it came from ccs.
+func sendViaSocket(path, token, text string) error {
+	conn, err := net.DialTimeout("unix", path, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errNotConnected, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	var out bytes.Buffer
+	if token != "" {
+		line, _ := json.Marshal(map[string]string{"type": "auth", "token": token})
+		out.Write(append(line, '\n'))
+	}
+	body := strings.ReplaceAll(text, "</cross-session-message>", "</ cross-session-message>")
+	line, _ := json.Marshal(map[string]any{
+		"type":    "user",
+		"message": map[string]string{"role": "user", "content": "<cross-session-message from-name=\"ccs\">\n" + body + "\n</cross-session-message>"},
+		"msg_id":  newUUID(),
+	})
+	out.Write(append(line, '\n'))
+	if _, err := conn.Write(out.Bytes()); err != nil {
+		return err
+	}
+	time.Sleep(150 * time.Millisecond) // as Claude Code's own sender does before ending
+	if uc, ok := conn.(*net.UnixConn); ok {
+		return uc.CloseWrite()
+	}
+	return nil
+}
+
+// peerToken reads the recipient's peer token from
+// ~/.claude/sessions/<pid>.<sha256(socket path)>.key, "" if there isn't one
+// (macOS sessions don't require it by default).
+func peerToken(pid int, socket string) string {
+	paths := []string{socket}
+	if real, err := filepath.EvalSymlinks(socket); err == nil && real != socket {
+		paths = append(paths, real)
+	}
+	for _, p := range paths {
+		sum := sha256.Sum256([]byte(p))
+		data, err := os.ReadFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))))
+		if err != nil {
+			continue
+		}
+		var k struct {
+			PeerToken string `json:"peerToken"`
+		}
+		if json.Unmarshal(data, &k) == nil && k.PeerToken != "" {
+			return k.PeerToken
+		}
+	}
+	return ""
+}
+
+// typeIntoSession types text into the terminal running pid and presses
+// Enter: its tmux pane, else its iTerm tab. where names what it used ("" if
+// neither found it). A timeout may still have typed it, so it's not retried.
+func typeIntoSession(pid int, text string) (where string, err error) {
+	if strings.ContainsFunc(text, func(r rune) bool { return r < 0x20 || r == 0x7f || r == utf8.RuneError }) {
+		return "terminal", errors.New("the message contains control characters")
+	}
+	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
+	tty := strings.TrimSpace(string(out))
+	if err != nil || tty == "" || tty == "??" {
+		return "", nil
+	}
+	tty = "/dev/" + tty
+	if os.Getenv("TMUX") != "" {
+		panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
+		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
+			if _, err := runBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "-l", "--", text); err != nil {
+				return "tmux pane", err
+			}
+			_, err := runBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "Enter")
+			return "tmux pane", err
+		}
+	}
+	if os.Getenv("TERM_PROGRAM") != "iTerm.app" {
+		return "", nil
+	}
+	script := fmt.Sprintf(`tell application "iTerm2"
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				if tty of s is %q then
+					tell s to write text %q
+					return "typed"
+				end if
+			end repeat
+		end repeat
+	end repeat
+end tell`, tty, text)
+	out, err = runBounded(5*time.Second, nil, "osascript", "-e", script)
+	if err != nil {
+		return "iTerm tab", err
+	}
+	if strings.TrimSpace(string(out)) != "typed" {
+		return "", nil
+	}
+	return "iTerm tab", nil
+}
+
+// checkDelivered clears a pending message once it shows up in the session's
+// transcript, sent through the socket (wrapped) or typed.
+func (m *model) checkDelivered(id string) {
+	text := m.pending[id]
+	if text == "" || m.sending {
+		return
+	}
+	for _, item := range m.items {
+		if item.conv.SessionID != id {
+			continue
+		}
+		msgs := item.conv.Messages
+		for i := len(msgs) - 1; i >= 0 && i >= len(msgs)-20; i-- {
+			body := msgs[i].Text
+			if _, b, ok := peerParts(body); ok {
+				body = b
+			}
+			if msgs[i].Role == "user" && strings.TrimSpace(body) == text {
+				delete(m.pending, id)
+				if strings.Contains(m.sendNote[id], "socket") {
+					m.sendNote[id] = "✓ Delivered to " + m.sessionName(item.conv) + " (as a message from ccs)"
+				}
+				return
+			}
+		}
+	}
+}
+
+// peerMessage matches a message another session (or ccs) sent through the
+// message socket; peerParts pulls out who it's from and the text.
+var peerMessage = regexp.MustCompile(`(?s)^<cross-session-message([^>]*)>\n(.*)\n</cross-session-message>$`)
+var peerFrom = regexp.MustCompile(`from-name="([^"]*)"`)
+
+func peerParts(text string) (from, body string, ok bool) {
+	m := peerMessage.FindStringSubmatch(text)
+	if m == nil {
+		return "", "", false
+	}
+	from = "another session"
+	if f := peerFrom.FindStringSubmatch(m[1]); f != nil {
+		from = f[1]
+	}
+	return from, m[2], true
+}
+
+func newUUID() string {
+	var b [16]byte
+	rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // prompting reports an open rename, delete or prune prompt.
@@ -1322,7 +1720,14 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 	ti.SetValue(filterQuery)
 	ti.Width = 40
 
+	chat := textinput.New()
+	chat.Prompt = "› "
+	chat.CharLimit = 4000
+	chat.Cursor.SetMode(cursor.CursorStatic)
+	chat.Focus() // only fed keys while chatFocus; drawn without a cursor otherwise
+
 	m := model{
+		chatInput:   chat,
 		items:       items,
 		textInput:   ti,
 		claudeFlags: claudeFlags,
@@ -1456,7 +1861,22 @@ func (m *model) restore(s uiState) {
 	m.showUsage = s.Screen == "usage"
 }
 
+// Update runs update, then keeps the message box in step with the selection:
+// focus only stays in it while the selected session is live, and the fast
+// refresh runs only while a live session is selected.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	res, cmd := m.update(msg)
+	n := res.(model)
+	if n.chatFocus && !n.selectedLive() {
+		n.chatFocus = false
+	}
+	if tick := n.ensureChatTick(); tick != nil {
+		return n, tea.Batch(cmd, tick)
+	}
+	return n, cmd
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -1511,6 +1931,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case liveMsg:
 		m.live = msg.live
+		if msg.pids != nil {
+			m.livePIDs = msg.pids
+		}
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
 			if msg.live[id] || time.Since(t) >= openedGrace {
@@ -1637,6 +2060,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return m.handleMouse(msg), nil
 
+	case chatTickMsg:
+		return m, m.chatTickCmd()
+
+	case chatTickResult:
+		m.chatTickOn = false // rescheduled by Update while the selection stays live
+		if msg.stat.status != "" {
+			if m.chatStatus == nil {
+				m.chatStatus = make(map[string]sessionStat)
+			}
+			m.chatStatus[msg.id] = msg.stat
+		}
+		if msg.conv != nil && msg.gen == m.gen && !m.prompting() {
+			m.applyLive([]Conversation{*msg.conv})
+		}
+		m.checkDelivered(msg.id)
+		return m, nil
+
+	case sendDoneMsg:
+		m.sending = false
+		if m.sendNote == nil {
+			m.sendNote = make(map[string]string)
+		}
+		m.sendNote[msg.id] = msg.note
+		if msg.err != nil {
+			delete(m.pending, msg.id)
+		}
+		m.checkDelivered(msg.id)
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyRunes && mouseLeak.MatchString(string(msg.Runes)) {
 			return m, nil // a fragmented mouse report, not typing
@@ -1743,7 +2195,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // the usage screen has no other keys; typing mustn't edit a hidden search
 		}
 
+		if m.chatFocus {
+			switch msg.String() {
+			case "esc":
+				m.chatFocus = false // back to the search
+				return m, nil
+			case "enter":
+				return m, m.sendCmd()
+			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x":
+				// fall through to the list's handling below
+			default:
+				var cmd tea.Cmd
+				m.chatInput, cmd = m.chatInput.Update(msg)
+				return m, cmd
+			}
+		}
+
 		switch msg.String() {
+		case "ctrl+s":
+			// Keyboard way into the message box of the selected live session
+			// (clicking it is the mouse way).
+			if m.selectedLive() && !m.showUsage {
+				m.chatFocus = true
+			} else if len(m.filtered) > 0 {
+				m.errorMsg = "Only a session open in claude (●) can receive messages"
+			}
+			return m, nil
+
 		case "esc":
 			// Esc only ever clears the search; Ctrl+C quits.
 			if m.textInput.Value() != "" {
@@ -1827,6 +2305,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor > 0 {
 				m.cursor--
 				m.previewScroll = 0
+				m.selectionMoved()
 			}
 			return m, nil
 
@@ -1834,6 +2313,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.filtered)-1 {
 				m.cursor++
 				m.previewScroll = 0
+				m.selectionMoved()
 			}
 			return m, nil
 
@@ -1928,9 +2408,11 @@ func (m model) viewScreen() string {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
 	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
-	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C"
+	help := "Resume:Enter Message:Ctrl+S Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C"
 	if m.showUsage { // only Tab and Ctrl+C do anything there
 		help = "Back:Tab Exit:Ctrl+C"
+	} else if m.chatFocus {
+		help = "Send:Enter Search:Esc Scroll:Ctrl+J/K Exit:Ctrl+C"
 	}
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
@@ -1974,7 +2456,11 @@ func (m model) viewScreen() string {
 		if searchPadding < 1 {
 			searchPadding = 1
 		}
-		inputSection = fmt.Sprintf("  %s%s%s\033[90m%s\033[0m", m.textInput.View(), strings.Repeat(" ", searchPadding), usage, count)
+		search := m.textInput
+		if m.chatFocus {
+			search.Blur() // typing goes to the message box; one cursor on screen
+		}
+		inputSection = fmt.Sprintf("  %s%s%s\033[90m%s\033[0m", search.View(), strings.Repeat(" ", searchPadding), usage, count)
 		sections = append(sections, inputSection)
 	}
 
@@ -2036,7 +2522,16 @@ func (m model) viewScreen() string {
 	b.WriteString("\n")
 
 	if len(m.filtered) > 0 {
-		preview := m.renderPreview(m.filtered[m.cursor], previewHeight)
+		rows := m.chatRows()
+		preview := m.renderPreview(m.filtered[m.cursor], previewHeight-rows)
+		if rows > 0 {
+			// Pin the message box to the bottom whatever the preview's length.
+			lines := strings.Split(preview, "\n")
+			for len(lines) < previewHeight-rows {
+				lines = append(lines, "")
+			}
+			preview = strings.Join(lines, "\n") + "\n" + m.chatView()
+		}
 		b.WriteString(preview)
 	}
 
@@ -2219,6 +2714,20 @@ func buildPreviewLines(conv Conversation, query string) []string {
 		msg := conv.Messages[i]
 		ts := formatTimestamp(msg.Ts)
 		var prefix string
+		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
+			// A message sent from another session or ccs, not typed here.
+			marker := "   "
+			if matchSet[i] {
+				marker = ">>>"
+			}
+			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s %s From %s:\033[0m", marker, ts, from))
+			for _, line := range strings.Split(body, "\n") {
+				msgLines = append(msgLines, "    "+highlight(line, query))
+			}
+			msgLines = append(msgLines, "")
+			lastShown = i
+			continue
+		}
 		if matchSet[i] {
 			if msg.Role == "user" {
 				prefix = fmt.Sprintf("\033[1;32m>>> %s User:\033[0m", ts) // Bold green
@@ -2269,7 +2778,7 @@ func (m model) maxPreviewScroll() int {
 // header, matching what View gives renderPreview.
 func (m model) previewMessageRows(conv Conversation) int {
 	_, _, previewTop := m.listLayout()
-	return max(m.height-previewTop-len(previewHeader(conv, m.textInput.Value())), 1)
+	return max(m.height-previewTop-m.chatRows()-len(previewHeader(conv, m.textInput.Value())), 1)
 }
 
 // previewHeader is the preview's fixed header (always visible above the
@@ -2657,7 +3166,9 @@ func parseLine(conv *Conversation, line []byte) bool {
 			name := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(m[1], "`", ""), "(default)", ""))
 			conv.ActiveModel, conv.Model1M = name, strings.Contains(name, "1M")
 		}
-		if !raw.IsMeta && strings.TrimSpace(text) != "" {
+		// Messages from other sessions (and from ccs) are harness-marked but
+		// are real conversation turns, so keep them.
+		if (!raw.IsMeta || peerMessage.MatchString(text)) && strings.TrimSpace(text) != "" {
 			if conv.FirstTimestamp == "" {
 				conv.FirstTimestamp = raw.Timestamp
 			}
@@ -3546,7 +4057,11 @@ func main() {
 			m.restore(state)
 		}
 	}
-	m.live = readLiveSessions()
+	m.livePIDs = liveSessionPIDs()
+	m.live = make(map[string]bool, len(m.livePIDs))
+	for id := range m.livePIDs {
+		m.live[id] = true
+	}
 	m.lastRefresh = time.Now()
 	if version != "dev" {
 		m.checkLatest = latestRelease

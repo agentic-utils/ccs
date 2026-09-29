@@ -90,6 +90,7 @@ ccs buyer -- --plan
 - Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it. Hold `⌥ Option` while dragging to select text in iTerm
 - `Ctrl+U` - Clear search
 - `Esc` - Clear the search
+- Message box - select an open (`●`) session with the arrows (typing moves into the box under its conversation), or press `Ctrl+S` to jump into it; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search
 - `Tab` - Switch between the session list and the usage screen
 - `Ctrl+C` - Quit
 

@@ -4030,7 +4030,7 @@ func TestChatTickReadsStatusAndNewLines(t *testing.T) {
 	nm, _ := m.Update(res)
 	m = nm.(model)
 	v := strip2(m.View())
-	if !strings.Contains(v, "working… 1") || !strings.Contains(v, "on it") || !strings.Contains(v, "message busy…") {
+	if !strings.Contains(v, "working 1") || !strings.Contains(v, "on it") || !strings.Contains(v, "message busy…") {
 		t.Errorf("view should show the reply, the working indicator and the box:\n%s", v)
 	}
 }
@@ -4333,5 +4333,23 @@ func TestLinksAndCollapsedIndent(t *testing.T) {
 	}
 	if !strings.Contains(plain, "and x.io/a.") {
 		t.Errorf("a link whose text is its URL shows once:\n%s", plain)
+	}
+}
+
+func TestChatPendingLine(t *testing.T) {
+	m := chatModel(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	id := m.filtered[m.cursor].conv.SessionID
+	m.pending = map[string]string{id: "please check the logs.\nthen fix it."}
+	v := strip2(m.View())
+	if !strings.Contains(v, "sent: please check the logs. then fix it.") || strings.Contains(v, "....") {
+		t.Errorf("pending message should read as sent on one line:\n%s", v)
+	}
+	if m.chatStatus == nil {
+		m.chatStatus = map[string]sessionStat{}
+	}
+	m.chatStatus[id] = sessionStat{status: "busy", since: time.Now()}
+	if v := strip2(m.View()); !strings.Contains(v, "queued until it's free:") {
+		t.Errorf("busy recipient should show the message as queued:\n%s", v)
 	}
 }

@@ -3427,7 +3427,7 @@ func TestAllowanceInSearchRowAndUsageScreenHidesSearch(t *testing.T) {
 	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "Tab to go back") {
 		t.Error("the usage screen should replace the search box with a back hint")
 	}
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "Fork:Ctrl+F") || !strings.Contains(v, "Back:Tab Exit:Ctrl+C") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "Fork:Ctrl+F") || !strings.Contains(v, "Back:Tab Account:Ctrl+O Exit:Ctrl+C") {
 		t.Error("the usage screen header should list only its own keys")
 	}
 }
@@ -4072,5 +4072,183 @@ func TestCtrlSReachesMessageBoxByKeyboard(t *testing.T) {
 	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if m = res.(model); m.chatFocus || m.errorMsg == "" {
 		t.Error("ctrl+s on a session that isn't live should say why")
+	}
+}
+
+// fakeCswap puts a fake cswap on PATH (and nothing else from the user's
+// PATH, so the real one can never run). It prints canned list JSON, records
+// every call's arguments, and fails "switch" when CSWAP_FAIL is set.
+func fakeCswap(t *testing.T) (logPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath = filepath.Join(dir, "calls")
+	list := `{"schemaVersion":1,"activeAccountNumber":1,"accounts":[` +
+		`{"number":1,"email":"me@work.example","organizationName":"Work","active":true,"usageStatus":"unavailable","usage":null,"lastGoodUsage":{"fiveHour":{"pct":21},"sevenDay":{"pct":24}}},` +
+		`{"number":2,"email":"me@home.example","organizationName":"Home","active":false,"usageStatus":"ok","usage":{"fiveHour":{"pct":4},"sevenDay":{"pct":10}}},` +
+		`{"number":3,"email":"old@example.com","organizationName":"Old","active":false,"usageStatus":"relogin_required"}]}`
+	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\n" +
+		"case \"$1\" in\n" +
+		"  list) echo '" + list + "' ;;\n" +
+		"  switch) if [ -n \"$CSWAP_FAIL\" ]; then echo 'Error: account 2 needs re-login' >&2; exit 1; fi ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "cswap"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":/bin:/usr/bin")
+	return logPath
+}
+
+// runAcct feeds a key to the model and runs any command it returns (and the
+// ones those return), like bubbletea would, skipping the allowance fetch.
+func runAcct(t *testing.T, m model, msg tea.Msg) model {
+	t.Helper()
+	res, cmd := m.Update(msg)
+	m = res.(model)
+	for cmd != nil {
+		out := cmd()
+		if b, ok := out.(tea.BatchMsg); ok {
+			cmd = nil
+			for _, c := range b {
+				if c == nil {
+					continue
+				}
+				if r := c(); r != nil {
+					if _, isAllow := r.(allowanceMsg); isAllow {
+						continue
+					}
+					res, next := m.Update(r)
+					m = res.(model)
+					if next != nil {
+						cmd = next
+					}
+				}
+			}
+			continue
+		}
+		if out == nil {
+			break
+		}
+		res, cmd = m.Update(out)
+		m = res.(model)
+	}
+	return m
+}
+
+func TestCswapUsageLabel(t *testing.T) {
+	pct := func(f float64) *float64 { return &f }
+	live := &cswapUsage{}
+	live.FiveHour = &struct {
+		Pct *float64 `json:"pct"`
+	}{pct(4)}
+	if got := cswapUsageLabel(cswapAccount{Usage: live}); got != "5h 4%" {
+		t.Errorf("got %q", got)
+	}
+	if got := cswapUsageLabel(cswapAccount{UsageStatus: "relogin_required", Usage: live}); got != "re-login" {
+		t.Errorf("relogin: got %q", got)
+	}
+	if got := cswapUsageLabel(cswapAccount{LastGoodUsage: live}); got != "5h 4%" {
+		t.Errorf("falls back to the last good reading: got %q", got)
+	}
+}
+
+func TestAccountSwitcherListsAndSwitches(t *testing.T) {
+	calls := fakeCswap(t)
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 140, 40
+
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if !m.acctOpen || len(m.accts) != 3 {
+		t.Fatalf("ctrl+o should open and list 3 accounts, open=%v n=%d msg=%q", m.acctOpen, len(m.accts), m.acctMsg)
+	}
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	v := strip.ReplaceAllString(m.View(), "")
+	for _, want := range []string{"Switch Claude account", "● 1  me@work.example", "5h 21% · 7d 24%", "me@home.example", "5h 4% · 7d 10%", "re-login"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("popup missing %q", want)
+		}
+	}
+
+	// The popup owns the keyboard: letters don't reach the search box.
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.textInput.Value() != "" {
+		t.Error("typing leaked into the search box")
+	}
+	// Choosing the active account doesn't run cswap.
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	// Switch with a digit.
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	if !strings.Contains(m.acctMsg, "Switched to me@home.example") {
+		t.Errorf("status after switch: %q", m.acctMsg)
+	}
+	// Switch with arrows + Enter, and add.
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+	got, _ := os.ReadFile(calls)
+	want := "list --json\nswitch 2\nlist --json\nswitch 3\nlist --json\nadd\nlist --json\n"
+	if string(got) != want {
+		t.Errorf("cswap calls:\n%s\nwant:\n%s", got, want)
+	}
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.acctOpen {
+		t.Error("esc should close the switcher")
+	}
+}
+
+func TestAccountSwitchFailureIsShown(t *testing.T) {
+	fakeCswap(t)
+	t.Setenv("CSWAP_FAIL", "1")
+	m := initialModel(nil, "", nil)
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	if !strings.Contains(m.acctMsg, "needs re-login") {
+		t.Errorf("failure should show cswap's reason, got %q", m.acctMsg)
+	}
+}
+
+func TestSwitchRefetchesAllowance(t *testing.T) {
+	fakeCswap(t)
+	m := initialModel(nil, "", nil)
+	m.allowanceAt = time.Now() // fetched recently: normally no refetch for a minute
+	m.allowanceLoading = true  // and one is in flight
+	res, _ := m.Update(acctActionMsg{what: "switching", done: "Switched"})
+	m = res.(model)
+	if !m.allowanceStale {
+		t.Fatal("an in-flight fetch for the old account should be marked stale")
+	}
+	res, cmd := m.Update(allowanceMsg{account: "old@example.com"})
+	if m = res.(model); cmd == nil || !m.allowanceLoading {
+		t.Error("a stale allowance result should trigger a fresh fetch")
+	}
+}
+
+func TestAccountSwitcherWithoutCswap(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	m := initialModel(nil, "", nil)
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	if m = res.(model); m.acctOpen || cmd != nil || !strings.Contains(m.errorMsg, "install cswap") {
+		t.Errorf("without cswap, ctrl+o should explain, got open=%v msg=%q", m.acctOpen, m.errorMsg)
+	}
+}
+
+func TestClickingAccountEmailOpensSwitcher(t *testing.T) {
+	fakeCswap(t)
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 160, 40
+	m.account = "me@work.example"
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	row := strip.ReplaceAllString(strings.Split(m.View(), "\n")[1], "")
+	x := strings.Index(row, "me@work.example")
+	if x < 0 {
+		t.Fatalf("email not in search row: %q", row)
+	}
+	// Clicking elsewhere on the row does nothing.
+	m = runAcct(t, m, tea.MouseMsg{X: 3, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.acctOpen {
+		t.Fatal("clicking the search box shouldn't open the switcher")
+	}
+	m = runAcct(t, m, tea.MouseMsg{X: utf8.RuneCountInString(row[:x]) + 2, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if !m.acctOpen || len(m.accts) != 3 {
+		t.Errorf("clicking the email should open and list accounts, open=%v n=%d", m.acctOpen, len(m.accts))
 	}
 }

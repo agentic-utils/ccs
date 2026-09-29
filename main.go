@@ -294,6 +294,15 @@ type model struct {
 	allowanceLoading bool
 	allowanceEnabled bool   // fetch the allowance for the header (off in tests)
 	account          string // Claude account email, from Claude Code's config
+	allowanceStale   bool   // the account changed while a fetch was in flight: fetch again
+
+	// Account switcher (Ctrl+O), backed by the cswap CLI.
+	acctOpen    bool
+	accts       []cswapAccount
+	acctCursor  int
+	acctBusy    bool   // a cswap command is running
+	acctMsg     string // outcome of the last list/switch/add, shown in the popup
+	acctPending bool   // opened by a click: the list still needs loading
 }
 
 // How often ccs asks GitHub for a newer release (one ~5KB HEAD request to the
@@ -1163,8 +1172,16 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.showUsage || m.prompting() || m.updateOpen || msg.Action != tea.MouseActionPress {
+	if m.showUsage || m.prompting() || m.updateOpen || m.acctOpen || msg.Action != tea.MouseActionPress {
 		return m
+	}
+	if msg.Button == tea.MouseButtonLeft && msg.Y == 1 && cswapPath() != "" {
+		if start, end, ok := m.accountSpan(); ok && msg.X >= start && msg.X < end {
+			m.acctOpen, m.acctMsg, m.acctCursor = true, "", 0
+			m.acctBusy = true
+			m.acctPending = true // Update starts the list command (handleMouse can't return one)
+			return m
+		}
 	}
 	listTop, listHeight, previewTop := m.listLayout()
 	onPreview := msg.Y >= previewTop
@@ -2001,9 +2018,43 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.usage = msg.data
 		return m, nil
 
+	case acctListMsg:
+		m.acctBusy = false
+		if msg.err != nil {
+			m.acctMsg = "✗ cswap list: " + msg.err.Error()
+			return m, nil
+		}
+		m.accts = msg.accts
+		if m.acctCursor >= len(m.accts) || m.acctCursor < 0 {
+			m.acctCursor = 0
+		}
+		return m, nil
+
+	case acctActionMsg:
+		m.acctBusy = false
+		if msg.err != nil {
+			m.acctMsg = "✗ " + msg.what + ": " + msg.err.Error()
+			return m, nil
+		}
+		m.acctMsg = "✓ " + msg.done
+		// The live login changed: re-read the account and allowance now.
+		cmds := []tea.Cmd{m.acctListCmd()}
+		if m.allowanceLoading {
+			m.allowanceStale = true
+		} else {
+			m.allowanceAt = time.Time{}
+			cmds = append(cmds, m.allowanceCmd())
+		}
+		return m, tea.Batch(cmds...)
+
 	case allowanceMsg:
 		m.allowanceLoading = false
 		m.allowanceAt = time.Now()
+		if m.allowanceStale { // fetched for the previous account: go again
+			m.allowanceStale = false
+			m.allowanceAt = time.Time{}
+			return m, m.allowanceCmd()
+		}
 		m.allowanceErr = msg.err
 		if msg.err == nil {
 			m.allowance = msg.limits
@@ -2058,7 +2109,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case tea.MouseMsg:
-		return m.handleMouse(msg), nil
+		m = m.handleMouse(msg)
+		if m.acctPending {
+			m.acctPending = false
+			return m, m.acctListCmd()
+		}
+		return m, nil
 
 	case chatTickMsg:
 		return m, m.chatTickCmd()
@@ -2092,6 +2148,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyRunes && mouseLeak.MatchString(string(msg.Runes)) {
 			return m, nil // a fragmented mouse report, not typing
+		}
+		if m.acctOpen {
+			return m.acctKey(msg)
+		}
+		if msg.String() == "ctrl+o" && !m.prompting() {
+			return m.openAccounts()
 		}
 		// The popup waits behind rename/delete/prune prompts, so it never takes
 		// their keys; once they close, it gets a fresh grace period.
@@ -2349,6 +2411,9 @@ func (m model) View() string {
 	if m.updateOpen && !m.prompting() {
 		screen = overlayCentre(screen, m.updatePopup(), m.width, m.height)
 	}
+	if m.acctOpen { // owns the keyboard, so it's drawn on top
+		screen = overlayCentre(screen, m.acctPopup(), m.width, m.height)
+	}
 	return screen
 }
 
@@ -2408,9 +2473,9 @@ func (m model) viewScreen() string {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
 	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
-	help := "Resume:Enter Message:Ctrl+S Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C"
+	help := "Resume:Enter Message:Ctrl+S Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Account:Ctrl+O Exit:Ctrl+C"
 	if m.showUsage { // only Tab and Ctrl+C do anything there
-		help = "Back:Tab Exit:Ctrl+C"
+		help = "Back:Tab Account:Ctrl+O Exit:Ctrl+C"
 	} else if m.chatFocus {
 		help = "Send:Enter Search:Esc Scroll:Ctrl+J/K Exit:Ctrl+C"
 	}
@@ -2447,20 +2512,8 @@ func (m model) viewScreen() string {
 	} else if m.showUsage {
 		sections = append(sections, "  \033[1;36mUsage\033[0m \033[90m· last 12h · Tab to go back\033[0m")
 	} else {
-		count := fmt.Sprintf("(%d/%d)", len(m.filtered), len(m.items))
-		usage := m.allowanceSummary()
-		if usage != "" {
-			usage += "   "
-		}
-		searchPadding := tableWidth - 2 - 2 - 40 - lipgloss.Width(usage) - len(count) - 1 // 2 for indent, 2 for "> ", 40 for textInput, -1 to shift left
-		if searchPadding < 1 {
-			searchPadding = 1
-		}
-		search := m.textInput
-		if m.chatFocus {
-			search.Blur() // typing goes to the message box; one cursor on screen
-		}
-		inputSection = fmt.Sprintf("  %s%s%s\033[90m%s\033[0m", search.View(), strings.Repeat(" ", searchPadding), usage, count)
+		prefix, usage, count := m.searchRowParts()
+		inputSection = prefix + usage + "\033[90m" + count + "\033[0m"
 		sections = append(sections, inputSection)
 	}
 
@@ -5011,6 +5064,240 @@ func resetLabel(iso string, now time.Time) string {
 		return "ends " + lt.Format("15:04")
 	}
 	return "ends " + lt.Format("Mon 15:04")
+}
+
+// ---- account switcher (Ctrl+O), backed by the cswap CLI ----
+
+// cswapAccount is one entry of `cswap list --json`.
+type cswapAccount struct {
+	Number           int         `json:"number"`
+	Email            string      `json:"email"`
+	OrganizationName string      `json:"organizationName"`
+	Active           bool        `json:"active"`
+	UsageStatus      string      `json:"usageStatus"`
+	Usage            *cswapUsage `json:"usage"`
+	LastGoodUsage    *cswapUsage `json:"lastGoodUsage"`
+}
+
+type cswapUsage struct {
+	FiveHour *struct {
+		Pct *float64 `json:"pct"`
+	} `json:"fiveHour"`
+	SevenDay *struct {
+		Pct *float64 `json:"pct"`
+	} `json:"sevenDay"`
+}
+
+type acctListMsg struct {
+	accts []cswapAccount
+	err   error
+}
+
+type acctActionMsg struct {
+	what, done string
+	err        error
+}
+
+// cswapPath finds the cswap binary; "" means the switcher isn't available.
+// A var so tests can point it at a fake.
+var cswapPath = func() string {
+	p, _ := exec.LookPath("cswap")
+	return p
+}
+
+// cswapUsageLabel is "5h 20% · 7d 56%" for an account, as claude-dashboard
+// shows it: live usage, else the last good reading, "re-login" if cswap needs
+// a fresh login to read it.
+func cswapUsageLabel(a cswapAccount) string {
+	if a.UsageStatus == "relogin_required" {
+		return "re-login"
+	}
+	u := a.Usage
+	if u == nil {
+		u = a.LastGoodUsage
+	}
+	if u == nil {
+		return ""
+	}
+	var parts []string
+	if u.FiveHour != nil && u.FiveHour.Pct != nil {
+		parts = append(parts, fmt.Sprintf("5h %.0f%%", *u.FiveHour.Pct))
+	}
+	if u.SevenDay != nil && u.SevenDay.Pct != nil {
+		parts = append(parts, fmt.Sprintf("7d %.0f%%", *u.SevenDay.Pct))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (m model) openAccounts() (tea.Model, tea.Cmd) {
+	if cswapPath() == "" {
+		m.errorMsg = "install cswap to switch accounts"
+		return m, nil
+	}
+	m.acctOpen, m.acctMsg, m.acctCursor = true, "", 0
+	return m, m.acctListCmd()
+}
+
+// acctListCmd reads `cswap list --json` off the UI goroutine.
+func (m *model) acctListCmd() tea.Cmd {
+	bin := cswapPath()
+	m.acctBusy = true
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				recoverWorkerValue(r)
+				msg = acctListMsg{err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}
+			}
+		}()
+		out, err := runBounded(15*time.Second, nil, bin, "list", "--json")
+		if err != nil {
+			return acctListMsg{err: err}
+		}
+		var list struct {
+			ActiveAccountNumber int            `json:"activeAccountNumber"`
+			Accounts            []cswapAccount `json:"accounts"`
+		}
+		if err := json.Unmarshal(out, &list); err != nil {
+			return acctListMsg{err: fmt.Errorf("unexpected output: %w", err)}
+		}
+		for i := range list.Accounts { // either marker means active
+			if list.Accounts[i].Number == list.ActiveAccountNumber {
+				list.Accounts[i].Active = true
+			}
+		}
+		return acctListMsg{accts: list.Accounts}
+	}
+}
+
+// cswapActionCmd runs a cswap command that changes the live login (switch,
+// add), detached so it can't prompt behind the TUI.
+func (m *model) cswapActionCmd(what, done string, args ...string) tea.Cmd {
+	bin := cswapPath()
+	m.acctBusy, m.acctMsg = true, what+"…"
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				recoverWorkerValue(r)
+				msg = acctActionMsg{what: what, err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}
+			}
+		}()
+		out, err := runCommand(60*time.Second, nil, true, bin, args...)
+		if err != nil && !errors.Is(err, errTimedOut) {
+			if lines := strings.Split(strings.TrimSpace(string(out)), "\n"); lines[len(lines)-1] != "" {
+				err = errors.New(ansiCodes.ReplaceAllString(lines[len(lines)-1], ""))
+			}
+		}
+		return acctActionMsg{what: what, done: done, err: err}
+	}
+}
+
+// acctKey handles keys while the switcher is open; it owns the keyboard.
+func (m model) acctKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	switch {
+	case key == "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case key == "esc" || key == "ctrl+o":
+		m.acctOpen = false
+		return m, nil
+	case m.acctBusy: // one cswap command at a time
+		return m, nil
+	case key == "up" || key == "ctrl+p":
+		m.acctCursor = max(m.acctCursor-1, 0)
+	case key == "down" || key == "ctrl+n":
+		m.acctCursor = min(m.acctCursor+1, max(len(m.accts)-1, 0))
+	case key == "enter":
+		if m.acctCursor < len(m.accts) {
+			return m, m.switchTo(m.accts[m.acctCursor])
+		}
+	case key == "+":
+		return m, m.cswapActionCmd("adding the current login", "Added the current login", "add")
+	case len(key) == 1 && key[0] >= '1' && key[0] <= '9':
+		n := int(key[0] - '0')
+		for i, a := range m.accts {
+			if a.Number == n {
+				m.acctCursor = i
+				return m, m.switchTo(a)
+			}
+		}
+		m.acctMsg = fmt.Sprintf("✗ no account %d", n)
+	}
+	return m, nil
+}
+
+func (m *model) switchTo(a cswapAccount) tea.Cmd {
+	if a.Active {
+		m.acctMsg = a.Email + " is already active"
+		return nil
+	}
+	return m.cswapActionCmd("switching to "+a.Email, "Switched to "+a.Email, "switch", strconv.Itoa(a.Number))
+}
+
+// acctPopup renders the switcher; View overlays it on any screen.
+func (m model) acctPopup() string {
+	var b strings.Builder
+	b.WriteString("\033[1mSwitch Claude account\033[0m\n\n")
+	emailW, orgW := 0, 0
+	for _, a := range m.accts {
+		emailW = max(emailW, lipgloss.Width(a.Email))
+		orgW = max(orgW, lipgloss.Width(truncate(a.OrganizationName, 30)))
+	}
+	for i, a := range m.accts {
+		mark := "  "
+		if a.Active {
+			mark = "\033[32m●\033[0m "
+		}
+		row := fmt.Sprintf("%s%d  %s  \033[90m%s\033[0m  %s", mark, a.Number,
+			padRight(a.Email, emailW), padRight(truncate(a.OrganizationName, 30), orgW), cswapUsageLabel(a))
+		if i == m.acctCursor {
+			row = "\033[7m" + ansiCodes.ReplaceAllString(row, "") + "\033[0m"
+		}
+		b.WriteString(row + "\n")
+	}
+	switch {
+	case len(m.accts) == 0 && m.acctBusy:
+		b.WriteString("\033[90mreading accounts…\033[0m\n")
+	case len(m.accts) == 0:
+		b.WriteString("\033[90mno accounts yet: + adds the current login\033[0m\n")
+	}
+	if m.acctMsg != "" {
+		b.WriteString("\n" + m.acctMsg + "\n")
+	}
+	b.WriteString("\n\033[90m1-9 / ↑↓ Enter: switch    +: add current login    Esc: close\033[0m")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 3).
+		Render(b.String())
+}
+
+// searchRowParts splits the search row into the search box plus padding, the
+// account/allowance summary, and the match count, so a click can tell where
+// the account email is.
+func (m model) searchRowParts() (prefix, usage, count string) {
+	count = fmt.Sprintf("(%d/%d)", len(m.filtered), len(m.items))
+	usage = m.allowanceSummary()
+	if usage != "" {
+		usage += "   "
+	}
+	pad := m.width - 2 - 2 - 40 - lipgloss.Width(usage) - len(count) - 1 // 2 for indent, 2 for "> ", 40 for textInput, -1 to shift left
+	search := m.textInput
+	if m.chatFocus {
+		search.Blur() // typing goes to the message box; one cursor on screen
+	}
+	return "  " + search.View() + strings.Repeat(" ", max(pad, 1)), usage, count
+}
+
+// accountSpan is the screen columns [start, end) of the account email in the
+// search row, or ok=false when it isn't shown.
+func (m model) accountSpan() (start, end int, ok bool) {
+	if m.account == "" || m.showUsage || m.prompting() {
+		return 0, 0, false
+	}
+	prefix, _, _ := m.searchRowParts()
+	start = lipgloss.Width(prefix)
+	return start, start + lipgloss.Width(m.account), true
 }
 
 // allowanceSummary is the one-line account and allowance shown in the search

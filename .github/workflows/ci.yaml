@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Re-run a release by hand if a push event is lost:
+  # gh workflow run CI --ref main
+  workflow_dispatch:
 
 jobs:
   test:

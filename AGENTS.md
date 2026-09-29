@@ -75,6 +75,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `formatAgo()` - WHEN column: time since the last message (`now`, `5m ago` ... `1y ago`), recomputed each frame; replaces the absolute date in the list (full timestamps stay searchable and show per message in the preview)
 - `formatTokens()` / `Conversation.ContextTokens` - CTX column: context size as of the last reply (input + cache reads + cache writes from its `usage`; zero-usage placeholder replies skipped)
 - `contextWindow()` / `ctxColour()` - CTX column traffic light (green/yellow/amber/red/flashing, thresholds scaled to a 200k or 1M window inferred from the model, or proven 1M by a context over 200k)
+- `Conversation.ActiveModel` / `shortModel()` - the model in use: the last reply's `message.model`, or a later `/model` switch parsed from its logged `Set model to …` output (`Model1M` when it names a 1M-context model). MODEL list column shows it short (`opus 5.5 1M`); the preview shows it exactly, noting a switch since the last reply
 - `sessionStats()` / `tokenUsage.effective()` - preview header: model, context of window, summed usage (one reply spans several lines with the same `message.id`; counted once), effective tokens (1x input, 1.25x 5m write, 2x 1h write, 0.1x read, 5x output) and cost at `pricePerMTok`; the last surfaced API error (`isApiErrorMessage`) until a later successful reply, also shown as a red `!` in the list
 - `formatListItem()` - Formats a single list row; `●` live / `⚙` spawned / `!` API error are packed right into a 3-cell column (`colMarks`) just before the title, so titles stay aligned; `✍` trails a user-set name
 - `readLiveSessions()` / `liveSessionPIDs()` - SessionIDs open in a running claude, from `~/.claude/sessions/<pid>.json` where the pid is alive and its start time (`ps lstart`, read in UTC) matches the file's `procStart` (UTC), so a recycled pid doesn't count. Files are checked per pid before mapping to sessions, so a stale leftover can't hide the live file
@@ -113,10 +114,10 @@ Install the release locally: `brew update && brew upgrade ccs`.
   ccs · claude code search    Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C
   > type to search...                                                     (N/total)
 
-  WHEN      PROJECT               TOPIC                    SIZE   CTX  MSGS  HITS
+  WHEN      PROJECT               TOPIC                    MODEL          SIZE   CTX  MSGS  HITS
 ──────────────────────────────────────────────────────────────────────────────────────
-  2h ago    project-name          ● Refactor auth flow ✍  1.2GB  281k    42     3
-> 3h ago    selected              This one is selected     12MB   92k    28     1
+  2h ago    project-name          ● Refactor auth flow ✍  opus 5.5 1M   1.2GB  281k    42     3
+> 3h ago    selected              This one is selected     sonnet 5       12MB   92k    28     1
 ──────────────────────────────────────────────────────────────────────────────────────
 Project: /path/to/project
 Session: abc123...

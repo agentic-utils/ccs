@@ -36,6 +36,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var version = "dev"
@@ -1697,7 +1698,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// View draws the current screen, then any popup on top. Popups are overlaid
+// here, not by each screen, so every screen (and any added later) shows them.
 func (m model) View() string {
+	screen := m.viewScreen()
+	if m.updateOpen && !m.prompting() {
+		screen = overlayCentre(screen, m.updatePopup(), m.width, m.height)
+	}
+	return screen
+}
+
+// overlayCentre draws box over the middle of screen, keeping what's visible
+// either side of it. Widths are measured without ANSI codes.
+func overlayCentre(screen, box string, width, height int) string {
+	lines := strings.Split(screen, "\n")
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	boxLines := strings.Split(box, "\n")
+	boxW := 0
+	for _, l := range boxLines {
+		boxW = max(boxW, ansi.StringWidth(l))
+	}
+	top := max((height-len(boxLines))/2, 0)
+	left := max((width-boxW)/2, 0)
+	for i, bl := range boxLines {
+		row := top + i
+		if row >= len(lines) {
+			break
+		}
+		base := lines[row]
+		if w := ansi.StringWidth(base); w < left+boxW {
+			base += strings.Repeat(" ", left+boxW-w)
+		}
+		pad := strings.Repeat(" ", boxW-ansi.StringWidth(bl))
+		lines[row] = ansi.Truncate(base, left, "") + "\033[0m" + bl + pad + ansi.TruncateLeft(base, left+boxW, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// viewScreen draws the current screen: the session list or the usage screen.
+func (m model) viewScreen() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
@@ -1783,11 +1824,7 @@ func (m model) View() string {
 	b.WriteString("\n\n")
 
 	if m.showUsage {
-		if m.updateOpen {
-			b.WriteString(m.updatePopup())
-		} else {
-			b.WriteString(m.usageView(m.height - 2 - len(sections)))
-		}
+		b.WriteString(m.usageView(m.height - 2 - len(sections)))
 		return b.String()
 	}
 
@@ -1834,9 +1871,7 @@ func (m model) View() string {
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	if m.updateOpen && !m.prompting() {
-		b.WriteString(m.updatePopup())
-	} else if len(m.filtered) > 0 {
+	if len(m.filtered) > 0 {
 		preview := m.renderPreview(m.filtered[m.cursor], previewHeight)
 		b.WriteString(preview)
 	}
@@ -1844,7 +1879,7 @@ func (m model) View() string {
 	return b.String()
 }
 
-// updatePopup renders the update offer in place of the preview pane.
+// updatePopup renders the update offer; View overlays it on any screen.
 func (m model) updatePopup() string {
 	body := fmt.Sprintf("ccs %s is available (you have v%s).\n\n", m.updateTo, version)
 	if m.updateErr != "" {
@@ -1862,7 +1897,7 @@ func (m model) updatePopup() string {
 		BorderForeground(lipgloss.Color("214")).
 		Padding(1, 3).
 		Render(body)
-	return "\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, box)
+	return box
 }
 
 // Fixed list column widths. TOPIC is the flex column - it absorbs the rest of

@@ -87,6 +87,7 @@ ccs buyer -- --plan
 - `Ctrl+R` - Rename selected conversation (not while it's open in `claude`; use `/rename` there)
 - `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
 - `Ctrl+J/K` - Scroll preview
+- Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it. Hold `⌥ Option` while dragging to select text in iTerm
 - `Ctrl+U` - Clear search
 - `Esc` - Clear the search
 - `Tab` - Switch between the session list and the usage screen

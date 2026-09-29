@@ -3533,3 +3533,91 @@ func TestUpdatePopupOverlaysEveryScreen(t *testing.T) {
 		}
 	}
 }
+
+func mouseModel(t *testing.T) model {
+	t.Helper()
+	var convs []Conversation
+	for i := 0; i < 10; i++ {
+		c := Conversation{SessionID: fmt.Sprint("s", i), LastTimestamp: fmt.Sprintf("2026-09-29T10:%02d:00Z", 59-i)}
+		for j := 0; j < 40; j++ {
+			c.Messages = append(c.Messages, Message{Role: "user", Text: fmt.Sprintf("message %d", j)})
+		}
+		convs = append(convs, c)
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 40
+	return m
+}
+
+func TestWheelScrollsWhateverIsUnderThePointer(t *testing.T) {
+	m := mouseModel(t)
+	listTop, _, previewTop := m.listLayout()
+
+	// Over the preview: the conversation scrolls, the selection stays.
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: previewTop + 2, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	if m.previewScroll != 3 || m.cursor != 0 {
+		t.Fatalf("wheel over preview: scroll=%d cursor=%d", m.previewScroll, m.cursor)
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: previewTop + 2, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	if m.previewScroll != 0 {
+		t.Errorf("wheel up over preview should scroll back, got %d", m.previewScroll)
+	}
+
+	// Over the list: the selection moves.
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: listTop + 1, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	if m.cursor != 1 {
+		t.Errorf("wheel over list should move the selection, cursor=%d", m.cursor)
+	}
+
+	// Clicking a row selects it.
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: listTop + 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.cursor != 4 {
+		t.Errorf("click should select row 4, cursor=%d", m.cursor)
+	}
+
+	// The layout matches what View draws: the preview's first line is the Project header.
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	lines := strings.Split(strip.ReplaceAllString(m.View(), ""), "\n")
+	if !strings.HasPrefix(lines[previewTop], "Project:") {
+		t.Errorf("previewTop %d doesn't match the screen: %q", previewTop, lines[previewTop])
+	}
+}
+
+func TestLeakedMouseReportNeverReachesSearch(t *testing.T) {
+	m := mouseModel(t)
+	for _, leak := range []string{"[<65;40;12M", "<64;10;5", "[<0;3;4m"} {
+		res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(leak)})
+		if m = res.(model); m.textInput.Value() != "" {
+			t.Errorf("%q leaked into the search box", leak)
+		}
+	}
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if m = res.(model); m.textInput.Value() != "a" {
+		t.Error("ordinary typing must still work")
+	}
+}
+
+func TestPreviewShowsWholeConversationWithoutSearch(t *testing.T) {
+	var conv Conversation
+	for i := 0; i < 300; i++ {
+		conv.Messages = append(conv.Messages, Message{Role: "user", Text: fmt.Sprint("msg-", i)})
+	}
+	all := strings.Join(buildPreviewLines(conv, ""), "\n")
+	if strings.Contains(all, "messages ...") || !strings.Contains(all, "msg-150") {
+		t.Error("without a search every message should be scrollable")
+	}
+	found := strings.Join(buildPreviewLines(conv, "msg-150"), "\n")
+	if !strings.Contains(found, "messages ...") || strings.Contains(found, "msg-100\n") {
+		t.Error("with a search the preview should collapse to matches in context")
+	}
+}
+
+func BenchmarkFullPreview7500(b *testing.B) {
+	var conv Conversation
+	for i := 0; i < 7500; i++ {
+		conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: strings.Repeat("some reply text ", 30), Ts: "2026-09-29T10:00:00Z"})
+	}
+	for i := 0; i < b.N; i++ {
+		buildPreviewLines(conv, "")
+	}
+}

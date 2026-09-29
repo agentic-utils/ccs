@@ -1354,15 +1354,17 @@ func (m model) chatView() string {
 	left := ""
 	switch {
 	case m.pending[id] != "" && m.sending:
-		left = "\033[90m  You · sending… " + truncate(m.pending[id], max(m.width-40, 10)) + "\033[0m"
+		left = "\033[90m  sending: " + chatSnippet(m.pending[id], m.width-40) + "\033[0m"
+	case m.pending[id] != "" && m.chatStatus[id].status == "busy":
+		left = "\033[90m  queued until it's free: " + chatSnippet(m.pending[id], m.width-60) + "\033[0m"
 	case m.pending[id] != "":
-		left = "\033[90m  You · " + truncate(m.pending[id], max(m.width-60, 10)) + " · not in the conversation yet\033[0m"
+		left = "\033[90m  sent: " + chatSnippet(m.pending[id], m.width-40) + "\033[0m"
 	case m.sendNote[id] != "":
 		left = "  " + m.sendNote[id]
 	}
 	right := ""
 	if st := m.chatStatus[id]; st.status == "busy" {
-		right = fmt.Sprintf("\033[33m◌ working… %ds\033[0m  ", int(time.Since(st.since).Seconds()))
+		right = fmt.Sprintf("\033[33m✻ working %ds\033[0m ", int(time.Since(st.since).Seconds()))
 	}
 	status := left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
 
@@ -1379,6 +1381,11 @@ func (m model) chatView() string {
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
 		Width(max(m.width-2, 10)).Render(in.View())
 	return status + "\n" + box
+}
+
+// chatSnippet is a pending message on one line, cut to width with a single "…".
+func chatSnippet(s string, width int) string {
+	return ansi.Truncate(strings.Join(strings.Fields(s), " "), max(width, 10), "…")
 }
 
 // sendCmd sends the message box's text to the selected live session.

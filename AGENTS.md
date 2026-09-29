@@ -36,6 +36,8 @@ go test -v -cover
 
 Merging to `main` releases automatically: `.github/workflows/ci.yaml` runs tests, bumps and pushes the tag from the conventional-commit prefixes (`feat:` minor, `fix:`/other patch, breaking-change major), then GoReleaser publishes and updates the Homebrew tap. Never tag by hand; `version` in `main.go` is injected at build time.
 
+If a merge's push event is lost and no release runs, start it by hand: `gh workflow run CI --ref main`.
+
 Install the release locally: `brew update && brew upgrade ccs`.
 
 ## Architecture

@@ -4001,7 +4001,7 @@ func TestPeerMessageShownAndPendingClearsWhenItLands(t *testing.T) {
 		t.Fatalf("a message from ccs should be kept even though it's marked meta, got %d", len(c.Messages))
 	}
 	lines := strip2(strings.Join(buildPreviewLines(*c, "", 0), "\n"))
-	if !strings.Contains(lines, "From ccs:") || !strings.Contains(lines, "check the PR") || strings.Contains(lines, "cross-session-message") {
+	if !strings.Contains(lines, "From ccs") || !strings.Contains(lines, "check the PR") || strings.Contains(lines, "cross-session-message") {
 		t.Errorf("preview should show it as from ccs, unwrapped:\n%s", lines)
 	}
 	m := initialModel(buildItems([]Conversation{*c}), "", nil)
@@ -4510,5 +4510,25 @@ func TestChangelogPopup(t *testing.T) {
 	}
 	if m, cmd = key(m, tea.KeyMsg{Type: tea.KeyCtrlL}); cmd != nil || !m.notesOpen || m.notesScroll != 0 {
 		t.Error("reopening should reuse the fetched changelog, from the top")
+	}
+}
+
+func TestHarnessNotesUseTimeGutter(t *testing.T) {
+	note := "<task-notification>\n<summary>Monitor event: CI</summary>\n</task-notification>"
+	conv := Conversation{Messages: []Message{
+		{Role: "assistant", Text: "watching", Ts: "2026-09-11T17:02:00Z"},
+		{Role: "user", Text: note, Ts: "2026-09-11T17:03:00Z"},
+		{Role: "user", Text: note, Ts: "2026-09-11T17:03:30Z"},
+		{Role: "assistant", Text: "done", Ts: "2026-09-11T17:04:00Z"},
+	}}
+	plain := strip2(strings.Join(buildPreviewLines(conv, "", 100), "\n"))
+	day := formatTimestamp("2026-09-11T17:03:00Z")[:10]
+	if strings.Count(plain, day) != 1 {
+		t.Errorf("the date should appear only on its own row:\n%s", plain)
+	}
+	clock := formatTimestamp("2026-09-11T17:03:00Z")[11:]
+	want := "    " + clock + " ▸ task-notification · Monitor event: CI\n    "
+	if !strings.Contains(plain, want) {
+		t.Errorf("notes should sit in the time gutter and stack without a blank line:\n%s", plain)
 	}
 }

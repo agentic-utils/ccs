@@ -71,7 +71,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - `View()` - Renders the TUI with delete confirmation prompt
 - `renderPreview()` - Renders conversation preview with highlights
 - `handleMouse()` / `listLayout()` / `mouseLeak` - mouse reporting is on: the wheel scrolls whatever is under the pointer (conversation preview vs session list, by row from `listLayout`, which must match `View`), a click selects a list row; a mouse report that arrives split and reads as typed text is dropped before the search box
-- `buildPreviewLines()` - with no search, the whole conversation (scroll reads it end to end); with a search, the first/last two messages plus matches with one message of context, gaps marked
+- `buildPreviewLines()` - with no search, the whole conversation; with a search, the first/last two messages plus matches with one message of context, gaps marked. `previewScroll` counts lines back from the newest message, so the preview opens (and any reset lands) at the latest message; `applyLive` shifts it by the lines added so a scrolled-back view stays still while new messages arrive
 - `previewLines()` - Memoised `buildPreviewLines` for the selected conversation (rebuilt only when selection/query changes), avoids per-frame rescans of huge conversations
 - `hitCount()` / `countHits()` - Memoised per-query HITS count (messages containing the query), keyed by SessionID, so `formatListItem` doesn't rescan every visible row each frame
 - `formatAgo()` - WHEN column: time since the last message (`now`, `5m ago` ... `1y ago`), recomputed each frame; replaces the absolute date in the list (full timestamps stay searchable and show per message in the preview)

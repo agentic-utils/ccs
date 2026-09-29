@@ -3099,3 +3099,193 @@ func TestFailedUpdatePopupPointsAtLog(t *testing.T) {
 		t.Error("a failed update should point at the update log")
 	}
 }
+
+func usageTestLine(id, reqID string, ts time.Time, in, create, c5, c1, read, out int) string {
+	return fmt.Sprintf(`{"type":"assistant","timestamp":%q,"requestId":%q,"message":{"id":%q,"usage":{"input_tokens":%d,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d,"output_tokens":%d,"cache_creation":{"ephemeral_5m_input_tokens":%d,"ephemeral_1h_input_tokens":%d}}}}`,
+		ts.UTC().Format(time.RFC3339), reqID, id, in, create, read, out, c5, c1) + "\n"
+}
+
+func TestCollectUsageBucketsAndDedupes(t *testing.T) {
+	dir := t.TempDir()
+	old := getProjectsDir
+	getProjectsDir = func() string { return dir }
+	defer func() { getProjectsDir = old }()
+	usageFilesMu.Lock()
+	usageFiles = make(map[string]usageFile)
+	usageFilesMu.Unlock()
+
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	proj := filepath.Join(dir, "-p")
+	sub := filepath.Join(proj, "sess", "subagents")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, body string, mod time.Time) {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		os.Chtimes(path, mod, mod)
+	}
+	recent := now.Add(-30 * time.Minute) // last bucket hour
+	earlier := now.Add(-6 * time.Hour)
+	write(filepath.Join(proj, "sess.jsonl"),
+		usageTestLine("m1", "", recent, 10, 300, 100, 200, 1000, 50)+
+			usageTestLine("m1", "", recent, 10, 300, 100, 200, 1000, 50)+ // same reply, second line
+			usageTestLine("", "r1", earlier, 5, 20, 20, 0, 0, 7)+ // no message id: requestId; read 0 = cache miss
+			usageTestLine("m0", "", now.Add(-13*time.Hour), 999, 0, 0, 0, 0, 999)+ // outside the window
+			`{"type":"user","message":{"content":"hi"}}`+"\n",
+		now)
+	write(filepath.Join(sub, "agent-a.jsonl"), usageTestLine("s1", "", recent, 1, 40, 40, 0, 500, 3), now)
+	write(filepath.Join(proj, "stale.jsonl"), usageTestLine("x", "", recent, 1e6, 0, 0, 0, 0, 1e6), now.Add(-24*time.Hour)) // file untouched for a day
+
+	d := collectUsage(now, nil)
+	var agg usageBucketTotals
+	for _, b := range d.buckets {
+		agg.Uncached += b.Uncached
+		agg.C5m += b.C5m
+		agg.C1h += b.C1h
+		agg.Read += b.Read
+		agg.New += b.New
+		agg.Miss += b.Miss
+		agg.Output += b.Output
+		agg.Responses += b.Responses
+	}
+	want := usageBucketTotals{Uncached: 16, C5m: 160, C1h: 200, Read: 1500, New: 310 + 41, Miss: 25, Output: 60, Responses: 3}
+	if agg != want {
+		t.Errorf("totals = %+v, want %+v", agg, want)
+	}
+	if last := d.buckets[usageBuckets-6]; last.Responses != 2 { // 30 minutes ago = 6 buckets from the end
+		t.Errorf("recent replies should land in the bucket 30m ago, got %+v", last)
+	}
+	eff1h := tokenUsage{Input: 10, Cache5m: 100, Cache1h: 200, CacheRead: 1000, Output: 50}.effective() +
+		tokenUsage{Input: 1, Cache5m: 40, CacheRead: 500, Output: 3}.effective()
+	eff12h := eff1h + tokenUsage{Input: 5, Cache5m: 20, Output: 7}.effective()
+	if d.eff1h != eff1h || d.eff12h != eff12h {
+		t.Errorf("effective 1h=%v 12h=%v", d.eff1h, d.eff12h)
+	}
+}
+
+func TestRenderUsageChart(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.Local)
+	buckets := make([]usageBucketTotals, usageBuckets)
+	buckets[10] = usageBucketTotals{Output: 1000}
+	buckets[20] = usageBucketTotals{Output: 500}
+	merged, per := mergeBuckets(buckets, 72)
+	if len(merged) != 72 || per != 2 || merged[5].Output != 1000 {
+		t.Fatalf("mergeBuckets: %d cols, per %d", len(merged), per)
+	}
+	lines := renderUsageChart("Output", []usageSeries{{"output", "output tokens"}}, merged, per, 4, now)
+	strip := func(s string) string { return regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, "") }
+	if len(lines) != 1+4+2 {
+		t.Fatalf("want title + 4 rows + baseline + labels, got %d lines", len(lines))
+	}
+	top := []rune(strip(lines[1]))
+	if top[usageMargin+5] != '█' || top[usageMargin+10] == '█' {
+		t.Errorf("tallest bar should reach the top row, half bar shouldn't: %q", strip(lines[1]))
+	}
+	if !strings.Contains(strip(lines[1]), "1k") {
+		t.Errorf("y-axis should label the scale: %q", strip(lines[1]))
+	}
+	if !strings.Contains(strip(lines[len(lines)-1]), ":00") {
+		t.Errorf("x-axis should have hourly labels: %q", strip(lines[len(lines)-1]))
+	}
+}
+
+func TestFetchAllowance(t *testing.T) {
+	var gotAuth, gotBeta string
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotBeta = r.Header.Get("Authorization"), r.Header.Get("anthropic-beta")
+		w.WriteHeader(status)
+		io.WriteString(w, `{"limits":[{"kind":"session","percent":62,"resets_at":"2026-09-29T14:10:00+00:00"},{"kind":"weekly_all","percent":21.5,"resets_at":"2026-10-05T09:00:00+00:00"}]}`)
+	}))
+	defer srv.Close()
+	oldURL, oldRead := allowanceURL, keychainRead
+	defer func() { allowanceURL, keychainRead = oldURL, oldRead }()
+	allowanceURL = srv.URL
+	now := time.Now()
+	creds := func(tok string, exp time.Time) {
+		keychainRead = func() ([]byte, error) {
+			return []byte(fmt.Sprintf(`{"claudeAiOauth":{"accessToken":%q,"expiresAt":%d}}`, tok, exp.UnixMilli())), nil
+		}
+	}
+
+	creds("tok", now.Add(time.Hour))
+	limits, err := fetchAllowance(now)
+	if err != nil || len(limits) != 2 || limits[0].Kind != "session" || limits[1].Percent != 21.5 {
+		t.Fatalf("limits=%+v err=%v", limits, err)
+	}
+	if gotAuth != "Bearer tok" || gotBeta != "oauth-2025-04-20" {
+		t.Errorf("headers: auth=%q beta=%q", gotAuth, gotBeta)
+	}
+
+	creds("tok", now.Add(-time.Minute)) // expired: never refreshed by ccs
+	if _, err := fetchAllowance(now); !errors.Is(err, errAllowanceLogin) {
+		t.Errorf("expired token should ask for a claude login, got %v", err)
+	}
+	keychainRead = func() ([]byte, error) { return nil, nil } // no credential stored
+	if _, err := fetchAllowance(now); !errors.Is(err, errAllowanceLogin) {
+		t.Errorf("missing credential should ask for a claude login, got %v", err)
+	}
+	creds("tok", now.Add(time.Hour))
+	status = http.StatusUnauthorized
+	if _, err := fetchAllowance(now); !errors.Is(err, errAllowanceLogin) {
+		t.Errorf("401 should ask for a claude login, got %v", err)
+	}
+	status = http.StatusInternalServerError
+	if _, err := fetchAllowance(now); err == nil || !strings.Contains(err.Error(), "500") {
+		t.Errorf("server error should be reported, got %v", err)
+	}
+}
+
+func TestKeychainServiceName(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	os.Unsetenv("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+	if keychainService() != "Claude Code-credentials" {
+		t.Errorf("default profile: %q", keychainService())
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "/Users/me/.claude-work")
+	sum := sha256.Sum256([]byte("/Users/me/.claude-work"))
+	if want := "Claude Code-credentials-" + hex.EncodeToString(sum[:])[:8]; keychainService() != want {
+		t.Errorf("per-profile: %q, want %q", keychainService(), want)
+	}
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "") // set but empty: the default item
+	if keychainService() != "Claude Code-credentials" {
+		t.Errorf("empty override: %q", keychainService())
+	}
+}
+
+func TestUsageScreenToggleAndPanels(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "a", Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m.width, m.height = 170, 50
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = res.(model)
+	if !m.showUsage || cmd == nil || !m.usageLoading || !m.allowanceLoading {
+		t.Fatal("tab should open the usage screen and start loading")
+	}
+	// Typing on the usage screen mustn't edit the hidden search.
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m = res.(model); m.textInput.Value() != "" {
+		t.Error("keys other than tab/ctrl+c are ignored on the usage screen")
+	}
+	buckets := make([]usageBucketTotals, usageBuckets)
+	buckets[100] = usageBucketTotals{Uncached: 10, Read: 90, New: 10, Output: 5, Responses: 1}
+	res, _ = m.Update(usageMsg{usageData{now: time.Now(), buckets: buckets, eff1h: 1000, eff12h: 2000}})
+	m = res.(model)
+	res, _ = m.Update(allowanceMsg{limits: []allowanceLimit{{Kind: "session", Percent: 62, ResetsAt: time.Now().Add(time.Hour).Format(time.RFC3339)}}})
+	m = res.(model)
+	v := regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(m.View(), "")
+	for _, want := range []string{"Input · cache write disposition", "Context assembly", "Output", "SUMMARY", "responses", "1 ", "ALLOWANCE", "5-hour session", "62%", "read from cache", "90.0%"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("usage screen missing %q", want)
+		}
+	}
+	res, _ = m.Update(allowanceMsg{err: errAllowanceLogin})
+	if m = res.(model); !strings.Contains(m.View(), "62%") || !strings.Contains(m.View(), "open claude") {
+		t.Error("a failed refresh keeps the last gauges and shows why")
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if m = res.(model); m.showUsage {
+		t.Error("tab again returns to the session list")
+	}
+}

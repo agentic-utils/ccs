@@ -90,6 +90,8 @@ Install the release locally: `brew update && brew upgrade ccs`.
 - Ctrl+F forks: `openResumeTab` / exec with `--fork-session`
 - `latestRelease()` / `newerVersion()` / `chooseUpgrader()` / `upgrader` - Self-update: at startup and every `updateCheckInterval` (2 min; `updateCheckBackoff` 10 min after a failed check), read the newest tag from the `github.com/.../releases/latest` redirect (not the REST API, whose 60/h unauthenticated limit shared IPs exhaust). If newer, `upgrader.Prepare` starts the slow, side-effect-free part in the background (Homebrew: `git pull` of just the ccs tap + `brew fetch`; otherwise download + verify against `checksums.txt`) while a popup over the preview offers Enter = install and re-exec, Esc = later (for that version, this session). `Install` waits for an in-flight prepare, then: Homebrew kegs (`/Cellar/`) only ever `brew upgrade agentic-utils/tap/ccs` (never overwritten); `/nix/` notify only; anything else atomically renames the verified binary over the old. The header shows the current step and elapsed seconds (`updateProgress`). Keys are ignored for `updateKeyGrace` after the popup opens. `dev` builds never check
 - `logUpdate()` / `updateLogPath` - self-update log (`~/Library/Logs/ccs/update.log` on macOS, capped at 1MB): every git/brew command with full output, exit and duration (brew fetch/upgrade run with `HOMEBREW_CURL_VERBOSE=1`, so each address curl tried is visible), every download with the address it connected to, and each prepare/install outcome. A failed update's popup points at it
+- `collectUsage()` / `usageView()` / `renderUsageChart()` - Usage screen (Tab), ported from claude-dashboard: every transcript (subagents included) modified in the last 12h, replies de-duplicated by `message.id` (else `requestId`), into 144 five-minute buckets: chart 1 uncached/5m write/1h write, chart 2 cache read/new input/cache miss (fresh input on a turn that read 0 from cache), chart 3 output; buckets merge to fit narrow terminals. Per-file records cached by size+mtime (`usageFiles`). SUMMARY: 12h totals, effective tokens 1h/12h, cache mix. Collected off the UI goroutine when the screen opens and on each 1-minute refresh while it's open
+- `fetchAllowance()` / `keychainRead` - ALLOWANCE panel: Claude Code's OAuth token read-only (`/usr/bin/security find-generic-password` for `keychainService()`, which hashes CLAUDE_CONFIG_DIR like Claude Code, else `.credentials.json`), then GET `api/oauth/usage` (`limits`: `session`, `weekly_all`). An expired/missing token or a 401 shows "open claude to refresh the allowance"; ccs never refreshes or writes the credential. At most once a minute, only while the usage screen is open
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `pruneConversation()` - Prunes the selected conversation in place (Ctrl+X) and refreshes its size
 - `getTopic()` - Title, else first real user message (skips tag-wrapped harness text, shows `/cmd` or `! cmd` for command-only sessions), else session id
@@ -101,7 +103,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 ### TUI Layout
 
 ```
-  ccs · claude code search    Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Exit:Ctrl+C
+  ccs · claude code search    Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C
   > type to search...                                                     (N/total)
 
   WHEN      PROJECT               TOPIC                    SIZE   CTX  MSGS  HITS

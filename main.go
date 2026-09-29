@@ -17,6 +17,7 @@ import (
 	"net/http/httptrace"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -234,6 +235,16 @@ type model struct {
 	updating          bool
 	dismissed         string // tag the user said "later" to
 	restart           string // after an upgrade: binary to exec once the TUI exits
+
+	// Usage screen (Tab).
+	showUsage        bool
+	usage            usageData
+	usageLoading     bool
+	usageExclude     []string // project dirs to skip, as for the session list
+	allowance        []allowanceLimit
+	allowanceErr     error
+	allowanceAt      time.Time // last allowance fetch that returned, success or not
+	allowanceLoading bool
 }
 
 // How often ccs asks GitHub for a newer release (one ~5KB HEAD request to the
@@ -1241,10 +1252,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyRefresh(refreshMsg{items: keepNewer(m.items, msg.items), live: msg.live})
 			m.lastRefresh = time.Now()
 		}
-		if msg.early {
-			return m, nil // the one-minute chain is still ticking on its own
+		// The usage screen refreshes with the list, only while it's open.
+		var usageCmds []tea.Cmd
+		if m.showUsage {
+			usageCmds = append(usageCmds, m.usageCmd(), m.allowanceCmd())
 		}
-		return m, refreshTick()
+		if msg.early {
+			return m, tea.Batch(usageCmds...) // the one-minute chain is still ticking on its own
+		}
+		return m, tea.Batch(append(usageCmds, refreshTick())...)
+
+	case usageMsg:
+		m.usageLoading = false
+		m.usage = msg.data
+		return m, nil
+
+	case allowanceMsg:
+		m.allowanceLoading = false
+		m.allowanceAt = time.Now()
+		m.allowanceErr = msg.err
+		if msg.err == nil {
+			m.allowance = msg.limits
+		}
+		return m, nil
 
 	case updateCheckTickMsg:
 		return m, m.checkUpdateCmd()
@@ -1380,6 +1410,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear error message on any keypress in normal mode
 		if m.errorMsg != "" {
 			m.errorMsg = ""
+		}
+
+		if msg.String() == "tab" {
+			m.showUsage = !m.showUsage
+			if m.showUsage {
+				return m, tea.Batch(m.usageCmd(), m.allowanceCmd())
+			}
+			return m, nil
+		}
+		if m.showUsage && msg.String() != "ctrl+c" {
+			return m, nil // the usage screen has no other keys; typing mustn't edit a hidden search
 		}
 
 		switch msg.String() {
@@ -1526,7 +1567,7 @@ func (m model) View() string {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
 	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
-	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Exit:Ctrl+C"
+	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C"
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
 		titlePadding = 1
@@ -1575,6 +1616,15 @@ func (m model) View() string {
 
 	b.WriteString(strings.Join(sections, "\n"))
 	b.WriteString("\n\n")
+
+	if m.showUsage {
+		if m.updateOpen {
+			b.WriteString(m.updatePopup())
+		} else {
+			b.WriteString(m.usageView(m.height - 2 - len(sections)))
+		}
+		return b.String()
+	}
 
 	// Calculate heights
 	listHeight := m.height * 30 / 100
@@ -2286,10 +2336,13 @@ var (
 // unrecovered worker panic exits without restoring the terminal and leaves it
 // garbled. The stack is appended to workerPanicLog.
 func recoverWorker() {
-	r := recover()
-	if r == nil {
-		return
+	if r := recover(); r != nil {
+		recoverWorkerValue(r)
 	}
+}
+
+// recoverWorkerValue records a recovered panic value (see recoverWorker).
+func recoverWorkerValue(r any) {
 	workerPanicked.Store(true)
 	if f, err := os.OpenFile(workerPanicLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 		fmt.Fprintf(f, "%s ccs %s: panic: %v\n%s\n", time.Now().Format(time.RFC3339), version, r, debug.Stack())
@@ -3098,6 +3151,7 @@ func main() {
 			m.upgrade = chooseUpgrader(exe)
 		}
 	}
+	m.usageExclude = excludeDirs
 	m.reload = func() ([]listItem, error) {
 		convs, err := getConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {
@@ -3406,4 +3460,670 @@ func tabResult(_ []byte, err error) (bool, error) {
 // single quotes, and control characters break the AppleScript string.
 func shellSafe(s string) bool {
 	return !strings.ContainsFunc(s, func(r rune) bool { return r == '\\' || r < 0x20 || r == 0x7f || r == utf8.RuneError })
+}
+
+// ============================================================================
+// Usage screen (Tab): 12h token charts, summary and allowance, ported from
+// claude-dashboard (https://github.com/agentic-utils/claude-dashboard)
+// ============================================================================
+
+const (
+	usageWindow  = 12 * time.Hour
+	usageBucket  = 5 * time.Minute
+	usageBuckets = int(usageWindow / usageBucket) // 144
+	usageMargin  = 8                              // left gutter for the y-axis scale
+)
+
+// usageRec is one reply's usage, as claude-dashboard's collect() reads it.
+type usageRec struct {
+	ts                            time.Time
+	id                            string // message.id or requestId, for de-duplication
+	inp, c5, c1, read, fresh, out int64
+}
+
+// usageBucketTotals is one 5-minute bucket. Chart 1 stacks uncached/c5m/c1h
+// (how fresh input was cached), chart 2 read/new/miss (how each prompt was
+// assembly: miss = a turn that read nothing from cache), chart 3 output.
+type usageBucketTotals struct {
+	Uncached, C5m, C1h, Read, New, Miss, Output, Responses int64
+}
+
+func (b *usageBucketTotals) add(r usageRec) {
+	b.Uncached += r.inp
+	b.C5m += r.c5
+	b.C1h += r.c1
+	b.Read += r.read
+	if r.read > 0 {
+		b.New += r.fresh
+	} else {
+		b.Miss += r.fresh
+	}
+	b.Output += r.out
+	b.Responses++
+}
+
+type usageData struct {
+	now           time.Time
+	buckets       []usageBucketTotals // oldest first, usageBuckets long
+	eff1h, eff12h float64
+	err           error
+}
+
+type usageMsg struct{ data usageData }
+
+// usageFiles caches each transcript's usage records by size+mtime, so a
+// refresh only re-reads files that changed.
+var (
+	usageFilesMu sync.Mutex
+	usageFiles   = make(map[string]usageFile)
+)
+
+type usageFile struct {
+	size    int64
+	modTime time.Time
+	recs    []usageRec
+}
+
+// usageLine is the subset of a transcript line the usage screen needs.
+type usageLine struct {
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+	RequestID string `json:"requestId"`
+	Message   struct {
+		ID    string `json:"id"`
+		Usage *struct {
+			InputTokens              int64 `json:"input_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+			CacheCreation            struct {
+				Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
+				Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
+			} `json:"cache_creation"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
+// readUsageRecs reads every usage-bearing reply in one transcript.
+func readUsageRecs(path string) ([]usageRec, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var recs []usageRec
+	br := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, err := br.ReadBytes('\n')
+		// Cheap pre-filter: only assistant lines carry usage.
+		if len(line) > 0 && bytes.Contains(line, []byte(`"usage"`)) {
+			var l usageLine
+			if json.Unmarshal(line, &l) == nil && l.Message.Usage != nil {
+				if ts, perr := time.Parse(time.RFC3339, l.Timestamp); perr == nil {
+					u := l.Message.Usage
+					id := l.Message.ID
+					if id == "" {
+						id = l.RequestID
+					}
+					recs = append(recs, usageRec{
+						ts: ts, id: id, inp: u.InputTokens,
+						c5: u.CacheCreation.Ephemeral5m, c1: u.CacheCreation.Ephemeral1h,
+						read: u.CacheReadInputTokens, fresh: u.InputTokens + u.CacheCreationInputTokens,
+						out: u.OutputTokens,
+					})
+				}
+			}
+		}
+		if err == io.EOF {
+			return recs, nil
+		}
+		if err != nil {
+			return recs, err
+		}
+	}
+}
+
+// collectUsage buckets the last 12h of usage across every transcript,
+// subagent transcripts included, de-duplicating replies by id (one reply is
+// written as several lines). Mirrors claude-dashboard's collect().
+func collectUsage(now time.Time, excludeDirs []string) usageData {
+	cutoff := now.Add(-usageWindow)
+	lastHour := now.Add(-time.Hour)
+	d := usageData{now: now, buckets: make([]usageBucketTotals, usageBuckets)}
+	seen := make(map[string]bool)
+	live := make(map[string]bool)
+	err := filepath.WalkDir(getProjectsDir(), func(path string, e os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if e.IsDir() {
+			for _, exc := range excludeDirs {
+				if strings.Contains(e.Name(), exc) {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().Before(cutoff) {
+			return nil
+		}
+		live[path] = true
+		usageFilesMu.Lock()
+		cached, ok := usageFiles[path]
+		usageFilesMu.Unlock()
+		if !ok || cached.size != info.Size() || !cached.modTime.Equal(info.ModTime()) {
+			recs, rerr := readUsageRecs(path)
+			if rerr != nil {
+				return nil
+			}
+			cached = usageFile{info.Size(), info.ModTime(), recs}
+			usageFilesMu.Lock()
+			usageFiles[path] = cached
+			usageFilesMu.Unlock()
+		}
+		for _, r := range cached.recs {
+			if r.ts.Before(cutoff) || r.ts.After(now) {
+				continue
+			}
+			if r.id != "" {
+				if seen[r.id] {
+					continue
+				}
+				seen[r.id] = true
+			}
+			idx := min(max(int(r.ts.Sub(cutoff)/usageBucket), 0), usageBuckets-1)
+			d.buckets[idx].add(r)
+			eff := tokenUsage{Input: r.inp, Cache5m: r.c5, Cache1h: r.c1, CacheRead: r.read, Output: r.out}.effective()
+			d.eff12h += eff
+			if !r.ts.Before(lastHour) {
+				d.eff1h += eff
+			}
+		}
+		return nil
+	})
+	d.err = err
+	// Drop cache entries for files that aged out of the window or vanished.
+	usageFilesMu.Lock()
+	for path := range usageFiles {
+		if !live[path] {
+			delete(usageFiles, path)
+		}
+	}
+	usageFilesMu.Unlock()
+	return d
+}
+
+func (m *model) usageCmd() tea.Cmd {
+	if m.usageLoading {
+		return nil
+	}
+	m.usageLoading = true
+	exclude := m.usageExclude
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				recoverWorkerValue(r)
+				msg = usageMsg{usageData{now: time.Now(), err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}}
+			}
+		}()
+		return usageMsg{collectUsage(time.Now(), exclude)}
+	}
+}
+
+// ---- allowance (GET /api/oauth/usage, the same numbers `/usage` shows) ----
+
+var (
+	allowanceURL = "https://api.anthropic.com/api/oauth/usage"
+	// keychainRead returns Claude Code's stored OAuth credential JSON, nil if
+	// there is none. A var so tests can inject it. Read-only: ccs never
+	// refreshes or writes the credential.
+	keychainRead = readClaudeCredential
+)
+
+const allowanceRefresh = time.Minute
+
+// errAllowanceLogin means there's no usable token; Claude Code refreshes it.
+var errAllowanceLogin = errors.New("open claude to refresh the allowance")
+
+type allowanceLimit struct {
+	Kind     string  `json:"kind"`
+	Percent  float64 `json:"percent"`
+	ResetsAt string  `json:"resets_at"`
+}
+
+type allowanceMsg struct {
+	limits []allowanceLimit
+	err    error
+}
+
+// claudeConfigHome is where Claude Code keeps its profile (CLAUDE_CONFIG_DIR
+// moves it, e.g. cswap).
+func claudeConfigHome() string {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude")
+}
+
+// keychainService names this profile's Keychain item the way Claude Code
+// does: a hash of the raw CLAUDE_CONFIG_DIR (or CLAUDE_SECURESTORAGE_CONFIG_DIR
+// when set, empty meaning the default). ponytail: Claude Code NFC-normalises
+// the path first; that needs golang.org/x/text, so a non-NFC path (rare: only
+// decomposed accents) would read the wrong item and show the login message.
+func keychainService() string {
+	const base = "Claude Code-credentials"
+	cfg, ok := os.LookupEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+	if !ok {
+		cfg = os.Getenv("CLAUDE_CONFIG_DIR")
+	}
+	if cfg == "" {
+		return base
+	}
+	sum := sha256.Sum256([]byte(cfg))
+	return base + "-" + hex.EncodeToString(sum[:])[:8]
+}
+
+// keychainAccount mirrors Claude Code's username lookup: $USER, else the OS user.
+func keychainAccount() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return "user"
+}
+
+// readClaudeCredential reads the credential from the login Keychain on macOS,
+// falling back to the profile's .credentials.json (where Claude Code writes
+// when the Keychain is unusable, and on other platforms).
+func readClaudeCredential() ([]byte, error) {
+	if runtime.GOOS == "darwin" {
+		out, err := runBounded(5*time.Second, nil, "/usr/bin/security", "find-generic-password",
+			"-s", keychainService(), "-a", keychainAccount(), "-w")
+		if err == nil {
+			return out, nil
+		}
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 44 { // 44: item not found
+			return nil, fmt.Errorf("keychain: %w", err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(claudeConfigHome(), ".credentials.json"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return data, err
+}
+
+// fetchAllowance reads the stored token and asks Anthropic for the live
+// 5-hour and weekly utilisation. An expired or missing token is reported as
+// errAllowanceLogin rather than refreshed: refreshing would mean writing
+// Claude Code's credential, which ccs never does.
+func fetchAllowance(now time.Time) ([]allowanceLimit, error) {
+	raw, err := keychainRead()
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, errAllowanceLogin
+	}
+	var creds struct {
+		ClaudeAiOauth struct {
+			AccessToken string `json:"accessToken"`
+			ExpiresAt   int64  `json:"expiresAt"` // epoch ms
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &creds); err != nil {
+		return nil, fmt.Errorf("reading the stored credential: %w", err)
+	}
+	oa := creds.ClaudeAiOauth
+	if oa.AccessToken == "" || (oa.ExpiresAt > 0 && now.UnixMilli() >= oa.ExpiresAt) {
+		return nil, errAllowanceLogin
+	}
+	req, err := http.NewRequest(http.MethodGet, allowanceURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+oa.AccessToken)
+	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("User-Agent", "claude-cli/cache-monitor")
+	client := http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errAllowanceLogin
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("allowance: HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Limits []allowanceLimit `json:"limits"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("allowance: %w", err)
+	}
+	return body.Limits, nil
+}
+
+// allowanceCmd fetches the allowance at most once a minute.
+func (m *model) allowanceCmd() tea.Cmd {
+	if m.allowanceLoading || time.Since(m.allowanceAt) < allowanceRefresh {
+		return nil
+	}
+	m.allowanceLoading = true
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				recoverWorkerValue(r)
+				msg = allowanceMsg{err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}
+			}
+		}()
+		limits, err := fetchAllowance(time.Now())
+		return allowanceMsg{limits, err}
+	}
+}
+
+// ---- rendering ----
+
+// Truecolour palette, as claude-dashboard's.
+var usageColours = map[string]string{
+	"uncached": "84;160;255", "c5m": "170;120;255", "c1h": "214;150;255",
+	"read": "52;224;150", "new": "84;160;255", "miss": "255;88;96", "output": "255;205;82",
+}
+
+func rgbText(rgb, s string) string { return "\033[38;2;" + rgb + "m" + s + "\033[0m" }
+
+type usageSeries struct{ key, label string }
+
+var usageCharts = []struct {
+	title  string
+	series []usageSeries
+}{
+	{"Input · cache write disposition", []usageSeries{{"uncached", "uncached"}, {"c5m", "5m · subagent"}, {"c1h", "1h · main"}}},
+	{"Context assembly", []usageSeries{{"read", "from cache"}, {"new", "new input"}, {"miss", "cache miss"}}},
+	{"Output", []usageSeries{{"output", "output tokens"}}},
+}
+
+func (b usageBucketTotals) value(key string) int64 {
+	switch key {
+	case "uncached":
+		return b.Uncached
+	case "c5m":
+		return b.C5m
+	case "c1h":
+		return b.C1h
+	case "read":
+		return b.Read
+	case "new":
+		return b.New
+	case "miss":
+		return b.Miss
+	case "output":
+		return b.Output
+	}
+	return 0
+}
+
+// mergeBuckets folds adjacent buckets so the chart fits `cols` columns.
+func mergeBuckets(in []usageBucketTotals, cols int) ([]usageBucketTotals, int) {
+	per := max(1, (len(in)+cols-1)/cols)
+	out := make([]usageBucketTotals, 0, (len(in)+per-1)/per)
+	for i := 0; i < len(in); i += per {
+		var b usageBucketTotals
+		for _, x := range in[i:min(i+per, len(in))] {
+			b.Uncached += x.Uncached
+			b.C5m += x.C5m
+			b.C1h += x.C1h
+			b.Read += x.Read
+			b.New += x.New
+			b.Miss += x.Miss
+			b.Output += x.Output
+			b.Responses += x.Responses
+		}
+		out = append(out, b)
+	}
+	return out, per
+}
+
+var blockChars = []string{" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
+
+// renderUsageChart draws one stacked bar chart: a title with legend, `height`
+// rows of bars with a token scale on every other row, a baseline and hourly
+// labels. Bars are scaled to the tallest column in eighths of a cell; each
+// cell takes the colour of the series it mostly covers.
+func renderUsageChart(title string, series []usageSeries, buckets []usageBucketTotals, per, height int, now time.Time) []string {
+	totals := make([]int64, len(buckets))
+	var maxT int64
+	for i, b := range buckets {
+		for _, s := range series {
+			totals[i] += b.value(s.key)
+		}
+		maxT = max(maxT, totals[i])
+	}
+	legend := make([]string, len(series))
+	for i, s := range series {
+		legend[i] = rgbText(usageColours[s.key], "■") + " \033[90m" + s.label + "\033[0m"
+	}
+	lines := []string{"  \033[1;36m▸\033[0m \033[1m" + title + "\033[0m   " + strings.Join(legend, "  ")}
+	units := height * 8
+	for row := height - 1; row >= 0; row-- {
+		label := strings.Repeat(" ", usageMargin)
+		if row%2 == 1 && maxT > 0 {
+			label = "\033[90m" + fmt.Sprintf("%*s", usageMargin-2, formatTokens(int(maxT*int64(row+1)/int64(height)))) + "\033[0m  "
+		}
+		var cells strings.Builder
+		for i, b := range buckets {
+			if totals[i] <= 0 || maxT <= 0 {
+				cells.WriteString(" ")
+				continue
+			}
+			filled := min(max(int(float64(totals[i])/float64(maxT)*float64(units)+0.5), 1), units)
+			n := min(max(filled-row*8, 0), 8)
+			if n == 0 {
+				cells.WriteString(" ")
+				continue
+			}
+			// Colour: the series covering the middle of this cell's filled part.
+			mid := float64(row*8) + float64(n)/2
+			cum, colour := 0.0, usageColours[series[len(series)-1].key]
+			for _, s := range series {
+				cum += float64(b.value(s.key)) / float64(totals[i]) * float64(filled)
+				if mid <= cum {
+					colour = usageColours[s.key]
+					break
+				}
+			}
+			cells.WriteString(rgbText(colour, blockChars[n]))
+		}
+		lines = append(lines, label+cells.String())
+	}
+	// Baseline and hourly tick labels.
+	nb := len(buckets)
+	axis := []rune(strings.Repeat(" ", nb))
+	cut := now.Add(-usageWindow).Local()
+	span := time.Duration(per) * usageBucket
+	tick := cut.Truncate(time.Hour)
+	if tick.Before(cut) {
+		tick = tick.Add(time.Hour)
+	}
+	step := time.Hour
+	if nb < 60 { // too narrow for a label every hour
+		step = 3 * time.Hour
+	}
+	for ; !tick.After(now); tick = tick.Add(step) {
+		lab := fmt.Sprintf("%d:00", tick.Hour())
+		pos := int(tick.Sub(cut) / span)
+		start := min(pos, nb-len(lab))
+		for j, ch := range lab {
+			if k := start + j; k >= 0 && k < nb {
+				axis[k] = ch
+			}
+		}
+	}
+	lines = append(lines,
+		"\033[90m"+fmt.Sprintf("%*s", usageMargin-1, "0")+" └"+strings.Repeat("─", max(nb-1, 0))+"\033[0m",
+		strings.Repeat(" ", usageMargin)+"\033[90m"+string(axis)+"\033[0m")
+	return lines
+}
+
+// usageSummary is the SUMMARY panel: 12h totals, effective tokens and the
+// cache mix (shares of all input).
+func usageSummary(d usageData) []string {
+	var agg usageBucketTotals
+	for _, b := range d.buckets {
+		agg.Uncached += b.Uncached
+		agg.C5m += b.C5m
+		agg.C1h += b.C1h
+		agg.Read += b.Read
+		agg.New += b.New
+		agg.Miss += b.Miss
+		agg.Output += b.Output
+		agg.Responses += b.Responses
+	}
+	totalIn := agg.Read + agg.New + agg.Miss
+	pct := func(part int64) string {
+		if totalIn == 0 {
+			return "n/a"
+		}
+		return fmt.Sprintf("%.1f%%", 100*float64(part)/float64(totalIn))
+	}
+	chip := func(key, label, v string) string {
+		return fmt.Sprintf("%s %-22s %7s", rgbText(usageColours[key], "■"), label, v)
+	}
+	return []string{
+		"\033[1;36mSUMMARY\033[0m \033[90m(last 12h)\033[0m",
+		fmt.Sprintf("\033[90m%-12s\033[0m %16s", "input", formatCount(totalIn)),
+		fmt.Sprintf("\033[90m%-12s\033[0m %16s", "output", formatCount(agg.Output)),
+		fmt.Sprintf("\033[90m%-12s\033[0m %16s", "responses", formatCount(agg.Responses)),
+		fmt.Sprintf("\033[90m%-12s\033[0m %16s", "effective", formatTokens(int(d.eff1h))+" / "+formatTokens(int(d.eff12h))) + " \033[90m(1h / 12h)\033[0m",
+		chip("c5m", "5m cache · subagent", pct(agg.C5m)),
+		chip("c1h", "1h cache · main", pct(agg.C1h)),
+		chip("read", "read from cache", pct(agg.Read)),
+		chip("miss", "cache miss", pct(agg.Miss)),
+	}
+}
+
+// formatCount renders n with thousands separators.
+func formatCount(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
+// gaugeColour grades an allowance gauge like claude-dashboard: green <= 70,
+// yellow <= 80, amber <= 90, red <= 95, flashing red above.
+func gaugeColour(pct float64) (string, bool) {
+	switch {
+	case pct > 95:
+		return "1;31", true
+	case pct > 90:
+		return "31", false
+	case pct > 80:
+		return "38;5;208", false
+	case pct > 70:
+		return "33", false
+	}
+	return "32", false
+}
+
+// resetLabel is a reset time as "ends 14:10" today or "ends Mon 09:00".
+func resetLabel(iso string, now time.Time) string {
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return ""
+	}
+	lt := t.Local()
+	if lt.Format("2006-01-02") == now.Local().Format("2006-01-02") {
+		return "ends " + lt.Format("15:04")
+	}
+	return "ends " + lt.Format("Mon 15:04")
+}
+
+// allowancePanel is the ALLOWANCE panel: 5-hour session and weekly gauges.
+func (m model) allowancePanel(width int) []string {
+	lines := []string{"\033[1;36mALLOWANCE\033[0m \033[90m(live /usage)\033[0m"}
+	switch {
+	case m.allowanceErr != nil && len(m.allowance) == 0:
+		colour := "31"
+		if errors.Is(m.allowanceErr, errAllowanceLogin) {
+			colour = "33"
+		}
+		return append(lines, "\033["+colour+"m"+truncate(m.allowanceErr.Error(), width)+"\033[0m")
+	case len(m.allowance) == 0:
+		return append(lines, "\033[90mloading…\033[0m")
+	}
+	byKind := make(map[string]allowanceLimit)
+	for _, l := range m.allowance {
+		byKind[l.Kind] = l
+	}
+	barW := max(width-7, 10)
+	now := time.Now()
+	for _, k := range []struct{ kind, label string }{{"session", "5-hour session"}, {"weekly_all", "weekly"}} {
+		l, ok := byKind[k.kind]
+		if !ok {
+			continue
+		}
+		p := min(max(l.Percent, 0), 100)
+		code, flash := gaugeColour(p)
+		if flash && now.Unix()%2 == 1 {
+			code = "2;31"
+		}
+		fill := int(p/100*float64(barW) + 0.5)
+		lines = append(lines,
+			k.label,
+			"\033["+code+"m"+strings.Repeat("█", fill)+"\033[0m\033[90m"+strings.Repeat("░", barW-fill)+"\033[0m \033[1;"+strings.TrimPrefix(code, "1;")+"m"+fmt.Sprintf("%3.0f%%", p)+"\033[0m",
+			"\033[90m"+resetLabel(l.ResetsAt, now)+"\033[0m")
+	}
+	if m.allowanceErr != nil { // showing last-good gauges, but the latest fetch failed
+		lines = append(lines, "\033[31m⚠ "+truncate(m.allowanceErr.Error(), width-2)+"\033[0m")
+	}
+	return lines
+}
+
+// usageView renders the usage screen in `height` rows below the header.
+func (m model) usageView(height int) string {
+	if m.usage.now.IsZero() {
+		return "  \033[90mReading the last 12h of usage…\033[0m"
+	}
+	d := m.usage
+	chartCols := max(m.width-usageMargin-1, 20)
+	buckets, per := mergeBuckets(d.buckets, chartCols)
+	// Three charts share what's left after the panels (10 rows); each chart
+	// has 3 rows of title, baseline and labels around its bars.
+	barH := max((height-11)/3-3, 2)
+	var out []string
+	for _, c := range usageCharts {
+		out = append(out, renderUsageChart(c.title, c.series, buckets, per, barH, d.now)...)
+	}
+	out = append(out, "")
+	summary := usageSummary(d)
+	allowance := m.allowancePanel(34)
+	for i := 0; i < max(len(summary), len(allowance)); i++ {
+		left, right := "", ""
+		if i < len(summary) {
+			left = summary[i]
+		}
+		if i < len(allowance) {
+			right = allowance[i]
+		}
+		pad := max(46-lipgloss.Width(left), 1)
+		out = append(out, "  "+left+strings.Repeat(" ", pad)+right)
+	}
+	if d.err != nil {
+		out = append(out, "  \033[31mreading transcripts: "+d.err.Error()+"\033[0m")
+	}
+	out = append(out, "", "  \033[90mTab: back to sessions\033[0m")
+	return strings.Join(out, "\n")
 }

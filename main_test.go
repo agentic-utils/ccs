@@ -3425,10 +3425,10 @@ func TestAllowanceInSearchRowAndUsageScreenHidesSearch(t *testing.T) {
 	}
 	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = res.(model)
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "⇥ back") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "tab back") {
 		t.Error("the usage screen should replace the search box with a back hint")
 	}
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "⇥ back  ^O account  ^L changelog  ^C quit") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "tab back  ^O account  ^L changelog  ^C quit") {
 		t.Error("the usage screen header should list only its own keys")
 	}
 }
@@ -4368,7 +4368,7 @@ func TestParseChangelog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"v0.43.1", `  fix: clearer "status" line`, "v0.43.0", "  feat: readable preview"}
+	want := []string{"v0.43.1", `  • fix: clearer "status" line`, "v0.43.0", "  • feat: readable preview"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -4397,7 +4397,7 @@ func TestUpdatePopupShowsChangelog(t *testing.T) {
 	nm, _ = m.Update(batch[0]()) // the fetch; batch[1] is the 2-minute tick
 	m = nm.(model)
 	v := strip2(m.updatePopup())
-	if !strings.Contains(v, "What's new:") || !strings.Contains(v, "fix: change 0") || !strings.Contains(v, "… and 10 more") || strings.Contains(v, "change 19") {
+	if !strings.Contains(v, "fix: change 0") || !strings.Contains(v, "… and 10 more") || strings.Contains(v, "change 19") {
 		t.Errorf("popup should list the changes, capped:\n%s", v)
 	}
 }
@@ -4428,7 +4428,7 @@ func TestHelpPopup(t *testing.T) {
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 120, 40
 	v := strip2(m.View())
-	if !strings.Contains(v, "⏎ resume  ^S msg  ⇥ usage  ^G help  ^C quit") || strings.Contains(v, "prune") {
+	if !strings.Contains(v, "enter resume  ^S msg  tab usage  ^G help  ^C quit") || strings.Contains(v, "prune") {
 		t.Errorf("header should list only the essentials:\n%s", v)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})

@@ -4410,7 +4410,10 @@ func TestPreviewSpeakerRuns(t *testing.T) {
 		{Role: "assistant", Text: "Posted now.", Ts: "2026-09-29T10:03:00Z"},
 	}}
 	plain := strip2(strings.Join(buildPreviewLines(conv, "", 80), "\n"))
-	if n := strings.Count(plain, "Claude ·"); n != 1 {
+	if n := strings.Count(plain, "── "+formatTimestamp("2026-09-29T10:02:00Z")[:10]+" ──"); n != 1 {
+		t.Errorf("the date should get one row of its own, got %d:\n%s", n, plain)
+	}
+	if n := strings.Count(plain, "Claude\n"); n != 1 {
 		t.Errorf("a run of Claude messages should share one header, got %d:\n%s", n, plain)
 	}
 	clock := formatTimestamp("2026-09-29T10:02:00Z")[11:]

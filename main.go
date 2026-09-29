@@ -4064,25 +4064,30 @@ func (b usageBucketTotals) value(key string) int64 {
 	return 0
 }
 
-// mergeBuckets folds adjacent buckets so the chart fits `cols` columns.
-func mergeBuckets(in []usageBucketTotals, cols int) ([]usageBucketTotals, int) {
-	per := max(1, (len(in)+cols-1)/cols)
-	out := make([]usageBucketTotals, 0, (len(in)+per-1)/per)
-	for i := 0; i < len(in); i += per {
-		var b usageBucketTotals
-		for _, x := range in[i:min(i+per, len(in))] {
-			b.Uncached += x.Uncached
-			b.C5m += x.C5m
-			b.C1h += x.C1h
-			b.Read += x.Read
-			b.New += x.New
-			b.Miss += x.Miss
-			b.Output += x.Output
-			b.Responses += x.Responses
+// resampleBuckets maps the 5-minute buckets onto exactly `cols` columns, so
+// the charts span the screen: on a narrow screen a column sums the buckets
+// it covers; on a wide one a bucket spans several columns.
+func resampleBuckets(in []usageBucketTotals, cols int) []usageBucketTotals {
+	out := make([]usageBucketTotals, cols)
+	n := len(in)
+	for j := range out {
+		lo, hi := j*n/cols, (j+1)*n/cols
+		if hi <= lo { // wider than the data: repeat the bucket under this column
+			out[j] = in[min(lo, n-1)]
+			continue
 		}
-		out = append(out, b)
+		for _, x := range in[lo:hi] {
+			out[j].Uncached += x.Uncached
+			out[j].C5m += x.C5m
+			out[j].C1h += x.C1h
+			out[j].Read += x.Read
+			out[j].New += x.New
+			out[j].Miss += x.Miss
+			out[j].Output += x.Output
+			out[j].Responses += x.Responses
+		}
 	}
-	return out, per
+	return out
 }
 
 var blockChars = []string{" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
@@ -4091,7 +4096,7 @@ var blockChars = []string{" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", 
 // rows of bars with a token scale on every other row, a baseline and hourly
 // labels. Bars are scaled to the tallest column in eighths of a cell; each
 // cell takes the colour of the series it mostly covers.
-func renderUsageChart(title string, series []usageSeries, buckets []usageBucketTotals, per, height int, now time.Time) []string {
+func renderUsageChart(title string, series []usageSeries, buckets []usageBucketTotals, height int, now time.Time) []string {
 	totals := make([]int64, len(buckets))
 	var maxT int64
 	for i, b := range buckets {
@@ -4141,7 +4146,7 @@ func renderUsageChart(title string, series []usageSeries, buckets []usageBucketT
 	nb := len(buckets)
 	axis := []rune(strings.Repeat(" ", nb))
 	cut := now.Add(-usageWindow).Local()
-	span := time.Duration(per) * usageBucket
+	span := usageWindow / time.Duration(max(nb, 1)) // time covered by one column
 	tick := cut.Truncate(time.Hour)
 	if tick.Before(cut) {
 		tick = tick.Add(time.Hour)
@@ -4325,13 +4330,13 @@ func (m model) usageView(height int) string {
 	}
 	d := m.usage
 	chartCols := max(m.width-usageMargin-1, 20)
-	buckets, per := mergeBuckets(d.buckets, chartCols)
+	buckets := resampleBuckets(d.buckets, chartCols)
 	// Three charts share what's left after the panels (10 rows); each chart
 	// has 3 rows of title, baseline and labels around its bars.
 	barH := max((height-11)/3-3, 2)
 	var out []string
 	for _, c := range usageCharts {
-		out = append(out, renderUsageChart(c.title, c.series, buckets, per, barH, d.now)...)
+		out = append(out, renderUsageChart(c.title, c.series, buckets, barH, d.now)...)
 	}
 	out = append(out, "")
 	summary := usageSummary(d)

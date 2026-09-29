@@ -1224,23 +1224,24 @@ func TestPreviewScrollClampedToContent(t *testing.T) {
 
 	maxScroll := m.maxPreviewScroll()
 
-	// Hammer pgdown far past the content; previewScroll must never exceed max.
+	// Hammer pgup (back through history) far past the start; previewScroll
+	// must never exceed max.
 	for i := 0; i < 100; i++ {
-		result, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		result, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 		m = result.(model)
 		if m.previewScroll > maxScroll {
-			t.Fatalf("previewScroll %d exceeded max %d after pgdown", m.previewScroll, maxScroll)
+			t.Fatalf("previewScroll %d exceeded max %d after pgup", m.previewScroll, maxScroll)
 		}
 	}
 	if m.previewScroll != maxScroll {
 		t.Errorf("previewScroll should settle at max %d, got %d", maxScroll, m.previewScroll)
 	}
 
-	// A single pgup from the bottom must visibly move (no dead scroll-up zone).
-	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	// A single pgdown from the oldest end must visibly move (no dead zone).
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	m = result.(model)
 	if maxScroll > 0 && m.previewScroll >= maxScroll {
-		t.Errorf("pgup should move up from max; stuck at %d", m.previewScroll)
+		t.Errorf("pgdown should move forward from max; stuck at %d", m.previewScroll)
 	}
 }
 
@@ -3572,13 +3573,14 @@ func TestWheelScrollsWhateverIsUnderThePointer(t *testing.T) {
 	listTop, _, previewTop := m.listLayout()
 
 	// Over the preview: the conversation scrolls, the selection stays.
-	m = m.handleMouse(tea.MouseMsg{X: 10, Y: previewTop + 2, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
-	if m.previewScroll != 3 || m.cursor != 0 {
-		t.Fatalf("wheel over preview: scroll=%d cursor=%d", m.previewScroll, m.cursor)
-	}
+	// (The preview opens at the newest message, so wheel up goes back first.)
 	m = m.handleMouse(tea.MouseMsg{X: 10, Y: previewTop + 2, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	if m.previewScroll != 3 || m.cursor != 0 {
+		t.Fatalf("wheel up over preview: scroll=%d cursor=%d", m.previewScroll, m.cursor)
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: previewTop + 2, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
 	if m.previewScroll != 0 {
-		t.Errorf("wheel up over preview should scroll back, got %d", m.previewScroll)
+		t.Errorf("wheel down over preview should come forward again, got %d", m.previewScroll)
 	}
 
 	// Over the list: the selection moves.
@@ -3691,7 +3693,7 @@ func TestShortModelNames(t *testing.T) {
 	}
 }
 
-func TestScrollingStopsWithLastMessageAtBottom(t *testing.T) {
+func TestPreviewOpensAtNewestAndScrollsBackToFirst(t *testing.T) {
 	var conv Conversation
 	conv.SessionID, conv.Cwd = "s", "/p"
 	for i := 0; i < 60; i++ {
@@ -3699,25 +3701,57 @@ func TestScrollingStopsWithLastMessageAtBottom(t *testing.T) {
 	}
 	m := initialModel(buildItems([]Conversation{conv}), "", nil)
 	m.width, m.height = 120, 40
-	_, _, previewTop := m.listLayout()
-	for i := 0; i < 100; i++ { // way past the end
-		m = m.handleMouse(tea.MouseMsg{Y: previewTop + 1, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
-	}
 	strip := regexp.MustCompile("\033\\[[0-9;]*m")
-	lines := strings.Split(strip.ReplaceAllString(m.View(), ""), "\n")
-	if len(lines) != m.height {
-		t.Fatalf("screen is %d rows, want %d", len(lines), m.height)
+	screen := func() []string { return strings.Split(strip.ReplaceAllString(m.View(), ""), "\n") }
+
+	// Opens with the newest message at the bottom.
+	lines := screen()
+	if len(lines) != m.height || !strings.Contains(strings.Join(lines[len(lines)-2:], "\n"), "line-59") {
+		t.Fatalf("should open at the newest message; last rows:\n%s", strings.Join(lines[len(lines)-3:], "\n"))
 	}
-	// The last message's text sits on the last row (a blank separator follows
-	// each message, so allow it to be the row just above).
-	tail := strings.Join(lines[len(lines)-2:], "\n")
-	if !strings.Contains(tail, "line-59") {
-		t.Errorf("scrolled to the end, the last message should be at the bottom; last rows:\n%s", tail)
+	// Scrolling back stops with the first message just under the header.
+	_, _, previewTop := m.listLayout()
+	for i := 0; i < 100; i++ {
+		m = m.handleMouse(tea.MouseMsg{Y: previewTop + 1, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 	}
 	if m.previewScroll != m.maxPreviewScroll() {
 		t.Errorf("scroll %d should stop at the max %d", m.previewScroll, m.maxPreviewScroll())
 	}
+	if !strings.Contains(strings.Join(screen(), "\n"), "line-0\n") {
+		t.Error("scrolled all the way back, the first message should be visible")
+	}
 }
+
+func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
+	mk := func(n int) Conversation {
+		c := Conversation{SessionID: "s", Cwd: "/p", Size: int64(n), readAt: time.Now()}
+		for i := 0; i < n; i++ {
+			c.Messages = append(c.Messages, Message{Role: "user", Text: fmt.Sprint("line-", i)})
+		}
+		return c
+	}
+	m := initialModel(buildItems([]Conversation{mk(60)}), "", nil)
+	m.width, m.height = 120, 40
+	m.previewScroll = 20 // reading back in the history
+	before := m.View()
+	grown := mk(62) // two new messages arrive
+	grown.readAt = time.Now().Add(time.Second)
+	m.applyLive([]Conversation{grown})
+	b, a := strings.Split(strip2(before), "\n"), strings.Split(strip2(m.View()), "\n")
+	_, _, previewTop := m.listLayout()
+	for i := previewTop; i < len(b) && i < len(a); i++ {
+		if b[i] != a[i] {
+			t.Errorf("preview row %d moved:\n was %q\n now %q", i, b[i], a[i])
+		}
+	}
+	m.previewScroll = 0 // at the newest: follow new messages
+	m.applyLive([]Conversation{func() Conversation { c := mk(64); c.readAt = time.Now().Add(2 * time.Second); return c }()})
+	if !strings.Contains(strip2(m.View()), "line-63") {
+		t.Error("at the newest message, new ones should come into view")
+	}
+}
+
+func strip2(s string) string { return regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, "") }
 
 func TestUIStateSurvivesRestart(t *testing.T) {
 	mk := func(id, text string) Conversation {

@@ -225,7 +225,7 @@ type model struct {
 	filtered        []listItem
 	textInput       textinput.Model
 	cursor          int
-	previewScroll   int
+	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width           int
 	height          int
 	listHeight      int // Calculated visible list height
@@ -942,8 +942,10 @@ func (m *model) applyLive(updated []Conversation) {
 	})
 
 	var selectedID string
+	oldLines := 0
 	if len(m.filtered) > 0 {
 		selectedID = m.filtered[m.cursor].conv.SessionID
+		oldLines = len(m.previewLines())
 	}
 	shown := make(map[string]bool, len(m.filtered))
 	for _, item := range m.filtered {
@@ -975,8 +977,13 @@ func (m *model) applyLive(updated []Conversation) {
 	}
 	// The selected preview can shrink (or be a different conversation), so a
 	// stored scroll offset past its end would make Ctrl+K seem stuck.
+	if _, changed := byID[selectedID]; changed && found && m.previewScroll > 0 {
+		// Scrolled back reading: new lines arrive at the bottom, so move the
+		// offset by as much, keeping the same lines on screen.
+		m.previewScroll += len(m.previewLines()) - oldLines
+	}
 	if _, changed := byID[selectedID]; changed || !found {
-		m.previewScroll = min(m.previewScroll, m.maxPreviewScroll())
+		m.previewScroll = max(0, min(m.previewScroll, m.maxPreviewScroll()))
 	}
 }
 
@@ -1150,9 +1157,9 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		up := msg.Button == tea.MouseButtonWheelUp
 		switch {
 		case onPreview && up:
-			m.previewScroll = max(0, m.previewScroll-3)
+			m.previewScroll = min(m.previewScroll+3, m.maxPreviewScroll()) // back towards older messages
 		case onPreview:
-			m.previewScroll = min(m.previewScroll+3, m.maxPreviewScroll())
+			m.previewScroll = max(0, m.previewScroll-3) // forward towards the newest
 		case up && m.cursor > 0:
 			m.cursor--
 			m.previewScroll = 0
@@ -1831,11 +1838,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "pgup", "ctrl+k":
-			m.previewScroll = max(0, m.previewScroll-10)
+			m.previewScroll = min(m.previewScroll+10, m.maxPreviewScroll()) // back
 			return m, nil
 
 		case "pgdown", "ctrl+j":
-			m.previewScroll = min(m.previewScroll+10, m.maxPreviewScroll())
+			m.previewScroll = max(0, m.previewScroll-10) // forward
 			return m, nil
 
 		case "ctrl+u":
@@ -2293,9 +2300,10 @@ func (m model) renderPreview(item listItem, height int) string {
 	if msgHeight < 1 {
 		msgHeight = 1
 	}
-	scroll := min(m.previewScroll, max(0, len(msgLines)-msgHeight))
-	end := min(scroll+msgHeight, len(msgLines))
-	visibleMsgLines := msgLines[scroll:end]
+	// previewScroll counts back from the newest message, so 0 shows the end.
+	back := min(m.previewScroll, max(0, len(msgLines)-msgHeight))
+	start := max(0, len(msgLines)-msgHeight-back)
+	visibleMsgLines := msgLines[start:min(start+msgHeight, len(msgLines))]
 
 	// Combine header + scrolled messages
 	allLines := append(header, visibleMsgLines...)

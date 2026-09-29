@@ -3055,3 +3055,47 @@ func TestSessionStatsAndErrorIcon(t *testing.T) {
 		t.Error("a session whose last action errored should show ! in the list")
 	}
 }
+
+func TestMain(m *testing.M) {
+	// Keep tests from writing into the real update log.
+	dir, _ := os.MkdirTemp("", "ccs-test-log")
+	updateLogPath = filepath.Join(dir, "update.log")
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+func TestUpdateLogRecordsCommandsAndDownloads(t *testing.T) {
+	old := updateLogPath
+	updateLogPath = filepath.Join(t.TempDir(), "logs", "update.log")
+	defer func() { updateLogPath = old }()
+
+	if _, err := runCommand(5*time.Second, nil, true, "sh", "-c", "echo downloading; echo boom >&2; exit 3"); err == nil {
+		t.Fatal("want failure")
+	}
+	fakeRelease(t, "v9.9.9", []byte("bin"), false)
+	if _, err := download(releaseDownloadURL + "/v9.9.9/checksums.txt"); err != nil {
+		t.Fatal(err)
+	}
+	logUpdate("install v9.9.9: %v in %s", errOrOK(nil), time.Second)
+
+	got, err := os.ReadFile(updateLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"$ sh -c", "exit status 3", "  | downloading", "  | boom", "GET http://", "last connection 127.0.0.1:", "install v9.9.9: ok"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("log missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFailedUpdatePopupPointsAtLog(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 120, 30
+	m.updateTo, m.updateErr, m.updateOpen = "v9.9.9", "brew upgrade: curl: (35) Recv failure", true
+	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
+	if !strings.Contains(m.View(), updateLogPath) {
+		t.Error("a failed update should point at the update log")
+	}
+}

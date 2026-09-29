@@ -3484,3 +3484,22 @@ func TestUsageChartsSpanScreenWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestUsagePanelsInThreeEqualColumns(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.usage = usageData{now: time.Now(), buckets: make([]usageBucketTotals, usageBuckets)}
+	m.usage.buckets[0] = usageBucketTotals{Read: 90, New: 10, Output: 5, Responses: 1}
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	for _, w := range []int{120, 200} {
+		m.width = w
+		for _, line := range strings.Split(strip.ReplaceAllString(m.usageView(40), ""), "\n") {
+			if !strings.Contains(line, "SUMMARY") {
+				continue
+			}
+			s, c, a := strings.Index(line, "SUMMARY"), strings.Index(line, "CACHE MIX"), strings.Index(line, "ALLOWANCE")
+			if s < 0 || c < 0 || a < 0 || c-s != a-c {
+				t.Errorf("width %d: panels not in equal columns: %q", w, line)
+			}
+		}
+	}
+}

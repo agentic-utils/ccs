@@ -4173,7 +4173,8 @@ func renderUsageChart(title string, series []usageSeries, buckets []usageBucketT
 
 // usageSummary is the SUMMARY panel: 12h totals, effective tokens and the
 // cache mix (shares of all input).
-func usageSummary(d usageData) []string {
+// usageSummary returns the SUMMARY and CACHE MIX panels, each `width` wide.
+func usageSummary(d usageData, width int) (summary, cache []string) {
 	var agg usageBucketTotals
 	for _, b := range d.buckets {
 		agg.Uncached += b.Uncached
@@ -4192,20 +4193,28 @@ func usageSummary(d usageData) []string {
 		}
 		return fmt.Sprintf("%.1f%%", 100*float64(part)/float64(totalIn))
 	}
-	chip := func(key, label, v string) string {
-		return fmt.Sprintf("%s %-22s %7s", rgbText(usageColours[key], "■"), label, v)
+	// row puts label on the left and value flush right within the column.
+	row := func(label, value string) string {
+		return label + strings.Repeat(" ", max(width-lipgloss.Width(label)-lipgloss.Width(value), 1)) + value
 	}
-	return []string{
+	chip := func(key, label, v string) string {
+		return row(rgbText(usageColours[key], "■")+" "+label, v)
+	}
+	summary = []string{
 		"\033[1;36mSUMMARY\033[0m \033[90m(last 12h)\033[0m",
-		fmt.Sprintf("\033[90m%-12s\033[0m %16s", "input", formatCount(totalIn)),
-		fmt.Sprintf("\033[90m%-12s\033[0m %16s", "output", formatCount(agg.Output)),
-		fmt.Sprintf("\033[90m%-12s\033[0m %16s", "responses", formatCount(agg.Responses)),
-		fmt.Sprintf("\033[90m%-12s\033[0m %16s", "effective", formatTokens(int(d.eff1h))+" / "+formatTokens(int(d.eff12h))) + " \033[90m(1h / 12h)\033[0m",
+		row("\033[90minput\033[0m", formatCount(totalIn)),
+		row("\033[90moutput\033[0m", formatCount(agg.Output)),
+		row("\033[90mresponses\033[0m", formatCount(agg.Responses)),
+		row("\033[90meffective 1h / 12h\033[0m", formatTokens(int(d.eff1h))+" / "+formatTokens(int(d.eff12h))),
+	}
+	cache = []string{
+		"\033[1;36mCACHE MIX\033[0m \033[90m(share of input)\033[0m",
 		chip("c5m", "5m cache · subagent", pct(agg.C5m)),
 		chip("c1h", "1h cache · main", pct(agg.C1h)),
 		chip("read", "read from cache", pct(agg.Read)),
 		chip("miss", "cache miss", pct(agg.Miss)),
 	}
+	return summary, cache
 }
 
 // formatCount renders n with thousands separators.
@@ -4339,22 +4348,32 @@ func (m model) usageView(height int) string {
 		out = append(out, renderUsageChart(c.title, c.series, buckets, barH, d.now)...)
 	}
 	out = append(out, "")
-	summary := usageSummary(d)
-	allowance := m.allowancePanel(34)
-	for i := 0; i < max(len(summary), len(allowance)); i++ {
-		left, right := "", ""
-		if i < len(summary) {
-			left = summary[i]
+	// Three equal columns across the screen: summary, cache mix, allowance.
+	const gap = 4
+	colW := max((m.width-2-2*gap)/3, 24)
+	summary, cache := usageSummary(d, colW)
+	panels := [][]string{summary, cache, m.allowancePanel(colW)}
+	rows := 0
+	for _, p := range panels {
+		rows = max(rows, len(p))
+	}
+	for i := 0; i < rows; i++ {
+		var line strings.Builder
+		line.WriteString("  ")
+		for j, p := range panels {
+			cell := ""
+			if i < len(p) {
+				cell = p[i]
+			}
+			if j < len(panels)-1 { // pad all but the last column
+				cell += strings.Repeat(" ", max(colW-lipgloss.Width(cell), 0)+gap)
+			}
+			line.WriteString(cell)
 		}
-		if i < len(allowance) {
-			right = allowance[i]
-		}
-		pad := max(46-lipgloss.Width(left), 1)
-		out = append(out, "  "+left+strings.Repeat(" ", pad)+right)
+		out = append(out, line.String())
 	}
 	if d.err != nil {
 		out = append(out, "  \033[31mreading transcripts: "+d.err.Error()+"\033[0m")
 	}
-	out = append(out, "", "  \033[90mTab: back to sessions\033[0m")
 	return strings.Join(out, "\n")
 }

@@ -3718,3 +3718,52 @@ func TestScrollingStopsWithLastMessageAtBottom(t *testing.T) {
 		t.Errorf("scroll %d should stop at the max %d", m.previewScroll, m.maxPreviewScroll())
 	}
 }
+
+func TestUIStateSurvivesRestart(t *testing.T) {
+	mk := func(id, text string) Conversation {
+		c := Conversation{SessionID: id, LastTimestamp: "2026-09-29T10:00:00Z"}
+		for i := 0; i < 50; i++ {
+			c.Messages = append(c.Messages, Message{Role: "user", Text: text + fmt.Sprint(i)})
+		}
+		return c
+	}
+	before := initialModel(buildItems([]Conversation{mk("a", "apple"), mk("b", "banana"), mk("c", "bandana")}), "", nil)
+	before.width, before.height = 120, 40
+	before.textInput.SetValue("band")
+	before.textInput.SetCursor(2)
+	before.updateFilter()
+	before.cursor = 0 // "band" matches only "c" (bandana)
+	before.previewScroll = 7
+	before.showUsage = true
+	saved, err := json.Marshal(before.uiState())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The new version's list comes back in a different order.
+	after := initialModel(buildItems([]Conversation{mk("c", "bandana"), mk("b", "banana"), mk("a", "apple")}), "", nil)
+	var state uiState
+	if err := json.Unmarshal(saved, &state); err != nil {
+		t.Fatal(err)
+	}
+	after.restore(state)
+	if after.textInput.Value() != "band" || after.textInput.Position() != 2 {
+		t.Errorf("query/cursor = %q/%d", after.textInput.Value(), after.textInput.Position())
+	}
+	if len(after.filtered) != 1 || after.filtered[after.cursor].conv.SessionID != "c" {
+		t.Errorf("selection not restored: %+v", after.filtered)
+	}
+	if after.previewScroll != 7 || !after.showUsage || after.screenName() != "usage" {
+		t.Errorf("scroll=%d usage=%v", after.previewScroll, after.showUsage)
+	}
+	if after.Init() == nil {
+		t.Error("restored onto the usage screen, Init should load the usage data")
+	}
+
+	// A conversation that no longer exists is skipped, not an error.
+	gone := initialModel(buildItems([]Conversation{mk("z", "zebra")}), "", nil)
+	gone.restore(uiState{Screen: "list", Selected: "missing"})
+	if gone.cursor != 0 || gone.showUsage {
+		t.Error("restoring a missing selection should leave a sane default")
+	}
+}

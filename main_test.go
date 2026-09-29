@@ -3174,11 +3174,11 @@ func TestRenderUsageChart(t *testing.T) {
 	buckets := make([]usageBucketTotals, usageBuckets)
 	buckets[10] = usageBucketTotals{Output: 1000}
 	buckets[20] = usageBucketTotals{Output: 500}
-	merged, per := mergeBuckets(buckets, 72)
-	if len(merged) != 72 || per != 2 || merged[5].Output != 1000 {
-		t.Fatalf("mergeBuckets: %d cols, per %d", len(merged), per)
+	merged := resampleBuckets(buckets, 72)
+	if len(merged) != 72 || merged[5].Output != 1000 {
+		t.Fatalf("resampleBuckets: %d cols", len(merged))
 	}
-	lines := renderUsageChart("Output", []usageSeries{{"output", "output tokens"}}, merged, per, 4, now)
+	lines := renderUsageChart("Output", []usageSeries{{"output", "output tokens"}}, merged, 4, now)
 	strip := func(s string) string { return regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, "") }
 	if len(lines) != 1+4+2 {
 		t.Fatalf("want title + 4 rows + baseline + labels, got %d lines", len(lines))
@@ -3438,5 +3438,49 @@ func TestAccountEmailFromClaudeConfig(t *testing.T) {
 	}
 	if got := accountEmail(); got != "other@example.com" {
 		t.Errorf("CLAUDE_CONFIG_DIR profile: got %q", got)
+	}
+}
+
+func TestResampleBucketsFillsAnyWidth(t *testing.T) {
+	in := make([]usageBucketTotals, usageBuckets)
+	for i := range in {
+		in[i].Output = 1
+	}
+	for _, cols := range []int{20, 72, 144, 200, 400} {
+		out := resampleBuckets(in, cols)
+		if len(out) != cols {
+			t.Errorf("cols %d: got %d columns", cols, len(out))
+		}
+		var total int64
+		for _, b := range out {
+			total += b.Output
+			if b.Output == 0 {
+				t.Errorf("cols %d: gap in the chart", cols)
+				break
+			}
+		}
+		if cols <= usageBuckets && total != int64(usageBuckets) {
+			t.Errorf("cols %d: downsampling must keep the total, got %d", cols, total)
+		}
+	}
+}
+
+func TestUsageChartsSpanScreenWidth(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.usage = usageData{now: time.Now(), buckets: make([]usageBucketTotals, usageBuckets)}
+	for i := range m.usage.buckets {
+		m.usage.buckets[i].Output = int64(i + 1)
+	}
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	for _, w := range []int{100, 170, 260} {
+		m.width, m.height = w, 50
+		for _, line := range strings.Split(strip.ReplaceAllString(m.usageView(46), ""), "\n") {
+			if strings.Contains(line, "└") {
+				if got := utf8.RuneCountInString(line); got != w-1 {
+					t.Errorf("width %d: chart baseline is %d wide, want %d", w, got, w-1)
+				}
+				break
+			}
+		}
 	}
 }

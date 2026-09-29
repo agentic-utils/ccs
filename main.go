@@ -34,6 +34,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1075,15 +1076,16 @@ func (m model) refreshNote() string {
 	case m.lastRefresh.IsZero():
 		return ""
 	}
-	ago := time.Since(m.lastRefresh)
-	when := fmt.Sprintf("%ds", int(ago.Seconds()))
-	if ago >= time.Minute {
-		when = fmt.Sprintf("%dm", int(ago.Minutes()))
+	// Minute granularity: a note that changes every second would make an
+	// idle ccs redraw constantly (terminals show that as tab activity).
+	when := "just now"
+	if ago := time.Since(m.lastRefresh); ago >= time.Minute {
+		when = fmt.Sprintf("%dm ago", int(ago.Minutes()))
 	}
 	if m.refreshFailed {
-		return " · refresh failed, list from " + when + " ago"
+		return " · refresh failed, list from " + when
 	}
-	return " · refreshed " + when + " ago"
+	return " · refreshed " + when
 }
 
 // mouseLeak matches a mouse report that arrived split and was read as typed
@@ -1276,6 +1278,9 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 	ti.Placeholder = "type to search..."
 	ti.Prompt = "> "
 	ti.Focus()
+	// A blinking cursor redraws twice a second forever, which terminals show
+	// as constant tab activity; a steady one lets an idle ccs draw nothing.
+	ti.Cursor.SetMode(cursor.CursorStatic)
 	ti.SetValue(filterQuery)
 	ti.Width = 40
 
@@ -1344,7 +1349,7 @@ func (m *model) updateFilter() {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink}
+	var cmds []tea.Cmd
 	if m.reload != nil {
 		cmds = append(cmds, refreshTick(), liveTick())
 	}
@@ -1697,7 +1702,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.renameInput.Width = 50
 				m.renameInput.SetValue(conv.Title)
 				m.renameInput.Focus()
-				return m, textinput.Blink
+				m.renameInput.Cursor.SetMode(cursor.CursorStatic)
+				return m, nil
 			}
 			return m, nil
 

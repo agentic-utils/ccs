@@ -1086,9 +1086,27 @@ func TestViewRendering(t *testing.T) {
 
 func TestInit(t *testing.T) {
 	m := initialModel([]listItem{}, "", nil)
-	cmd := m.Init()
-	if cmd == nil {
-		t.Error("Init should return a command")
+	if m.Init() != nil {
+		t.Error("with nothing to refresh, Init should schedule nothing (no cursor blink)")
+	}
+	m.reload = func() ([]listItem, error) { return nil, nil }
+	if m.Init() == nil {
+		t.Error("Init should start the refresh and live ticks")
+	}
+}
+
+func TestIdleScreenDoesNotChange(t *testing.T) {
+	// An idle frame must be identical from one render to the next: the
+	// renderer skips identical frames, so ccs writes nothing and terminals
+	// don't show the tab as busy.
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", LastTimestamp: time.Now().Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	m.reload = func() ([]listItem, error) { return nil, nil }
+	m.lastRefresh = time.Now()
+	first := m.View()
+	time.Sleep(1100 * time.Millisecond)
+	if m.View() != first {
+		t.Error("an idle screen changed within a second; it would redraw constantly")
 	}
 }
 
@@ -2443,7 +2461,7 @@ func TestRefreshNote(t *testing.T) {
 	}
 	m.reload = func() ([]listItem, error) { return nil, nil }
 	m.lastRefresh = time.Now().Add(-20 * time.Second)
-	if got := m.refreshNote(); got != " · refreshed 20s ago" {
+	if got := m.refreshNote(); got != " · refreshed just now" {
 		t.Errorf("got %q", got)
 	}
 	m.lastRefresh = time.Now().Add(-3 * time.Minute)
@@ -2460,11 +2478,11 @@ func TestRefreshNote(t *testing.T) {
 		t.Errorf("failed scan should say so, got %q", m.refreshNote())
 	}
 	res, _ = m.Update(refreshMsg{items: []listItem{}})
-	if m = res.(model); m.refreshNote() != " · refreshed 0s ago" {
+	if m = res.(model); m.refreshNote() != " · refreshed just now" {
 		t.Errorf("successful scan resets the counter, got %q", m.refreshNote())
 	}
 	m.width, m.height = 160, 30
-	if !strings.Contains(m.View(), "refreshed 0s ago") {
+	if !strings.Contains(m.View(), "refreshed just now") {
 		t.Error("note should render in the header")
 	}
 }

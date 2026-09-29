@@ -3690,3 +3690,31 @@ func TestShortModelNames(t *testing.T) {
 		}
 	}
 }
+
+func TestScrollingStopsWithLastMessageAtBottom(t *testing.T) {
+	var conv Conversation
+	conv.SessionID, conv.Cwd = "s", "/p"
+	for i := 0; i < 60; i++ {
+		conv.Messages = append(conv.Messages, Message{Role: "user", Text: fmt.Sprint("line-", i)})
+	}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.width, m.height = 120, 40
+	_, _, previewTop := m.listLayout()
+	for i := 0; i < 100; i++ { // way past the end
+		m = m.handleMouse(tea.MouseMsg{Y: previewTop + 1, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	}
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	lines := strings.Split(strip.ReplaceAllString(m.View(), ""), "\n")
+	if len(lines) != m.height {
+		t.Fatalf("screen is %d rows, want %d", len(lines), m.height)
+	}
+	// The last message's text sits on the last row (a blank separator follows
+	// each message, so allow it to be the row just above).
+	tail := strings.Join(lines[len(lines)-2:], "\n")
+	if !strings.Contains(tail, "line-59") {
+		t.Errorf("scrolled to the end, the last message should be at the bottom; last rows:\n%s", tail)
+	}
+	if m.previewScroll != m.maxPreviewScroll() {
+		t.Errorf("scroll %d should stop at the max %d", m.previewScroll, m.maxPreviewScroll())
+	}
+}

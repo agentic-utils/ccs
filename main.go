@@ -7,12 +7,14 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"os"
@@ -427,12 +429,14 @@ func chooseUpgrader(exe string) *upgrader {
 		return &upgrader{
 			prepare: func(string) error {
 				refreshTap(brew, func(string) {})
+				preseedBrewCache(brew)
 				return runBrew(brew, "fetch", "agentic-utils/tap/ccs") // into brew's download cache
 			},
 			install: func(_ string, step func(string)) (string, error) {
 				if err := refreshTap(brew, step); err != nil {
 					return "", err
 				}
+				preseedBrewCache(brew)
 				step("brew upgrade")
 				if err := runBrew(brew, "upgrade", "agentic-utils/tap/ccs"); err != nil {
 					return "", err
@@ -582,7 +586,7 @@ func download(url string) (body []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
-	client := http.Client{Timeout: 2 * time.Minute}
+	client := http.Client{Timeout: 2 * time.Minute, Transport: downloadTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -596,6 +600,146 @@ func download(url string) (body []byte, err error) {
 		return nil, fmt.Errorf("download %s: larger than %dMB", url, maxDownload>>20)
 	}
 	return body, err
+}
+
+// preseedBrewCache puts the formula's download into brew's cache ourselves,
+// using the address-fallback transport, so brew fetch/upgrade find it cached
+// instead of downloading with curl. It uses only the URL and sha256 brew
+// reports; brew still verifies the file. Any problem is logged and leaves
+// brew to download as usual.
+func preseedBrewCache(brew string) {
+	if err := preseed(brew); err != nil {
+		logUpdate("preseed skipped, brew will download itself: %v", err)
+	}
+}
+
+func preseed(brew string) error {
+	env := []string{"HOMEBREW_NO_AUTO_UPDATE=1"}
+	out, err := runCommand(30*time.Second, env, true, brew, "info", "--json=v2", "agentic-utils/tap/ccs")
+	if err != nil {
+		return err
+	}
+	var info struct {
+		Formulae []struct {
+			URLs struct {
+				Stable struct{ URL, Checksum string } `json:"stable"`
+			} `json:"urls"`
+		} `json:"formulae"`
+	}
+	if json.Unmarshal(out, &info) != nil || len(info.Formulae) != 1 {
+		return errors.New("unexpected brew info output")
+	}
+	url, want := info.Formulae[0].URLs.Stable.URL, info.Formulae[0].URLs.Stable.Checksum
+	if !strings.HasPrefix(url, "https://") || len(want) != 64 {
+		return fmt.Errorf("unexpected formula url/checksum %q %q", url, want)
+	}
+	cacheOut, err := runCommand(30*time.Second, env, true, brew, "--cache", "agentic-utils/tap/ccs")
+	if err != nil {
+		return err
+	}
+	return seedFile(strings.TrimSpace(string(cacheOut)), url, want)
+}
+
+// seedFile makes path hold url's content with sha256 want, downloading only
+// if it isn't already there. Written atomically beside path.
+func seedFile(path, url, want string) error {
+	if data, err := os.ReadFile(path); err == nil && sha256Hex(data) == want {
+		return nil
+	}
+	body, err := download(url)
+	if err != nil {
+		return err
+	}
+	if got := sha256Hex(body); got != want {
+		return fmt.Errorf("checksum mismatch for %s: got %s", url, got)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ccs-seed-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil { // as brew writes its own downloads
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// downloadTransport tries every address a host resolves to, each with a short
+// limit covering TCP and the TLS handshake, and moves on when one fails, so a
+// single unreachable address costs seconds rather than the whole download.
+// Addresses that failed are tried last for the rest of the process.
+var downloadTransport = &http.Transport{
+	Proxy:               http.ProxyFromEnvironment,
+	DialTLSContext:      dialTLSAnyAddr,
+	TLSHandshakeTimeout: 10 * time.Second,
+}
+
+var (
+	addrAttemptTimeout = 5 * time.Second
+	downloadTLSConfig  = &tls.Config{} // tests swap in their own roots
+	resolveHost        = func(ctx context.Context, host string) ([]string, error) {
+		return net.DefaultResolver.LookupHost(ctx, host)
+	}
+	dialAddr    = (&net.Dialer{}).DialContext
+	failedAddrs sync.Map
+)
+
+func dialTLSAnyAddr(ctx context.Context, network, hostport string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := resolveHost(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(addrs, func(i, j int) bool { // known-bad addresses last
+		_, bi := failedAddrs.Load(addrs[i])
+		_, bj := failedAddrs.Load(addrs[j])
+		return !bi && bj
+	})
+	var lastErr error
+	for _, a := range addrs {
+		start := time.Now()
+		conn, err := tlsDialOne(ctx, network, net.JoinHostPort(a, port), host)
+		if err == nil {
+			logUpdate("connect %s via %s: ok in %s", host, a, time.Since(start).Round(time.Millisecond))
+			return conn, nil
+		}
+		failedAddrs.Store(a, true)
+		logUpdate("connect %s via %s: %v after %s, trying next address", host, a, err, time.Since(start).Round(time.Millisecond))
+		lastErr = err
+	}
+	return nil, fmt.Errorf("no address for %s worked: %w", host, lastErr)
+}
+
+func tlsDialOne(ctx context.Context, network, addr, serverName string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, addrAttemptTimeout)
+	defer cancel()
+	raw, err := dialAddr(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	cfg := downloadTLSConfig.Clone()
+	cfg.ServerName = serverName
+	conn := tls.Client(raw, cfg)
+	if err := conn.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 // checksumFor finds name's sha256 in a checksums.txt ("<hex>  <name>" lines).

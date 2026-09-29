@@ -2301,7 +2301,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.acctOpen {
 			return m.acctKey(msg)
 		}
-		if msg.String() == "ctrl+g" && !m.prompting() {
+		if msg.String() == "ctrl+g" && !m.prompting() && !m.showUsage {
 			m.helpOpen = true
 			return m, nil
 		}
@@ -2583,8 +2583,8 @@ const (
 	keyEsc   = "esc"
 )
 
-// shortcuts is the keys that do something right now, for the Ctrl+G popup:
-// what's on screen (list or usage), whether a conversation is selected and
+// shortcuts is the keys that do something right now on the list, for the
+// Ctrl+G popup (the usage screen's header already lists all of its keys): whether a conversation is selected and
 // live, and whether the message box has focus.
 func (m model) shortcuts() [][2]string {
 	var out [][2]string
@@ -2594,30 +2594,26 @@ func (m model) shortcuts() [][2]string {
 		}
 	}
 	hasCswap := cswapPath() != ""
-	if m.showUsage {
-		add(true, keyTab, "back to the list")
-	} else {
-		sel := len(m.filtered) > 0
-		live := sel && m.selectedLive()
-		switch {
-		case m.chatFocus:
-			add(true, keyEnter, "send the message")
-			add(true, keyEsc, "back to the search")
-		case live:
-			add(true, keyEnter, "focus the live session")
-			add(true, "^S", "message it")
-		default:
-			add(sel, keyEnter, "resume")
-		}
-		add(sel, "^F", "fork")
-		add(sel && !live, "^R", "rename")
-		add(sel, "^D", "delete")
-		add(sel, "^X", "prune")
-		add(sel, "^J/K", "scroll the conversation")
-		add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
-		add(true, keyTab, "usage")
-		add(!m.chatFocus && m.textInput.Value() != "", keyEsc+" ^U", "clear the search")
+	sel := len(m.filtered) > 0
+	live := sel && m.selectedLive()
+	switch {
+	case m.chatFocus:
+		add(true, keyEnter, "send the message")
+		add(true, keyEsc, "back to the search")
+	case live:
+		add(true, keyEnter, "focus the live session")
+		add(true, "^S", "message it")
+	default:
+		add(sel, keyEnter, "resume")
 	}
+	add(sel, "^F", "fork")
+	add(sel && !live, "^R", "rename")
+	add(sel, "^D", "delete")
+	add(sel, "^X", "prune")
+	add(sel, "^J/K", "scroll the conversation")
+	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
+	add(true, keyTab, "usage")
+	add(!m.chatFocus && m.textInput.Value() != "", keyEsc+" ^U", "clear the search")
 	add(hasCswap, "^O", "switch account")
 	add(true, "^L", "changelog")
 	add(true, "^C", "quit")
@@ -2754,7 +2750,7 @@ func (m model) viewScreen() string {
 	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
 	help := hints(keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help", "^C", "quit")
 	if m.showUsage { // only Tab, account, help and quit do anything there
-		help = hints(keyTab, "back", "^O", "account", "^G", "help", "^C", "quit")
+		help = hints(keyTab, "back", "^O", "account", "^L", "changelog", "^C", "quit") // every key it has, so no ^G help
 	} else if m.chatFocus {
 		help = hints(keyEnter, "send", keyEsc, "search", "^J/K", "scroll", "^G", "help")
 	}

@@ -109,7 +109,7 @@ func TestHighlightMatchesMultibyte(t *testing.T) {
 		t.Errorf("expected 2 highlights of multibyte query, got %d in %q", n, got)
 	}
 	// The visible text must be preserved exactly once ANSI codes are stripped.
-	stripped := strings.NewReplacer("\033[43;30m", "", "\033[0m", "").Replace(got)
+	stripped := strings.NewReplacer("\033[43;30m", "", "\033[0m", "", "\033[49;39m", "").Replace(got)
 	if stripped != "héllo wörld héllo" {
 		t.Errorf("highlight altered visible text: %q", stripped)
 	}
@@ -3622,11 +3622,11 @@ func TestPreviewShowsWholeConversationWithoutSearch(t *testing.T) {
 	for i := 0; i < 300; i++ {
 		conv.Messages = append(conv.Messages, Message{Role: "user", Text: fmt.Sprint("msg-", i)})
 	}
-	all := strings.Join(buildPreviewLines(conv, ""), "\n")
+	all := strings.Join(buildPreviewLines(conv, "", 0), "\n")
 	if strings.Contains(all, "messages ...") || !strings.Contains(all, "msg-150") {
 		t.Error("without a search every message should be scrollable")
 	}
-	found := strings.Join(buildPreviewLines(conv, "msg-150"), "\n")
+	found := strings.Join(buildPreviewLines(conv, "msg-150", 0), "\n")
 	if !strings.Contains(found, "messages ...") || strings.Contains(found, "msg-100\n") {
 		t.Error("with a search the preview should collapse to matches in context")
 	}
@@ -3638,7 +3638,7 @@ func BenchmarkFullPreview7500(b *testing.B) {
 		conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: strings.Repeat("some reply text ", 30), Ts: "2026-09-29T10:00:00Z"})
 	}
 	for i := 0; i < b.N; i++ {
-		buildPreviewLines(conv, "")
+		buildPreviewLines(conv, "", 0)
 	}
 }
 
@@ -3999,7 +3999,7 @@ func TestPeerMessageShownAndPendingClearsWhenItLands(t *testing.T) {
 	if len(c.Messages) != 2 {
 		t.Fatalf("a message from ccs should be kept even though it's marked meta, got %d", len(c.Messages))
 	}
-	lines := strip2(strings.Join(buildPreviewLines(*c, ""), "\n"))
+	lines := strip2(strings.Join(buildPreviewLines(*c, "", 0), "\n"))
 	if !strings.Contains(lines, "From ccs:") || !strings.Contains(lines, "check the PR") || strings.Contains(lines, "cross-session-message") {
 		t.Errorf("preview should show it as from ccs, unwrapped:\n%s", lines)
 	}
@@ -4250,5 +4250,88 @@ func TestClickingAccountEmailOpensSwitcher(t *testing.T) {
 	m = runAcct(t, m, tea.MouseMsg{X: utf8.RuneCountInString(row[:x]) + 2, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if !m.acctOpen || len(m.accts) != 3 {
 		t.Errorf("clicking the email should open and list accounts, open=%v n=%d", m.acctOpen, len(m.accts))
+	}
+}
+
+func TestPreviewReadable(t *testing.T) {
+	long := strings.Repeat("word ", 60)
+	conv := Conversation{Messages: []Message{
+		{Role: "user", Text: "<task-notification>\n<task-id>x</task-id>\n<summary>Monitor event: CI on #336</summary>\n<event>check build: fail</event>\n</task-notification>"},
+		{Role: "assistant", Text: "## Result\nThe **build** failed in `docker build`.\n- " + long + "\n```\ncode line\n```\n" + strings.Repeat("x", 600)},
+	}}
+	lines := buildPreviewLines(conv, "", 80)
+	plain := strip2(strings.Join(lines, "\n"))
+	for i, l := range strings.Split(plain, "\n") {
+		if w := utf8.RuneCountInString(l); w > 80 {
+			t.Errorf("line %d is %d wide, over 80: %q", i, w, l)
+		}
+	}
+	if !strings.Contains(plain, "▸ task-notification · Monitor event: CI on #336") || strings.Contains(plain, "<task-id>") {
+		t.Errorf("harness message should collapse to one summary line:\n%s", plain)
+	}
+	if strings.Contains(plain, "**") || strings.Contains(plain, "`") || strings.Contains(plain, "## ") {
+		t.Errorf("markdown markers should be rendered, not shown:\n%s", plain)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "\033[1mbuild\033[22m") || !strings.Contains(joined, "\033[36mdocker build\033[39m") {
+		t.Error("bold and inline code should be styled")
+	}
+	// A wrapped bullet's continuation lines line up with its text.
+	var bullet []string
+	for _, l := range strings.Split(plain, "\n") {
+		if strings.HasPrefix(l, "    - word") || (len(bullet) > 0 && strings.HasPrefix(l, "      word")) {
+			bullet = append(bullet, l)
+		}
+	}
+	if len(bullet) < 2 {
+		t.Errorf("long bullet should wrap with a hanging indent:\n%s", plain)
+	}
+	// No more 500-character cut.
+	if strings.Contains(plain, "(truncated)") || strings.Count(plain, "x") < 600 {
+		t.Error("messages should be shown in full")
+	}
+}
+
+func BenchmarkReadablePreview7500(b *testing.B) {
+	var conv Conversation
+	for i := 0; i < 7500; i++ {
+		conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: "Some **bold** reply with `code` and a long line " + strings.Repeat("of words ", 30), Ts: "2026-09-29T10:00:00Z"})
+	}
+	for i := 0; i < b.N; i++ {
+		buildPreviewLines(conv, "", 160)
+	}
+}
+
+func TestLongCodeBlocksCollapse(t *testing.T) {
+	diff := "```diff\n" + strings.Repeat("+ added line\n", 40) + "- needle removed\n```"
+	conv := Conversation{Messages: []Message{{Role: "assistant", Text: "Here's the change:\n" + diff + "\nShort one:\n```go\nx := 1\n```"}}}
+	plain := strip2(strings.Join(buildPreviewLines(conv, "", 100), "\n"))
+	if !strings.Contains(plain, "▸ diff · 41 lines") || strings.Contains(plain, "+ added line") {
+		t.Errorf("a long diff should collapse to one line:\n%s", plain)
+	}
+	if !strings.Contains(plain, "x := 1") {
+		t.Error("short code blocks stay inline")
+	}
+	// A search that matches inside keeps it expanded.
+	found := strip2(strings.Join(buildPreviewLines(conv, "needle", 100), "\n"))
+	if !strings.Contains(found, "needle removed") {
+		t.Error("a block containing the search match should stay expanded")
+	}
+}
+
+func TestLinksAndCollapsedIndent(t *testing.T) {
+	conv := Conversation{Messages: []Message{
+		{Role: "user", Text: "<task-notification><summary>CI done</summary></task-notification>", Ts: "2026-09-29T10:00:00Z"},
+		{Role: "assistant", Text: "See [slack-bot#336](https://github.com/two-inc/slack-bot/pull/336) and [https://x.io/a](https://x.io/a)."},
+	}}
+	plain := strip2(strings.Join(buildPreviewLines(conv, "", 120), "\n"))
+	if !regexp.MustCompile(`(?m)^    \S.* ▸ task-notification · CI done$`).MatchString(plain) {
+		t.Errorf("collapsed line should keep its indent:\n%s", plain)
+	}
+	if !strings.Contains(plain, "slack-bot#336 (github.com/two-inc/slack-bot/pull/336)") || strings.Contains(plain, "](") {
+		t.Errorf("links should render as text plus a short address:\n%s", plain)
+	}
+	if !strings.Contains(plain, "and x.io/a.") {
+		t.Errorf("a link whose text is its URL shows once:\n%s", plain)
 	}
 }

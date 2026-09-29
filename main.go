@@ -1767,13 +1767,14 @@ func (m model) previewLines() []string {
 	conv := m.filtered[m.cursor].conv
 	query := m.textInput.Value()
 	if m.preview == nil { // model built without initialModel (e.g. tests)
-		return buildPreviewLines(conv, query)
+		return buildPreviewLines(conv, query, m.width)
 	}
-	// Preview lines depend only on the messages, so tool-only appends reuse it.
-	key := fmt.Sprintf("%s\x00%d\x00%s", conv.SessionID, len(conv.Messages), query)
+	// Preview lines depend only on the messages (so tool-only appends reuse
+	// them) and on the width they're wrapped to.
+	key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", conv.SessionID, len(conv.Messages), m.width, query)
 	if m.preview.key != key {
 		m.preview.key = key
-		m.preview.lines = buildPreviewLines(conv, query)
+		m.preview.lines = buildPreviewLines(conv, query, m.width)
 	}
 	return m.preview.lines
 }
@@ -2704,7 +2705,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 // preview (everything below the fixed header). Shared by renderPreview and
 // maxPreviewScroll so the render and the scroll-clamp can never disagree on how
 // far the preview can scroll.
-func buildPreviewLines(conv Conversation, query string) []string {
+func buildPreviewLines(conv Conversation, query string, width int) []string {
 	var msgLines []string
 
 	// Find messages containing the query
@@ -2774,10 +2775,26 @@ func buildPreviewLines(conv Conversation, query string) []string {
 				marker = ">>>"
 			}
 			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s %s From %s:\033[0m", marker, ts, from))
-			for _, line := range strings.Split(body, "\n") {
-				msgLines = append(msgLines, "    "+highlight(line, query))
-			}
+			msgLines = append(msgLines, renderBody(body, query, width)...)
 			msgLines = append(msgLines, "")
+			lastShown = i
+			continue
+		}
+		if tag, summary, ok := harnessNote(msg.Text); ok && msg.Role == "user" {
+			// Injected by the harness (task notifications, reminders, command
+			// output): one dim line, so the real conversation stays readable.
+			marker := "   "
+			if matchSet[i] {
+				marker = ">>>"
+			}
+			line := fmt.Sprintf("%s ▸ %s", ts, tag)
+			if summary != "" {
+				line += " · " + summary
+			}
+			if width > 0 {
+				line = truncate(line, width-5) // truncate squeezes spaces, so add the marker after
+			}
+			msgLines = append(msgLines, "\033[90m"+marker+" "+highlight(line, query)+"\033[0m", "")
 			lastShown = i
 			continue
 		}
@@ -2796,13 +2813,7 @@ func buildPreviewLines(conv Conversation, query string) []string {
 		}
 
 		msgLines = append(msgLines, prefix)
-		text := msg.Text
-		if r := []rune(text); len(r) > 500 {
-			text = string(r[:500]) + "... (truncated)" // slice on runes, not bytes
-		}
-		for _, line := range strings.Split(text, "\n") {
-			msgLines = append(msgLines, "    "+highlight(line, query))
-		}
+		msgLines = append(msgLines, renderBody(msg.Text, query, width)...)
 		msgLines = append(msgLines, "")
 
 		lastShown = i
@@ -2905,6 +2916,145 @@ func sessionStats(conv Conversation) []string {
 	return lines
 }
 
+var (
+	harnessTag  = regexp.MustCompile(`^<([a-z][a-z0-9-]*)[ >]`)
+	harnessSumm = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
+	anyTag      = regexp.MustCompile(`</?[a-z][a-z0-9-]*[^>]*>`)
+)
+
+// harnessNote recognises a user-role message that the harness injected
+// (starts with a tag like <task-notification> or <system-reminder>) and
+// returns its tag and a one-line summary: its <summary> if it has one, else
+// its text with the tags removed.
+func harnessNote(text string) (tag, summary string, ok bool) {
+	m := harnessTag.FindStringSubmatch(text)
+	if m == nil {
+		return "", "", false
+	}
+	if sm := harnessSumm.FindStringSubmatch(text); sm != nil {
+		summary = sm[1]
+	} else {
+		summary = anyTag.ReplaceAllString(text, " ")
+	}
+	return m[1], strings.Join(strings.Fields(summary), " "), true
+}
+
+// maxCodeLines is the longest fenced code block (a diff, a log) shown inline;
+// longer ones collapse to a one-line summary unless the search matches inside.
+const maxCodeLines = 8
+
+func containsFold(s, query string) bool {
+	return query != "" && strings.Contains(strings.ToLower(s), strings.ToLower(query))
+}
+
+// maxMessageRunes caps one message in the preview; beyond it the rest is
+// summarised, so a pasted log can't swamp the conversation.
+const maxMessageRunes = 20000
+
+var (
+	mdBold   = regexp.MustCompile(`\*\*([^*\n]+?)\*\*`)
+	mdCode   = regexp.MustCompile("`([^`\n]+)`")
+	mdBullet = regexp.MustCompile(`^(\s*)([-*+]|\d+[.)])\s+`)
+	mdHead   = regexp.MustCompile(`^#{1,6}\s+`)
+	mdLink   = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)`)
+	ansiSeq  = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+)
+
+// renderBody lays out one message for the preview: common markdown rendered
+// (bold, inline code, headings, bullets, fenced code), the search query
+// highlighted, and every line wrapped to width with a hanging indent so
+// nothing runs off the screen. width 0 means don't wrap.
+func renderBody(text, query string, width int) []string {
+	if r := []rune(text); len(r) > maxMessageRunes {
+		text = string(r[:maxMessageRunes]) + fmt.Sprintf("\n… (%d more characters)", len(r)-maxMessageRunes)
+	}
+	const indent = "    "
+	var out []string
+	inCode := false
+	lines := strings.Split(text, "\n")
+	for li := 0; li < len(lines); li++ {
+		line := lines[li]
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCode = !inCode
+			if inCode { // opening fence: collapse a long block (diffs, logs) to one line
+				lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+				end := li + 1
+				for end < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[end]), "```") {
+					end++
+				}
+				body := lines[li+1 : end]
+				if len(body) > maxCodeLines && !containsFold(strings.Join(body, "\n"), query) {
+					if lang == "" {
+						lang = "code"
+					}
+					out = append(out, indent+fmt.Sprintf("\033[90m▸ %s · %d lines\033[0m", lang, len(body)))
+					li, inCode = end, false // skip to the closing fence
+				}
+			}
+			continue // the fence itself carries no content
+		}
+		var styled, hang string
+		switch {
+		case inCode:
+			styled = "\033[36m" + highlightStyled(line, query) + "\033[39m"
+			hang = "  "
+		case mdHead.MatchString(trimmed):
+			styled = "\033[1;4m" + highlightStyled(inlineMarkdown(mdHead.ReplaceAllString(trimmed, "")), query) + "\033[0m"
+		default:
+			if m := mdBullet.FindStringSubmatch(line); m != nil {
+				hang = strings.Repeat(" ", len(m[0])) // continuation lines line up with the text
+			}
+			styled = highlightStyled(inlineMarkdown(line), query)
+		}
+		if width <= len(indent)+len(hang)+10 {
+			out = append(out, indent+styled)
+			continue
+		}
+		wrapped := strings.Split(ansi.Wrap(styled, width-len(indent)-len(hang)-1, ""), "\n")
+		for j, w := range wrapped {
+			if j == 0 {
+				out = append(out, indent+w)
+			} else {
+				out = append(out, indent+hang+strings.TrimLeft(w, " "))
+			}
+		}
+	}
+	return out
+}
+
+// inlineMarkdown renders [links](url), **bold** and `code` spans.
+func inlineMarkdown(s string) string {
+	// [text](url) -> underlined text, then the address in grey without https://
+	s = mdLink.ReplaceAllStringFunc(s, func(link string) string {
+		m := mdLink.FindStringSubmatch(link)
+		url := strings.TrimPrefix(strings.TrimPrefix(m[2], "https://"), "http://")
+		if m[1] == m[2] || m[1] == url {
+			return "\033[4m" + url + "\033[24m"
+		}
+		return "\033[4m" + m[1] + "\033[24m \033[90m(" + url + ")\033[39m"
+	})
+	s = mdCode.ReplaceAllString(s, "\033[36m$1\033[39m")
+	return mdBold.ReplaceAllString(s, "\033[1m$1\033[22m")
+}
+
+// highlightStyled highlights query in text that already carries ANSI
+// styling, matching only within the plain runs between escape codes.
+func highlightStyled(s, query string) string {
+	if query == "" {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range ansiSeq.FindAllStringIndex(s, -1) {
+		b.WriteString(highlight(s[last:loc[0]], query))
+		b.WriteString(s[loc[0]:loc[1]])
+		last = loc[1]
+	}
+	b.WriteString(highlight(s[last:], query))
+	return b.String()
+}
+
 func highlight(text, query string) string {
 	if query == "" {
 		return text
@@ -2928,7 +3078,7 @@ func highlight(text, query string) string {
 			// Yellow background, black text for highlight
 			result.WriteString("\033[43;30m")
 			result.WriteString(string(tr[i : i+len(qr)]))
-			result.WriteString("\033[0m")
+			result.WriteString("\033[49;39m")
 			i += len(qr)
 		} else {
 			result.WriteRune(tr[i])

@@ -40,7 +40,9 @@ brews:
 
 changelog:
   sort: asc
+  abbrev: -1 # no commit hashes; ccs shows these notes in its update popup
   filters:
     exclude:
+      - "^Merge "
       - "^docs:"
       - "^test:"

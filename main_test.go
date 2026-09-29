@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
@@ -4351,5 +4352,52 @@ func TestChatPendingLine(t *testing.T) {
 	m.chatStatus[id] = sessionStat{status: "busy", since: time.Now()}
 	if v := strip2(m.View()); !strings.Contains(v, "queued until it's free:") {
 		t.Errorf("busy recipient should show the message as queued:\n%s", v)
+	}
+}
+
+func TestParseChangelog(t *testing.T) {
+	feed := `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">
+<entry><title>v0.44.0</title><content type="html">&lt;ul&gt;&lt;li&gt;feat: not yet offered&lt;/li&gt;&lt;/ul&gt;</content></entry>
+<entry><title>v0.43.1</title><content type="html">&lt;h2&gt;Changelog&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;&lt;a href=&quot;x&quot;&gt;&lt;tt&gt;4cde904&lt;/tt&gt;&lt;/a&gt; Merge pull request &lt;a&gt;#66&lt;/a&gt; from x&lt;/li&gt;
+&lt;li&gt;&lt;a href=&quot;x&quot;&gt;&lt;tt&gt;7d1e6c2&lt;/tt&gt;&lt;/a&gt; fix: clearer &amp;quot;status&amp;quot; line&lt;/li&gt;&lt;/ul&gt;</content></entry>
+<entry><title>v0.43.0</title><content type="html">&lt;ul&gt;&lt;li&gt;feat: readable preview&lt;/li&gt;&lt;/ul&gt;</content></entry>
+<entry><title>v0.42.0</title><content type="html">&lt;ul&gt;&lt;li&gt;feat: already installed&lt;/li&gt;&lt;/ul&gt;</content></entry>
+</feed>`
+	got, err := parseChangelog(strings.NewReader(feed), "0.42.0", "v0.43.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"v0.43.1", `  fix: clearer "status" line`, "v0.43.0", "  feat: readable preview"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestUpdatePopupShowsChangelog(t *testing.T) {
+	old := version
+	version = "0.24.1"
+	defer func() { version = old }()
+	m := model{width: 100, fetchChangelog: func(tag string) ([]string, error) {
+		lines := []string{tag}
+		for i := range 20 {
+			lines = append(lines, fmt.Sprintf("  fix: change %d", i))
+		}
+		return lines, nil
+	}}
+	nm, cmd := m.Update(latestMsg{tag: "v9.0.0"})
+	m = nm.(model)
+	if cmd == nil {
+		t.Fatal("expected a changelog fetch")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatal("expected the changelog fetch alongside the next check")
+	}
+	nm, _ = m.Update(batch[0]()) // the fetch; batch[1] is the 2-minute tick
+	m = nm.(model)
+	v := strip2(m.updatePopup())
+	if !strings.Contains(v, "What's new:") || !strings.Contains(v, "fix: change 0") || !strings.Contains(v, "… and 10 more") || strings.Contains(v, "change 19") {
+		t.Errorf("popup should list the changes, capped:\n%s", v)
 	}
 }

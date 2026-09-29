@@ -11,8 +11,10 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"maps"
 	"net"
@@ -274,7 +276,9 @@ type model struct {
 	upgrade           *upgrader
 	progress          *updateProgress // step + start time, written by the upgrade goroutine
 	updateTo          string          // newer release tag found, "" if none
-	updateShownAt     time.Time       // popup ignores keys for a moment so in-flight typing can't answer it
+	changelog         []string        // what changed from this version up to updateTo, for the popup
+	fetchChangelog    func(to string) ([]string, error)
+	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
 	updateErr         string // last install failure, shown in the popup with a retry
 	updateCheckFailed bool
@@ -399,6 +403,10 @@ type latestMsg struct {
 	tag string
 	err error
 }
+type changelogMsg struct {
+	tag   string
+	lines []string
+}
 type upgradeDoneMsg struct {
 	path string
 	err  error
@@ -410,6 +418,57 @@ func (m model) checkUpdateCmd() tea.Cmd {
 		tag, err := check()
 		return latestMsg{tag, err}
 	}
+}
+
+// releaseChangelog lists what changed in every release after this version up
+// to tag, newest first, from the releases Atom feed (like latestRelease, not the
+// rate-limited REST API). The feed holds the latest 10 releases.
+func releaseChangelog(tag string) ([]string, error) {
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("https://github.com/agentic-utils/ccs/releases.atom")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("releases feed: %s", resp.Status)
+	}
+	return parseChangelog(io.LimitReader(resp.Body, 1<<20), version, tag)
+}
+
+var (
+	liItem     = regexp.MustCompile(`(?s)<li>(.*?)</li>`)
+	commitHash = regexp.MustCompile(`^[0-9a-f]{7,40}\s+`)
+)
+
+// parseChangelog turns the feed's entries newer than current, up to and
+// including tag, into "v0.43.1" headings each followed by "  fix: …" commit
+// subjects (merge commits dropped).
+func parseChangelog(r io.Reader, current, tag string) ([]string, error) {
+	var feed struct {
+		Entries []struct {
+			Title   string `xml:"title"`
+			Content string `xml:"content"`
+		} `xml:"entry"`
+	}
+	if err := xml.NewDecoder(r).Decode(&feed); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range feed.Entries {
+		if !newerVersion(e.Title, current) || newerVersion(e.Title, strings.TrimPrefix(tag, "v")) {
+			continue
+		}
+		out = append(out, e.Title)
+		for _, li := range liItem.FindAllStringSubmatch(e.Content, -1) {
+			text := strings.TrimSpace(html.UnescapeString(anyTag.ReplaceAllString(li[1], "")))
+			text = commitHash.ReplaceAllString(text, "")
+			if text != "" && !strings.HasPrefix(text, "Merge ") {
+				out = append(out, "  "+text)
+			}
+		}
+	}
+	return out, nil
 }
 
 // newerVersion reports whether release tag (e.g. "v0.25.0") is newer than
@@ -2077,10 +2136,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case latestMsg:
 		m.updateCheckFailed = msg.err != nil
+		var fetch tea.Cmd
 		if newerVersion(msg.tag, version) && msg.tag != m.dismissed && !m.updating {
 			if msg.tag != m.updateTo {
 				m.updateOpen = true
 				m.updateShownAt = time.Now()
+				m.changelog = nil
+				if f := m.fetchChangelog; f != nil {
+					tag := msg.tag
+					fetch = func() tea.Msg {
+						lines, err := f(tag)
+						if err != nil {
+							logUpdate("changelog %s: %v", tag, err)
+						}
+						return changelogMsg{tag, lines}
+					}
+				}
 			}
 			m.updateTo = msg.tag
 			if m.upgrade != nil {
@@ -2091,7 +2162,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			next = updateCheckBackoff
 		}
-		return m, tea.Tick(next, func(time.Time) tea.Msg { return updateCheckTickMsg{} })
+		return m, tea.Batch(fetch, tea.Tick(next, func(time.Time) tea.Msg { return updateCheckTickMsg{} }))
+
+	case changelogMsg:
+		if msg.tag == m.updateTo {
+			m.changelog = msg.lines
+		}
+		return m, nil
 
 	case updatingTickMsg:
 		if m.updating {
@@ -2602,6 +2679,9 @@ func (m model) viewScreen() string {
 // updatePopup renders the update offer; View overlays it on any screen.
 func (m model) updatePopup() string {
 	body := fmt.Sprintf("ccs %s is available (you have v%s).\n\n", m.updateTo, version)
+	if len(m.changelog) > 0 {
+		body += "What's new:\n" + m.changelogBlock() + "\n\n"
+	}
 	if m.updateErr != "" {
 		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, truncate(m.updateErr, 60), updateLogPath)
 	}
@@ -2619,6 +2699,28 @@ func (m model) updatePopup() string {
 		Render(body)
 	return box
 }
+
+// changelogBlock fits the changelog into the popup: lines cut to the popup's
+// width, and at most maxChangelogLines of them, then how many more.
+func (m model) changelogBlock() string {
+	width := min(max(m.width-12, 30), 80)
+	lines := m.changelog
+	var more string
+	if len(lines) > maxChangelogLines {
+		more = fmt.Sprintf("\n  … and %d more", len(lines)-maxChangelogLines+1)
+		lines = lines[:maxChangelogLines-1]
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = ansi.Truncate(l, width, "…")
+		if !strings.HasPrefix(l, " ") {
+			out[i] = "\033[1m" + out[i] + "\033[22m"
+		}
+	}
+	return strings.Join(out, "\n") + more
+}
+
+const maxChangelogLines = 12
 
 // Fixed list column widths. TOPIC is the flex column - it absorbs the rest of
 // the terminal width (see topicColWidth).
@@ -4275,6 +4377,7 @@ func main() {
 	m.lastRefresh = time.Now()
 	if version != "dev" {
 		m.checkLatest = latestRelease
+		m.fetchChangelog = releaseChangelog
 		m.allowanceEnabled = true
 		if exe, err := os.Executable(); err == nil {
 			m.upgrade = chooseUpgrader(exe)

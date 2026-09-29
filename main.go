@@ -247,6 +247,8 @@ type model struct {
 	allowanceErr     error
 	allowanceAt      time.Time // last allowance fetch that returned, success or not
 	allowanceLoading bool
+	allowanceEnabled bool   // fetch the allowance for the header (off in tests)
+	account          string // Claude account email, from Claude Code's config
 }
 
 // How often ccs asks GitHub for a newer release (one ~5KB HEAD request to the
@@ -1290,6 +1292,9 @@ func (m model) Init() tea.Cmd {
 	if m.checkLatest != nil {
 		cmds = append(cmds, m.checkUpdateCmd())
 	}
+	if m.allowanceEnabled {
+		cmds = append(cmds, m.allowanceCmd())
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -1396,10 +1401,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyRefresh(refreshMsg{items: keepNewer(m.items, msg.items), live: msg.live})
 			m.lastRefresh = time.Now()
 		}
-		// The usage screen refreshes with the list, only while it's open.
+		// The allowance (shown in the search row) refreshes with the list;
+		// the usage charts only while their screen is open.
 		var usageCmds []tea.Cmd
+		if m.allowanceEnabled || m.showUsage {
+			usageCmds = append(usageCmds, m.allowanceCmd())
+		}
 		if m.showUsage {
-			usageCmds = append(usageCmds, m.usageCmd(), m.allowanceCmd())
+			usageCmds = append(usageCmds, m.usageCmd())
 		}
 		if msg.early {
 			return m, tea.Batch(usageCmds...) // the one-minute chain is still ticking on its own
@@ -1417,6 +1426,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.allowanceErr = msg.err
 		if msg.err == nil {
 			m.allowance = msg.limits
+		}
+		if msg.account != "" {
+			m.account = msg.account
 		}
 		return m, nil
 
@@ -1712,6 +1724,9 @@ func (m model) View() string {
 	}
 	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
 	help := "Resume:Enter Fork:Ctrl+F Rename:Ctrl+R Delete:Ctrl+D Prune:Ctrl+X Scroll:Ctrl+J/K Clear:Esc Usage:Tab Exit:Ctrl+C"
+	if m.showUsage { // only Tab and Ctrl+C do anything there
+		help = "Back:Tab Exit:Ctrl+C"
+	}
 	titlePadding := tableWidth - 2 - len(title) - len(help)
 	if titlePadding < 1 {
 		titlePadding = 1
@@ -1742,13 +1757,19 @@ func (m model) View() string {
 			Foreground(lipgloss.Color("196")). // Red
 			Render(fmt.Sprintf("Delete conversation \"%s\"?%s [y/N]", truncate(topic, 50), liveWarning))
 		sections = append(sections, "  "+inputSection)
+	} else if m.showUsage {
+		sections = append(sections, "  \033[1;36mUsage\033[0m \033[90m· last 12h · Tab to go back\033[0m")
 	} else {
 		count := fmt.Sprintf("(%d/%d)", len(m.filtered), len(m.items))
-		searchPadding := tableWidth - 2 - 2 - 40 - len(count) - 1 // 2 for indent, 2 for "> ", 40 for textInput, -1 to shift left
+		usage := m.allowanceSummary()
+		if usage != "" {
+			usage += "   "
+		}
+		searchPadding := tableWidth - 2 - 2 - 40 - lipgloss.Width(usage) - len(count) - 1 // 2 for indent, 2 for "> ", 40 for textInput, -1 to shift left
 		if searchPadding < 1 {
 			searchPadding = 1
 		}
-		inputSection = fmt.Sprintf("  %s%s\033[90m%s\033[0m", m.textInput.View(), strings.Repeat(" ", searchPadding), count)
+		inputSection = fmt.Sprintf("  %s%s%s\033[90m%s\033[0m", m.textInput.View(), strings.Repeat(" ", searchPadding), usage, count)
 		sections = append(sections, inputSection)
 	}
 
@@ -3291,6 +3312,7 @@ func main() {
 	m.lastRefresh = time.Now()
 	if version != "dev" {
 		m.checkLatest = latestRelease
+		m.allowanceEnabled = true
 		if exe, err := os.Executable(); err == nil {
 			m.upgrade = chooseUpgrader(exe)
 		}
@@ -3840,8 +3862,32 @@ type allowanceLimit struct {
 }
 
 type allowanceMsg struct {
-	limits []allowanceLimit
-	err    error
+	limits  []allowanceLimit
+	err     error
+	account string
+}
+
+// accountEmail is the logged-in Claude account, as Claude Code records it in
+// its config (.claude.json in the home folder, or in CLAUDE_CONFIG_DIR).
+var accountEmail = func() string {
+	path := filepath.Join(claudeConfigHome(), ".claude.json")
+	if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
+		home, _ := os.UserHomeDir()
+		path = filepath.Join(home, ".claude.json")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		OauthAccount struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return ""
+	}
+	return cfg.OauthAccount.EmailAddress
 }
 
 // claudeConfigHome is where Claude Code keeps its profile (CLAUDE_CONFIG_DIR
@@ -3973,7 +4019,7 @@ func (m *model) allowanceCmd() tea.Cmd {
 			}
 		}()
 		limits, err := fetchAllowance(time.Now())
-		return allowanceMsg{limits, err}
+		return allowanceMsg{limits, err, accountEmail()}
 	}
 }
 
@@ -4193,6 +4239,42 @@ func resetLabel(iso string, now time.Time) string {
 		return "ends " + lt.Format("15:04")
 	}
 	return "ends " + lt.Format("Mon 15:04")
+}
+
+// allowanceSummary is the one-line account and allowance shown in the search
+// row: "you@example.com · 5h 14% ends 18:15 · week 22%". Tab shows the rest.
+func (m model) allowanceSummary() string {
+	var parts []string
+	if m.account != "" {
+		parts = append(parts, "\033[90m"+m.account+"\033[0m")
+	}
+	byKind := make(map[string]allowanceLimit)
+	for _, l := range m.allowance {
+		byKind[l.Kind] = l
+	}
+	now := time.Now()
+	for _, k := range []struct{ kind, label string }{{"session", "5h"}, {"weekly_all", "week"}} {
+		l, ok := byKind[k.kind]
+		if !ok {
+			continue
+		}
+		p := min(max(l.Percent, 0), 100)
+		code, flash := gaugeColour(p)
+		if flash && now.Unix()%2 == 1 {
+			code = "2;31"
+		}
+		part := fmt.Sprintf("\033[90m%s\033[0m \033[%sm%.0f%%\033[0m", k.label, code, p)
+		if k.kind == "session" {
+			if r := resetLabel(l.ResetsAt, now); r != "" {
+				part += " \033[90m" + r + "\033[0m"
+			}
+		}
+		parts = append(parts, part)
+	}
+	if len(m.allowance) == 0 && errors.Is(m.allowanceErr, errAllowanceLogin) {
+		parts = append(parts, "\033[33mopen claude to see usage\033[0m")
+	}
+	return strings.Join(parts, " \033[90m·\033[0m ")
 }
 
 // allowancePanel is the ALLOWANCE panel: 5-hour session and weekly gauges.

@@ -2858,11 +2858,16 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		}
 	}
 
-	// Display messages with gaps
+	// Display messages with gaps. Consecutive messages from one speaker share
+	// a header (lastRole/lastDay); each message starts with its time.
 	lastShown := -1
+	lastRole, lastDay := "", ""
 	for i := 0; i < len(conv.Messages); i++ {
 		if !showSet[i] {
 			continue
+		}
+		if lastShown >= 0 && i > lastShown+1 {
+			lastRole = ""
 		}
 
 		if lastShown >= 0 && i > lastShown+1 {
@@ -2876,7 +2881,6 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 
 		msg := conv.Messages[i]
 		ts := formatTimestamp(msg.Ts)
-		var prefix string
 		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
 			// A message sent from another session or ccs, not typed here.
 			marker := "   "
@@ -2886,7 +2890,7 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s %s From %s:\033[0m", marker, ts, from))
 			msgLines = append(msgLines, renderBody(body, query, width)...)
 			msgLines = append(msgLines, "")
-			lastShown = i
+			lastShown, lastRole = i, ""
 			continue
 		}
 		if tag, summary, ok := harnessNote(msg.Text); ok && msg.Role == "user" {
@@ -2904,25 +2908,26 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 				line = truncate(line, width-5) // truncate squeezes spaces, so add the marker after
 			}
 			msgLines = append(msgLines, "\033[90m"+marker+" "+highlight(line, query)+"\033[0m", "")
-			lastShown = i
+			lastShown, lastRole = i, ""
 			continue
 		}
-		if matchSet[i] {
+		day, clock, _ := strings.Cut(ts, " ")
+		if msg.Role != lastRole || day != lastDay || matchSet[i] {
+			name, colour, marker := "Claude", "34", "   "
 			if msg.Role == "user" {
-				prefix = fmt.Sprintf("\033[1;32m>>> %s User:\033[0m", ts) // Bold green
-			} else {
-				prefix = fmt.Sprintf("\033[1;34m>>> %s Claude:\033[0m", ts) // Bold blue
+				name, colour = "User", "32"
 			}
-		} else {
-			if msg.Role == "user" {
-				prefix = fmt.Sprintf("\033[32m    %s User:\033[0m", ts) // Green
-			} else {
-				prefix = fmt.Sprintf("\033[34m    %s Claude:\033[0m", ts) // Blue
+			if matchSet[i] {
+				colour, marker = "1;"+colour, ">>>"
 			}
+			prefix := fmt.Sprintf("\033[%sm%s %s\033[0m", colour, marker, name)
+			if day != "" {
+				prefix += " \033[90m· " + day + "\033[0m"
+			}
+			msgLines = append(msgLines, prefix)
 		}
-
-		msgLines = append(msgLines, prefix)
-		msgLines = append(msgLines, renderBody(msg.Text, query, width)...)
+		lastRole, lastDay = msg.Role, day
+		msgLines = append(msgLines, timeGutter(renderBody(msg.Text, query, max(width-gutterExtra, 0)), clock)...)
 		msgLines = append(msgLines, "")
 
 		lastShown = i
@@ -2934,6 +2939,25 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 	}
 
 	return msgLines
+}
+
+// gutterExtra is how much further right message text sits to leave room for
+// the time before its first line.
+const gutterExtra = 6
+
+// timeGutter puts clock ("21:45") before a message's first line and shifts the
+// rest to line up after it.
+func timeGutter(lines []string, clock string) []string {
+	pad := strings.Repeat(" ", gutterExtra)
+	for i, l := range lines {
+		if clock != "" && strings.HasPrefix(l, "    ") {
+			lines[i] = "    \033[90m" + fmt.Sprintf("%-5s", clock) + "\033[0m " + l[4:]
+			clock = ""
+		} else if l != "" {
+			lines[i] = pad + l
+		}
+	}
+	return lines
 }
 
 // maxPreviewScroll is the furthest the preview of the current selection can

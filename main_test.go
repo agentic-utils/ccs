@@ -4280,7 +4280,7 @@ func TestPreviewReadable(t *testing.T) {
 	// A wrapped bullet's continuation lines line up with its text.
 	var bullet []string
 	for _, l := range strings.Split(plain, "\n") {
-		if strings.HasPrefix(l, "    - word") || (len(bullet) > 0 && strings.HasPrefix(l, "      word")) {
+		if strings.HasPrefix(l, "          - word") || (len(bullet) > 0 && strings.HasPrefix(l, "            word")) {
 			bullet = append(bullet, l)
 		}
 	}
@@ -4399,5 +4399,27 @@ func TestUpdatePopupShowsChangelog(t *testing.T) {
 	v := strip2(m.updatePopup())
 	if !strings.Contains(v, "What's new:") || !strings.Contains(v, "fix: change 0") || !strings.Contains(v, "… and 10 more") || strings.Contains(v, "change 19") {
 		t.Errorf("popup should list the changes, capped:\n%s", v)
+	}
+}
+
+func TestPreviewSpeakerRuns(t *testing.T) {
+	conv := Conversation{Messages: []Message{
+		{Role: "user", Text: "merge it", Ts: "2026-09-29T10:00:00Z"},
+		{Role: "assistant", Text: "Merged.", Ts: "2026-09-29T10:01:00Z"},
+		{Role: "assistant", Text: "The reply didn't post.", Ts: "2026-09-29T10:02:00Z"},
+		{Role: "assistant", Text: "Posted now.", Ts: "2026-09-29T10:03:00Z"},
+	}}
+	plain := strip2(strings.Join(buildPreviewLines(conv, "", 80), "\n"))
+	if n := strings.Count(plain, "Claude ·"); n != 1 {
+		t.Errorf("a run of Claude messages should share one header, got %d:\n%s", n, plain)
+	}
+	clock := formatTimestamp("2026-09-29T10:02:00Z")[11:]
+	if !strings.Contains(plain, "    "+clock+" The reply didn't post.") {
+		t.Errorf("each message should start with its time:\n%s", plain)
+	}
+	// A search match gets its own marked header even mid-run.
+	plain = strip2(strings.Join(buildPreviewLines(conv, "reply", 80), "\n"))
+	if !strings.Contains(plain, ">>> Claude") {
+		t.Errorf("a match should be marked:\n%s", plain)
 	}
 }

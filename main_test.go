@@ -3428,7 +3428,7 @@ func TestAllowanceInSearchRowAndUsageScreenHidesSearch(t *testing.T) {
 	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "⇥ back") {
 		t.Error("the usage screen should replace the search box with a back hint")
 	}
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "⇥ back  ^O account  ^G help  ^C quit") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "⇥ back  ^O account  ^L changelog  ^C quit") {
 		t.Error("the usage screen header should list only its own keys")
 	}
 }
@@ -4443,12 +4443,13 @@ func TestHelpPopup(t *testing.T) {
 		strings.Contains(v, "clear the search") || strings.Contains(v, "move through the list") {
 		t.Errorf("popup should list only the keys that apply:\n%s", v)
 	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	m.showUsage = true
-	v = strip2(m.View())
-	if !strings.Contains(v, "back to the list") || strings.Contains(v, "fork") || !strings.Contains(v, "changelog") {
-		t.Errorf("usage screen help should list only its keys:\n%s", v)
+	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG}); m.helpOpen {
+		t.Error("the usage screen lists all its keys, so ^G should do nothing there")
 	}
 	m.showUsage = false
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if !m.helpOpen || m.textInput.Value() != "" {
 		t.Error("popup should own the keyboard while open")

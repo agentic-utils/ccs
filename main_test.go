@@ -3386,3 +3386,57 @@ func TestSeedFile(t *testing.T) {
 		t.Error("a mismatched download must not be written to the cache")
 	}
 }
+
+func TestAllowanceInSearchRowAndUsageScreenHidesSearch(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m.width, m.height = 160, 40
+	res, _ := m.Update(allowanceMsg{account: "me@example.com", limits: []allowanceLimit{
+		{Kind: "session", Percent: 14, ResetsAt: time.Now().Add(2 * time.Hour).Format(time.RFC3339)},
+		{Kind: "weekly_all", Percent: 22.4},
+	}})
+	m = res.(model)
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	lines := strings.Split(strip.ReplaceAllString(m.View(), ""), "\n")
+	row := lines[1]
+	for _, want := range []string{"type to search", "me@example.com", "5h 14%", "ends ", "week 22%", "(1/1)"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("search row missing %q: %q", want, row)
+		}
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = res.(model)
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "Tab to go back") {
+		t.Error("the usage screen should replace the search box with a back hint")
+	}
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "Fork:Ctrl+F") || !strings.Contains(v, "Back:Tab Exit:Ctrl+C") {
+		t.Error("the usage screen header should list only its own keys")
+	}
+}
+
+func TestAllowanceSummaryAsksToOpenClaudeWhenLoggedOut(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.allowanceErr = errAllowanceLogin
+	if !strings.Contains(m.allowanceSummary(), "open claude") {
+		t.Error("no token should say how to get usage")
+	}
+}
+
+func TestAccountEmailFromClaudeConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"oauthAccount":{"emailAddress":"me@example.com"},"projects":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := accountEmail(); got != "me@example.com" {
+		t.Errorf("got %q", got)
+	}
+	alt := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", alt)
+	if err := os.WriteFile(filepath.Join(alt, ".claude.json"), []byte(`{"oauthAccount":{"emailAddress":"other@example.com"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := accountEmail(); got != "other@example.com" {
+		t.Errorf("CLAUDE_CONFIG_DIR profile: got %q", got)
+	}
+}

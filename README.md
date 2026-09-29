@@ -20,6 +20,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Pass flags through to `claude` (e.g., `--plan`)
+- Usage screen (`Tab`): the last 12 hours of token usage across all sessions (including subagents) as three charts (cache-write disposition, context assembly, output), a summary with effective tokens, and your live 5-hour and weekly allowance. The allowance reads Claude Code's stored login read-only (macOS Keychain, else `~/.claude/.credentials.json`); ccs never refreshes or writes it, so if it has expired, open `claude` to refresh it
 - Checks for new releases at startup and every 2 minutes (update steps are logged to `~/Library/Logs/ccs/update.log`) and offers to update and restart from a popup (via `brew upgrade` for Homebrew installs, otherwise by replacing the binary with the checksum-verified release)
 
 ## Installation
@@ -88,6 +89,7 @@ ccs buyer -- --plan
 - `Ctrl+J/K` - Scroll preview
 - `Ctrl+U` - Clear search
 - `Esc` - Clear the search
+- `Tab` - Switch between the session list and the usage screen
 - `Ctrl+C` - Quit
 
 ## Pruning

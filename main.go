@@ -2568,7 +2568,7 @@ func (m model) View() string {
 		screen = overlayCentre(screen, m.acctPopup(), m.width, m.height)
 	}
 	if m.helpOpen {
-		screen = overlayCentre(screen, helpPopup(), m.width, m.height)
+		screen = overlayCentre(screen, m.helpPopup(), m.width, m.height)
 	}
 	if m.notesOpen {
 		screen = overlayCentre(screen, m.notesPopup(), m.width, m.height)
@@ -2583,22 +2583,45 @@ const (
 	keyEsc   = "esc"
 )
 
-// shortcuts is every key ccs has, for the Ctrl+G popup (and the docs).
-var shortcuts = [][2]string{
-	{keyEnter, "resume, or focus a live session"},
-	{"^S", "message the live session"},
-	{"^F", "fork"},
-	{"^R", "rename"},
-	{"^D", "delete"},
-	{"^X", "prune"},
-	{"^J/K", "scroll the conversation"},
-	{"↑↓ ^P/N", "move through the list"},
-	{"^O", "switch account"},
-	{keyTab, "usage"},
-	{keyEsc + " ^U", "clear the search"},
-	{"^L", "changelog"},
-	{"^G", "this help"},
-	{"^C", "quit"},
+// shortcuts is the keys that do something right now, for the Ctrl+G popup:
+// what's on screen (list or usage), whether a conversation is selected and
+// live, and whether the message box has focus.
+func (m model) shortcuts() [][2]string {
+	var out [][2]string
+	add := func(on bool, k, what string) {
+		if on {
+			out = append(out, [2]string{k, what})
+		}
+	}
+	hasCswap := cswapPath() != ""
+	if m.showUsage {
+		add(true, keyTab, "back to the list")
+	} else {
+		sel := len(m.filtered) > 0
+		live := sel && m.selectedLive()
+		switch {
+		case m.chatFocus:
+			add(true, keyEnter, "send the message")
+			add(true, keyEsc, "back to the search")
+		case live:
+			add(true, keyEnter, "focus the live session")
+			add(true, "^S", "message it")
+		default:
+			add(sel, keyEnter, "resume")
+		}
+		add(sel, "^F", "fork")
+		add(sel && !live, "^R", "rename")
+		add(sel, "^D", "delete")
+		add(sel, "^X", "prune")
+		add(sel, "^J/K", "scroll the conversation")
+		add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
+		add(true, keyTab, "usage")
+		add(!m.chatFocus && m.textInput.Value() != "", keyEsc+" ^U", "clear the search")
+	}
+	add(hasCswap, "^O", "switch account")
+	add(true, "^L", "changelog")
+	add(true, "^C", "quit")
+	return out
 }
 
 // hints renders key/label pairs as "⏎ resume  ^S msg".
@@ -2658,11 +2681,11 @@ func (m model) notesPopup() string {
 			"\n\n\033[90m" + hints("↑↓", "scroll", "^L/"+keyEsc, "close") + pos + "\033[0m")
 }
 
-// helpPopup lists every shortcut; Ctrl+G or Esc closes it.
-func helpPopup() string {
+// helpPopup lists the shortcuts that apply now; Ctrl+G or Esc closes it.
+func (m model) helpPopup() string {
 	var b strings.Builder
 	b.WriteString("\033[1mshortcuts\033[0m\n\n")
-	for _, s := range shortcuts {
+	for _, s := range m.shortcuts() {
 		fmt.Fprintf(&b, "\033[33m%-8s\033[0m %s\n", s[0], s[1])
 	}
 	b.WriteString("\n\033[90m" + hints("^G/"+keyEsc, "close") + "\033[0m")
@@ -2729,7 +2752,7 @@ func (m model) viewScreen() string {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
 	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
-	help := hints(keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help")
+	help := hints(keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help", "^C", "quit")
 	if m.showUsage { // only Tab, account, help and quit do anything there
 		help = hints(keyTab, "back", "^O", "account", "^G", "help", "^C", "quit")
 	} else if m.chatFocus {

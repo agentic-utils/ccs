@@ -3103,7 +3103,11 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 			continue
 		}
 		day, clock, _ := strings.Cut(ts, " ")
-		if msg.Role != lastRole || day != lastDay || matchSet[i] {
+		newDay := day != "" && day != lastDay
+		if newDay { // the date gets its own row, once per day
+			msgLines = append(msgLines, "\033[90m    ── "+day+" ──\033[0m", "")
+		}
+		if msg.Role != lastRole || newDay || matchSet[i] {
 			name, colour, marker := "Claude", "34", "   "
 			if msg.Role == "user" {
 				name, colour = "User", "32"
@@ -3111,13 +3115,12 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 			if matchSet[i] {
 				colour, marker = "1;"+colour, ">>>"
 			}
-			prefix := fmt.Sprintf("\033[%sm%s %s\033[0m", colour, marker, name)
-			if day != "" {
-				prefix += " \033[90m· " + day + "\033[0m"
-			}
-			msgLines = append(msgLines, prefix)
+			msgLines = append(msgLines, fmt.Sprintf("\033[%sm%s %s\033[0m", colour, marker, name))
 		}
-		lastRole, lastDay = msg.Role, day
+		lastRole = msg.Role
+		if day != "" {
+			lastDay = day
+		}
 		msgLines = append(msgLines, timeGutter(renderBody(msg.Text, query, max(width-gutterExtra, 0)), clock)...)
 		msgLines = append(msgLines, "")
 

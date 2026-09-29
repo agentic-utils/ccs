@@ -3503,3 +3503,33 @@ func TestUsagePanelsInThreeEqualColumns(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdatePopupOverlaysEveryScreen(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.36.0"
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Title: "Some session", Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m.width, m.height = 140, 40
+	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
+	m.usage = usageData{now: time.Now(), buckets: make([]usageBucketTotals, usageBuckets)}
+	res, _ := m.Update(latestMsg{tag: "v0.37.0"})
+	m = res.(model)
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	for _, usage := range []bool{false, true} {
+		m.showUsage = usage
+		v := strip.ReplaceAllString(m.View(), "")
+		if !strings.Contains(v, "v0.37.0 is available") {
+			t.Errorf("usage=%v: popup not shown", usage)
+		}
+		if !strings.Contains(v, "claude code search") {
+			t.Errorf("usage=%v: the screen behind the popup should stay visible", usage)
+		}
+		for i, line := range strings.Split(v, "\n") {
+			if !strings.ContainsAny(line, "│╭╰") { // only the rows the popup covers
+				continue
+			}
+			if w := utf8.RuneCountInString(line); w > m.width {
+				t.Errorf("usage=%v: line %d is %d wide, over the %d-column screen", usage, i, w, m.width)
+			}
+		}
+	}
+}

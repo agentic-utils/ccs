@@ -14,6 +14,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,7 +284,9 @@ func (u *upgrader) Prepare(tag string) {
 	go func() {
 		defer close(done)
 		defer recoverWorker()
-		u.prepare(tag) // failures are retried by install
+		start := time.Now()
+		err := u.prepare(tag) // failures are retried by install
+		logUpdate("prepare %s: %v in %s", tag, errOrOK(err), time.Since(start).Round(time.Millisecond))
 	}()
 }
 
@@ -480,6 +483,11 @@ func refreshTap(brew string, step func(string)) error {
 // ourselves), returning brew's last output line as the error.
 func runBrew(brew string, args ...string) error {
 	env := []string{"HOMEBREW_NO_AUTO_UPDATE=1", "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes"}
+	if args[0] == "fetch" || args[0] == "upgrade" {
+		// Makes curl print each address it tries and how it failed, for the
+		// update log (brew's own --verbose doesn't show that).
+		env = append(env, "HOMEBREW_CURL_VERBOSE=1")
+	}
 	if out, err := runCommand(10*time.Minute, env, true, brew, args...); err != nil {
 		if errors.Is(err, errTimedOut) {
 			return fmt.Errorf("brew %s: %w", args[0], err)
@@ -552,9 +560,19 @@ const (
 	maxBinary   = 200 << 20
 )
 
-func download(url string) ([]byte, error) {
+func download(url string) (body []byte, err error) {
+	start := time.Now()
+	var remote string
+	trace := &httptrace.ClientTrace{GotConn: func(i httptrace.GotConnInfo) { remote = i.Conn.RemoteAddr().String() }}
+	defer func() {
+		logUpdate("GET %s\n  -> %v, %d bytes in %s (last connection %s)", url, errOrOK(err), len(body), time.Since(start).Round(time.Millisecond), remote)
+	}()
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
 	client := http.Client{Timeout: 2 * time.Minute}
-	resp, err := client.Get(url)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -562,7 +580,7 @@ func download(url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download %s: %s", url, resp.Status)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
+	body, err = io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
 	if err == nil && len(body) > maxDownload {
 		return nil, fmt.Errorf("download %s: larger than %dMB", url, maxDownload>>20)
 	}
@@ -1257,6 +1275,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case upgradeDoneMsg:
 		m.updating = false
+		if m.progress != nil {
+			logUpdate("install %s: %v in %s", m.updateTo, errOrOK(msg.err), time.Since(m.progress.started).Round(time.Millisecond))
+		}
 		if msg.err != nil {
 			// Keep the offer open with the reason, so the failure can't vanish
 			// on the next keypress and Enter retries.
@@ -1612,7 +1633,7 @@ func (m model) View() string {
 func (m model) updatePopup() string {
 	body := fmt.Sprintf("ccs %s is available (you have v%s).\n\n", m.updateTo, version)
 	if m.updateErr != "" {
-		body = fmt.Sprintf("Updating to %s failed:\n%s\n\n", m.updateTo, truncate(m.updateErr, 60))
+		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, truncate(m.updateErr, 60), updateLogPath)
 	}
 	if m.upgrade != nil && m.updateErr != "" {
 		body += "Enter: retry    Esc: later"
@@ -3205,6 +3226,55 @@ func runBounded(timeout time.Duration, env []string, name string, args ...string
 	return runCommand(timeout, env, false, name, args...)
 }
 
+// updateLogPath is where self-update steps are logged: each git/brew
+// command with its full output, exit and duration, and each download with
+// the address it connected to. Kept under 1MB (the previous file is .1).
+var updateLogPath = func() string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Logs", "ccs", "update.log")
+	}
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "ccs", "update.log")
+	}
+	return filepath.Join(os.TempDir(), "ccs-update.log")
+}()
+
+var updateLogMu sync.Mutex
+
+func logUpdate(format string, args ...any) {
+	updateLogMu.Lock()
+	defer updateLogMu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(updateLogPath), 0o755); err != nil {
+		return
+	}
+	if info, err := os.Stat(updateLogPath); err == nil && info.Size() > 1<<20 {
+		os.Rename(updateLogPath, updateLogPath+".1")
+	}
+	f, err := os.OpenFile(updateLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s ccs %s: %s\n", time.Now().Format(time.RFC3339), version, fmt.Sprintf(format, args...))
+}
+
+func errOrOK(err error) any {
+	if err == nil {
+		return "ok"
+	}
+	return err
+}
+
+// indent prefixes each line of command output for the log.
+func indent(out []byte) string {
+	text := strings.TrimRight(string(out), "\n")
+	if text == "" {
+		return ""
+	}
+	return "  | " + strings.ReplaceAll(text, "\n", "\n  | ")
+}
+
 // errTimedOut marks a command that hit its deadline, as opposed to one that
 // failed: a timed-out tab open may still have opened, a failed one didn't.
 var errTimedOut = errors.New("timed out")
@@ -3225,6 +3295,7 @@ func runCommand(timeout time.Duration, env []string, detach bool, name string, a
 	}
 	var out []byte
 	var err error
+	start := time.Now()
 	if detach {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		out, err = cmd.CombinedOutput()
@@ -3232,7 +3303,10 @@ func runCommand(timeout time.Duration, env []string, detach bool, name string, a
 		out, err = cmd.Output()
 	}
 	if ctx.Err() == context.DeadlineExceeded {
-		return out, fmt.Errorf("%s: %w after %s", name, errTimedOut, timeout)
+		err = fmt.Errorf("%s: %w after %s", name, errTimedOut, timeout)
+	}
+	if detach { // git/brew during self-update: keep a record to diagnose slow or failed updates
+		logUpdate("$ %s %s\n  -> %v in %s\n%s", name, strings.Join(args, " "), errOrOK(err), time.Since(start).Round(time.Millisecond), indent(out))
 	}
 	return out, err
 }

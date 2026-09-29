@@ -1390,7 +1390,63 @@ func (m model) Init() tea.Cmd {
 	if m.allowanceEnabled {
 		cmds = append(cmds, m.allowanceCmd())
 	}
+	if m.showUsage { // restored onto the usage screen after an update
+		cmds = append(cmds, m.usageCmd())
+	}
 	return tea.Batch(cmds...)
+}
+
+// restoreEnv carries uiState across the restart after a self-update.
+const restoreEnv = "CCS_RESTORE_STATE"
+
+// uiState is where the user was: which screen, the search text and cursor
+// position within it, the selected conversation and the preview scroll.
+// Screen is a name, so a screen added later only needs a case in
+// screenName and restore.
+type uiState struct {
+	Screen        string `json:"screen"`
+	Query         string `json:"query"`
+	QueryCursor   int    `json:"query_cursor"`
+	Selected      string `json:"selected"` // SessionID, so it survives a reordered list
+	PreviewScroll int    `json:"preview_scroll"`
+}
+
+func (m model) screenName() string {
+	if m.showUsage {
+		return "usage"
+	}
+	return "list"
+}
+
+func (m model) uiState() uiState {
+	s := uiState{
+		Screen:        m.screenName(),
+		Query:         m.textInput.Value(),
+		QueryCursor:   m.textInput.Position(),
+		PreviewScroll: m.previewScroll,
+	}
+	if len(m.filtered) > 0 {
+		s.Selected = m.filtered[m.cursor].conv.SessionID
+	}
+	return s
+}
+
+// restore puts the user back where uiState says; anything that no longer
+// applies (a conversation that's gone) is skipped.
+func (m *model) restore(s uiState) {
+	m.textInput.SetValue(s.Query)
+	m.textInput.SetCursor(s.QueryCursor)
+	m.updateFilter()
+	for i, item := range m.filtered {
+		if item.conv.SessionID == s.Selected {
+			m.cursor = i
+			break
+		}
+	}
+	// Not clamped here: the window size isn't known yet at startup; the
+	// preview clamps it when drawing.
+	m.previewScroll = max(0, s.PreviewScroll)
+	m.showUsage = s.Screen == "usage"
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -3475,6 +3531,13 @@ func main() {
 	// pointer (see listLayout). A report that arrives fragmented can reach
 	// Update as typed text; mouseLeak drops those before the search box.
 	m := initialModel(items, filterQuery, claudeFlags)
+	if saved := os.Getenv(restoreEnv); saved != "" {
+		os.Unsetenv(restoreEnv) // once only: not inherited by claude or a later ccs
+		var state uiState
+		if json.Unmarshal([]byte(saved), &state) == nil {
+			m.restore(state)
+		}
+	}
 	m.live = readLiveSessions()
 	m.lastRefresh = time.Now()
 	if version != "dev" {
@@ -3502,7 +3565,12 @@ func main() {
 
 	final := finalModel.(model)
 	if final.restart != "" {
-		err := syscall.Exec(final.restart, append([]string{"ccs"}, os.Args[1:]...), os.Environ())
+		// Hand the new version where the user was, so the update is seamless.
+		env := os.Environ()
+		if state, err := json.Marshal(final.uiState()); err == nil {
+			env = append(env, restoreEnv+"="+string(state))
+		}
+		err := syscall.Exec(final.restart, append([]string{"ccs"}, os.Args[1:]...), env)
 		fmt.Fprintf(os.Stderr, "Updated; run ccs again (%v)\n", err)
 		os.Exit(1)
 	}

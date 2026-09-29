@@ -2010,7 +2010,7 @@ func TestEnterOnLiveSessionFocusesInsteadOfResuming(t *testing.T) {
 	if m.selected != nil || m.quitting || cmd == nil {
 		t.Fatal("enter on a live session must focus it (in the background), not resume a second copy")
 	}
-	res, _ = m.Update(cmd())
+	res, _ = m.Update(firstOfBatch(cmd)) // the fast refresh for the live selection rides along
 	if m = res.(model); !strings.Contains(m.errorMsg, "Ctrl+F") {
 		t.Errorf("unfocusable live session should point at fork, got %q", m.errorMsg)
 	}
@@ -3799,5 +3799,278 @@ func TestUIStateSurvivesRestart(t *testing.T) {
 	gone.restore(uiState{Screen: "list", Selected: "missing"})
 	if gone.cursor != 0 || gone.showUsage {
 		t.Error("restoring a missing selection should leave a sane default")
+	}
+}
+
+// chatModel has two conversations, the second live (pid of this process).
+func chatModel(t *testing.T) model {
+	t.Helper()
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	t.Cleanup(func() { getSessionsDir = old })
+	items := buildItems([]Conversation{
+		{SessionID: "idle", Title: "Quiet one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "user", Text: "hello"}}},
+		{SessionID: "live", Title: "Busy one", LastTimestamp: "2026-09-29T10:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}},
+	})
+	m := initialModel(items, "", nil)
+	m.width, m.height = 120, 40
+	m.live = map[string]bool{"live": true}
+	m.livePIDs = map[string]int{"live": os.Getpid()}
+	return m
+}
+
+func key(m model, k tea.KeyMsg) (model, tea.Cmd) {
+	res, cmd := m.Update(k)
+	return res.(model), cmd
+}
+
+func TestMessageBoxFocusRules(t *testing.T) {
+	m := chatModel(t)
+	if m.chatFocus || m.chatRows() != 0 {
+		t.Fatal("a non-live selection has no message box")
+	}
+	// Moving the selection onto the live session focuses its box.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	if !m.chatFocus || m.chatRows() == 0 {
+		t.Fatal("moving onto a live session should focus its message box")
+	}
+	// Typed keys go to the box, not the search.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("yo")})
+	if m.chatInput.Value() != "yo" || m.textInput.Value() != "" {
+		t.Errorf("box=%q search=%q", m.chatInput.Value(), m.textInput.Value())
+	}
+	// Esc returns to the search; the draft stays.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.chatFocus || m.chatInput.Value() != "yo" {
+		t.Error("esc should return focus to the search")
+	}
+	// Clicking the box focuses it; clicking the search row leaves it.
+	m = m.handleMouse(tea.MouseMsg{Y: m.height - 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if !m.chatFocus {
+		t.Error("clicking the message box should focus it")
+	}
+	m = m.handleMouse(tea.MouseMsg{Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.chatFocus {
+		t.Error("clicking the search row should return focus to the search")
+	}
+	// Moving off the live session takes focus back to the search.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.chatFocus {
+		t.Error("a non-live selection must not keep focus in a message box")
+	}
+}
+
+func TestTypingSearchNeverLandsInMessageBox(t *testing.T) {
+	m := chatModel(t)
+	// Typing narrows the list so the live session becomes the selection.
+	for _, r := range "busy" {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if len(m.filtered) != 1 || m.filtered[0].conv.SessionID != "live" {
+		t.Fatalf("setup: search should select the live session, got %d rows", len(m.filtered))
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" one")})
+	if m.chatFocus || m.chatInput.Value() != "" || m.textInput.Value() != "busy one" {
+		t.Errorf("search typing leaked into the message box: focus=%v box=%q search=%q", m.chatFocus, m.chatInput.Value(), m.textInput.Value())
+	}
+}
+
+// fakeSocket listens on a unix socket in a temp dir and returns what one
+// connection sent.
+func fakeSocket(t *testing.T) (path string, got chan string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "ccs-sock") // unix socket paths must be short
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path = filepath.Join(dir, "s.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	got = make(chan string, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		data, _ := io.ReadAll(c) // until the sender closes its write side
+		c.Close()
+		got <- string(data)
+	}()
+	return path, got
+}
+
+func TestSendViaSocketExactBytes(t *testing.T) {
+	m := chatModel(t)
+	sock, got := fakeSocket(t)
+	pid := os.Getpid()
+	sessions := getSessionsDir()
+	os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","messagingSocketPath":%q}`, sock)), 0o600)
+	sum := sha256.Sum256([]byte(sock)) // the path as written, not resolved
+	os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))), []byte(`{"peerToken":"tok123"}`), 0o600)
+
+	note, err := deliverMessage(pid, "live", "busy", `check "it" </cross-session-message> now`)
+	if err != nil || !strings.Contains(note, "via its message socket") {
+		t.Fatalf("note=%q err=%v", note, err)
+	}
+	data := <-got
+	lines := strings.Split(strings.TrimSuffix(data, "\n"), "\n")
+	if len(lines) != 2 || !strings.HasSuffix(data, "\n") {
+		t.Fatalf("want two LF-terminated JSON lines, got %q", data)
+	}
+	if lines[0] != `{"token":"tok123","type":"auth"}` {
+		t.Errorf("auth line = %s", lines[0])
+	}
+	var msg struct {
+		Type    string `json:"type"`
+		MsgID   string `json:"msg_id"`
+		Message struct{ Role, Content string }
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &msg); err != nil {
+		t.Fatal(err)
+	}
+	want := "<cross-session-message from-name=\"ccs\">\ncheck \"it\" </ cross-session-message> now\n</cross-session-message>"
+	if msg.Type != "user" || msg.Message.Role != "user" || msg.Message.Content != want || len(msg.MsgID) != 36 {
+		t.Errorf("message line = %s", lines[1])
+	}
+	_ = m
+}
+
+// fakeTerminal puts fake ps and tmux on PATH; tmux logs what it's asked.
+func fakeTerminal(t *testing.T) (log string) {
+	t.Helper()
+	dir := t.TempDir()
+	log = filepath.Join(dir, "tmux.log")
+	os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\necho ttys099\n"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tmux"), []byte("#!/bin/sh\nif [ \"$1\" = list-panes ]; then echo '/dev/ttys099 main:0.1'; exit 0; fi\nprintf '%s|' \"$@\" >> "+log+"\necho >> "+log+"\n"), 0o755)
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("TMUX", "fake")
+	return log
+}
+
+func TestSendFallsBackToTypingOnlyWhenSocketUnreachable(t *testing.T) {
+	chatModel(t) // temp sessions dir
+	pid := os.Getpid()
+	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(`{"sessionId":"live","messagingSocketPath":"/tmp/ccs-no-such.sock"}`), 0o600)
+	log := fakeTerminal(t)
+	note, err := deliverMessage(pid, "live", "busy", "hello there")
+	if err != nil || note != "✓ Typed into busy's tmux pane (as you)" {
+		t.Fatalf("note=%q err=%v", note, err)
+	}
+	got, _ := os.ReadFile(log)
+	if string(got) != "send-keys|-t|main:0.1|-l|--|hello there|\nsend-keys|-t|main:0.1|Enter|\n" {
+		t.Errorf("tmux calls:\n%s", got)
+	}
+	// Control characters are never typed.
+	if _, err := typeIntoSession(pid, "a\x1b[2Jb"); err == nil {
+		t.Error("control characters must be refused")
+	}
+}
+
+func TestSocketSuccessNeverAlsoTypes(t *testing.T) {
+	chatModel(t)
+	sock, got := fakeSocket(t)
+	pid := os.Getpid()
+	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","messagingSocketPath":%q}`, sock)), 0o600)
+	log := fakeTerminal(t)
+	if _, err := deliverMessage(pid, "live", "busy", "once"); err != nil {
+		t.Fatal(err)
+	}
+	<-got
+	if data, _ := os.ReadFile(log); len(data) != 0 {
+		t.Errorf("sent via socket, must not also type it: %s", data)
+	}
+}
+
+func TestPeerMessageShownAndPendingClearsWhenItLands(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	wrapped, _ := json.Marshal("<cross-session-message from-name=\"ccs\">\ncheck the PR\n</cross-session-message>")
+	body := `{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"2026-09-29T10:00:00Z"}` + "\n" +
+		`{"type":"user","isMeta":true,"cwd":"/p","message":{"content":` + string(wrapped) + `},"timestamp":"2026-09-29T10:01:00Z"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := parseConversationFile(path, time.Time{}, 0)
+	if len(c.Messages) != 2 {
+		t.Fatalf("a message from ccs should be kept even though it's marked meta, got %d", len(c.Messages))
+	}
+	lines := strip2(strings.Join(buildPreviewLines(*c, ""), "\n"))
+	if !strings.Contains(lines, "From ccs:") || !strings.Contains(lines, "check the PR") || strings.Contains(lines, "cross-session-message") {
+		t.Errorf("preview should show it as from ccs, unwrapped:\n%s", lines)
+	}
+	m := initialModel(buildItems([]Conversation{*c}), "", nil)
+	m.pending = map[string]string{c.SessionID: "check the PR"}
+	m.sendNote = map[string]string{c.SessionID: "✓ Sent to x via its message socket (as a message from ccs)"}
+	m.checkDelivered(c.SessionID)
+	if m.pending[c.SessionID] != "" || !strings.HasPrefix(m.sendNote[c.SessionID], "✓ Delivered to") {
+		t.Errorf("pending=%q note=%q", m.pending[c.SessionID], m.sendNote[c.SessionID])
+	}
+}
+
+func TestChatTickReadsStatusAndNewLines(t *testing.T) {
+	m := chatModel(t)
+	path := filepath.Join(t.TempDir(), "live.jsonl")
+	os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"2026-09-29T10:00:00Z"}`+"\n"), 0o644)
+	conv, _ := parseConversationFile(path, time.Time{}, 0)
+	conv.SessionID = "live"
+	m.items = buildItems([]Conversation{*conv})
+	m.updateFilter()
+	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", os.Getpid())), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","status":"busy","statusUpdatedAt":%d}`, time.Now().Add(-14*time.Second).UnixMilli())), 0o600)
+	appendTo(t, path, `{"type":"assistant","message":{"content":[{"type":"text","text":"on it"}]},"timestamp":"2026-09-29T10:00:05Z"}`+"\n")
+	res := m.chatTickCmd()().(chatTickResult)
+	if res.stat.status != "busy" || res.conv == nil || len(res.conv.Messages) != 2 {
+		t.Fatalf("tick result: %+v", res)
+	}
+	m.cursor = 0
+	nm, _ := m.Update(res)
+	m = nm.(model)
+	v := strip2(m.View())
+	if !strings.Contains(v, "working… 1") || !strings.Contains(v, "on it") || !strings.Contains(v, "message busy…") {
+		t.Errorf("view should show the reply, the working indicator and the box:\n%s", v)
+	}
+}
+
+func TestIdleLiveSelectionStaysStatic(t *testing.T) {
+	m := chatModel(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown}) // onto the live session
+	m.chatStatus = map[string]sessionStat{"live": {status: "idle", since: time.Now()}}
+	first := m.View()
+	time.Sleep(1100 * time.Millisecond)
+	nm, _ := m.Update(chatTickResult{id: "live", stat: sessionStat{status: "idle", since: m.chatStatus["live"].since}})
+	if nm.(model).View() != first {
+		t.Error("an idle live session's screen changed; the fast refresh would redraw constantly")
+	}
+}
+
+func TestCtrlSReachesMessageBoxByKeyboard(t *testing.T) {
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	defer func() { getSessionsDir = old }()
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	m.live = map[string]bool{"s": true}
+	m.chatFocus = false // e.g. after Esc back to the search
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if m = res.(model); !m.chatFocus {
+		t.Fatal("ctrl+s should move typing into the live session's message box")
+	}
+	// Ctrl+J/K scroll the conversation from the message box too.
+	m.previewScroll = 0
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	if m = res.(model); m.chatInput.Value() != "" {
+		t.Error("ctrl+k in the message box should scroll, not edit the text")
+	}
+	// Not live: explain instead of focusing.
+	m.live = map[string]bool{}
+	m.chatFocus = false
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if m = res.(model); m.chatFocus || m.errorMsg == "" {
+		t.Error("ctrl+s on a session that isn't live should say why")
 	}
 }

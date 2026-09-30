@@ -4731,3 +4731,32 @@ func TestChangelogScrollHintOnlyWhenScrollable(t *testing.T) {
 		t.Errorf("a long changelog should offer scrolling:\n%s", v)
 	}
 }
+
+func TestMouseFragmentsDropped(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("["), Alt: true})
+	nm, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	m = nm.(model)
+	for _, frag := range []string{"[", "<65;40", ";12M"} {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(frag)})
+	}
+	if v := m.textInput.Value(); v != "" {
+		t.Errorf("split mouse reports shouldn't reach the search box, got %q", v)
+	}
+	m.lastMouse = time.Time{}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+	if v := m.textInput.Value(); v != "[" {
+		t.Errorf("a typed [ long after any mouse event should still type, got %q", v)
+	}
+}
+
+func TestControlCodesStripped(t *testing.T) {
+	conv := Conversation{Messages: []Message{{Role: "assistant", Text: "ok \x1b[1;35mcoloured\x1b[0m\rdone\x07", Ts: "2026-09-30T10:00:00Z"}}}
+	joined := strings.Join(buildPreviewLines(conv, "", 80), "\n")
+	if strings.Contains(joined, "\x1b[1;35m") || strings.Contains(joined, "\r") || strings.Contains(joined, "\x07") {
+		t.Errorf("control codes from the transcript should be dropped: %q", joined)
+	}
+	if !strings.Contains(strip2(joined), "ok coloureddone") {
+		t.Errorf("text should survive: %q", strip2(joined))
+	}
+}

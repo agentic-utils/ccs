@@ -312,10 +312,11 @@ type model struct {
 	helpOpen    bool // Ctrl+G shortcut list
 	accts       []cswapAccount
 	acctCursor  int
-	acctBusy    bool   // a cswap command is running
-	acctMsg     string // outcome of the last list/switch/add, shown in the popup
-	acctPending bool   // opened by a click: the list still needs loading
-	linkPending string // a clicked link, opened by Update (handleMouse can't return a command)
+	acctBusy    bool      // a cswap command is running
+	acctMsg     string    // outcome of the last list/switch/add, shown in the popup
+	acctPending bool      // opened by a click: the list still needs loading
+	lastMouse   time.Time // when the last mouse report arrived, to spot split ones
+	linkPending string    // a clicked link, opened by Update (handleMouse can't return a command)
 }
 
 // How often ccs asks GitHub for a newer release (one ~5KB HEAD request to the
@@ -1270,6 +1271,17 @@ func (m model) refreshNote() string {
 		return " · refresh failed, list from " + when
 	}
 	return " · refreshed " + when
+}
+
+// mouseFragment spots the rest of a split mouse report that mouseLeak can't
+// tell from typing on its own: "[" after an escape (read as alt+[), or bits of
+// "[<64;10;5M" arriving right after a mouse event. Nobody types those that fast.
+func (m model) mouseFragment(k tea.KeyMsg) bool {
+	s := string(k.Runes)
+	if k.Alt && s == "[" {
+		return true
+	}
+	return time.Since(m.lastMouse) < 150*time.Millisecond && strings.Trim(s, "[<;0123456789Mm") == ""
 }
 
 // mouseLeak matches a mouse report that arrived split and was read as typed
@@ -2342,6 +2354,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case tea.MouseMsg:
+		m.lastMouse = time.Now()
 		m = m.handleMouse(msg)
 		if m.acctPending {
 			m.acctPending = false
@@ -2392,7 +2405,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if msg.Type == tea.KeyRunes && mouseLeak.MatchString(string(msg.Runes)) {
+		if msg.Type == tea.KeyRunes && (mouseLeak.MatchString(string(msg.Runes)) || m.mouseFragment(msg)) {
 			return m, nil // a fragmented mouse report, not typing
 		}
 		if m.notesOpen { // owns the keyboard until closed
@@ -3217,6 +3230,7 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		}
 
 		msg := conv.Messages[i]
+		msg.Text = cleanText(msg.Text)
 		ts := formatTimestamp(msg.Ts)
 		day, clock, _ := strings.Cut(ts, " ")
 		newDay := day != "" && day != lastDay
@@ -3383,6 +3397,22 @@ func linkAt(line string, x int) string {
 		i += size
 	}
 	return ""
+}
+
+// cleanText drops terminal control codes that transcripts can carry (coloured
+// command output, carriage returns): printed raw they'd move the cursor or
+// leave stray "[" on screen.
+func cleanText(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 && r != '\n' && r != '\t' || r == 0x7f }) {
+		return s
+	}
+	s = ansi.Strip(s)
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // dateRow separates days in the preview; renderPreview pins the current one.

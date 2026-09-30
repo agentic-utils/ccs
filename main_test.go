@@ -4918,3 +4918,57 @@ func TestPrunePromptHints(t *testing.T) {
 		t.Errorf("prune prompt should use the compact key hints:\n%s", v)
 	}
 }
+
+func TestLinksPopup(t *testing.T) {
+	var opened []string
+	defer func(f func(string) error) { openURL = f }(openURL)
+	openURL = func(u string) error { opened = append(opened, u); return nil }
+	conv := Conversation{SessionID: "s", Cwd: "/p", Messages: []Message{
+		{Role: "assistant", Text: "See [the release notes](https://github.com/a/b/releases) and https://example.com/x.", Ts: "2026-09-30T10:00:00Z"},
+		{Role: "assistant", Text: "Again https://example.com/x and a long [link text that wraps across more than one line here](https://e.io/z)", Ts: "2026-09-30T10:01:00Z"},
+	}}
+	m := initialModel([]listItem{{conv: conv}}, "", nil)
+	m.width, m.height = 60, 40
+	want := []linkItem{
+		{"https://github.com/a/b/releases", "the release notes"},
+		{"https://example.com/x", "example.com/x"},
+		{"https://e.io/z", "link text that wraps across more than one line here"},
+	}
+	if got := m.visibleLinks(); !reflect.DeepEqual(got, want) {
+		t.Errorf("visible links = %q, want %q", got, want)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	if !m.linksOpen {
+		t.Fatal("^T should open the links popup")
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "1 the release notes github.com/a/b/releases") || !strings.Contains(v, "3 link text") {
+		t.Errorf("popup should number the links:\n%s", v)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.linksOpen || cmd == nil {
+		t.Fatal("enter should open the selected link and close the popup")
+	}
+	cmd()
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	cmd()
+	if want := []string{"https://example.com/x", "https://e.io/z"}; !reflect.DeepEqual(opened, want) {
+		t.Errorf("opened %q, want %q", opened, want)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.linksOpen || m.textInput.Value() != "" {
+		t.Error("esc should close the popup without touching the search")
+	}
+}
+
+func TestLinksPopupEmpty(t *testing.T) {
+	conv := Conversation{SessionID: "s", Cwd: "/p", Messages: []Message{{Role: "assistant", Text: "no links here", Ts: "2026-09-30T10:00:00Z"}}}
+	m := initialModel([]listItem{{conv: conv}}, "", nil)
+	m.width, m.height = 100, 40
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	if m.linksOpen || !strings.Contains(strip2(m.View()), "No links in view") {
+		t.Errorf("with no links, ^T should say so instead of opening an empty popup:\n%s", strip2(m.View()))
+	}
+}

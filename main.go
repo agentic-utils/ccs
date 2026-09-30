@@ -325,8 +325,12 @@ type model struct {
 	allowanceStale   bool   // the account changed while a fetch was in flight: fetch again
 
 	// Account switcher (Ctrl+O), backed by the cswap CLI.
-	acctOpen    bool
-	helpOpen    bool // Ctrl+G shortcut list
+	acctOpen bool
+	helpOpen bool // Ctrl+G shortcut list
+	// Ctrl+T: the links in the visible part of the preview, to open by key.
+	linksOpen   bool
+	links       []linkItem
+	linksCursor int
 	accts       []cswapAccount
 	acctCursor  int
 	acctBusy    bool      // a cswap command is running
@@ -1322,6 +1326,9 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
+	if m.linksOpen {
+		return m // keyboard only while it's open
+	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
 		if msg.Button == tea.MouseButtonWheelUp {
 			m.scrollNotes(-3)
@@ -2394,12 +2401,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if u := m.linkPending; u != "" {
 			m.linkPending = ""
-			return m, func() tea.Msg {
-				if err := openURL(u); err != nil {
-					return linkErrMsg{err}
-				}
-				return nil
-			}
+			return m, openLinkCmd(u)
 		}
 		return m, nil
 
@@ -2466,6 +2468,39 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "pgdown", " ":
 				m.scrollNotes(m.notesRows())
 			}
+			return m, nil
+		}
+		if m.linksOpen { // owns the keyboard until closed
+			switch k := msg.String(); k {
+			case "ctrl+t", "esc":
+				m.linksOpen = false
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			case "up", "ctrl+p", "ctrl+k":
+				m.linksCursor = max(m.linksCursor-1, 0)
+			case "down", "ctrl+n", "ctrl+j":
+				m.linksCursor = min(m.linksCursor+1, len(m.links)-1)
+			case "enter":
+				m.linksOpen = false
+				return m, openLinkCmd(m.links[m.linksCursor].url)
+			default:
+				if len(k) == 1 && k[0] >= '1' && k[0] <= '9' {
+					if i := int(k[0] - '1'); i < len(m.links) {
+						m.linksOpen = false
+						return m, openLinkCmd(m.links[i].url)
+					}
+				}
+			}
+			return m, nil
+		}
+		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage {
+			m.helpOpen = false
+			if m.links = m.visibleLinks(); len(m.links) == 0 {
+				m.errorMsg = "No links in view"
+				return m, nil
+			}
+			m.linksOpen, m.linksCursor = true, 0
 			return m, nil
 		}
 		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen {
@@ -2765,6 +2800,9 @@ func (m model) View() string {
 	if m.notesOpen {
 		screen = overlayCentre(screen, m.notesPopup(), m.width, m.height)
 	}
+	if m.linksOpen {
+		screen = overlayCentre(screen, m.linksPopup(), m.width, m.height)
+	}
 	return screen
 }
 
@@ -2808,6 +2846,7 @@ func (m model) shortcuts() [][2]string {
 	add(true, keyTab, "usage")
 	add(!m.chatFocus && m.textInput.Value() != "", keyEsc+" ^U", "clear the search")
 	add(hasCswap, "^O", "switch account")
+	add(sel && len(m.visibleLinks()) > 0, "^T", "open a link in view")
 	add(true, "^L", "changelog")
 	add(true, "^C", "quit")
 	return out
@@ -3479,6 +3518,107 @@ func (m model) previewRenderHeight() int {
 }
 
 type linkErrMsg struct{ err error }
+
+func openLinkCmd(u string) tea.Cmd {
+	return func() tea.Msg {
+		if err := openURL(u); err != nil {
+			return linkErrMsg{err}
+		}
+		return nil
+	}
+}
+
+// linkItem is one link in the Ctrl+T popup: where it goes and the text shown for it.
+type linkItem struct{ url, text string }
+
+// visibleLinks lists the links in the preview as drawn now, top to bottom,
+// each once, with the text it's shown as. A link hyperlink() split word by
+// word, or wrapped across lines, is joined back into one.
+func (m model) visibleLinks() []linkItem {
+	if len(m.filtered) == 0 {
+		return nil
+	}
+	var out []linkItem
+	seen := map[string]bool{}
+	cur, gap, last := "", "", "" // open link, plain text since last closed, last closed link
+	var text strings.Builder
+	finish := func() {
+		if last != "" && !seen[last] {
+			seen[last] = true
+			out = append(out, linkItem{last, strings.TrimSpace(text.String())})
+		}
+		last, gap = "", ""
+		text.Reset()
+	}
+	for _, line := range strings.Split(m.renderPreview(m.filtered[m.cursor], m.previewRenderHeight()), "\n") {
+		if cur == "" {
+			gap += " "
+		}
+		pos := 0
+		plain := func(t string) {
+			if cur != "" {
+				text.WriteString(t)
+			} else if last != "" {
+				gap += t
+			}
+		}
+		for _, loc := range ansiSeq.FindAllStringIndex(line, -1) {
+			plain(line[pos:loc[0]])
+			if seq := line[loc[0]:loc[1]]; strings.HasPrefix(seq, "\x1b]8;") {
+				url := strings.TrimSuffix(seq[strings.Index(seq[4:], ";")+5:], "\x1b\\")
+				switch {
+				case url == "" && cur != "":
+					last, cur, gap = cur, "", ""
+				case url != "" && url == last && strings.TrimSpace(gap) == "":
+					text.WriteString(" ") // the next word of the same link
+					cur, last = url, ""
+				case url != "":
+					finish()
+					cur = url
+				}
+			}
+			pos = loc[1]
+		}
+		plain(line[pos:])
+	}
+	if cur != "" {
+		last = cur
+	}
+	finish()
+	return out
+}
+
+// linksPopup lists visibleLinks, numbered, with the cursor on one.
+func (m model) linksPopup() string {
+	width := min(max(m.width-12, 30), 90)
+	var b strings.Builder
+	b.WriteString("\033[1mlinks in view\033[0m\n\n")
+	for i, l := range m.links {
+		num := "  "
+		if i < 9 {
+			num = fmt.Sprintf("%d ", i+1)
+		}
+		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
+		row := num + l.text
+		if l.text != addr {
+			row += " \033[90m" + addr + "\033[39m"
+		}
+		row = ansi.Truncate(row, width-2, "…")
+		if i == m.linksCursor {
+			row = "\033[1m› " + row + "\033[0m"
+		} else {
+			row = "  " + row
+		}
+		b.WriteString(row + "\n")
+	}
+	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "open", "1-9", "open", "^T/"+keyEsc, "close") + "\033[0m")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 3).
+		Width(width + 6).
+		Render(b.String())
+}
 
 // openURL opens a clicked link in the browser. Only web addresses: the text
 // comes from transcripts.
@@ -5009,6 +5149,7 @@ Key bindings:
   Tab             Usage screen (Tab again to go back)
   Ctrl+O          Switch Claude account (needs cswap)
   Ctrl+L          Changelog
+  Ctrl+T          Open a link in view
   Ctrl+] / Ctrl+\  Next / previous search hit
   Ctrl+G          Show the shortcuts that apply right now
   Ctrl+C          Quit

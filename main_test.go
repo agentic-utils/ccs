@@ -4672,3 +4672,35 @@ func TestClickOpensLink(t *testing.T) {
 	}
 	t.Fatal("link not on screen")
 }
+
+func TestChangelogRetry(t *testing.T) {
+	calls := 0
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 100, 30
+	m.fetchNotes = func() ([]string, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("timed out")
+		}
+		return []string{"v1.0.0", "  • fix: x"}, nil
+	}
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyCtrlL})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlL}) // close
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlL}) // reopen while the fetch is in flight
+	nm, _ := m.Update(cmd())
+	m = nm.(model)
+	if calls != 1 {
+		t.Errorf("reopening while a fetch is in flight shouldn't start another: %d fetches", calls)
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "couldn't fetch the changelog: timed out") || !strings.Contains(v, "enter retry") {
+		t.Errorf("should say it failed and offer a retry:\n%s", v)
+	}
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter should retry")
+	}
+	nm, _ = m.Update(cmd())
+	if v := strip2(nm.(model).View()); !strings.Contains(v, "fix: x") {
+		t.Errorf("retry should show the changelog:\n%s", v)
+	}
+}

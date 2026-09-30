@@ -3753,7 +3753,7 @@ func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
 	}
 }
 
-func strip2(s string) string { return regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, "") }
+func strip2(s string) string { return ansiSeq.ReplaceAllString(s, "") }
 
 func TestUIStateSurvivesRestart(t *testing.T) {
 	mk := func(id, text string) Conversation {
@@ -4570,5 +4570,27 @@ func TestMarkdownTable(t *testing.T) {
 	}
 	if strings.Contains(plain, "|---") || strings.Contains(plain, "**") {
 		t.Errorf("markdown table syntax should not show:\n%s", plain)
+	}
+}
+
+func TestLinksClickable(t *testing.T) {
+	text := "See [the PR](https://github.com/a/b/pull/7) and https://example.com/x?y=1. Also a long [link text that wraps across lines](https://e.io/z)."
+	joined := strings.Join(renderBody(text, "", 0), "\n")
+	lines := renderBody(text, "", 30)
+	for _, want := range []string{
+		"\033]8;;https://github.com/a/b/pull/7\033\\the\033]8;;\033\\",
+		"\033]8;;https://example.com/x?y=1\033\\example.com/x?y=1\033]8;;\033\\\033[24m.",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing clickable link %q in:\n%q", want, joined)
+		}
+	}
+	for i, l := range lines {
+		if strings.Count(l, "\033]8;;https") != strings.Count(l, "\033]8;;\033\\") {
+			t.Errorf("line %d leaves a link open: %q", i, l)
+		}
+	}
+	if plain := strip2(joined); !strings.Contains(plain, "the PR (github.com/a/b/pull/7)") {
+		t.Errorf("links should still read as text plus a short address:\n%s", plain)
 	}
 }

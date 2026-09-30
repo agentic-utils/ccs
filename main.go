@@ -3311,8 +3311,9 @@ var (
 	mdCode   = regexp.MustCompile("`([^`\n]+)`")
 	mdBullet = regexp.MustCompile(`^(\s*)([-*+]|\d+[.)])\s+`)
 	mdHead   = regexp.MustCompile(`^#{1,6}\s+`)
-	mdLink   = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)`)
-	ansiSeq  = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	ansiSeq  = regexp.MustCompile(`\x1b\[[0-9;]*m|\x1b\]8;[^\x1b]*\x1b\\`)
+	// a markdown link, or a bare address (trailing punctuation left out)
+	anyLink = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^)\s]+)\)|https?://[^\s<>()\[\]"'\x60]*[^\s<>()\[\]"'\x60.,;:!?]`)
 )
 
 // renderBody lays out one message for the preview: common markdown rendered
@@ -3468,17 +3469,35 @@ func sum(xs []int) int {
 
 // inlineMarkdown renders [links](url), **bold** and `code` spans.
 func inlineMarkdown(s string) string {
-	// [text](url) -> underlined text, then the address in grey without https://
-	s = mdLink.ReplaceAllStringFunc(s, func(link string) string {
-		m := mdLink.FindStringSubmatch(link)
-		url := strings.TrimPrefix(strings.TrimPrefix(m[2], "https://"), "http://")
-		if m[1] == m[2] || m[1] == url {
-			return "\033[4m" + url + "\033[24m"
+	// [text](url) -> underlined text, then the address in grey without
+	// https://; bare addresses shortened the same way. All clickable.
+	s = anyLink.ReplaceAllStringFunc(s, func(link string) string {
+		m := anyLink.FindStringSubmatch(link)
+		text, target := m[1], m[2]
+		if target == "" { // a bare address
+			text, target = link, link
 		}
-		return "\033[4m" + m[1] + "\033[24m \033[90m(" + url + ")\033[39m"
+		url := strings.TrimPrefix(strings.TrimPrefix(target, "https://"), "http://")
+		if text == target || text == url {
+			return "\033[4m" + hyperlink(target, url) + "\033[24m"
+		}
+		return "\033[4m" + hyperlink(target, text) + "\033[24m \033[90m(" + hyperlink(target, url) + ")\033[39m"
 	})
 	s = mdCode.ReplaceAllString(s, "\033[36m$1\033[39m")
 	return mdBold.ReplaceAllString(s, "\033[1m$1\033[22m")
+}
+
+// hyperlink makes text a terminal link to url (OSC 8: iTerm2, kitty, WezTerm,
+// Ghostty…; others just show the text). Each word is linked on its own so a
+// link wrapped across lines never leaves one open.
+func hyperlink(url, text string) string {
+	words := strings.Split(text, " ")
+	for i, w := range words {
+		if w != "" {
+			words[i] = "\033]8;;" + url + "\033\\" + w + "\033]8;;\033\\"
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // highlightStyled highlights query in text that already carries ANSI

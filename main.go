@@ -3338,6 +3338,15 @@ func renderBody(text, query string, width int) []string {
 			}
 			continue // the fence itself carries no content
 		}
+		if !inCode && isTableRow(trimmed) && li+1 < len(lines) && mdTableSep.MatchString(strings.TrimSpace(lines[li+1])) {
+			end := li + 2
+			for end < len(lines) && isTableRow(strings.TrimSpace(lines[end])) {
+				end++
+			}
+			out = append(out, renderTable(lines[li:end], query, width-len(indent), indent)...)
+			li = end - 1
+			continue
+		}
 		var styled, hang string
 		switch {
 		case inCode:
@@ -3365,6 +3374,85 @@ func renderBody(text, query string, width int) []string {
 		}
 	}
 	return out
+}
+
+var mdTableSep = regexp.MustCompile(`^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$`)
+
+func isTableRow(s string) bool { return strings.HasPrefix(s, "|") && strings.Count(s, "|") >= 2 }
+
+func tableCells(row string) []string {
+	row = strings.TrimSpace(row)
+	row = strings.TrimSuffix(strings.TrimPrefix(row, "|"), "|")
+	cells := strings.Split(row, "|")
+	for i, c := range cells {
+		cells[i] = strings.TrimSpace(c)
+	}
+	return cells
+}
+
+// renderTable draws a markdown table (header, separator, rows) as aligned
+// columns. When it's wider than width, the widest columns are cut with "…".
+func renderTable(rows []string, query string, width int, indent string) []string {
+	var cells [][]string
+	for i, r := range rows {
+		if i != 1 { // skip the |---| separator
+			cells = append(cells, tableCells(r))
+		}
+	}
+	cols := 0
+	for _, r := range cells {
+		cols = max(cols, len(r))
+	}
+	widths := make([]int, cols)
+	for ri, r := range cells {
+		for c, v := range r {
+			v = inlineMarkdown(v)
+			cells[ri][c] = v
+			widths[c] = max(widths[c], ansi.StringWidth(v))
+		}
+	}
+	// ponytail: shrinks the widest column one cell at a time; fine for chat-sized tables.
+	if avail := width - 3*(cols-1); width > 0 {
+		for sum(widths) > avail {
+			w := slices.Index(widths, slices.Max(widths))
+			if widths[w] <= 3 {
+				break
+			}
+			widths[w]--
+		}
+	}
+	var out []string
+	for ri, r := range cells {
+		parts := make([]string, cols)
+		for c := range cols {
+			v := ""
+			if c < len(r) {
+				v = ansi.Truncate(r[c], widths[c], "…")
+			}
+			v = highlightStyled(v, query) + strings.Repeat(" ", widths[c]-ansi.StringWidth(v))
+			if ri == 0 {
+				v = "\033[1m" + v + "\033[22m"
+			}
+			parts[c] = v
+		}
+		out = append(out, indent+strings.Join(parts, " \033[90m│\033[39m "))
+		if ri == 0 {
+			seps := make([]string, cols)
+			for c := range cols {
+				seps[c] = strings.Repeat("─", widths[c])
+			}
+			out = append(out, indent+"\033[90m"+strings.Join(seps, "─┼─")+"\033[39m")
+		}
+	}
+	return out
+}
+
+func sum(xs []int) int {
+	t := 0
+	for _, x := range xs {
+		t += x
+	}
+	return t
 }
 
 // inlineMarkdown renders [links](url), **bold** and `code` spans.

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"io"
 	"net"
 	"net/http"
@@ -4551,5 +4552,23 @@ func TestPinnedDate(t *testing.T) {
 	m.previewScroll = 1000
 	if got := m.renderPreview(item, 12); strings.Count(got, day) != 1 {
 		t.Errorf("date should appear once at the top:\n%s", got)
+	}
+}
+
+func TestMarkdownTable(t *testing.T) {
+	text := "Results:\n| PR | State | Note |\n|---|:---:|---|\n| #70 | **merged** | changelog popup |\n| #71 | open | " + strings.Repeat("long ", 30) + "|\nafter"
+	plain := strip2(strings.Join(renderBody(text, "", 60), "\n"))
+	for _, want := range []string{"PR  │ State  │ Note", "────┼────────┼", "#70 │ merged │ changelog popup", "…", "after"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("table should render as aligned columns, missing %q:\n%s", want, plain)
+		}
+	}
+	for i, l := range strings.Split(plain, "\n") {
+		if w := ansi.StringWidth(l); w > 60 {
+			t.Errorf("line %d is %d wide, over 60: %q", i, w, l)
+		}
+	}
+	if strings.Contains(plain, "|---") || strings.Contains(plain, "**") {
+		t.Errorf("markdown table syntax should not show:\n%s", plain)
 	}
 }

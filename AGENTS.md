@@ -42,7 +42,17 @@ Install the release locally: `brew update && brew upgrade ccs`.
 
 ## Architecture
 
-- `main.go` - Single file containing all logic
+One package, split by area (all `package main`, same directory):
+
+- `main.go` - `main()`, flags, `--help`, `version`, and the bounded command runners (`runCommand`, `runBounded`)
+- `ui.go` - the bubbletea model: `initialModel`, `Init`, `Update`, `View`, the list, mouse handling, popups, key hints (`shortcuts`, `hints`), rename/delete/prune actions
+- `parse.go` - transcript types and parsing (`Conversation`, `RawMessage`, `parseLine`, `parseAppended`, `parseCache`), background refresh, search text, list formatting helpers
+- `preview.go` - the conversation preview: `buildPreviewLines`, `renderBody`, markdown/tables/links, harness/teammate notes, time gutter, pinned date, search-hit jumps, the links popup
+- `live.go` - live sessions (`~/.claude/sessions`), the live tick, resume/fork/focus in tmux or iTerm
+- `chat.go` - the message box: socket send, delivery receipts, typing fallback, delivery status
+- `update.go` - self-update (release check, brew/binary upgraders, `downloadTransport`, update log), changelog fetch and popups, restore-after-restart state
+- `usage.go` - usage screen, allowance, keychain, cswap account switcher
+- `prune.go` - `ccs prune` and the lossless pruning it shares with Ctrl+X
 - `main_test.go` - Unit tests
 - `.goreleaser.yaml` - Release configuration
 - `.github/workflows/test.yaml` - CI test workflow (reusable)
@@ -153,4 +163,4 @@ Session: abc123...
 
 - Use conventional commits (feat:, fix:, docs:, etc.)
 - Run tests before releasing
-- Keep it simple - single file is fine for this project
+- Keep it simple: one package, files split by area as listed under Architecture; put new code in the file for its area

@@ -576,7 +576,9 @@ const (
 
 // peerMessage matches a message another session (or ccs) sent through the
 // message socket; peerParts pulls out who it's from and the text.
-var peerMessage = regexp.MustCompile(`(?s)^(?:Another Claude session sent a message:\n)?<cross-session-message([^>]*)>\n(.*)\n</cross-session-message>$`)
+// Claude Code may add its own paragraph after the closing tag (a note that
+// peers can't grant permissions), so anything after it is allowed.
+var peerMessage = regexp.MustCompile(`(?s)^(?:Another Claude session sent a message:\n)?<cross-session-message([^>]*)>\n(.*?)\n</cross-session-message>(?:\s.*)?$`)
 
 var peerFrom = regexp.MustCompile(`from-name="([^"]*)"`)
 

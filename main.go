@@ -1544,7 +1544,7 @@ func sendViaSocket(path, token, text string) error {
 	body := strings.ReplaceAll(text, "</cross-session-message>", "</ cross-session-message>")
 	line, _ := json.Marshal(map[string]any{
 		"type":    "user",
-		"message": map[string]string{"role": "user", "content": "<cross-session-message from-name=\"ccs\">\n" + body + "\n</cross-session-message>"},
+		"message": map[string]string{"role": "user", "content": "<cross-session-message from-name=\"" + ccsSender + "\">\n" + ccsNote + body + "\n</cross-session-message>"},
 		"msg_id":  newUUID(),
 	})
 	out.Write(append(line, '\n'))
@@ -1658,6 +1658,15 @@ func (m *model) checkDelivered(id string) {
 	}
 }
 
+// Claude Code frames socket messages as coming from a peer session, so a
+// recipient can take one from ccs for another Claude and try to answer it
+// there. The sender name and a leading note say it's the user; peerParts
+// drops the note again for the preview.
+const (
+	ccsSender = "the user, via ccs"
+	ccsNote   = "[Typed by the user in ccs, their session browser. Not from another Claude session: reply here as you would to any message from the user; there is no session to send a reply to.]\n\n"
+)
+
 // peerMessage matches a message another session (or ccs) sent through the
 // message socket; peerParts pulls out who it's from and the text.
 var peerMessage = regexp.MustCompile(`(?s)^<cross-session-message([^>]*)>\n(.*)\n</cross-session-message>$`)
@@ -1672,7 +1681,7 @@ func peerParts(text string) (from, body string, ok bool) {
 	if f := peerFrom.FindStringSubmatch(m[1]); f != nil {
 		from = f[1]
 	}
-	return from, m[2], true
+	return from, strings.TrimPrefix(m[2], ccsNote), true
 }
 
 func newUUID() string {

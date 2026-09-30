@@ -4351,8 +4351,58 @@ func TestChatPendingLine(t *testing.T) {
 		m.chatStatus = map[string]sessionStat{}
 	}
 	m.chatStatus[id] = sessionStat{status: "busy", since: time.Now()}
-	if v := strip2(m.View()); !strings.Contains(v, "queued until it's free:") {
-		t.Errorf("busy recipient should show the message as queued:\n%s", v)
+	if v := strip2(m.View()); !strings.Contains(v, "Claude sees it after its current step") {
+		t.Errorf("busy recipient should say when Claude sees it:\n%s", v)
+	}
+	// A socket send the session hasn't queued within heldTimeout may be held.
+	m.sentAt = map[string]time.Time{id: time.Now().Add(-2 * heldTimeout)}
+	if v := strip2(m.View()); !strings.Contains(v, "not picked up yet") {
+		t.Errorf("an unqueued message should warn it may be held:\n%s", v)
+	}
+	for i := range m.items {
+		if m.items[i].conv.SessionID == id {
+			m.items[i].conv.peerQueued = []string{"<cross-session-message from-name=\"x\">\n" + ccsNote + "please check the logs.\nthen fix it.\n</cross-session-message>"}
+		}
+	}
+	m.pending[id] = "please check the logs.\nthen fix it."
+	m.checkDelivered(id)
+	if v := strip2(m.View()); strings.Contains(v, "not picked up yet") {
+		t.Errorf("once the session has queued it, there's nothing to warn about:\n%s", v)
+	}
+}
+
+func TestMidTurnAndPrefixedPeerMessagesParsed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	wrap := "<cross-session-message from-name=\"the user, via ccs\">\n" + ccsNote + "check CI\n</cross-session-message>"
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	lines := []string{
+		`{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"2026-09-30T10:00:00Z"}`,
+		// idle: a meta user line, with Claude Code's prefix
+		`{"type":"user","isMeta":true,"message":{"content":` + j("Another Claude session sent a message:\n"+wrap) + `},"timestamp":"2026-09-30T10:01:00Z"}`,
+		// busy: queued, then attached mid-turn
+		`{"type":"queue-operation","operation":"enqueue","content":` + j(strings.Replace(wrap, "check CI", "and the logs", 1)) + `,"timestamp":"2026-09-30T10:02:00Z"}`,
+		`{"type":"attachment","attachment":{"type":"queued_command","prompt":` + j(strings.Replace(wrap, "check CI", "and the logs", 1)) + `,"commandMode":"prompt","isMeta":true},"timestamp":"2026-09-30T10:02:05Z"}`,
+		// the user typing mid-turn
+		`{"type":"attachment","attachment":{"type":"queued_command","prompt":"also bump node","commandMode":"prompt"},"timestamp":"2026-09-30T10:02:06Z"}`,
+		// other attachments are ignored
+		`{"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>x</task-notification>","commandMode":"task-notification"},"timestamp":"2026-09-30T10:02:07Z"}`,
+	}
+	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+	c, _ := parseConversationFile(path, time.Time{}, 0)
+	var got []string
+	for _, msg := range c.Messages {
+		body := msg.Text
+		if _, b, ok := peerParts(body); ok {
+			body = "peer:" + b
+		}
+		got = append(got, body)
+	}
+	want := []string{"hi", "peer:check CI", "peer:and the logs", "also bump node"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("messages = %q, want %q", got, want)
+	}
+	if len(c.peerQueued) != 1 {
+		t.Errorf("the enqueue should be recorded, got %d", len(c.peerQueued))
 	}
 }
 

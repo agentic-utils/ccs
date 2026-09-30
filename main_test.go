@@ -4621,3 +4621,54 @@ func TestTeammateMessagesReadable(t *testing.T) {
 		}
 	}
 }
+
+func TestWrappedLinkStaysContainedAndClickable(t *testing.T) {
+	text := "The PR is still waiting for review: https://github.com/two-inc/infra/pull/4369"
+	lines := renderBody(text, "", 50)
+	if len(lines) < 2 {
+		t.Fatalf("expected a wrap: %q", lines)
+	}
+	for i, l := range lines {
+		if strings.Count(l, "\033]8;;https") != strings.Count(l, "\033]8;;\033\\") {
+			t.Errorf("line %d leaves the link open: %q", i, l)
+		}
+		if strings.Contains(l, "\033[4m") && !strings.HasSuffix(l, "\033[0m") && !strings.HasSuffix(l, "\033[24m") {
+			t.Errorf("line %d leaves the underline open: %q", i, l)
+		}
+	}
+	last := lines[len(lines)-1]
+	x := ansi.StringWidth(strings.TrimRight(ansiSeq.ReplaceAllString(last, ""), " ")) - 1
+	if got := linkAt(last, x); got != "https://github.com/two-inc/infra/pull/4369" {
+		t.Errorf("clicking the wrapped part should find the link, got %q in %q", got, last)
+	}
+	if got := linkAt(lines[0], 0); got != "" {
+		t.Errorf("plain text isn't a link, got %q", got)
+	}
+}
+
+func TestClickOpensLink(t *testing.T) {
+	var opened string
+	defer func(f func(string) error) { openURL = f }(openURL)
+	openURL = func(u string) error { opened = u; return nil }
+	conv := Conversation{SessionID: "s", Cwd: "/p", Messages: []Message{{Role: "assistant", Text: "see https://example.com/a", Ts: "2026-09-30T10:00:00Z"}}}
+	m := initialModel([]listItem{{conv: conv}}, "", nil)
+	m.width, m.height = 100, 40
+	_, _, previewTop := m.listLayout()
+	lines := strings.Split(m.renderPreview(m.filtered[0], m.previewRenderHeight()), "\n")
+	for row, l := range lines {
+		plain := ansiSeq.ReplaceAllString(l, "")
+		if x := strings.Index(plain, "example.com"); x >= 0 {
+			nm, cmd := m.Update(tea.MouseMsg{X: ansi.StringWidth(plain[:x]) + 2, Y: previewTop + row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+			m = nm.(model)
+			if cmd == nil {
+				t.Fatal("clicking a link should open it")
+			}
+			cmd()
+			if opened != "https://example.com/a" {
+				t.Errorf("opened %q", opened)
+			}
+			return
+		}
+	}
+	t.Fatal("link not on screen")
+}

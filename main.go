@@ -314,6 +314,7 @@ type model struct {
 	acctBusy    bool   // a cswap command is running
 	acctMsg     string // outcome of the last list/switch/add, shown in the popup
 	acctPending bool   // opened by a click: the list still needs loading
+	linkPending string // a clicked link, opened by Update (handleMouse can't return a command)
 }
 
 // How often ccs asks GitHub for a newer release (one ~5KB HEAD request to the
@@ -1287,6 +1288,14 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		}
 		if m.chatRows() > 0 && msg.Y >= m.height-3 { // the message box
 			m.chatFocus = true
+			return m
+		}
+		if onPreview && len(m.filtered) > 0 {
+			// ccs has the mouse, so the terminal never sees a click on a link: open it here.
+			lines := strings.Split(m.renderPreview(m.filtered[m.cursor], m.previewRenderHeight()), "\n")
+			if row := msg.Y - previewTop; row >= 0 && row < len(lines) {
+				m.linkPending = linkAt(lines[row], msg.X)
+			}
 			return m
 		}
 		if msg.Y < listTop || msg.Y >= listTop+listHeight {
@@ -2283,6 +2292,19 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.acctPending = false
 			return m, m.acctListCmd()
 		}
+		if u := m.linkPending; u != "" {
+			m.linkPending = ""
+			return m, func() tea.Msg {
+				if err := openURL(u); err != nil {
+					return linkErrMsg{err}
+				}
+				return nil
+			}
+		}
+		return m, nil
+
+	case linkErrMsg:
+		m.errorMsg = "Couldn't open the link: " + msg.err.Error()
 		return m, nil
 
 	case chatTickMsg:
@@ -2869,7 +2891,7 @@ func (m model) viewScreen() string {
 	if listHeight < 3 {
 		listHeight = 3
 	}
-	previewHeight := m.height - listHeight - 6 // 6 for title + search + blank + header + borders
+	previewHeight := m.previewRenderHeight() + m.chatRows()
 
 	// Column headers
 	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %-*s  %*s  %*s  %*s  %*s\033[0m\n",
@@ -3217,6 +3239,85 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 	return msgLines
 }
 
+// carryStyles makes each wrapped line self-contained: styles and a link still
+// open at a line's end are closed there and reopened on the next line, so an
+// underline or link never runs on into the rest of the screen.
+func carryStyles(lines []string) []string {
+	var sgr []string // SGR codes since the last reset
+	link := ""       // open OSC 8 target
+	for i, l := range lines {
+		prefix := strings.Join(sgr, "")
+		if link != "" {
+			prefix += "\033]8;;" + link + "\033\\"
+		}
+		for _, seq := range ansiSeq.FindAllString(l, -1) {
+			switch {
+			case strings.HasPrefix(seq, "\x1b]8;"):
+				link = strings.TrimSuffix(seq[strings.Index(seq[4:], ";")+5:], "\x1b\\")
+			case seq == "\x1b[0m" || seq == "\x1b[m":
+				sgr = sgr[:0]
+			default:
+				sgr = append(sgr, seq)
+			}
+		}
+		suffix := ""
+		if link != "" {
+			suffix = "\033]8;;\033\\"
+		}
+		if len(sgr) > 0 {
+			suffix += "\033[0m"
+		}
+		lines[i] = prefix + l + suffix
+	}
+	return lines
+}
+
+// previewRenderHeight is the height View gives renderPreview.
+func (m model) previewRenderHeight() int {
+	_, listHeight, _ := m.listLayout()
+	return m.height - listHeight - 6 - m.chatRows() // 6 for title + search + blank + header + borders
+}
+
+type linkErrMsg struct{ err error }
+
+// openURL opens a clicked link in the browser. Only web addresses: the text
+// comes from transcripts.
+var openURL = func(u string) error {
+	if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		return fmt.Errorf("not a web address: %s", truncate(u, 40))
+	}
+	opener := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		opener = "open"
+	}
+	return exec.Command(opener, u).Start()
+}
+
+// linkAt returns the OSC 8 link under screen column x of a rendered line, or "".
+func linkAt(line string, x int) string {
+	col, url := 0, ""
+	for i := 0; i < len(line); {
+		if line[i] == 0x1b {
+			if loc := ansiSeq.FindStringIndex(line[i:]); loc != nil && loc[0] == 0 {
+				seq := line[i : i+loc[1]]
+				if strings.HasPrefix(seq, "\x1b]8;") {
+					url = strings.TrimSuffix(seq[strings.Index(seq[4:], ";")+5:], "\x1b\\")
+				}
+				i += loc[1]
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		w := ansi.StringWidth(string(r))
+		if x >= col && x < col+w {
+			return url
+		}
+		col += w
+		i += size
+	}
+	return ""
+}
+
 // dateRow separates days in the preview; renderPreview pins the current one.
 const dateRowPrefix = "\033[90m  ── "
 
@@ -3448,7 +3549,7 @@ func renderBody(text, query string, width int) []string {
 			out = append(out, indent+styled)
 			continue
 		}
-		wrapped := strings.Split(ansi.Wrap(styled, width-len(indent)-len(hang)-1, ""), "\n")
+		wrapped := carryStyles(strings.Split(ansi.Wrap(styled, width-len(indent)-len(hang)-1, ""), "\n"))
 		for j, w := range wrapped {
 			if j == 0 {
 				out = append(out, indent+w)

@@ -4594,3 +4594,30 @@ func TestLinksClickable(t *testing.T) {
 		t.Errorf("links should still read as text plus a short address:\n%s", plain)
 	}
 }
+
+func TestTeammateMessagesReadable(t *testing.T) {
+	report := `{"type":"idle_notification","from":"sonnet-alerts-c","timestamp":"2026-09-30T09:33:22.836Z","result":"I only got part of this batch done.\n\n**Decision for you**: merge 189.","idleReason":"available"}`
+	ping := `{"type":"idle_notification","from":"opus-x","timestamp":"2026-09-30T09:34:00Z","idleReason":"available"}`
+	text := "Another Claude session sent a message:\n<teammate-message teammate_id=\"sonnet-alerts-c\" color=\"red\">\n" + report + "\n</teammate-message>\n\n" +
+		"<teammate-message teammate_id=\"opus-x\" color=\"blue\">\n" + ping + "\n</teammate-message>\n\n" +
+		"<teammate-message teammate_id=\"team-lead\" summary=\"Round 2\">\nPlease attack the revised proposal.\n</teammate-message>"
+	conv := Conversation{Messages: []Message{{Role: "user", Text: text, Ts: "2026-09-30T09:34:00Z"}}}
+	plain := strip2(strings.Join(buildPreviewLines(conv, "", 100), "\n"))
+	for _, want := range []string{
+		"From sonnet-alerts-c · idle notification",
+		"I only got part of this batch done.",
+		"Decision for you: merge 189.",
+		"▸ opus-x · idle notification · available",
+		"From team-lead · Round 2",
+		"Please attack the revised proposal.",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q in:\n%s", want, plain)
+		}
+	}
+	for _, bad := range []string{"<teammate-message", `{"type"`, `\n`, "Another Claude session"} {
+		if strings.Contains(plain, bad) {
+			t.Errorf("raw %q should not show:\n%s", bad, plain)
+		}
+	}
+}

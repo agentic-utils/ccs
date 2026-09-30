@@ -1667,6 +1667,54 @@ const (
 	ccsNote   = "[Typed by the user in ccs, their session browser. Not from another Claude session: reply here as you would to any message from the user; there is no session to send a reply to.]\n\n"
 )
 
+var (
+	teammateMsg  = regexp.MustCompile(`(?s)<teammate-message([^>]*)>\n(.*?)\n?</teammate-message>`)
+	teammateAttr = regexp.MustCompile(`(\w+)="([^"]*)"`)
+)
+
+type teammateBlock struct{ from, note, body string }
+
+// teammateBlocks splits a message from teammate agents (optionally after
+// "Another Claude session sent a message:") into one block per sender. A
+// JSON report's result becomes the body; a status with nothing to read
+// (idle, shutdown…) has an empty body and a short note instead.
+func teammateBlocks(text string) []teammateBlock {
+	if !strings.Contains(text, "<teammate-message") {
+		return nil
+	}
+	var out []teammateBlock
+	for _, m := range teammateMsg.FindAllStringSubmatch(text, -1) {
+		b := teammateBlock{from: "a teammate", body: strings.TrimSpace(m[2])}
+		for _, a := range teammateAttr.FindAllStringSubmatch(m[1], -1) {
+			switch a[1] {
+			case "teammate_id":
+				b.from = html.UnescapeString(a[2])
+			case "summary":
+				b.note = html.UnescapeString(a[2])
+			}
+		}
+		var status map[string]any
+		if strings.HasPrefix(b.body, "{") && json.Unmarshal([]byte(b.body), &status) == nil {
+			str := func(k string) string { v, _ := status[k].(string); return v }
+			kind := strings.ReplaceAll(str("type"), "_", " ")
+			b.body = str("result")
+			if b.body == "" {
+				b.body = str("message")
+			}
+			note := kind
+			for _, k := range []string{"summary", "subject", "reason", "idleReason", "failureReason"} {
+				if v := str(k); v != "" && v != b.body {
+					note += " · " + v
+					break
+				}
+			}
+			b.note = note
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
 // peerMessage matches a message another session (or ccs) sent through the
 // message socket; peerParts pulls out who it's from and the text.
 var peerMessage = regexp.MustCompile(`(?s)^<cross-session-message([^>]*)>\n(.*)\n</cross-session-message>$`)
@@ -3086,6 +3134,30 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		if newDay { // the date gets its own row, once per day
 			msgLines = append(msgLines, dateRow(day), "")
 			lastDay = day
+		}
+		if blocks := teammateBlocks(msg.Text); blocks != nil && msg.Role == "user" {
+			// Messages from teammate agents: each under its own "From" header,
+			// JSON status reports unpacked; bare status pings are one dim line.
+			marker := " "
+			if matchSet[i] {
+				marker = "▶"
+			}
+			for _, b := range blocks {
+				if b.body == "" {
+					line := truncate("▸ "+b.from+" · "+b.note, max(width-2-gutterExtra, 20))
+					msgLines = append(msgLines, "\033[90m"+marker+" "+fmt.Sprintf("%-5s", clock)+" "+highlight(line, query)+"\033[0m", "")
+					continue
+				}
+				head := fmt.Sprintf("\033[36m%s From %s\033[0m", marker, b.from)
+				if b.note != "" {
+					head += " \033[90m· " + highlight(b.note, query) + "\033[0m"
+				}
+				msgLines = append(msgLines, head)
+				msgLines = append(msgLines, timeGutter(renderBody(b.body, query, max(width-gutterExtra, 0)), clock)...)
+				msgLines = append(msgLines, "")
+			}
+			lastShown, lastRole = i, ""
+			continue
 		}
 		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
 			// A message sent from another session or ccs, not typed here.

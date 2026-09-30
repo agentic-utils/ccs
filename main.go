@@ -3075,7 +3075,7 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		day, clock, _ := strings.Cut(ts, " ")
 		newDay := day != "" && day != lastDay
 		if newDay { // the date gets its own row, once per day
-			msgLines = append(msgLines, "\033[90m    ── "+day+" ──\033[0m", "")
+			msgLines = append(msgLines, dateRow(day), "")
 			lastDay = day
 		}
 		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
@@ -3135,6 +3135,11 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 
 	return msgLines
 }
+
+// dateRow separates days in the preview; renderPreview pins the current one.
+const dateRowPrefix = "\033[90m    ── "
+
+func dateRow(day string) string { return dateRowPrefix + day + " ──\033[0m" }
 
 // gutterExtra is how much further right message text sits to leave room for
 // the time before its first line.
@@ -3205,6 +3210,17 @@ func (m model) renderPreview(item listItem, height int) string {
 	back := min(m.previewScroll, max(0, len(msgLines)-msgHeight))
 	start := max(0, len(msgLines)-msgHeight-back)
 	visibleMsgLines := msgLines[start:min(start+msgHeight, len(msgLines))]
+
+	// The header's last (blank) line pins the date of the top visible message,
+	// unless that message's own date row is already at the top.
+	if len(visibleMsgLines) > 0 && !strings.HasPrefix(visibleMsgLines[0], dateRowPrefix) {
+		for i := start; i >= 0; i-- {
+			if strings.HasPrefix(msgLines[i], dateRowPrefix) {
+				header[len(header)-1] = msgLines[i]
+				break
+			}
+		}
+	}
 
 	// Combine header + scrolled messages
 	allLines := append(header, visibleMsgLines...)

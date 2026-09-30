@@ -4532,3 +4532,24 @@ func TestHarnessNotesUseTimeGutter(t *testing.T) {
 		t.Errorf("notes should sit in the time gutter and stack without a blank line:\n%s", plain)
 	}
 }
+
+func TestPinnedDate(t *testing.T) {
+	var msgs []Message
+	for i := range 20 {
+		msgs = append(msgs, Message{Role: "assistant", Text: fmt.Sprintf("reply %d", i), Ts: fmt.Sprintf("2026-09-11T10:%02d:00Z", i)})
+	}
+	conv := Conversation{SessionID: "s", Cwd: "/p", Messages: msgs}
+	item := listItem{conv: conv}
+	m := initialModel([]listItem{item}, "", nil)
+	m.width, m.height = 100, 40
+	day := dateRow(formatTimestamp(msgs[0].Ts)[:10])
+	// At the bottom, the day's own row has scrolled away, so it's pinned.
+	if lines := strings.Split(m.renderPreview(item, 12), "\n"); !slices.Contains(lines[:len(previewHeader(conv, ""))], day) {
+		t.Errorf("date should be pinned above the messages:\n%s", strings.Join(lines, "\n"))
+	}
+	// At the top, the date row itself is shown, not pinned twice.
+	m.previewScroll = 1000
+	if got := m.renderPreview(item, 12); strings.Count(got, day) != 1 {
+		t.Errorf("date should appear once at the top:\n%s", got)
+	}
+}

@@ -4704,3 +4704,30 @@ func TestChangelogRetry(t *testing.T) {
 		t.Errorf("retry should show the changelog:\n%s", v)
 	}
 }
+
+func TestParseAPIChangelog(t *testing.T) {
+	body := `[{"tag_name":"v0.3.0","body":"## Changelog\n*  fix: newer\n"},
+{"tag_name":"v0.2.1","body":"## Changelog\n* 35cdc1b016d93b529a853c93a980acb55be9c985 chore: rename org\n* 4cde904 Merge pull request #1 from x\n\n"},
+{"tag_name":"v0.2.0","body":"## Changelog\n* f15ec5c Add GoReleaser config\n"}]`
+	got, err := parseAPIChangelog(strings.NewReader(body), "0.0.0", "v0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"v0.2.1", "  • chore: rename org", "v0.2.0", "  • Add GoReleaser config"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestChangelogScrollHintOnlyWhenScrollable(t *testing.T) {
+	m := model{width: 100, height: 30, notesOpen: true, notes: []string{"v1.0.0", "  • fix: x"}}
+	if v := strip2(m.notesPopup()); strings.Contains(v, "scroll") {
+		t.Errorf("a changelog that fits shouldn't offer scrolling:\n%s", v)
+	}
+	for range 40 {
+		m.notes = append(m.notes, "  • more")
+	}
+	if v := strip2(m.notesPopup()); !strings.Contains(v, "↑↓ scroll") {
+		t.Errorf("a long changelog should offer scrolling:\n%s", v)
+	}
+}

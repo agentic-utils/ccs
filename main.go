@@ -434,11 +434,17 @@ func (m model) checkUpdateCmd() tea.Cmd {
 }
 
 // releaseChangelog lists what changed in every release after from up to tag,
-// newest first, from the releases Atom feed (like latestRelease, not the
-// rate-limited REST API). The feed holds the latest 10 releases.
+// newest first. The REST API has the whole history in one call; if it fails
+// (its 60/hour unauthenticated limit, say) the Atom feed still has the
+// latest 10 releases.
 func releaseChangelog(from, tag string) ([]string, error) {
 	// downloadTransport moves on from an address that stalls (5s each).
 	client := http.Client{Timeout: 20 * time.Second, Transport: downloadTransport}
+	lines, err := apiChangelog(client, from, tag)
+	if err == nil {
+		return lines, nil
+	}
+	logUpdate("changelog from the API: %v; trying the feed", err)
 	resp, err := client.Get("https://github.com/agentic-utils/ccs/releases.atom")
 	if err != nil {
 		return nil, err
@@ -448,6 +454,48 @@ func releaseChangelog(from, tag string) ([]string, error) {
 		return nil, fmt.Errorf("releases feed: %s", resp.Status)
 	}
 	return parseChangelog(io.LimitReader(resp.Body, 1<<20), from, tag)
+}
+
+func apiChangelog(client http.Client, from, tag string) ([]string, error) {
+	resp, err := client.Get("https://api.github.com/repos/agentic-utils/ccs/releases?per_page=100")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("releases API: %s", resp.Status)
+	}
+	return parseAPIChangelog(io.LimitReader(resp.Body, 4<<20), from, tag)
+}
+
+// parseAPIChangelog is parseChangelog for the REST API's release list, whose
+// bodies are GoReleaser's markdown ("* <hash> fix: …").
+func parseAPIChangelog(r io.Reader, current, tag string) ([]string, error) {
+	var releases []struct {
+		Tag  string `json:"tag_name"`
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r).Decode(&releases); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, rel := range releases {
+		if !newerVersion(rel.Tag, current) || newerVersion(rel.Tag, strings.TrimPrefix(tag, "v")) {
+			continue
+		}
+		out = append(out, rel.Tag)
+		for _, l := range strings.Split(rel.Body, "\n") {
+			l = strings.TrimSpace(l)
+			if !strings.HasPrefix(l, "* ") && !strings.HasPrefix(l, "- ") {
+				continue
+			}
+			text := commitHash.ReplaceAllString(strings.TrimSpace(l[2:]), "")
+			if text != "" && !strings.HasPrefix(text, "Merge ") {
+				out = append(out, "  • "+text)
+			}
+		}
+	}
+	return out, nil
 }
 
 var (
@@ -2763,8 +2811,9 @@ func (m model) notesPopup() string {
 	for len(body) < min(m.notesRows(), max(len(m.notes), 1)) {
 		body = append(body, "") // a steady height while scrolling
 	}
-	pos := ""
+	pos, keys := "", hints("^L/"+keyEsc, "close")
 	if len(m.notes) > m.notesRows() {
+		keys = hints("↑↓", "scroll", "^L/"+keyEsc, "close")
 		pos = fmt.Sprintf("  %d–%d of %d", m.notesScroll+1, min(m.notesScroll+m.notesRows(), len(m.notes)), len(m.notes))
 	}
 	return lipgloss.NewStyle().
@@ -2772,7 +2821,7 @@ func (m model) notesPopup() string {
 		BorderForeground(lipgloss.Color("39")).
 		Padding(1, 3).
 		Render("\033[1mchangelog\033[0m\n\n" + strings.Join(body, "\n") +
-			"\n\n\033[90m" + hints("↑↓", "scroll", "^L/"+keyEsc, "close") + pos + "\033[0m")
+			"\n\n\033[90m" + keys + pos + "\033[0m")
 }
 
 // helpPopup lists the shortcuts that apply now; Ctrl+G or Esc closes it.

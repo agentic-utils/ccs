@@ -277,6 +277,7 @@ type model struct {
 	pending        map[string]string      // text sent but not yet seen in the transcript, by SessionID
 	sendNote       map[string]string      // outcome of the last send, by SessionID
 	sentAt         map[string]time.Time   // when a socket send finished, by SessionID, until the session queues it
+	held           map[string]bool        // a receipt said the session is holding the message for approval
 	sending        bool
 	reload         func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
 	gen            int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
@@ -1528,6 +1529,8 @@ func (m model) chatView() string {
 	switch {
 	case m.pending[id] != "" && m.sending:
 		left = "\033[90m  sending: " + chatSnippet(m.pending[id], m.width-40) + "\033[0m"
+	case m.pending[id] != "" && m.held[id]:
+		left = "\033[33m  ⏸ held: approve it in " + name + " · " + chatSnippet(m.pending[id], m.width-50-len(name)) + "\033[0m"
 	case m.pending[id] != "" && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
 		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], m.width-90) +
 			" · if it runs with bypass permissions, approve it in that session\033[0m"
@@ -1604,7 +1607,10 @@ func deliverMessage(pid int, id, name, text string) (string, error) {
 		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("session file: %v", err)
 	}
 	if f.Socket != "" {
-		err := sendViaSocket(f.Socket, peerToken(pid, f.Socket), text)
+		msgID, err := sendViaSocket(f.Socket, peerToken(pid, f.Socket), text)
+		if msgID != "" {
+			sentMsgs.Store(msgID, id) // so a receipt can find the session
+		}
 		if err == nil {
 			return "✓ Sent to " + name + " via its message socket (as a message from ccs)", nil
 		}
@@ -1627,10 +1633,10 @@ func deliverMessage(pid int, id, name, text string) (string, error) {
 // sendViaSocket writes one message to a Claude Code session's message
 // socket: newline-delimited JSON, an auth line with the session's peer token
 // first, then the message wrapped so the session sees it came from ccs.
-func sendViaSocket(path, token, text string) error {
+func sendViaSocket(path, token, text string) (string, error) {
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errNotConnected, err)
+		return "", fmt.Errorf("%w: %v", errNotConnected, err)
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(3 * time.Second))
@@ -1640,20 +1646,147 @@ func sendViaSocket(path, token, text string) error {
 		out.Write(append(line, '\n'))
 	}
 	body := strings.ReplaceAll(text, "</cross-session-message>", "</ cross-session-message>")
-	line, _ := json.Marshal(map[string]any{
+	msgID := newUUID()
+	msg := map[string]any{
 		"type":    "user",
 		"message": map[string]string{"role": "user", "content": "<cross-session-message from-name=\"" + ccsSender + "\">\n" + ccsNote + body + "\n</cross-session-message>"},
-		"msg_id":  newUUID(),
-	})
+		"msg_id":  msgID,
+		"msgV":    1,
+	}
+	// A return address lets the session send receipts (held, refused…); it
+	// only replies to one in its own socket folder.
+	if inbox := receiptInbox(filepath.Dir(path)); inbox != "" {
+		msg["from"] = "uds:" + inbox
+	}
+	line, _ := json.Marshal(msg)
 	out.Write(append(line, '\n'))
 	if _, err := conn.Write(out.Bytes()); err != nil {
-		return err
+		return msgID, err
 	}
 	time.Sleep(150 * time.Millisecond) // as Claude Code's own sender does before ending
 	if uc, ok := conn.(*net.UnixConn); ok {
-		return uc.CloseWrite()
+		return msgID, uc.CloseWrite()
 	}
-	return nil
+	return msgID, nil
+}
+
+// Delivery receipts. A Claude Code session sends one back, as a
+// {"type":"control","action":"peer_message_status"} line, only when a
+// message doesn't go straight in: held for approval (bypass-permissions
+// sessions), then delivered, denied or expired; refused; or dropped. It
+// connects to the "from" address, which must be a .sock in the recipient's
+// own socket folder, and checks the listener is the process that sent.
+var (
+	inboxMu    sync.Mutex
+	inboxes    = map[string]net.Listener{} // socket folder -> ccs's listener there
+	sentMsgs   sync.Map                    // msg_id -> SessionID
+	receiptsCh = make(chan receiptMsg, 16)
+)
+
+type receiptMsg struct {
+	id, status, reason string // id is the SessionID the message went to
+}
+
+// receiptInbox returns ccs's listening socket in dir, starting it on first
+// use; "" if it can't (the send then just goes without a return address).
+func receiptInbox(dir string) string {
+	inboxMu.Lock()
+	defer inboxMu.Unlock()
+	if l, ok := inboxes[dir]; ok {
+		return l.Addr().String()
+	}
+	path := filepath.Join(dir, fmt.Sprintf("ccs-%d-inbox.sock", os.Getpid()))
+	if len(path) > 100 { // unix socket paths are limited to ~104 bytes
+		return ""
+	}
+	reapInboxes(dir)
+	os.Remove(path) // our own pid's leftover, if any
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return ""
+	}
+	os.Chmod(path, 0o600)
+	inboxes[dir] = l
+	go serveReceipts(l)
+	return path
+}
+
+// reapInboxes removes inbox sockets left by ccs processes that have exited.
+func reapInboxes(dir string) {
+	matches, _ := filepath.Glob(filepath.Join(dir, "ccs-*-inbox.sock"))
+	for _, m := range matches {
+		var pid int
+		if _, err := fmt.Sscanf(filepath.Base(m), "ccs-%d-inbox.sock", &pid); err != nil || pid == os.Getpid() {
+			continue
+		}
+		if syscall.Kill(pid, 0) == syscall.ESRCH {
+			os.Remove(m)
+		}
+	}
+}
+
+func serveReceipts(l net.Listener) {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			return // closed
+		}
+		go func() {
+			defer conn.Close()
+			conn.SetDeadline(time.Now().Add(10 * time.Second))
+			sc := bufio.NewScanner(conn)
+			sc.Buffer(make([]byte, 64<<10), 1<<20)
+			for sc.Scan() {
+				if r, ok := parseReceipt(sc.Bytes()); ok {
+					select {
+					case receiptsCh <- r:
+					default: // nobody's reading fast enough; the heuristic still covers it
+					}
+				}
+			}
+		}()
+	}
+}
+
+// parseReceipt reads one line sent to ccs's inbox; anything but a receipt
+// for a message ccs sent (an auth line, a reply, an idle notice) is ignored.
+func parseReceipt(line []byte) (receiptMsg, bool) {
+	var r struct {
+		Type, Action, Status, Reason string
+		StatusDetail                 string   `json:"status_detail"`
+		OrigMsgID                    string   `json:"orig_msg_id"`
+		DropReason                   string   `json:"drop_reason"`
+		DroppedMsgIDs                []string `json:"dropped_msg_ids"`
+	}
+	if json.Unmarshal(line, &r) != nil || r.Type != "control" || r.Action != "peer_message_status" {
+		return receiptMsg{}, false
+	}
+	if r.Status == "expired" && r.StatusDetail == "refused" {
+		r.Status = "refused"
+	}
+	if r.Status == "dropped" && r.DropReason != "" {
+		r.Reason = r.DropReason
+	}
+	for _, id := range append([]string{r.OrigMsgID}, r.DroppedMsgIDs...) {
+		if sid, ok := sentMsgs.Load(id); ok && id != "" {
+			return receiptMsg{id: sid.(string), status: r.Status, reason: r.Reason}, true
+		}
+	}
+	return receiptMsg{}, false
+}
+
+// waitReceipt delivers the next receipt to Update; it blocks, so an idle
+// screen stays still.
+func waitReceipt() tea.Msg { return <-receiptsCh }
+
+// closeInboxes stops ccs's receipt sockets and removes their files.
+func closeInboxes() {
+	inboxMu.Lock()
+	defer inboxMu.Unlock()
+	for dir, l := range inboxes {
+		l.Close() // Go removes the socket file on Close
+		delete(inboxes, dir)
+	}
 }
 
 // peerToken reads the recipient's peer token from
@@ -1748,6 +1881,7 @@ func (m *model) checkDelivered(id string) {
 			if msgs[i].Role == "user" && strings.TrimSpace(body) == text {
 				delete(m.pending, id)
 				delete(m.sentAt, id)
+				delete(m.held, id)
 				if strings.Contains(m.sendNote[id], "socket") {
 					m.sendNote[id] = "✓ Delivered to " + m.sessionName(item.conv) + " (as a message from ccs)"
 				}
@@ -1761,6 +1895,45 @@ func (m *model) checkDelivered(id string) {
 				delete(m.sentAt, id)
 			}
 		}
+	}
+}
+
+// applyReceipt updates the status line from a session's delivery receipt.
+func (m *model) applyReceipt(r receiptMsg) {
+	name := r.id
+	for _, item := range m.items {
+		if item.conv.SessionID == r.id {
+			name = m.sessionName(item.conv)
+		}
+	}
+	if m.sendNote == nil {
+		m.sendNote = make(map[string]string)
+	}
+	if m.held == nil {
+		m.held = make(map[string]bool)
+	}
+	delete(m.sentAt, r.id) // a receipt beats the guess
+	switch r.status {
+	case "held":
+		m.held[r.id] = true
+	case "delivered":
+		delete(m.held, r.id) // approved; the transcript shows it next
+	default:
+		why := map[string]string{
+			"denied":  "declined in that session",
+			"expired": "it was held and expired without approval",
+			"refused": "that session isn't accepting messages",
+			"dropped": "dropped at its inbox",
+		}[r.status]
+		if why == "" {
+			why = r.status
+		}
+		if r.status == "dropped" && r.reason != "" {
+			why += " (" + r.reason + ")"
+		}
+		delete(m.held, r.id)
+		delete(m.pending, r.id)
+		m.sendNote[r.id] = "✗ " + name + " didn't take it: " + why
 	}
 }
 
@@ -2064,7 +2237,7 @@ func (m *model) updateFilter() {
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.reload != nil {
-		cmds = append(cmds, refreshTick(), liveTick())
+		cmds = append(cmds, refreshTick(), liveTick(), waitReceipt)
 	}
 	if m.checkLatest != nil {
 		cmds = append(cmds, m.checkUpdateCmd())
@@ -2425,6 +2598,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.checkDelivered(msg.id)
 		return m, nil
+
+	case receiptMsg:
+		m.applyReceipt(msg)
+		return m, waitReceipt
 
 	case sendDoneMsg:
 		m.sending = false
@@ -5308,6 +5485,7 @@ func main() {
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	finalModel, err := p.Run()
+	closeInboxes()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

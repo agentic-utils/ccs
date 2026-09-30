@@ -3936,7 +3936,7 @@ func TestSendViaSocketExactBytes(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &msg); err != nil {
 		t.Fatal(err)
 	}
-	want := "<cross-session-message from-name=\"ccs\">\ncheck \"it\" </ cross-session-message> now\n</cross-session-message>"
+	want := "<cross-session-message from-name=\"the user, via ccs\">\n" + ccsNote + "check \"it\" </ cross-session-message> now\n</cross-session-message>"
 	if msg.Type != "user" || msg.Message.Role != "user" || msg.Message.Content != want || len(msg.MsgID) != 36 {
 		t.Errorf("message line = %s", lines[1])
 	}
@@ -3991,7 +3991,7 @@ func TestSocketSuccessNeverAlsoTypes(t *testing.T) {
 
 func TestPeerMessageShownAndPendingClearsWhenItLands(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
-	wrapped, _ := json.Marshal("<cross-session-message from-name=\"ccs\">\ncheck the PR\n</cross-session-message>")
+	wrapped, _ := json.Marshal("<cross-session-message from-name=\"the user, via ccs\">\n" + ccsNote + "check the PR\n</cross-session-message>")
 	body := `{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"2026-09-29T10:00:00Z"}` + "\n" +
 		`{"type":"user","isMeta":true,"cwd":"/p","message":{"content":` + string(wrapped) + `},"timestamp":"2026-09-29T10:01:00Z"}` + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -4002,7 +4002,7 @@ func TestPeerMessageShownAndPendingClearsWhenItLands(t *testing.T) {
 		t.Fatalf("a message from ccs should be kept even though it's marked meta, got %d", len(c.Messages))
 	}
 	lines := strip2(strings.Join(buildPreviewLines(*c, "", 0), "\n"))
-	if !strings.Contains(lines, "From ccs") || !strings.Contains(lines, "check the PR") || strings.Contains(lines, "cross-session-message") {
+	if !strings.Contains(lines, "From the user, via ccs") || !strings.Contains(lines, "check the PR") || strings.Contains(lines, "cross-session-message") || strings.Contains(lines, "Typed by the user") {
 		t.Errorf("preview should show it as from ccs, unwrapped:\n%s", lines)
 	}
 	m := initialModel(buildItems([]Conversation{*c}), "", nil)

@@ -53,7 +53,7 @@ One package, split by area (all `package main`, same directory):
 - `update.go` - self-update (release check, brew/binary upgraders, `downloadTransport`, update log), changelog fetch and popups, restore-after-restart state
 - `usage.go` - usage screen, allowance, keychain, cswap account switcher
 - `prune.go` - `ccs prune` and the lossless pruning it shares with Ctrl+X
-- `main_test.go` - Unit tests
+- `<area>_test.go` - tests live next to their code (`preview_test.go` for `preview.go`, and so on); a test that drives the UI goes with the feature it checks. Shared helpers (`TestMain`, `key`, `strip2`, `chatModel`, fake binaries and sockets) are in `helpers_test.go`
 - `.goreleaser.yaml` - Release configuration
 - `.github/workflows/test.yaml` - CI test workflow (reusable)
 - `.github/workflows/ci.yaml` - On push to main: runs test.yaml, then tags and releases

@@ -284,6 +284,7 @@ type model struct {
 	notesErr          string
 	notesScroll       int
 	fetchNotes        func() ([]string, error)
+	notesFetching     bool      // a fetch is in flight (started at launch or by Ctrl+L)
 	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
 	updateErr         string // last install failure, shown in the popup with a retry
@@ -436,7 +437,8 @@ func (m model) checkUpdateCmd() tea.Cmd {
 // newest first, from the releases Atom feed (like latestRelease, not the
 // rate-limited REST API). The feed holds the latest 10 releases.
 func releaseChangelog(from, tag string) ([]string, error) {
-	client := http.Client{Timeout: 10 * time.Second}
+	// downloadTransport moves on from an address that stalls (5s each).
+	client := http.Client{Timeout: 20 * time.Second, Transport: downloadTransport}
 	resp, err := client.Get("https://github.com/agentic-utils/ccs/releases.atom")
 	if err != nil {
 		return nil, err
@@ -1974,6 +1976,9 @@ func (m model) Init() tea.Cmd {
 	if m.showUsage { // restored onto the usage screen after an update
 		cmds = append(cmds, m.usageCmd())
 	}
+	if m.fetchNotes != nil { // in the background, so Ctrl+L opens instantly
+		cmds = append(cmds, m.notesCmd())
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -2250,8 +2255,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(fetch, tea.Tick(next, func(time.Time) tea.Msg { return updateCheckTickMsg{} }))
 
 	case notesMsg:
+		m.notesFetching = false
 		if msg.err != nil {
 			m.notesErr = msg.err.Error()
+			logUpdate("changelog: %v", msg.err)
 		} else {
 			m.notes = msg.lines
 		}
@@ -2344,6 +2351,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+l", "esc":
 				m.notesOpen = false
+			case "enter":
+				if m.notesErr != "" && !m.notesFetching && m.fetchNotes != nil { // retry
+					m.notesErr = ""
+					return m, m.notesCmd()
+				}
 			case "ctrl+c":
 				m.quitting = true
 				return m, tea.Quit
@@ -2360,10 +2372,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen {
 			m.helpOpen, m.notesOpen, m.notesScroll = false, true, 0
-			if m.notes == nil && m.fetchNotes != nil {
+			if m.notes == nil && !m.notesFetching && m.fetchNotes != nil {
 				m.notesErr = ""
-				f := m.fetchNotes
-				return m, func() tea.Msg { lines, err := f(); return notesMsg{lines, err} }
+				return m, m.notesCmd()
 			}
 			return m, nil
 		}
@@ -2709,6 +2720,13 @@ func hints(pairs ...string) string {
 	return strings.Join(parts, "  ")
 }
 
+// notesCmd fetches the changelog off the UI goroutine.
+func (m *model) notesCmd() tea.Cmd {
+	m.notesFetching = true
+	f := m.fetchNotes
+	return func() tea.Msg { lines, err := f(); return notesMsg{lines, err} }
+}
+
 // notesRows is how many changelog lines the popup shows at once.
 func (m model) notesRows() int { return max(m.height-10, 3) }
 
@@ -2723,7 +2741,7 @@ func (m model) notesPopup() string {
 	var body []string
 	switch {
 	case m.notesErr != "":
-		body = []string{"couldn't fetch the changelog: " + truncate(m.notesErr, width-30)}
+		body = []string{"couldn't fetch the changelog: " + truncate(m.notesErr, width-30), "", "\033[90m" + hints(keyEnter, "retry") + "\033[0m"}
 	case m.notes == nil:
 		body = []string{"fetching…"}
 	default:
@@ -4907,6 +4925,7 @@ func main() {
 		m.checkLatest = latestRelease
 		m.fetchChangelog = func(tag string) ([]string, error) { return releaseChangelog(version, tag) }
 		m.fetchNotes = func() ([]string, error) { return releaseChangelog("0.0.0", "v99999.0.0") }
+		m.notesFetching = true // Init starts it
 		m.allowanceEnabled = true
 		if exe, err := os.Executable(); err == nil {
 			m.upgrade = chooseUpgrader(exe)

@@ -4775,3 +4775,52 @@ func TestChangelogWidthSteady(t *testing.T) {
 		}
 	}
 }
+
+func TestJumpBetweenSearchHits(t *testing.T) {
+	var msgs []Message
+	for i := range 40 {
+		text := fmt.Sprintf("filler %d", i)
+		if i == 5 || i == 20 || i == 38 {
+			text = fmt.Sprintf("needle %d", i)
+		}
+		msgs = append(msgs, Message{Role: []string{"user", "assistant"}[i%2], Text: text, Ts: "2026-09-30T10:00:00Z"})
+	}
+	conv := Conversation{SessionID: "s", Cwd: "/p", Messages: msgs}
+	m := initialModel(buildItems([]Conversation{conv}), "needle", nil)
+	m.width, m.height = 100, 30
+	hits := m.hitLines()
+	if len(hits) != 3 {
+		t.Fatalf("want 3 hits, got %v", hits)
+	}
+	top := func() int {
+		lines := m.previewLines()
+		rows := m.previewMessageRows(m.filtered[m.cursor].conv)
+		return max(0, len(lines)-rows-min(m.previewScroll, max(0, len(lines)-rows)))
+	}
+	// Opens at the bottom; previous goes back through the hits, then wraps.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlBackslash})
+	if top() != hits[1] {
+		t.Errorf("previous from the bottom should reach the middle hit (%d), top=%d", hits[1], top())
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlBackslash})
+	if top() != hits[0] {
+		t.Errorf("previous again should reach the first hit (%d), top=%d", hits[0], top())
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlCloseBracket})
+	if top() != hits[1] {
+		t.Errorf("next should go to the middle hit, top=%d", top())
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlCloseBracket}) // last hit sits in the final screen
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlCloseBracket})
+	if top() != hits[0] {
+		t.Errorf("next past the end should wrap to the first hit, top=%d", top())
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "hit 1/3") {
+		t.Errorf("preview should show the hit position:\n%s", v)
+	}
+	m.textInput.SetValue("")
+	m.updateFilter()
+	if v := strip2(m.View()); strings.Contains(v, "hit ") {
+		t.Errorf("no hit position without a search:\n%s", v)
+	}
+}

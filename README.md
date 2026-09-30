@@ -95,6 +95,7 @@ ccs buyer -- --plan
 - `Ctrl+O` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
 - `Ctrl+G` - Show every shortcut (the header lists only the common ones, in compact form: `^S` for Ctrl+S)
 - `Ctrl+L` - Changelog: what changed in each recent release, newest first, the installed and newer ones marked; scroll with ↑↓, PgUp/PgDn or the wheel
+- `Ctrl+]` / `Ctrl+\` - With a search typed, jump to the next / previous matching message in the conversation (wraps round); the preview shows `hit 2/5`
 - `Ctrl+C` - Quit
 
 ## Pruning

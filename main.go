@@ -2568,7 +2568,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "enter":
 				return m, m.sendCmd()
-			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x":
+			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x", "ctrl+]", "ctrl+\\":
 				// fall through to the list's handling below
 			default:
 				var cmd tea.Cmd
@@ -2683,6 +2683,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
+		case "ctrl+]", "ctrl+\\": // next / previous search hit
+			m.jumpHit(msg.String() == "ctrl+]")
+			return m, nil
+
 		case "pgup", "ctrl+k":
 			m.previewScroll = min(m.previewScroll+10, m.maxPreviewScroll()) // back
 			return m, nil
@@ -2762,6 +2766,7 @@ func (m model) shortcuts() [][2]string {
 	add(sel, "^D", "delete")
 	add(sel, "^X", "prune")
 	add(sel, "^J/K", "scroll the conversation")
+	add(sel && m.textInput.Value() != "" && len(m.hitLines()) > 0, "^] ^\\", "next / previous search hit")
 	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
 	add(true, keyTab, "usage")
 	add(!m.chatFocus && m.textInput.Value() != "", keyEsc+" ^U", "clear the search")
@@ -2833,7 +2838,7 @@ func (m model) notesPopup() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
 		Padding(1, 3).
-		Width(width+6). // fixed, so scrolling past longer or shorter lines doesn't resize it
+		Width(width + 6). // fixed, so scrolling past longer or shorter lines doesn't resize it
 		Render("\033[1mchangelog\033[0m\n\n" + strings.Join(body, "\n") +
 			"\n\n\033[90m" + keys + pos + "\033[0m")
 }
@@ -3354,6 +3359,59 @@ func carryStyles(lines []string) []string {
 	return lines
 }
 
+// hitLinesIn returns the preview line indexes of search matches: the lines
+// buildPreviewLines marks with ▶ (headers and one-line notes, never body text,
+// which is always indented).
+func hitLinesIn(lines []string) []int {
+	var hits []int
+	for i, l := range lines {
+		if strings.HasPrefix(ansiSeq.ReplaceAllString(l, ""), "▶") {
+			hits = append(hits, i)
+		}
+	}
+	return hits
+}
+
+func (m model) hitLines() []int { return hitLinesIn(m.previewLines()) }
+
+// jumpHit scrolls the preview so the next (or previous) search hit is at the
+// top, wrapping round at either end.
+func (m *model) jumpHit(next bool) {
+	if len(m.filtered) == 0 || m.textInput.Value() == "" {
+		return
+	}
+	lines := m.previewLines()
+	hits := hitLinesIn(lines)
+	if len(hits) == 0 {
+		return
+	}
+	rows := m.previewMessageRows(m.filtered[m.cursor].conv)
+	back := min(m.previewScroll, max(0, len(lines)-rows))
+	top := max(0, len(lines)-rows-back)
+	scrollTo := func(line int) int { return min(max(len(lines)-rows-line, 0), m.maxPreviewScroll()) }
+	// Hits in jump order from the top line, wrapping; take the first that
+	// actually moves the view (near the end several hits share one position).
+	var order []int
+	if next {
+		i := sort.SearchInts(hits, top+1)
+		order = append(append(order, hits[i:]...), hits[:i]...)
+	} else {
+		i := sort.SearchInts(hits, top)
+		for j := i - 1; j >= 0; j-- {
+			order = append(order, hits[j])
+		}
+		for j := len(hits) - 1; j >= i; j-- {
+			order = append(order, hits[j])
+		}
+	}
+	for _, h := range order {
+		if s := scrollTo(h); s != back {
+			m.previewScroll = s
+			return
+		}
+	}
+}
+
 // previewRenderHeight is the height View gives renderPreview.
 func (m model) previewRenderHeight() int {
 	_, listHeight, _ := m.listLayout()
@@ -3502,6 +3560,12 @@ func (m model) renderPreview(item listItem, height int) string {
 				break
 			}
 		}
+	}
+
+	// While searching, where the view is among this conversation's hits.
+	if hits := hitLinesIn(msgLines); query != "" && len(hits) > 0 {
+		i := sort.SearchInts(hits, start) + 1 // first hit at or below the top
+		header[len(header)-1] += fmt.Sprintf("  \033[90mhit %d/%d · ^] next ^\\ prev\033[0m", min(i, len(hits)), len(hits))
 	}
 
 	// Combine header + scrolled messages
@@ -4868,6 +4932,7 @@ Key bindings:
   Esc             Clear the search
   Ctrl+G          Show all shortcuts
   Ctrl+L          Changelog
+  Ctrl+] / Ctrl+\  Next / previous search hit
   Ctrl+C          Quit
 
 `, version)

@@ -4972,3 +4972,67 @@ func TestLinksPopupEmpty(t *testing.T) {
 		t.Errorf("with no links, ^T should say so instead of opening an empty popup:\n%s", strip2(m.View()))
 	}
 }
+
+func TestDeliveryReceipts(t *testing.T) {
+	defer closeInboxes()
+	m := chatModel(t)
+	sock, got := fakeSocket(t)
+	pid := os.Getpid()
+	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","messagingSocketPath":%q}`, sock)), 0o600)
+	if _, err := deliverMessage(pid, "live", "busy", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	var msg struct {
+		MsgID string `json:"msg_id"`
+		MsgV  int    `json:"msgV"`
+		From  string `json:"from"`
+	}
+	json.Unmarshal([]byte(strings.TrimSpace(<-got)), &msg)
+	inbox := filepath.Join(filepath.Dir(sock), fmt.Sprintf("ccs-%d-inbox.sock", pid))
+	if msg.From != "uds:"+inbox || msg.MsgV != 1 || msg.MsgID == "" {
+		t.Fatalf("message should carry a return address in the session's socket folder: %+v", msg)
+	}
+
+	receipt := func(line string) receiptMsg {
+		t.Helper()
+		c, err := net.Dial("unix", inbox)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Write([]byte(line + "\n"))
+		c.Close()
+		select {
+		case r := <-receiptsCh:
+			return r
+		case <-time.After(2 * time.Second):
+			t.Fatal("no receipt came through")
+		}
+		return receiptMsg{}
+	}
+	m.pending = map[string]string{"live": "hello"}
+	m.sentAt = map[string]time.Time{"live": time.Now().Add(-time.Minute)}
+	for i := range m.filtered {
+		if m.filtered[i].conv.SessionID == "live" {
+			m.cursor = i
+		}
+	}
+	m.applyReceipt(receipt(`{"type":"control","action":"peer_message_status","status":"held","orig_msg_id":"` + msg.MsgID + `","from":"uds:/x.sock","msgV":1}`))
+	if v := strip2(m.View()); !strings.Contains(v, "held: approve it in") || strings.Contains(v, "not picked up yet") {
+		t.Errorf("a held receipt should replace the guess:\n%s", v)
+	}
+	m.applyReceipt(receipt(`{"type":"control","action":"peer_message_status","status":"expired","status_detail":"refused","orig_msg_id":"` + msg.MsgID + `"}`))
+	if v := strip2(m.View()); !strings.Contains(v, "didn't take it: that session isn't accepting messages") {
+		t.Errorf("a refusal should say so:\n%s", v)
+	}
+	// Anything else on the inbox (an unknown id, a reply) is ignored.
+	if _, ok := parseReceipt([]byte(`{"type":"control","action":"peer_message_status","status":"held","orig_msg_id":"nope"}`)); ok {
+		t.Error("a receipt for a message ccs didn't send should be ignored")
+	}
+	if _, ok := parseReceipt([]byte(`{"type":"user","message":{"content":"hi"}}`)); ok {
+		t.Error("a reply isn't a receipt")
+	}
+	closeInboxes()
+	if _, err := os.Stat(inbox); !os.IsNotExist(err) {
+		t.Errorf("the inbox socket should be removed on exit: %v", err)
+	}
+}

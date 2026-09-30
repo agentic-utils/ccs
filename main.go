@@ -82,8 +82,9 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	parsedBytes int64
 	sawUser     bool
-	lastUsageID string // one reply spans several lines with the same id and usage; count it once
-	tailApplied bool   // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
+	peerQueued  []string // recent messages from other sessions/ccs the session has queued, for delivery status
+	lastUsageID string   // one reply spans several lines with the same id and usage; count it once
+	tailApplied bool     // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
 
 	// readAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -119,6 +120,21 @@ type RawMessage struct {
 	TeamName       string `json:"teamName"`   // set on teammate transcripts spawned by a team lead
 	CustomTitle    string `json:"customTitle"`
 	AiTitle        string `json:"aiTitle"`
+	// A message that arrived mid-turn (typed by the user, or from another
+	// session or ccs) is logged as an attachment, not a user line.
+	// Raw, and decoded only for those record types, so an unexpected shape
+	// elsewhere can't make a whole line unparseable.
+	Attachment json.RawMessage `json:"attachment"`
+	Operation  string          `json:"operation"` // queue-operation: enqueue, dequeue, remove
+	Content    json.RawMessage `json:"content"`   // queue-operation: what was queued
+}
+
+// queuedCommand is an attachment record for a message that arrived mid-turn.
+type queuedCommand struct {
+	Type        string          `json:"type"`
+	Prompt      json.RawMessage `json:"prompt"`
+	CommandMode string          `json:"commandMode"`
+	IsMeta      bool            `json:"isMeta"`
 }
 
 // tokenUsage sums a conversation's per-reply usage.
@@ -260,6 +276,7 @@ type model struct {
 	chatStatus     map[string]sessionStat // busy/idle per live session, from its session file
 	pending        map[string]string      // text sent but not yet seen in the transcript, by SessionID
 	sendNote       map[string]string      // outcome of the last send, by SessionID
+	sentAt         map[string]time.Time   // when a socket send finished, by SessionID, until the session queues it
 	sending        bool
 	reload         func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
 	gen            int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
@@ -1504,8 +1521,11 @@ func (m model) chatView() string {
 	switch {
 	case m.pending[id] != "" && m.sending:
 		left = "\033[90m  sending: " + chatSnippet(m.pending[id], m.width-40) + "\033[0m"
+	case m.pending[id] != "" && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
+		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], m.width-90) +
+			" · if it runs with bypass permissions, approve it in that session\033[0m"
 	case m.pending[id] != "" && m.chatStatus[id].status == "busy":
-		left = "\033[90m  queued until it's free: " + chatSnippet(m.pending[id], m.width-60) + "\033[0m"
+		left = "\033[90m  sent: " + chatSnippet(m.pending[id], m.width-60) + " · Claude sees it after its current step\033[0m"
 	case m.pending[id] != "":
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], m.width-40) + "\033[0m"
 	case m.sendNote[id] != "":
@@ -1720,14 +1740,26 @@ func (m *model) checkDelivered(id string) {
 			}
 			if msgs[i].Role == "user" && strings.TrimSpace(body) == text {
 				delete(m.pending, id)
+				delete(m.sentAt, id)
 				if strings.Contains(m.sendNote[id], "socket") {
 					m.sendNote[id] = "✓ Delivered to " + m.sessionName(item.conv) + " (as a message from ccs)"
 				}
 				return
 			}
 		}
+		// Claude Code logs a socket message as queued the moment it arrives,
+		// then hands it to Claude at the next step (or at once when idle).
+		for _, q := range item.conv.peerQueued {
+			if _, b, ok := peerParts(q); ok && strings.TrimSpace(b) == text {
+				delete(m.sentAt, id)
+			}
+		}
 	}
 }
+
+// heldTimeout is how long a socket message may go unqueued before ccs says
+// the session may be holding it.
+const heldTimeout = 5 * time.Second
 
 // Claude Code frames socket messages as coming from a peer session, so a
 // recipient can take one from ccs for another Claude and try to answer it
@@ -1788,7 +1820,7 @@ func teammateBlocks(text string) []teammateBlock {
 
 // peerMessage matches a message another session (or ccs) sent through the
 // message socket; peerParts pulls out who it's from and the text.
-var peerMessage = regexp.MustCompile(`(?s)^<cross-session-message([^>]*)>\n(.*)\n</cross-session-message>$`)
+var peerMessage = regexp.MustCompile(`(?s)^(?:Another Claude session sent a message:\n)?<cross-session-message([^>]*)>\n(.*)\n</cross-session-message>$`)
 var peerFrom = regexp.MustCompile(`from-name="([^"]*)"`)
 
 func peerParts(text string) (from, body string, ok bool) {
@@ -2400,6 +2432,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sendNote[msg.id] = msg.note
 		if msg.err != nil {
 			delete(m.pending, msg.id)
+		} else if strings.Contains(msg.note, "socket") {
+			if m.sentAt == nil {
+				m.sentAt = make(map[string]time.Time)
+			}
+			m.sentAt[msg.id] = time.Now()
 		}
 		m.checkDelivered(msg.id)
 		return m, nil
@@ -2833,7 +2870,7 @@ func (m model) notesPopup() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
 		Padding(1, 3).
-		Width(width+6). // fixed, so scrolling past longer or shorter lines doesn't resize it
+		Width(width + 6). // fixed, so scrolling past longer or shorter lines doesn't resize it
 		Render("\033[1mchangelog\033[0m\n\n" + strings.Join(body, "\n") +
 			"\n\n\033[90m" + keys + pos + "\033[0m")
 }
@@ -4109,6 +4146,22 @@ func parseLine(conv *Conversation, line []byte) bool {
 				conv.FirstTimestamp = raw.Timestamp
 			}
 			conv.Messages = append(conv.Messages, Message{Role: "user", Text: text, Ts: raw.Timestamp})
+		}
+	case "attachment":
+		var a queuedCommand
+		if json.Unmarshal(raw.Attachment, &a) != nil || a.Type != "queued_command" || a.CommandMode != "prompt" {
+			break
+		}
+		text := extractText(a.Prompt)
+		if (!a.IsMeta || peerMessage.MatchString(text)) && strings.TrimSpace(text) != "" {
+			conv.Messages = append(conv.Messages, Message{Role: "user", Text: text, Ts: raw.Timestamp})
+		}
+	case "queue-operation":
+		if text := extractText(raw.Content); raw.Operation == "enqueue" && peerMessage.MatchString(text) {
+			if len(conv.peerQueued) >= 20 {
+				conv.peerQueued = conv.peerQueued[1:]
+			}
+			conv.peerQueued = append(conv.peerQueued, text)
 		}
 	case "assistant":
 		if raw.IsAPIError {

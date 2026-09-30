@@ -2818,7 +2818,7 @@ func (m model) notesPopup() string {
 			} else if strings.TrimPrefix(l, "v") == version {
 				mark = " \033[90m(installed)\033[0m"
 			}
-			body = append(body, "\033[1m"+l+"\033[22m"+mark)
+			body = append(body, ansi.Truncate("\033[1m"+l+"\033[22m"+mark, width, "…"))
 		}
 	}
 	for len(body) < min(m.notesRows(), max(len(m.notes), 1)) {
@@ -2833,6 +2833,7 @@ func (m model) notesPopup() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
 		Padding(1, 3).
+		Width(width+6). // fixed, so scrolling past longer or shorter lines doesn't resize it
 		Render("\033[1mchangelog\033[0m\n\n" + strings.Join(body, "\n") +
 			"\n\n\033[90m" + keys + pos + "\033[0m")
 }

@@ -4760,3 +4760,18 @@ func TestControlCodesStripped(t *testing.T) {
 		t.Errorf("text should survive: %q", strip2(joined))
 	}
 }
+
+func TestChangelogWidthSteady(t *testing.T) {
+	m := model{width: 120, height: 20, notesOpen: true}
+	for i := range 30 {
+		m.notes = append(m.notes, fmt.Sprintf("v0.%d.0", i), "  • "+strings.Repeat("x", i*3))
+	}
+	width := func() int { return ansi.StringWidth(strings.Split(m.notesPopup(), "\n")[0]) }
+	w := width()
+	for range 40 {
+		m.scrollNotes(1)
+		if got := width(); got != w {
+			t.Fatalf("popup width changed while scrolling: %d then %d", w, got)
+		}
+	}
+}

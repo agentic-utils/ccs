@@ -4281,7 +4281,7 @@ func TestPreviewReadable(t *testing.T) {
 	// A wrapped bullet's continuation lines line up with its text.
 	var bullet []string
 	for _, l := range strings.Split(plain, "\n") {
-		if strings.HasPrefix(l, "          - word") || (len(bullet) > 0 && strings.HasPrefix(l, "            word")) {
+		if strings.HasPrefix(l, "        - word") || (len(bullet) > 0 && strings.HasPrefix(l, "          word")) {
 			bullet = append(bullet, l)
 		}
 	}
@@ -4327,7 +4327,7 @@ func TestLinksAndCollapsedIndent(t *testing.T) {
 		{Role: "assistant", Text: "See [slack-bot#336](https://github.com/two-inc/slack-bot/pull/336) and [https://x.io/a](https://x.io/a)."},
 	}}
 	plain := strip2(strings.Join(buildPreviewLines(conv, "", 120), "\n"))
-	if !regexp.MustCompile(`(?m)^    \S.* ▸ task-notification · CI done$`).MatchString(plain) {
+	if !regexp.MustCompile(`(?m)^  \S.* ▸ task-notification · CI done$`).MatchString(plain) {
 		t.Errorf("collapsed line should keep its indent:\n%s", plain)
 	}
 	if !strings.Contains(plain, "slack-bot#336 (github.com/two-inc/slack-bot/pull/336)") || strings.Contains(plain, "](") {
@@ -4418,12 +4418,12 @@ func TestPreviewSpeakerRuns(t *testing.T) {
 		t.Errorf("a run of Claude messages should share one header, got %d:\n%s", n, plain)
 	}
 	clock := formatTimestamp("2026-09-29T10:02:00Z")[11:]
-	if !strings.Contains(plain, "    "+clock+" The reply didn't post.") {
+	if !strings.Contains(plain, "  "+clock+" The reply didn't post.") {
 		t.Errorf("each message should start with its time:\n%s", plain)
 	}
 	// A search match gets its own marked header even mid-run.
 	plain = strip2(strings.Join(buildPreviewLines(conv, "reply", 80), "\n"))
-	if !strings.Contains(plain, ">>> Claude") {
+	if !strings.Contains(plain, "▶ Claude") {
 		t.Errorf("a match should be marked:\n%s", plain)
 	}
 }
@@ -4528,7 +4528,7 @@ func TestHarnessNotesUseTimeGutter(t *testing.T) {
 		t.Errorf("the date should appear only on its own row:\n%s", plain)
 	}
 	clock := formatTimestamp("2026-09-11T17:03:00Z")[11:]
-	want := "    " + clock + " ▸ task-notification · Monitor event: CI\n    "
+	want := "  " + clock + " ▸ task-notification · Monitor event: CI\n  "
 	if !strings.Contains(plain, want) {
 		t.Errorf("notes should sit in the time gutter and stack without a blank line:\n%s", plain)
 	}

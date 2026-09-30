@@ -3063,10 +3063,10 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 
 		if lastShown >= 0 && i > lastShown+1 {
 			skipped := i - lastShown - 1
-			msgLines = append(msgLines, fmt.Sprintf("\033[90m    ... %d messages ...\033[0m", skipped))
+			msgLines = append(msgLines, fmt.Sprintf("\033[90m  ... %d messages ...\033[0m", skipped))
 			msgLines = append(msgLines, "")
 		} else if lastShown == -1 && i > 0 {
-			msgLines = append(msgLines, fmt.Sprintf("\033[90m    ... %d earlier messages\033[0m", i))
+			msgLines = append(msgLines, fmt.Sprintf("\033[90m  ... %d earlier messages\033[0m", i))
 			msgLines = append(msgLines, "")
 		}
 
@@ -3080,9 +3080,9 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		}
 		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
 			// A message sent from another session or ccs, not typed here.
-			marker := "   "
+			marker := " "
 			if matchSet[i] {
-				marker = ">>>"
+				marker = "▶"
 			}
 			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s From %s\033[0m", marker, from))
 			msgLines = append(msgLines, timeGutter(renderBody(body, query, max(width-gutterExtra, 0)), clock)...)
@@ -3093,16 +3093,16 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		if tag, summary, ok := harnessNote(msg.Text); ok && msg.Role == "user" {
 			// Injected by the harness (task notifications, reminders, command
 			// output): one dim line, so the real conversation stays readable.
-			marker := "   "
+			marker := " "
 			if matchSet[i] {
-				marker = ">>>"
+				marker = "▶"
 			}
 			line := "▸ " + tag
 			if summary != "" {
 				line += " · " + summary
 			}
 			if width > 0 {
-				line = truncate(line, width-4-gutterExtra) // truncate squeezes spaces, so add the gutter after
+				line = truncate(line, width-2-gutterExtra) // truncate squeezes spaces, so add the gutter after
 			}
 			if lastRole == "harness" && lastShown == i-1 {
 				msgLines = msgLines[:len(msgLines)-1] // consecutive notes stack without blank lines
@@ -3112,12 +3112,12 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 			continue
 		}
 		if msg.Role != lastRole || newDay || matchSet[i] {
-			name, colour, marker := "Claude", "34", "   "
+			name, colour, marker := "Claude", "34", " "
 			if msg.Role == "user" {
 				name, colour = "User", "32"
 			}
 			if matchSet[i] {
-				colour, marker = "1;"+colour, ">>>"
+				colour, marker = "1;"+colour, "▶"
 			}
 			msgLines = append(msgLines, fmt.Sprintf("\033[%sm%s %s\033[0m", colour, marker, name))
 		}
@@ -3130,14 +3130,14 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 
 	if lastShown < len(conv.Messages)-1 {
 		remaining := len(conv.Messages) - lastShown - 1
-		msgLines = append(msgLines, fmt.Sprintf("\033[90m    ... %d more messages\033[0m", remaining))
+		msgLines = append(msgLines, fmt.Sprintf("\033[90m  ... %d more messages\033[0m", remaining))
 	}
 
 	return msgLines
 }
 
 // dateRow separates days in the preview; renderPreview pins the current one.
-const dateRowPrefix = "\033[90m    ── "
+const dateRowPrefix = "\033[90m  ── "
 
 func dateRow(day string) string { return dateRowPrefix + day + " ──\033[0m" }
 
@@ -3150,10 +3150,12 @@ const gutterExtra = 6
 func timeGutter(lines []string, clock string) []string {
 	pad := strings.Repeat(" ", gutterExtra)
 	for i, l := range lines {
-		if clock != "" && strings.HasPrefix(l, "    ") {
-			lines[i] = "    \033[90m" + fmt.Sprintf("%-5s", clock) + "\033[0m " + l[4:]
+		if clock != "" && strings.HasPrefix(l, "  ") {
+			lines[i] = "  \033[90m" + fmt.Sprintf("%-5s", clock) + "\033[0m " + l[2:]
 			clock = ""
-		} else if l != "" {
+		} else if strings.TrimSpace(l) == "" {
+			lines[i] = ""
+		} else {
 			lines[i] = pad + l
 		}
 	}
@@ -3312,7 +3314,7 @@ func renderBody(text, query string, width int) []string {
 	if r := []rune(text); len(r) > maxMessageRunes {
 		text = string(r[:maxMessageRunes]) + fmt.Sprintf("\n… (%d more characters)", len(r)-maxMessageRunes)
 	}
-	const indent = "    "
+	const indent = "  "
 	var out []string
 	inCode := false
 	lines := strings.Split(text, "\n")

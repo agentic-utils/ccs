@@ -1073,8 +1073,8 @@ func TestViewRendering(t *testing.T) {
 	if !strings.Contains(output, "Delete conversation") {
 		t.Error("delete confirmation should be shown")
 	}
-	if !strings.Contains(output, "[y/N]") {
-		t.Error("delete confirmation should show [y/N] prompt")
+	if !strings.Contains(strip2(output), "y delete  n/esc cancel") {
+		t.Error("delete confirmation should show its keys")
 	}
 
 	// Test error message display
@@ -4872,5 +4872,49 @@ func TestJumpBetweenSearchHits(t *testing.T) {
 	m.updateFilter()
 	if v := strip2(m.View()); strings.Contains(v, "hit ") {
 		t.Errorf("no hit position without a search:\n%s", v)
+	}
+}
+
+func TestHeaderNeverWraps(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.height = 30
+	for _, w := range []int{140, 90, 70, 50, 30, 12} {
+		m.width = w
+		first := strings.Split(m.View(), "\n")[0]
+		if got := ansi.StringWidth(first); got > w {
+			t.Errorf("width %d: header is %d wide: %q", w, got, strip2(first))
+		}
+		plain := strip2(first)
+		if w >= 70 && (!strings.Contains(plain, "^G help") || !strings.Contains(plain, "^C quit")) {
+			t.Errorf("width %d: help and quit should stay: %q", w, plain)
+		}
+		if w == 140 && !strings.Contains(plain, "enter resume") {
+			t.Errorf("wide header should keep every hint: %q", plain)
+		}
+	}
+}
+
+func TestHelpTextListsEveryKey(t *testing.T) {
+	var buf bytes.Buffer
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	printHelp()
+	w.Close()
+	os.Stdout = old
+	buf.ReadFrom(r)
+	for _, k := range []string{"Ctrl+S", "Ctrl+O", "Ctrl+L", "Ctrl+G", "Tab", "Ctrl+X", "Ctrl+R", "Ctrl+F"} {
+		if !strings.Contains(buf.String(), k) {
+			t.Errorf("--help should list %s", k)
+		}
+	}
+}
+
+func TestPrunePromptHints(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", Size: 4096}}}, "", nil)
+	m.width, m.height = 140, 30
+	m.confirmPrune, m.pruneIndex, m.pruneSaved = true, 0, 1024
+	if v := strip2(m.View()); !strings.Contains(v, "y prune  n/esc cancel") || strings.Contains(v, "[y/N]") {
+		t.Errorf("prune prompt should use the compact key hints:\n%s", v)
 	}
 }

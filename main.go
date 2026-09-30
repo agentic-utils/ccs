@@ -2813,6 +2813,32 @@ func (m model) shortcuts() [][2]string {
 	return out
 }
 
+// headerLine fits the title row into width so it never wraps (listLayout
+// counts it as one row): hint pairs go from the end, keeping the last keep
+// (help, quit), then the title is cut, then the kept hints go too.
+func headerLine(width int, title string, pairs []string, keep int) string {
+	fits := func(t, h string) bool { return 2+ansi.StringWidth(t)+1+ansi.StringWidth(h) <= width }
+	drop := len(pairs)/2 - keep // pairs that may go
+	for !fits(title, hints(pairs...)) && drop > 0 {
+		i := 2 * (drop - 1)
+		pairs = append(pairs[:i:i], pairs[i+2:]...)
+		drop--
+	}
+	help := hints(pairs...)
+	if !fits(title, help) {
+		title = ansi.Truncate(title, max(width-2-1-ansi.StringWidth(help), 3), "…") + "\033[0m"
+	}
+	if !fits(title, help) {
+		help = ""
+		title = ansi.Truncate(title, max(width-3, 1), "…") + "\033[0m"
+	}
+	pad := max(width-2-ansi.StringWidth(title)-ansi.StringWidth(help), 1)
+	if help == "" {
+		pad = 0
+	}
+	return "  " + title + strings.Repeat(" ", pad) + "\033[90m" + help + "\033[0m"
+}
+
 // hints renders key/label pairs as "enter resume  ^S msg", keys in bold so
 // "enter update" reads as key then action.
 func hints(pairs ...string) string {
@@ -2950,19 +2976,14 @@ func (m model) viewScreen() string {
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
-	title := fmt.Sprintf("ccs · claude code search · %s%s%s", version, note, status)
-	help := hints(keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help", "^C", "quit")
+	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
+	pairs, keep := []string{keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help", "^C", "quit"}, 2
 	if m.showUsage { // only Tab, account, help and quit do anything there
-		help = hints(keyTab, "back", "^O", "account", "^L", "changelog", "^C", "quit") // every key it has, so no ^G help
+		pairs, keep = []string{keyTab, "back", "^O", "account", "^L", "changelog", "^C", "quit"}, 1 // every key it has, so no ^G help
 	} else if m.chatFocus {
-		help = hints(keyEnter, "send", keyEsc, "search", "^J/K", "scroll", "^G", "help")
+		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "^J/K", "scroll", "^G", "help"}, 1
 	}
-	titlePadding := tableWidth - 2 - lipgloss.Width(title) - lipgloss.Width(help)
-	if titlePadding < 1 {
-		titlePadding = 1
-	}
-	b.WriteString(fmt.Sprintf("  \033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m\033[90m%s%s\033[0m\n",
-		version, note, status, strings.Repeat(" ", titlePadding), help))
+	b.WriteString(headerLine(tableWidth, title, pairs, keep) + "\n")
 
 	// Search line or delete confirmation
 	var sections []string
@@ -2973,8 +2994,9 @@ func (m model) viewScreen() string {
 		conv := m.filtered[m.pruneIndex].conv
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214")). // Amber
-			Render(fmt.Sprintf("Prune \"%s\"? %s -> %s, saves %s (keeps dialogue). [y/N]",
-				truncate(getTopic(conv), 32), formatBytes(conv.Size), formatBytes(conv.Size-m.pruneSaved), formatBytes(m.pruneSaved)))
+			Render(fmt.Sprintf("Prune \"%s\"? %s -> %s, saves %s (keeps dialogue).",
+				truncate(getTopic(conv), 32), formatBytes(conv.Size), formatBytes(conv.Size-m.pruneSaved), formatBytes(m.pruneSaved))) +
+			"  \033[90m" + hints("y", "prune", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if m.confirmDelete {
 		conv := m.filtered[m.deleteIndex].conv
@@ -2985,7 +3007,8 @@ func (m model) viewScreen() string {
 		}
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")). // Red
-			Render(fmt.Sprintf("Delete conversation \"%s\"?%s [y/N]", truncate(topic, 50), liveWarning))
+			Render(fmt.Sprintf("Delete conversation \"%s\"?%s", truncate(topic, 50), liveWarning)) +
+			"  \033[90m" + hints("y", "delete", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if m.showUsage {
 		sections = append(sections, "  \033[1;36mUsage\033[0m \033[90m· last 12h · "+keyTab+" back\033[0m")
@@ -4974,19 +4997,23 @@ Examples:
   ccs buyer -- --plan                Search "buyer", resume with plan mode
 
 Key bindings:
-  ↑/↓, Ctrl+P/N   Navigate list
-  Enter           Select and resume conversation
-  Ctrl+D          Delete conversation (with confirmation)
+  ↑/↓, Ctrl+P/N   Move through the list
+  Enter           Resume the conversation, or focus it if it's open in claude
+  Ctrl+S          Message the selected live session (Enter sends, Esc back)
   Ctrl+F          Fork conversation (resume into a new session id)
   Ctrl+R          Rename conversation (not while it's open in claude)
+  Ctrl+D          Delete conversation (with confirmation)
   Ctrl+X          Prune conversation - shrink it losslessly (with confirmation)
-  Ctrl+J/K        Scroll preview
-  Ctrl+U          Clear search
-  Esc             Clear the search
-  Ctrl+G          Show all shortcuts
+  Ctrl+J/K        Scroll the conversation preview (also the mouse wheel)
+  Esc, Ctrl+U     Clear the search
+  Tab             Usage screen (Tab again to go back)
+  Ctrl+O          Switch Claude account (needs cswap)
   Ctrl+L          Changelog
   Ctrl+] / Ctrl+\  Next / previous search hit
+  Ctrl+G          Show the shortcuts that apply right now
   Ctrl+C          Quit
+
+  Click a row to select it, click a link in the preview to open it.
 
 `, version)
 }

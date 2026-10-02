@@ -157,6 +157,10 @@ Session: abc123...
   12:02 a second reply, no repeated header
 ```
 
+### Demo
+
+`demo.gif` in the README is recorded by `demo/record.py`: it writes made-up conversations into a throwaway HOME (never real transcripts), builds ccs at the latest tag, drives it with scripted keys in a 140x40 pty and saves `demo/demo.cast`. Render with `agg --theme monokai --font-size 14 --idle-time-limit 3 demo/demo.cast demo.gif`. Re-record after visible UI changes; edit `KEYS` to change what it shows.
+
 ## Conventions
 
 - Every interaction must be possible from the keyboard; the mouse (click, wheel) is only ever a shortcut for something a key already does

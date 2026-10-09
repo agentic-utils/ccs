@@ -133,7 +133,7 @@ func main() {
 			conversations, _ := getConversations(cutoff, maxSize, excludeDirs)
 			items := buildItems(conversations)
 			for _, item := range items {
-				line := item.searchText
+				line := strings.ReplaceAll(item.searchText, searchSep, " ")
 				if filter != "" {
 					line = highlight(line, filter)
 				}

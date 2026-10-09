@@ -1135,3 +1135,18 @@ func TestSearchMatchesWordsAndDashedNames(t *testing.T) {
 		t.Errorf("each word is highlighted: %q", highlight("revoke the self", "self revoke"))
 	}
 }
+
+func TestWordsMustShareAMessage(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "split", Title: "x", Messages: []Message{{Role: "user", Text: "self check"}, {Role: "user", Text: "revoke it"}}},
+		{SessionID: "together", Title: "y", Messages: []Message{{Role: "user", Text: "revoke your own access, self service"}}},
+	}
+	m := initialModel(buildItems(convs), "self revoke", nil)
+	if len(m.filtered) != 1 || m.filtered[0].conv.SessionID != "together" {
+		t.Errorf("words in different messages shouldn't match (HITS would be 0): %v", m.filtered)
+	}
+	m = initialModel(buildItems(convs), "revoke", nil)
+	if len(m.filtered) != 2 {
+		t.Errorf("one word matches anywhere: got %d", len(m.filtered))
+	}
+}

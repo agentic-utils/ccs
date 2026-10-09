@@ -491,7 +491,7 @@ func appendedSearchText(prev, c *Conversation) (string, string) {
 	if len(c.Messages) == len(prev.Messages) && c.Title == prev.Title && c.Cwd == prev.Cwd && c.FirstTimestamp == prev.FirstTimestamp {
 		return prev.searchText, prev.searchLower
 	}
-	oldTail := " " + formatTimestamp(prev.LastTimestamp)
+	oldTail := searchSep + formatTimestamp(prev.LastTimestamp)
 	oldTailLower := strings.ToLower(oldTail)
 	if len(c.Messages) > len(prev.Messages) && c.Title == prev.Title && c.Cwd == prev.Cwd && c.FirstTimestamp == prev.FirstTimestamp &&
 		strings.HasSuffix(prev.searchText, oldTail) && strings.HasSuffix(prev.searchLower, oldTailLower) {
@@ -500,7 +500,7 @@ func appendedSearchText(prev, c *Conversation) (string, string) {
 			parts = append(parts, msg.Text)
 		}
 		parts = append(parts, formatTimestamp(c.LastTimestamp))
-		add := " " + strings.Join(parts, " ")
+		add := searchSep + strings.Join(parts, searchSep)
 		return strings.TrimSuffix(prev.searchText, oldTail) + add,
 			strings.TrimSuffix(prev.searchLower, oldTailLower) + strings.ToLower(add)
 	}
@@ -903,8 +903,13 @@ func searchTextOf(conv Conversation) string {
 	}
 	// Last, so new messages can be appended without rebuilding (parseAppended).
 	parts = append(parts, formatTimestamp(conv.LastTimestamp))
-	return strings.Join(parts, " ")
+	return strings.Join(parts, searchSep)
 }
+
+// searchSep separates the parts of a session's search text (its id/title/
+// project, each message, the last timestamp), so a multi-word query can
+// require every word in the same part, as HITS counts them.
+const searchSep = "\x1e"
 
 // nameWords lowercases a session name and treats - and _ as spaces, so
 // "checkout pdf gate" finds the session named checkout-pdf-gate.
@@ -922,8 +927,27 @@ func containsAll(s string, terms []string) bool {
 }
 
 // queryMatches is the one search rule, shared by the list, HITS, the preview
-// and ccs mcp: every word of the query appears in the text, or every word
-// appears in the session's name with its dashes read as spaces.
+// and ccs mcp: every word of the query appears in one part of the search text
+// (the same message, or the id/title/project), or every word appears in the
+// session's name with its dashes read as spaces.
 func queryMatches(lower, name string, terms []string) bool {
-	return containsAll(lower, terms) || (name != "" && containsAll(nameWords(name), terms))
+	if name != "" && containsAll(nameWords(name), terms) {
+		return true
+	}
+	if !containsAll(lower, terms) {
+		return false // fast reject: some word appears nowhere
+	}
+	if len(terms) < 2 {
+		return true
+	}
+	for rest := lower; ; {
+		part, after, more := strings.Cut(rest, searchSep)
+		if containsAll(part, terms) {
+			return true
+		}
+		if !more {
+			return false
+		}
+		rest = after
+	}
 }

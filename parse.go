@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -917,13 +919,79 @@ func nameWords(s string) string {
 	return strings.NewReplacer("-", " ", "_", " ").Replace(strings.ToLower(s))
 }
 
+// containsAll reports whether every term starts a word somewhere in s (so
+// "self" matches "self-revoke" and "selfish" but not "itself"; "revoke"
+// matches "revoked"). s and terms are lowercase.
 func containsAll(s string, terms []string) bool {
 	for _, t := range terms {
-		if !strings.Contains(s, t) {
+		if wordStartIndex(s, t, 0) < 0 {
 			return false
 		}
 	}
 	return true
+}
+
+// wordStartIndex is the first index at or after from where t starts a word
+// in s, or -1.
+func wordStartIndex(s, t string, from int) int {
+	for from <= len(s) {
+		i := strings.Index(s[from:], t)
+		if i < 0 {
+			return -1
+		}
+		i += from
+		if i == 0 || !isWordByte(s, i) {
+			return i
+		}
+		from = i + 1
+	}
+	return -1
+}
+
+// isWordByte reports whether the character just before index i is a letter
+// or digit.
+func isWordByte(s string, i int) bool {
+	r, _ := utf8.DecodeLastRuneInString(s[:i])
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// hasPhrase reports whether the terms appear in s next to each other, in
+// order, separated only by spaces, dashes or underscores ("self revoke",
+// "self-revoke"): a much stronger signal than the words appearing apart.
+func hasPhrase(s string, terms []string) bool {
+	if len(terms) < 2 {
+		return false
+	}
+	for at := wordStartIndex(s, terms[0], 0); at >= 0; at = wordStartIndex(s, terms[0], at+1) {
+		i, ok := at+len(terms[0]), true
+		for _, t := range terms[1:] {
+			j := i
+			for j < len(s) && (s[j] == ' ' || s[j] == '-' || s[j] == '_') {
+				j++
+			}
+			if j == i || !strings.HasPrefix(s[j:], t) {
+				ok = false
+				break
+			}
+			i = j + len(t)
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// matchRank orders search results: 0 the session's name has every word,
+// 1 the words appear together as a phrase, 2 anything else that matches.
+func matchRank(lower, name string, terms []string) int {
+	switch {
+	case name != "" && containsAll(nameWords(name), terms):
+		return 0
+	case hasPhrase(lower, terms):
+		return 1
+	}
+	return 2
 }
 
 // queryMatches is the one search rule, shared by the list, HITS, the preview

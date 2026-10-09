@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -948,7 +949,8 @@ func highlight(text, query string) string {
 	for i := 0; i < len(tr); {
 		n := 0
 		for _, t := range terms {
-			if q := []rune(t); i+len(q) <= len(tr) && string(lr[i:i+len(q)]) == t {
+			if q := []rune(t); i+len(q) <= len(tr) && string(lr[i:i+len(q)]) == t &&
+				(i == 0 || !(unicode.IsLetter(lr[i-1]) || unicode.IsDigit(lr[i-1]))) { // word starts only, as the search matches
 				n = len(q)
 				break
 			}

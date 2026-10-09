@@ -1150,3 +1150,30 @@ func TestWordsMustShareAMessage(t *testing.T) {
 		t.Errorf("one word matches anywhere: got %d", len(m.filtered))
 	}
 }
+
+func TestSearchWordStartsAndRanking(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "inside", LastTimestamp: "2026-10-09T03:00:00Z", Messages: []Message{{Role: "user", Text: "it fixed itself, then we revoked the key"}}},
+		{SessionID: "apart", LastTimestamp: "2026-10-09T02:00:00Z", Messages: []Message{{Role: "user", Text: "self service: revoke your own access"}}},
+		{SessionID: "phrase", LastTimestamp: "2026-10-08T00:00:00Z", Messages: []Message{{Role: "user", Text: "add a self-revoke button"}}},
+		{SessionID: "named", Title: "self-revoke-access", LastTimestamp: "2026-10-01T00:00:00Z", Messages: []Message{{Role: "user", Text: "hello"}}},
+	}
+	m := initialModel(buildItems(convs), "self revoke", nil)
+	var got []string
+	for _, it := range m.filtered {
+		got = append(got, it.conv.SessionID)
+	}
+	if strings.Join(got, ",") != "named,phrase,apart" {
+		t.Errorf("want name match, then phrase, then the rest; \"itself\" isn't \"self\": got %v", got)
+	}
+	if h := highlight("itself self", "self"); strings.Count(h, "\033[43;30m") != 1 {
+		t.Errorf("only word starts are highlighted: %q", h)
+	}
+	// Typing more narrows from the previous results without losing any.
+	m = initialModel(buildItems(convs), "self rev", nil)
+	m.textInput.SetValue("self revoke")
+	m.updateFilter()
+	if len(m.filtered) != 3 {
+		t.Errorf("narrowing lost results: %d", len(m.filtered))
+	}
+}

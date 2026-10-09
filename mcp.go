@@ -195,7 +195,7 @@ func mcpSearch(convs []Conversation, query string, n int) (string, error) {
 	}
 	type hit struct {
 		c       Conversation
-		named   bool // the query is in its name: what someone searching for a session usually means
+		rank    int // matchRank: named after the query, then the words as a phrase, then the rest
 		hits    int
 		snippet string
 	}
@@ -208,7 +208,7 @@ func mcpSearch(convs []Conversation, query string, n int) (string, error) {
 		if !queryMatches(lower, getTopic(c), terms) {
 			continue
 		}
-		h := hit{c: c, named: containsAll(nameWords(getTopic(c)), terms)}
+		h := hit{c: c, rank: matchRank(lower, getTopic(c), terms)}
 		for _, m := range c.Messages {
 			if containsAll(strings.ToLower(m.Text), terms) {
 				h.hits++
@@ -220,8 +220,8 @@ func mcpSearch(convs []Conversation, query string, n int) (string, error) {
 		found = append(found, h)
 	}
 	sort.SliceStable(found, func(i, j int) bool {
-		if found[i].named != found[j].named {
-			return found[i].named
+		if found[i].rank != found[j].rank {
+			return found[i].rank < found[j].rank
 		}
 		if found[i].hits != found[j].hits {
 			return found[i].hits > found[j].hits

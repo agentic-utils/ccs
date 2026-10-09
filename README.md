@@ -23,6 +23,17 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Usage screen (`Tab`): the last 12 hours of token usage across all sessions (including subagents) as three charts (cache-write disposition, context assembly, output), a summary with effective tokens, and your live 5-hour and weekly allowance. The allowance reads Claude Code's stored login read-only (macOS Keychain, else `~/.claude/.credentials.json`); ccs never refreshes or writes it, so if it has expired, open `claude` to refresh it
 - Checks for new releases at startup and every 2 minutes (update steps are logged to `~/Library/Logs/ccs/update.log`) and offers to update and restart from a popup (via `brew upgrade` for Homebrew installs, otherwise by replacing the binary with the checksum-verified release)
 
+
+## Let Claude search your sessions (MCP)
+
+`ccs mcp` is an MCP server that lets Claude find and read your earlier Claude Code sessions. Add it once:
+
+```bash
+claude mcp add --scope user ccs -- ccs mcp
+```
+
+Claude starts it when needed (no ccs window has to be open, no network port). It has three tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first) and `read_session` (a session's messages, paged, optionally only those around a search term). It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
+
 ## Installation
 
 ### Homebrew (macOS and Linux)

@@ -80,7 +80,7 @@ func TestMCPSearchListRead(t *testing.T) {
 	)
 	search := toolText(t, resps[0])
 	if !strings.Contains(search, "1 sessions match") || !strings.Contains(search, "Fix flaky checkout test") ||
-		!strings.Contains(search, "claude --resume aaaa-1111") || !strings.Contains(search, "2 matching messages") {
+		!strings.Contains(search, "claude --resume aaaa-1111") || !strings.Contains(search, "1 matching messages") {
 		t.Errorf("search:\n%s", search)
 	}
 	if s := toolText(t, resps[1]); !strings.Contains(s, "No sessions") {
@@ -88,6 +88,9 @@ func TestMCPSearchListRead(t *testing.T) {
 	}
 	if s := toolText(t, mcpRoundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_sessions","arguments":{"query":"staging deploy"}}}`)[0]); !strings.Contains(s, "1. Staging deploy") {
 		t.Errorf("a name match should rank first:\n%s", s)
+	}
+	if s := toolText(t, mcpRoundTrip(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_sessions","arguments":{"query":"flaky checkout"}}}`)[0]); !strings.Contains(s, "1. Fix flaky checkout test") || !strings.Contains(s, "1 matching messages") {
+		t.Errorf("only messages with every word count:\n%s", s)
 	}
 	list := toolText(t, resps[2])
 	if strings.Index(list, "Staging deploy") > strings.Index(list, "Fix flaky") {
@@ -102,5 +105,17 @@ func TestMCPSearchListRead(t *testing.T) {
 	}
 	if last := toolText(t, resps[5]); !strings.Contains(last, "messages 3-3 of 3") {
 		t.Errorf("negative offset should count from the end:\n%s", last)
+	}
+}
+
+func TestMCPNameMatchIgnoresDashes(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "big", Title: "cycle-secrets", LastTimestamp: "2026-10-09T00:00:00Z", Messages: []Message{
+			{Role: "user", Text: "checkout pdf gate"}, {Role: "user", Text: "checkout pdf gate again"}}},
+		{SessionID: "named", Title: "checkout-pdf-gate", LastTimestamp: "2026-10-01T00:00:00Z", Messages: []Message{{Role: "user", Text: "hello"}}},
+	}
+	got, _ := mcpSearch(convs, "checkout pdf gate", 5)
+	if !strings.Contains(got, "1. checkout-pdf-gate") {
+		t.Errorf("the session named after the words should come first, even with dashes:\n%s", got)
 	}
 }

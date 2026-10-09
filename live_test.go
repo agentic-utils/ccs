@@ -79,7 +79,11 @@ func TestEnterOnLiveSessionFocusesInsteadOfResuming(t *testing.T) {
 
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.live = map[string]bool{"s": true}
-	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // first Enter: the message box
+	if m = res.(model); !m.chatFocus {
+		t.Fatal("first enter on a live session should focus its message box")
+	}
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // Enter on the empty box opens the session
 	m = res.(model)
 	if m.selected != nil || m.quitting || cmd == nil {
 		t.Fatal("enter on a live session must focus it (in the background), not resume a second copy")

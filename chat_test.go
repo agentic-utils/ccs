@@ -20,10 +20,15 @@ func TestMessageBoxFocusRules(t *testing.T) {
 	if m.chatFocus || m.chatRows() != 0 {
 		t.Fatal("a non-live selection has no message box")
 	}
-	// Moving the selection onto the live session focuses its box.
+	// Moving onto the live session shows its box but leaves typing in the search.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
-	if !m.chatFocus || m.chatRows() == 0 {
-		t.Fatal("moving onto a live session should focus its message box")
+	if m.chatFocus || m.chatRows() == 0 {
+		t.Fatal("moving onto a live session should show its box without focusing it")
+	}
+	// Enter focuses it.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.chatFocus {
+		t.Fatal("enter on a live session should focus its message box")
 	}
 	// Typed keys go to the box, not the search.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("yo")})

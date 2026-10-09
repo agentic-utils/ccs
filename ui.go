@@ -849,6 +849,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatFocus = false // back to the search
 				return m, nil
 			case "enter":
+				if strings.TrimSpace(m.chatInput.Value()) == "" && len(m.filtered) > 0 {
+					// Enter on an empty box opens the session itself.
+					m.chatFocus = false
+					return m, m.resumeCmd(m.filtered[m.cursor].conv, false)
+				}
 				return m, m.sendCmd()
 			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x", "ctrl+]", "ctrl+\\":
 				// fall through to the list's handling below
@@ -890,6 +895,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.filtered) == 0 {
 				m.quitting = true
 				return m, tea.Quit
+			}
+			if m.selectedLive() { // first Enter: the message box; Enter again on it empty opens the session
+				m.chatFocus = true
+				return m, nil
 			}
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, false)
 
@@ -1038,10 +1047,10 @@ func (m model) shortcuts() [][2]string {
 	live := sel && m.selectedLive()
 	switch {
 	case m.chatFocus:
-		add(true, keyEnter, "send the message")
+		add(true, keyEnter, "send; on an empty box, open the session")
 		add(true, keyEsc, "back to the search")
 	case live:
-		add(true, keyEnter, "focus the live session")
+		add(true, keyEnter, "message it (enter again to open it)")
 		add(true, "^S", "message it")
 	default:
 		add(sel, keyEnter, "resume")

@@ -81,8 +81,9 @@ func (m model) selectedLive() bool {
 // click): landing on a live session puts typing in its message box. Never
 // called for list changes caused by typing a search, so a search can't end
 // up in the message box.
+// The message box takes focus only on Enter, never by moving the selection.
 func (m *model) selectionMoved() {
-	m.chatFocus = m.selectedLive() && !m.showUsage
+	m.chatFocus = false
 }
 
 // chatRows is the height the message area takes under the preview: a status

@@ -581,10 +581,10 @@ func TestRefreshKeepsSelectionAndFilter(t *testing.T) {
 	mk := func(id, text string) listItem {
 		return buildItems([]Conversation{{SessionID: id, Messages: []Message{{Role: "user", Text: text}}}})[0]
 	}
-	m := initialModel([]listItem{mk("a", "apple"), mk("b", "banana")}, "an", nil)
+	m := initialModel([]listItem{mk("a", "apple"), mk("b", "banana")}, "ban", nil)
 	m.cursor = 0 // "b" is the only match
 	next, cmd := m.Update(refreshMsg{
-		items: []listItem{mk("c", "mango"), mk("a", "apple"), mk("b", "banana")},
+		items: []listItem{mk("c", "bandit"), mk("a", "apple"), mk("b", "banana")},
 		live:  map[string]bool{"b": true},
 	})
 	m = next.(model)

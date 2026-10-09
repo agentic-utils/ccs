@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -286,7 +287,7 @@ func (m *model) updateFilter() {
 		// item matching the new query already matched the old one, so filter the
 		// previous (smaller) result set instead of rescanning every conversation.
 		source := m.items
-		if m.lastFilterQuery != "" && strings.Contains(queryLower, m.lastFilterQuery) {
+		if m.lastFilterQuery != "" && strings.HasPrefix(queryLower, m.lastFilterQuery) {
 			source = m.filtered
 		}
 		terms := strings.Fields(queryLower)
@@ -296,6 +297,19 @@ func (m *model) updateFilter() {
 				next = append(next, item)
 			}
 		}
+		// Best matches first (named after the query, then the words as a
+		// phrase), newest first within each.
+		rank := make(map[string]int, len(next))
+		for _, it := range next {
+			rank[it.conv.SessionID] = matchRank(it.searchLower, it.conv.Title, terms)
+		}
+		sort.SliceStable(next, func(i, j int) bool {
+			ri, rj := rank[next[i].conv.SessionID], rank[next[j].conv.SessionID]
+			if ri != rj {
+				return ri < rj
+			}
+			return next[i].conv.LastTimestamp > next[j].conv.LastTimestamp
+		})
 		m.filtered = next
 	}
 	m.lastFilterQuery = queryLower

@@ -97,7 +97,7 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 var mcpTools = []map[string]any{
 	{
 		"name":        "search_sessions",
-		"description": "Find earlier Claude Code sessions whose messages, title, project path or session id contain every word of the query (case-insensitive). Results are ranked by how many messages match, then by recency, each with a matching snippet and how to resume it.",
+		"description": "Find earlier Claude Code sessions whose messages, title, project path or session id contain every word of the query (case-insensitive). Sessions whose name contains the query words come first, then those with the most messages containing all the words, then the most recent, each with a matching snippet and how to resume it.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -205,20 +205,12 @@ func mcpSearch(convs []Conversation, query string, n int) (string, error) {
 		if lower == "" {
 			lower = strings.ToLower(searchTextOf(c))
 		}
-		all := true
-		for _, t := range terms {
-			if !strings.Contains(lower, t) {
-				all = false
-				break
-			}
-		}
-		if !all {
+		if !containsAll(lower, terms) && !containsAll(nameWords(getTopic(c)), terms) {
 			continue
 		}
-		h := hit{c: c, named: strings.Contains(strings.ToLower(getTopic(c)), strings.Join(terms, " "))}
+		h := hit{c: c, named: containsAll(nameWords(getTopic(c)), terms)}
 		for _, m := range c.Messages {
-			ml := strings.ToLower(m.Text)
-			if strings.Contains(ml, terms[0]) {
+			if containsAll(strings.ToLower(m.Text), terms) {
 				h.hits++
 				if h.snippet == "" {
 					h.snippet = snippetAround(cleanText(m.Text), terms[0], 240)
@@ -343,6 +335,21 @@ func mcpRead(convs []Conversation, id, query string, offset, limit int) (string,
 		fmt.Fprintf(&b, "\n[%d] %s %s:\n%s\n", i, formatTimestamp(m.Ts), who, text)
 	}
 	return b.String(), nil
+}
+
+// nameWords lowercases a session name and treats - and _ as spaces, so
+// "checkout pdf gate" finds the session named checkout-pdf-gate.
+func nameWords(s string) string {
+	return strings.NewReplacer("-", " ", "_", " ").Replace(strings.ToLower(s))
+}
+
+func containsAll(s string, terms []string) bool {
+	for _, t := range terms {
+		if !strings.Contains(s, t) {
+			return false
+		}
+	}
+	return true
 }
 
 // snippetAround returns about width characters of s centred on the first

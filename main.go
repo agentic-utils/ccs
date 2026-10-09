@@ -23,6 +23,8 @@ Search and resume Claude Code conversations.
 
 Usage: ccs [filter] [-- claude-flags...]
        ccs prune [flags]    Shrink large conversations (see ccs prune --help)
+       ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
+                            claude mcp add --scope user ccs -- ccs mcp
 
 Arguments:
   filter           Initial search query (optional)
@@ -114,6 +116,11 @@ func main() {
 	var cutoff time.Time
 	if maxAgeDays > 0 {
 		cutoff = time.Now().AddDate(0, 0, -maxAgeDays)
+	}
+
+	if len(args) > 0 && args[0] == "mcp" {
+		mcpMain(cutoff, maxSize, excludeDirs)
+		return
 	}
 
 	// Debug mode - dump search lines

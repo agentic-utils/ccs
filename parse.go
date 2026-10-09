@@ -905,3 +905,25 @@ func searchTextOf(conv Conversation) string {
 	parts = append(parts, formatTimestamp(conv.LastTimestamp))
 	return strings.Join(parts, " ")
 }
+
+// nameWords lowercases a session name and treats - and _ as spaces, so
+// "checkout pdf gate" finds the session named checkout-pdf-gate.
+func nameWords(s string) string {
+	return strings.NewReplacer("-", " ", "_", " ").Replace(strings.ToLower(s))
+}
+
+func containsAll(s string, terms []string) bool {
+	for _, t := range terms {
+		if !strings.Contains(s, t) {
+			return false
+		}
+	}
+	return true
+}
+
+// queryMatches is the one search rule, shared by the list, HITS, the preview
+// and ccs mcp: every word of the query appears in the text, or every word
+// appears in the session's name with its dashes read as spaces.
+func queryMatches(lower, name string, terms []string) bool {
+	return containsAll(lower, terms) || (name != "" && containsAll(nameWords(name), terms))
+}

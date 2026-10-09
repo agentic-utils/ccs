@@ -205,7 +205,7 @@ func mcpSearch(convs []Conversation, query string, n int) (string, error) {
 		if lower == "" {
 			lower = strings.ToLower(searchTextOf(c))
 		}
-		if !containsAll(lower, terms) && !containsAll(nameWords(getTopic(c)), terms) {
+		if !queryMatches(lower, getTopic(c), terms) {
 			continue
 		}
 		h := hit{c: c, named: containsAll(nameWords(getTopic(c)), terms)}
@@ -335,21 +335,6 @@ func mcpRead(convs []Conversation, id, query string, offset, limit int) (string,
 		fmt.Fprintf(&b, "\n[%d] %s %s:\n%s\n", i, formatTimestamp(m.Ts), who, text)
 	}
 	return b.String(), nil
-}
-
-// nameWords lowercases a session name and treats - and _ as spaces, so
-// "checkout pdf gate" finds the session named checkout-pdf-gate.
-func nameWords(s string) string {
-	return strings.NewReplacer("-", " ", "_", " ").Replace(strings.ToLower(s))
-}
-
-func containsAll(s string, terms []string) bool {
-	for _, t := range terms {
-		if !strings.Contains(s, t) {
-			return false
-		}
-	}
-	return true
 }
 
 // snippetAround returns about width characters of s centred on the first

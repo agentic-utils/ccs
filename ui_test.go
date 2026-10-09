@@ -1113,3 +1113,25 @@ func TestPrunePromptHints(t *testing.T) {
 		t.Errorf("prune prompt should use the compact key hints:\n%s", v)
 	}
 }
+
+func TestSearchMatchesWordsAndDashedNames(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "a", Title: "self-revoke-access", Messages: []Message{{Role: "user", Text: "let people drop their own access"}}},
+		{SessionID: "b", Title: "other", Messages: []Message{{Role: "user", Text: "revoke the token, then the self check"}}},
+		{SessionID: "c", Title: "unrelated", Messages: []Message{{Role: "user", Text: "nothing here"}}},
+	}
+	m := initialModel(buildItems(convs), "self revoke", nil)
+	var got []string
+	for _, it := range m.filtered {
+		got = append(got, it.conv.SessionID)
+	}
+	if strings.Join(got, ",") != "a,b" {
+		t.Errorf("every word must appear, in any order, or in the dashed name: got %v", got)
+	}
+	if n := countHits(convs[1], "self revoke"); n != 1 {
+		t.Errorf("a message with both words is a hit, got %d", n)
+	}
+	if h := strip2(highlight("revoke the self", "self revoke")); h != "revoke the self" || !strings.Contains(highlight("revoke the self", "self revoke"), "\033[43;30mself") {
+		t.Errorf("each word is highlighted: %q", highlight("revoke the self", "self revoke"))
+	}
+}

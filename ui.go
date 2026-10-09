@@ -289,9 +289,10 @@ func (m *model) updateFilter() {
 		if m.lastFilterQuery != "" && strings.Contains(queryLower, m.lastFilterQuery) {
 			source = m.filtered
 		}
+		terms := strings.Fields(queryLower)
 		next := make([]listItem, 0, len(source))
 		for _, item := range source {
-			if strings.Contains(item.searchLower, queryLower) {
+			if queryMatches(item.searchLower, item.conv.Title, terms) {
 				next = append(next, item)
 			}
 		}

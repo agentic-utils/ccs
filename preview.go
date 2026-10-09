@@ -84,10 +84,10 @@ type hitCounter struct {
 
 // countHits is the number of a conversation's messages containing query.
 func countHits(conv Conversation, query string) int {
-	queryLower := strings.ToLower(query)
+	terms := strings.Fields(strings.ToLower(query))
 	n := 0
 	for _, msg := range conv.Messages {
-		if strings.Contains(strings.ToLower(msg.Text), queryLower) {
+		if len(terms) > 0 && containsAll(strings.ToLower(msg.Text), terms) {
 			n++
 		}
 	}
@@ -146,11 +146,11 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 	var msgLines []string
 
 	// Find messages containing the query
-	queryLower := strings.ToLower(query)
+	terms := strings.Fields(strings.ToLower(query))
 	matchSet := make(map[int]bool)
 	if query != "" {
 		for i, msg := range conv.Messages {
-			if strings.Contains(strings.ToLower(msg.Text), queryLower) {
+			if len(terms) > 0 && containsAll(strings.ToLower(msg.Text), terms) {
 				matchSet[i] = true
 			}
 		}
@@ -707,7 +707,8 @@ func harnessNote(text string) (tag, summary string, ok bool) {
 const maxCodeLines = 8
 
 func containsFold(s, query string) bool {
-	return query != "" && strings.Contains(strings.ToLower(s), strings.ToLower(query))
+	terms := strings.Fields(strings.ToLower(query))
+	return len(terms) > 0 && containsAll(strings.ToLower(s), terms)
 }
 
 // maxMessageRunes caps one message in the preview; beyond it the rest is
@@ -931,25 +932,33 @@ func highlight(text, query string) string {
 	}
 	tr := []rune(text)
 	lr := []rune(strings.ToLower(text))
-	queryLower := strings.ToLower(query)
-	qr := []rune(queryLower)
+	// Each word of the query is highlighted wherever it appears, longest first.
+	terms := strings.Fields(strings.ToLower(query))
+	sort.Slice(terms, func(a, b int) bool { return len([]rune(terms[a])) > len([]rune(terms[b])) })
 
 	// Match on runes so multibyte text (CJK, emoji) is never sliced mid-rune.
 	// ponytail: a handful of runes change length when lowercased (İ, Kelvin K),
 	// which breaks the lr/tr index alignment - bail to plain text rather than
 	// emit corrupted bytes. Highlighting those is not worth the complexity.
-	if len(lr) != len(tr) || len(qr) == 0 {
+	if len(lr) != len(tr) || len(terms) == 0 {
 		return text
 	}
 
 	var result strings.Builder
 	for i := 0; i < len(tr); {
-		if i+len(qr) <= len(tr) && string(lr[i:i+len(qr)]) == queryLower {
+		n := 0
+		for _, t := range terms {
+			if q := []rune(t); i+len(q) <= len(tr) && string(lr[i:i+len(q)]) == t {
+				n = len(q)
+				break
+			}
+		}
+		if n > 0 {
 			// Yellow background, black text for highlight
 			result.WriteString("\033[43;30m")
-			result.WriteString(string(tr[i : i+len(qr)]))
+			result.WriteString(string(tr[i : i+n]))
 			result.WriteString("\033[49;39m")
-			i += len(qr)
+			i += n
 		} else {
 			result.WriteRune(tr[i])
 			i++

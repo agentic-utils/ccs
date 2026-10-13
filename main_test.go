@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -26,5 +27,16 @@ func TestHelpTextListsEveryKey(t *testing.T) {
 		if !strings.Contains(buf.String(), k) {
 			t.Errorf("--help should list %s", k)
 		}
+	}
+}
+
+func TestWithEnvClaudeArgs(t *testing.T) {
+	got := withEnvClaudeArgs("  --mcp-config /a.json\t--x ", []string{"--plan"})
+	want := []string{"--mcp-config", "/a.json", "--x", "--plan"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got := withEnvClaudeArgs("", nil); len(got) != 0 {
+		t.Errorf("empty env: got %q", got)
 	}
 }

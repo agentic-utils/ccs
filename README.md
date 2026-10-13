@@ -80,6 +80,12 @@ ccs -- --plan
 ccs buyer -- --plan
 ```
 
+Set `CCS_CLAUDE_ARGS` to pass flags to every `claude` ccs starts, ahead of any `--` flags. It is split on whitespace with no quoting:
+
+```bash
+export CCS_CLAUDE_ARGS="--permission-mode auto"
+```
+
 ### Flags
 
 | Flag | Default | Description |

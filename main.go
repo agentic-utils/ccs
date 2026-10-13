@@ -30,6 +30,10 @@ Arguments:
   filter           Initial search query (optional)
   -- claude-flags  Flags to pass to 'claude --resume' (after --)
 
+Environment:
+  CCS_CLAUDE_ARGS  Flags passed to every claude ccs starts, before any -- claude-flags
+                   (whitespace-separated, no quoting)
+
 Flags:
   -h, --help       Show this help message
   -v, --version    Show version
@@ -159,6 +163,7 @@ func main() {
 			filterQuery = arg
 		}
 	}
+	claudeFlags = withEnvClaudeArgs(os.Getenv("CCS_CLAUDE_ARGS"), claudeFlags)
 
 	projectsDir := getProjectsDir()
 	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
@@ -320,4 +325,9 @@ func runCommand(timeout time.Duration, env []string, detach bool, name string, a
 		logUpdate("$ %s %s\n  -> %v in %s\n%s", name, strings.Join(args, " "), errOrOK(err), time.Since(start).Round(time.Millisecond), indent(out))
 	}
 	return out, err
+}
+
+// withEnvClaudeArgs puts CCS_CLAUDE_ARGS ahead of the -- flags, so the command line wins where claude takes the last value.
+func withEnvClaudeArgs(env string, flags []string) []string {
+	return append(strings.Fields(env), flags...)
 }

@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -50,9 +51,10 @@ type sendDoneMsg struct {
 
 // sessionStat is what a live session's file says about it right now.
 type sessionStat struct {
-	status string // "busy" or "idle"
-	since  time.Time
-	name   string
+	status     string // "busy", "idle", "waiting" (on the user) or "shell"
+	waitingFor string // with "waiting": "permission prompt", "input needed"
+	since      time.Time
+	name       string
 }
 
 // sessionFile is the part of ~/.claude/sessions/<pid>.json ccs uses.
@@ -61,7 +63,12 @@ type sessionFile struct {
 	Name            string `json:"name"`
 	Status          string `json:"status"`
 	StatusUpdatedAt int64  `json:"statusUpdatedAt"` // epoch ms
+	WaitingFor      string `json:"waitingFor"`
 	Socket          string `json:"messagingSocketPath"`
+}
+
+func (f sessionFile) stat() sessionStat {
+	return sessionStat{status: f.Status, waitingFor: f.WaitingFor, since: time.UnixMilli(f.StatusUpdatedAt), name: f.Name}
 }
 
 func readSessionFile(pid int) (sessionFile, error) {
@@ -122,7 +129,7 @@ func (m model) chatTickCmd() tea.Cmd {
 			}
 		}()
 		if f, err := readSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
-			res.stat = sessionStat{status: f.Status, since: time.UnixMilli(f.StatusUpdatedAt), name: f.Name}
+			res.stat = f.stat()
 		}
 		if _, busy := liveReads.LoadOrStore(conv.FilePath, true); !busy {
 			defer liveReads.Delete(conv.FilePath)
@@ -148,21 +155,25 @@ func (m model) sessionName(conv Conversation) string {
 
 // chatView draws the status line and message box for the selected session.
 func (m model) chatView() string {
-	conv := m.filtered[m.cursor].conv
+	return m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus, m.width)
+}
+
+// chatBox draws conv's status line and the message box in, width wide.
+func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width int) string {
 	id, name := conv.SessionID, m.sessionName(conv)
 	left := ""
 	switch {
 	case m.pending[id] != "" && m.sending:
-		left = "\033[90m  sending: " + chatSnippet(m.pending[id], m.width-40) + "\033[0m"
+		left = "\033[90m  sending: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.pending[id] != "" && m.held[id]:
-		left = "\033[33m  ⏸ held: approve it in " + name + " · " + chatSnippet(m.pending[id], m.width-50-len(name)) + "\033[0m"
+		left = "\033[33m  ⏸ held: approve it in " + name + " · " + chatSnippet(m.pending[id], width-50-len(name)) + "\033[0m"
 	case m.pending[id] != "" && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
-		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], m.width-90) +
+		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], width-90) +
 			" · if it runs with bypass permissions, approve it in that session\033[0m"
 	case m.pending[id] != "" && m.chatStatus[id].status == "busy":
-		left = "\033[90m  sent: " + chatSnippet(m.pending[id], m.width-60) + " · Claude sees it after its current step\033[0m"
+		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-60) + " · Claude sees it after its current step\033[0m"
 	case m.pending[id] != "":
-		left = "\033[90m  sent: " + chatSnippet(m.pending[id], m.width-40) + "\033[0m"
+		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.sendNote[id] != "":
 		left = "  " + m.sendNote[id]
 	}
@@ -170,20 +181,19 @@ func (m model) chatView() string {
 	if st := m.chatStatus[id]; st.status == "busy" {
 		right = fmt.Sprintf("\033[33m✻ working %ds\033[0m ", int(time.Since(st.since).Seconds()))
 	}
-	status := left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
+	status := left + strings.Repeat(" ", max(width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
 
-	in := m.chatInput
 	in.Placeholder = "message " + name + "…"
-	in.Width = max(m.width-8, 10)
-	if !m.chatFocus {
+	in.Width = max(width-8, 10)
+	if !focus {
 		in.Blur() // no cursor while typing goes to the search
 	}
 	border := lipgloss.Color("240")
-	if m.chatFocus {
+	if focus {
 		border = lipgloss.Color("62")
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
-		Width(max(m.width-2, 10)).Render(in.View())
+		Width(max(width-2, 10)).Render(in.View())
 	return status + "\n" + box
 }
 
@@ -194,11 +204,18 @@ func chatSnippet(s string, width int) string {
 
 // sendCmd sends the message box's text to the selected live session.
 func (m *model) sendCmd() tea.Cmd {
-	text := strings.TrimSpace(m.chatInput.Value())
-	if text == "" || m.sending || !m.selectedLive() {
+	if !m.selectedLive() {
 		return nil
 	}
-	conv := m.filtered[m.cursor].conv
+	return m.sendTo(m.filtered[m.cursor].conv, &m.chatInput)
+}
+
+// sendTo sends in's text to conv, a live session, and empties in.
+func (m *model) sendTo(conv Conversation, in *textinput.Model) tea.Cmd {
+	text := strings.TrimSpace(in.Value())
+	if text == "" || m.sending {
+		return nil
+	}
 	id, name, pid := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID]
 	if m.pending == nil {
 		m.pending = make(map[string]string)
@@ -206,7 +223,7 @@ func (m *model) sendCmd() tea.Cmd {
 	m.pending[id] = text
 	delete(m.sendNote, id)
 	m.sending = true
-	m.chatInput.SetValue("")
+	in.SetValue("")
 	return func() (msg tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {

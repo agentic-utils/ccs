@@ -680,11 +680,12 @@ const restoreEnv = "CCS_RESTORE_STATE"
 // Screen is a name, so a screen added later only needs a case in
 // screenName and restore.
 type uiState struct {
-	Screen        string `json:"screen"`
-	Query         string `json:"query"`
-	QueryCursor   int    `json:"query_cursor"`
-	Selected      string `json:"selected"` // SessionID, so it survives a reordered list
-	PreviewScroll int    `json:"preview_scroll"`
+	Screen        string               `json:"screen"`
+	Query         string               `json:"query"`
+	QueryCursor   int                  `json:"query_cursor"`
+	Selected      string               `json:"selected"` // SessionID, so it survives a reordered list
+	PreviewScroll int                  `json:"preview_scroll"`
+	Snoozed       map[string]time.Time `json:"snoozed,omitempty"` // input-prompt overlay snoozes, by SessionID
 }
 
 func (m model) screenName() string {
@@ -700,6 +701,7 @@ func (m model) uiState() uiState {
 		Query:         m.textInput.Value(),
 		QueryCursor:   m.textInput.Position(),
 		PreviewScroll: m.previewScroll,
+		Snoozed:       m.snoozed,
 	}
 	if len(m.filtered) > 0 {
 		s.Selected = m.filtered[m.cursor].conv.SessionID
@@ -723,6 +725,7 @@ func (m *model) restore(s uiState) {
 	// preview clamps it when drawing.
 	m.previewScroll = max(0, s.PreviewScroll)
 	m.showUsage = s.Screen == "usage"
+	m.snoozed = s.Snoozed
 }
 
 // notesCmd fetches the changelog off the UI goroutine.

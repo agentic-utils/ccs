@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -66,7 +67,7 @@ type model struct {
 	chatFocus  bool // typing goes to the message box, not the search
 	chatInput  textinput.Model
 	chatTickOn bool                   // the fast refresh for the selected live session is running
-	chatStatus map[string]sessionStat // busy/idle per live session, from its session file
+	chatStatus map[string]sessionStat // every live session's last known status (set only by setStat; applyStats drops sessions that are gone)
 	pending    map[string]string      // text sent but not yet seen in the transcript, by SessionID
 	sendNote   map[string]string      // outcome of the last send, by SessionID
 	sentAt     map[string]time.Time   // when a socket send finished, by SessionID, until the session queues it
@@ -75,15 +76,18 @@ type model struct {
 
 	// Input-prompt overlay (see wait*): live sessions waiting on the user.
 	waitOpen       bool
-	waitAll        bool   // opened by hand: also sessions whose last message asks something
-	waitID         string // the session it shows
-	waitInput      textinput.Model
-	waitScroll     int                        // like previewScroll, for the overlay's transcript
-	waitPreview    *previewCache              // the overlay's transcript, wrapped to its width
-	waitDue        bool                       // a session started waiting (or its snooze ran out): pop up when quiet
-	snoozed        map[string]time.Time       // SessionID -> when its snooze ends
+	waitAll        bool              // opened by hand: also sessions whose last message asks something
+	waitID         string            // the session it shows
+	waitInput      textinput.Model   // the shown session's draft
+	waitDrafts     map[string]string // the other sessions' drafts, so a draft never follows you to another session
+	waitEngaged    bool              // it has the keyboard: opened by hand, or Ctrl+Y on a pop-up
+	waitErr        string            // the overlay's own errors, kept apart from the main screen's
+	waitScroll     int               // like previewScroll, for the overlay's transcript
+	waitPreview    *previewCache     // the overlay's transcript, wrapped to its width
+	waitDue        map[string]bool   // sessions with a wait (or a snooze that ran out) not yet seen: pop up when free
+	snoozed        map[string]snoozeRec
 	snooze         time.Duration              // CCS_SNOOZE
-	lastKey        time.Time                  // so a pop-up never lands mid-typing
+	unverified     map[string]bool            // live sessions whose pid couldn't be checked against their file
 	reload         func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
 	gen            int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
 	refreshStarted time.Time                  // when the in-flight scan began; zero when none
@@ -181,14 +185,6 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 	if m.linksOpen {
 		return m // keyboard only while it's open
 	}
-	if m.waitOpen { // the wheel scrolls its transcript, nothing else reacts
-		if msg.Button == tea.MouseButtonWheelUp {
-			m.waitScroll = min(m.waitScroll+3, m.maxWaitScroll())
-		} else if msg.Button == tea.MouseButtonWheelDown {
-			m.waitScroll = max(0, m.waitScroll-3)
-		}
-		return m
-	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
 		if msg.Button == tea.MouseButtonWheelUp {
 			m.scrollNotes(-3)
@@ -197,7 +193,15 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		}
 		return m
 	}
-	if m.showUsage || m.prompting() || m.updateOpen || m.acctOpen || m.helpOpen || msg.Action != tea.MouseActionPress {
+	if m.waitOpen && !m.popupAboveWait() { // the wheel scrolls its transcript, nothing else reacts
+		if msg.Button == tea.MouseButtonWheelUp {
+			m.waitScroll = min(m.waitScroll+3, m.maxWaitScroll())
+		} else if msg.Button == tea.MouseButtonWheelDown {
+			m.waitScroll = max(0, m.waitScroll-3)
+		}
+		return m
+	}
+	if m.waitOpen || m.popupAboveWait() || m.showUsage || m.prompting() || msg.Action != tea.MouseActionPress {
 		return m
 	}
 	if msg.Button == tea.MouseButtonLeft && msg.Y == 1 && cswapPath() != "" {
@@ -283,11 +287,12 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 	chat.Focus() // only fed keys while chatFocus; drawn without a cursor otherwise
 
 	wait := chat
+	snooze, ok := snoozeLength(os.Getenv("CCS_SNOOZE"))
 	m := model{
 		chatInput:   chat,
 		waitInput:   wait,
 		waitPreview: &previewCache{},
-		snooze:      snoozeLength(os.Getenv("CCS_SNOOZE")),
+		snooze:      snooze,
 		items:       items,
 		textInput:   ti,
 		claudeFlags: claudeFlags,
@@ -295,6 +300,9 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		opened:      make(map[string]time.Time),
 		kicked:      make(map[string]bool),
 		hits:        &hitCounter{byID: make(map[string]int)},
+	}
+	if !ok {
+		m.errorMsg = fmt.Sprintf("CCS_SNOOZE=%q isn't a duration like 15m; snoozing for %s", os.Getenv("CCS_SNOOZE"), shortDuration(snooze))
 	}
 	m.updateFilter()
 	return m
@@ -389,6 +397,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.listHeight < 3 {
 			m.listHeight = 3
 		}
+		// The inputs scroll their text during Update, so their width must be set here, not only on View's copy.
+		inner, _, _, _ := m.waitLayout()
+		m.chatInput.Width, m.waitInput.Width = chatInputWidth(m.width), chatInputWidth(inner)
 		// Clear so a shrink doesn't leave wider stale rows behind.
 		return m, tea.ClearScreen
 
@@ -424,7 +435,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case focusDoneMsg:
 		m.resuming = false
-		if !msg.found {
+		if msg.gone {
+			m.errorMsg = "Couldn't find " + msg.name + "'s terminal right now: it may have exited"
+		} else if !msg.found {
 			m.errorMsg = "Session is open in claude but its terminal wasn't found - ^F forks it"
 		}
 		return m, nil
@@ -435,7 +448,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveMsg:
 		m.live = msg.live
 		if msg.pids != nil {
-			m.livePIDs = msg.pids
+			m.livePIDs, m.unverified = msg.pids, msg.unverified
 		}
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
@@ -644,10 +657,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.chatTickCmd()
 
 	case chatTickResult:
-		m.chatTickOn = false // rescheduled by Update while the selection stays live
-		if msg.stat.status != "" {
-			m.setStat(msg.id, msg.stat)
-		}
+		m.chatTickOn = false // rescheduled by Update while its session stays live
+		m.setStat(msg.id, msg.stat)
 		if msg.conv != nil && msg.gen == m.gen && !m.prompting() {
 			m.applyLive([]Conversation{*msg.conv})
 		}
@@ -666,6 +677,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sendNote[msg.id] = msg.note
 		if msg.err != nil {
 			delete(m.pending, msg.id)
+			if errors.Is(msg.err, errUnsent) {
+				m.giveBack(msg.id, msg.text, msg.overlay)
+			}
 		} else if strings.Contains(msg.note, "socket") {
 			if m.sentAt == nil {
 				m.sentAt = make(map[string]time.Time)
@@ -679,7 +693,21 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyRunes && (mouseLeak.MatchString(string(msg.Runes)) || m.mouseFragment(msg)) {
 			return m, nil // a fragmented mouse report, not typing
 		}
-		m.lastKey = time.Now()
+		// An overlay that popped up on its own takes only Ctrl+Y (to answer) and
+		// Esc (snooze); other keys carry on to the search or the message box.
+		// Engaged, it owns the keyboard until closed.
+		if m.waitOpen && !m.popupAboveWait() && (m.waitEngaged || !m.prompting()) {
+			if m.waitEngaged {
+				return m.waitKey(msg)
+			}
+			switch msg.String() {
+			case "ctrl+y":
+				m.waitEngaged, m.waitErr = true, ""
+				return m, nil
+			case "esc":
+				return m.waitKey(msg)
+			}
+		}
 		if m.notesOpen { // owns the keyboard until closed
 			switch msg.String() {
 			case "ctrl+l", "esc":
@@ -727,7 +755,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			if m.links = m.visibleLinks(); len(m.links) == 0 {
 				m.errorMsg = "No links in view"
@@ -736,7 +764,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.linksOpen, m.linksCursor = true, 0
 			return m, nil
 		}
-		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen {
+		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen && !m.waitOpen {
 			m.helpOpen, m.notesOpen, m.notesScroll = false, true, 0
 			if m.notes == nil && !m.notesFetching && m.fetchNotes != nil {
 				m.notesErr = ""
@@ -757,11 +785,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.acctOpen {
 			return m.acctKey(msg)
 		}
-		if msg.String() == "ctrl+g" && !m.prompting() && !m.showUsage {
+		if msg.String() == "ctrl+g" && !m.prompting() && !m.showUsage && !m.waitOpen {
 			m.helpOpen = true
 			return m, nil
 		}
-		if msg.String() == "ctrl+o" && !m.prompting() {
+		if msg.String() == "ctrl+o" && !m.prompting() && !m.waitOpen {
 			return m.openAccounts()
 		}
 		// The popup waits behind rename/delete/prune prompts, so it never takes
@@ -799,9 +827,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m, nil
-		}
-		if m.waitOpen { // owns the keyboard until closed (popups above it come first)
-			return m.waitKey(msg)
 		}
 		if m.renaming {
 			switch msg.String() {
@@ -865,7 +890,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.showUsage && msg.String() != "ctrl+c" {
+		if m.showUsage && msg.String() != "ctrl+c" && msg.String() != "ctrl+y" {
 			return m, nil // the usage screen has no other keys; typing mustn't edit a hidden search
 		}
 
@@ -878,7 +903,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(m.chatInput.Value()) == "" && len(m.filtered) > 0 {
 					// Enter on an empty box opens the session itself.
 					m.chatFocus = false
-					return m, m.resumeCmd(m.filtered[m.cursor].conv, false)
+					return m, m.focusCmd(m.filtered[m.cursor].conv)
 				}
 				return m, m.sendCmd()
 			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x", "ctrl+]", "ctrl+\\", "ctrl+y":
@@ -1023,8 +1048,21 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Update text input
+	// Anything else (e.g. a Ctrl+V paste's result) is for the input that has focus.
 	var cmd tea.Cmd
+	if _, isKey := msg.(tea.KeyMsg); !isKey {
+		switch {
+		case m.waitOpen && m.waitEngaged:
+			m.waitInput, cmd = m.waitInput.Update(msg)
+			return m, cmd
+		case m.renaming:
+			m.renameInput, cmd = m.renameInput.Update(msg)
+			return m, cmd
+		case m.chatFocus:
+			m.chatInput, cmd = m.chatInput.Update(msg)
+			return m, cmd
+		}
+	}
 	prevValue := m.textInput.Value()
 	m.textInput, cmd = m.textInput.Update(msg)
 	if m.textInput.Value() != prevValue {
@@ -1037,25 +1075,30 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // here, not by each screen, so every screen (and any added later) shows them.
 func (m model) View() string {
 	screen := m.viewScreen()
-	if m.waitOpen { // under the other popups: they take the keyboard first
-		screen = overlayCentre(screen, m.waitPopup(), m.width, m.height)
-	}
-	if m.updateOpen && !m.prompting() {
-		screen = overlayCentre(screen, m.updatePopup(), m.width, m.height)
-	}
-	if m.acctOpen { // owns the keyboard, so it's drawn on top
-		screen = overlayCentre(screen, m.acctPopup(), m.width, m.height)
-	}
-	if m.helpOpen {
-		screen = overlayCentre(screen, m.helpPopup(), m.width, m.height)
-	}
-	if m.notesOpen {
-		screen = overlayCentre(screen, m.notesPopup(), m.width, m.height)
-	}
-	if m.linksOpen {
-		screen = overlayCentre(screen, m.linksPopup(), m.width, m.height)
+	for _, p := range m.popups() {
+		if p.open {
+			screen = overlayCentre(screen, p.draw(), m.width, m.height)
+		}
 	}
 	return screen
+}
+
+type popup struct {
+	open bool
+	draw func() string
+}
+
+// popups is every popup, bottom first: View draws them in this order, and
+// popupAboveWait is the ones over the overlay.
+func (m model) popups() []popup {
+	return []popup{
+		{m.waitOpen, m.waitPopup},
+		{m.updateOpen && !m.prompting(), m.updatePopup},
+		{m.acctOpen, m.acctPopup},
+		{m.helpOpen, m.helpPopup},
+		{m.notesOpen, m.notesPopup},
+		{m.linksOpen, m.linksPopup},
+	}
 }
 
 // Compact key labels, shared by every hint so they stay consistent.
@@ -1066,23 +1109,15 @@ const (
 )
 
 // shortcuts is the keys that do something right now on the list, for the
-// Ctrl+G popup (the usage screen's header already lists all of its keys): whether a conversation is selected and
-// live, and whether the message box has focus.
+// Ctrl+G popup (the usage screen's header and the overlay's hint row list
+// their own): whether a conversation is selected and live, and whether the
+// message box has focus.
 func (m model) shortcuts() [][2]string {
 	var out [][2]string
 	add := func(on bool, k, what string) {
 		if on {
 			out = append(out, [2]string{k, what})
 		}
-	}
-	if m.waitOpen {
-		add(true, keyEnter, "send; on an empty box, go to its tab")
-		add(true, keyEsc, "snooze it, show the next")
-		add(true, "^N/P", "next / previous waiting session")
-		add(true, "^J/K", "scroll the conversation")
-		add(true, "^Y", "close")
-		add(true, "^C", "quit")
-		return out
 	}
 	hasCswap := cswapPath() != ""
 	sel := len(m.filtered) > 0
@@ -1226,7 +1261,11 @@ func (m model) viewScreen() string {
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
 	pairs, keep := []string{keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help", "^C", "quit"}, 2
 	if m.showUsage { // only Tab, account, help and quit do anything there
-		pairs, keep = []string{keyTab, "back", "^O", "account", "^L", "changelog", "^C", "quit"}, 1 // every key it has, so no ^G help
+		pairs, keep = []string{keyTab, "back", "^O", "account", "^L", "changelog"}, 1 // every key it has, so no ^G help
+		if len(m.waitQueue(true)) > 0 {
+			pairs = append(pairs, "^Y", "waiting")
+		}
+		pairs = append(pairs, "^C", "quit")
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "^J/K", "scroll", "^G", "help"}, 1
 	}

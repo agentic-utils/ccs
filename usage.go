@@ -868,8 +868,8 @@ func (m model) searchRowParts() (prefix, usage, count string) {
 	}
 	pad := m.width - 2 - 2 - 40 - lipgloss.Width(usage) - len(count) - 1 // 2 for indent, 2 for "> ", 40 for textInput, -1 to shift left
 	search := m.textInput
-	if m.chatFocus {
-		search.Blur() // typing goes to the message box; one cursor on screen
+	if m.chatFocus || m.waitEngaged {
+		search.Blur() // typing goes to a message box; one cursor on screen
 	}
 	return "  " + search.View() + strings.Repeat(" ", max(pad, 1)), usage, count
 }

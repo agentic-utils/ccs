@@ -685,7 +685,7 @@ type uiState struct {
 	QueryCursor   int                  `json:"query_cursor"`
 	Selected      string               `json:"selected"` // SessionID, so it survives a reordered list
 	PreviewScroll int                  `json:"preview_scroll"`
-	Snoozed       map[string]time.Time `json:"snoozed,omitempty"` // input-prompt overlay snoozes, by SessionID
+	Snoozes       map[string]snoozeRec `json:"snoozes,omitempty"` // input-prompt overlay snoozes, by SessionID
 }
 
 func (m model) screenName() string {
@@ -701,7 +701,7 @@ func (m model) uiState() uiState {
 		Query:         m.textInput.Value(),
 		QueryCursor:   m.textInput.Position(),
 		PreviewScroll: m.previewScroll,
-		Snoozed:       m.snoozed,
+		Snoozes:       m.snoozed,
 	}
 	if len(m.filtered) > 0 {
 		s.Selected = m.filtered[m.cursor].conv.SessionID
@@ -725,7 +725,7 @@ func (m *model) restore(s uiState) {
 	// preview clamps it when drawing.
 	m.previewScroll = max(0, s.PreviewScroll)
 	m.showUsage = s.Screen == "usage"
-	m.snoozed = s.Snoozed
+	m.snoozed = s.Snoozes
 }
 
 // notesCmd fetches the changelog off the UI goroutine.

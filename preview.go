@@ -124,19 +124,23 @@ func (m model) previewLines() []string {
 	if len(m.filtered) == 0 {
 		return nil
 	}
-	conv := m.filtered[m.cursor].conv
-	query := m.textInput.Value()
-	if m.preview == nil { // model built without initialModel (e.g. tests)
-		return buildPreviewLines(conv, query, m.width)
+	return cachedPreview(m.preview, m.filtered[m.cursor].conv, m.textInput.Value(), m.width)
+}
+
+// cachedPreview is buildPreviewLines memoised in c; a nil c (a model built
+// without initialModel, e.g. tests) isn't memoised.
+func cachedPreview(c *previewCache, conv Conversation, query string, width int) []string {
+	if c == nil {
+		return buildPreviewLines(conv, query, width)
 	}
 	// Preview lines depend only on the messages (so tool-only appends reuse
 	// them) and on the width they're wrapped to.
-	key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", conv.SessionID, len(conv.Messages), m.width, query)
-	if m.preview.key != key {
-		m.preview.key = key
-		m.preview.lines = buildPreviewLines(conv, query, m.width)
+	key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", conv.SessionID, len(conv.Messages), width, query)
+	if c.key != key {
+		c.key = key
+		c.lines = buildPreviewLines(conv, query, width)
 	}
-	return m.preview.lines
+	return c.lines
 }
 
 // buildPreviewLines builds the scrollable message lines of a conversation

@@ -33,6 +33,7 @@ Arguments:
 Environment:
   CCS_CLAUDE_ARGS  Flags passed to every claude ccs starts, before any -- claude-flags
                    (whitespace-separated, no quoting)
+  CCS_SNOOZE       How long Esc puts aside a session waiting on you (default: 15m)
 
 Flags:
   -h, --help       Show this help message

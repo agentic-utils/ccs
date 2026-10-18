@@ -63,15 +63,27 @@ type model struct {
 	livePIDs        map[string]int  // live SessionID -> claude pid (for its session file and socket)
 
 	// Message box for the selected live session (see chat*).
-	chatFocus      bool // typing goes to the message box, not the search
-	chatInput      textinput.Model
-	chatTickOn     bool                   // the fast refresh for the selected live session is running
-	chatStatus     map[string]sessionStat // busy/idle per live session, from its session file
-	pending        map[string]string      // text sent but not yet seen in the transcript, by SessionID
-	sendNote       map[string]string      // outcome of the last send, by SessionID
-	sentAt         map[string]time.Time   // when a socket send finished, by SessionID, until the session queues it
-	held           map[string]bool        // a receipt said the session is holding the message for approval
-	sending        bool
+	chatFocus  bool // typing goes to the message box, not the search
+	chatInput  textinput.Model
+	chatTickOn bool                   // the fast refresh for the selected live session is running
+	chatStatus map[string]sessionStat // busy/idle per live session, from its session file
+	pending    map[string]string      // text sent but not yet seen in the transcript, by SessionID
+	sendNote   map[string]string      // outcome of the last send, by SessionID
+	sentAt     map[string]time.Time   // when a socket send finished, by SessionID, until the session queues it
+	held       map[string]bool        // a receipt said the session is holding the message for approval
+	sending    bool
+
+	// Input-prompt overlay (see wait*): live sessions waiting on the user.
+	waitOpen       bool
+	waitAll        bool   // opened by hand: also sessions whose last message asks something
+	waitID         string // the session it shows
+	waitInput      textinput.Model
+	waitScroll     int                        // like previewScroll, for the overlay's transcript
+	waitPreview    *previewCache              // the overlay's transcript, wrapped to its width
+	waitDue        bool                       // a session started waiting (or its snooze ran out): pop up when quiet
+	snoozed        map[string]time.Time       // SessionID -> when its snooze ends
+	snooze         time.Duration              // CCS_SNOOZE
+	lastKey        time.Time                  // so a pop-up never lands mid-typing
 	reload         func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
 	gen            int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
 	refreshStarted time.Time                  // when the in-flight scan began; zero when none
@@ -169,6 +181,14 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 	if m.linksOpen {
 		return m // keyboard only while it's open
 	}
+	if m.waitOpen { // the wheel scrolls its transcript, nothing else reacts
+		if msg.Button == tea.MouseButtonWheelUp {
+			m.waitScroll = min(m.waitScroll+3, m.maxWaitScroll())
+		} else if msg.Button == tea.MouseButtonWheelDown {
+			m.waitScroll = max(0, m.waitScroll-3)
+		}
+		return m
+	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
 		if msg.Button == tea.MouseButtonWheelUp {
 			m.scrollNotes(-3)
@@ -262,8 +282,12 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 	chat.Cursor.SetMode(cursor.CursorStatic)
 	chat.Focus() // only fed keys while chatFocus; drawn without a cursor otherwise
 
+	wait := chat
 	m := model{
 		chatInput:   chat,
+		waitInput:   wait,
+		waitPreview: &previewCache{},
+		snooze:      snoozeLength(os.Getenv("CCS_SNOOZE")),
 		items:       items,
 		textInput:   ti,
 		claudeFlags: claudeFlags,
@@ -430,6 +454,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.updated) > 0 && msg.gen == m.gen && !m.prompting() {
 			m.applyLive(msg.updated)
 		}
+		m.applyStats(msg.stats)
 		cmds := []tea.Cmd{liveTick()}
 		// A session that went live but isn't listed (a brand-new conversation):
 		// scan now rather than at the next minute, at most every 15s.
@@ -621,10 +646,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatTickResult:
 		m.chatTickOn = false // rescheduled by Update while the selection stays live
 		if msg.stat.status != "" {
-			if m.chatStatus == nil {
-				m.chatStatus = make(map[string]sessionStat)
-			}
-			m.chatStatus[msg.id] = msg.stat
+			m.setStat(msg.id, msg.stat)
 		}
 		if msg.conv != nil && msg.gen == m.gen && !m.prompting() {
 			m.applyLive([]Conversation{*msg.conv})
@@ -657,6 +679,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyRunes && (mouseLeak.MatchString(string(msg.Runes)) || m.mouseFragment(msg)) {
 			return m, nil // a fragmented mouse report, not typing
 		}
+		m.lastKey = time.Now()
 		if m.notesOpen { // owns the keyboard until closed
 			switch msg.String() {
 			case "ctrl+l", "esc":
@@ -777,6 +800,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.waitOpen { // owns the keyboard until closed (popups above it come first)
+			return m.waitKey(msg)
+		}
 		if m.renaming {
 			switch msg.String() {
 			case "enter":
@@ -855,7 +881,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.resumeCmd(m.filtered[m.cursor].conv, false)
 				}
 				return m, m.sendCmd()
-			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x", "ctrl+]", "ctrl+\\":
+			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x", "ctrl+]", "ctrl+\\", "ctrl+y":
 				// fall through to the list's handling below
 			default:
 				var cmd tea.Cmd
@@ -990,6 +1016,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput.SetValue("")
 			m.updateFilter()
 			return m, nil
+
+		case "ctrl+y":
+			m.openWait(true)
+			return m, nil
 		}
 	}
 
@@ -1007,6 +1037,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // here, not by each screen, so every screen (and any added later) shows them.
 func (m model) View() string {
 	screen := m.viewScreen()
+	if m.waitOpen { // under the other popups: they take the keyboard first
+		screen = overlayCentre(screen, m.waitPopup(), m.width, m.height)
+	}
 	if m.updateOpen && !m.prompting() {
 		screen = overlayCentre(screen, m.updatePopup(), m.width, m.height)
 	}
@@ -1042,6 +1075,15 @@ func (m model) shortcuts() [][2]string {
 			out = append(out, [2]string{k, what})
 		}
 	}
+	if m.waitOpen {
+		add(true, keyEnter, "send; on an empty box, go to its tab")
+		add(true, keyEsc, "snooze it, show the next")
+		add(true, "^N/P", "next / previous waiting session")
+		add(true, "^J/K", "scroll the conversation")
+		add(true, "^Y", "close")
+		add(true, "^C", "quit")
+		return out
+	}
 	hasCswap := cswapPath() != ""
 	sel := len(m.filtered) > 0
 	live := sel && m.selectedLive()
@@ -1064,6 +1106,7 @@ func (m model) shortcuts() [][2]string {
 	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
 	add(true, keyTab, "usage")
 	add(!m.chatFocus && m.textInput.Value() != "", keyEsc+" ^U", "clear the search")
+	add(len(m.waitQueue(true)) > 0, "^Y", "sessions waiting on you")
 	add(hasCswap, "^O", "switch account")
 	add(sel && len(m.visibleLinks()) > 0, "^T", "open a link in view")
 	add(true, "^L", "changelog")
@@ -1176,6 +1219,9 @@ func (m model) viewScreen() string {
 	}
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
+	}
+	if n := len(m.waitQueue(true)); n > 0 && !m.showUsage {
+		status += fmt.Sprintf(" · %d waiting", n)
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
 	pairs, keep := []string{keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help", "^C", "quit"}, 2
@@ -1326,15 +1372,24 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	project = truncate(project, colProject)
 
 	// Status icons, packed right against the topic so titles stay aligned:
-	// ● open in a running claude, ⚙ started by a script or another session.
+	// ● open in a running claude (? instead when it waits on you: bright for
+	// a prompt, dim when its last message asks something), ⚙ started by a
+	// script or another session.
 	// ponytail: the glyphs are ambiguous-width, so a marked row may sit one
 	// cell off on CJK-width terminals - cosmetic only.
 	var icons, colouredIcons string
 	n := 0
+	liveGlyph, liveColour := "●", "32"
+	switch m.waitSignal(item.conv) {
+	case waitPrompt:
+		liveGlyph, liveColour = "?", "1;33"
+	case waitAsked:
+		liveGlyph, liveColour = "?", "2;33"
+	}
 	for _, s := range []struct {
 		on           bool
 		glyph, color string
-	}{{m.live[item.conv.SessionID], "●", "32"}, {item.conv.Spawned, "⚙", "90"}, {item.conv.LastError != "", "!", "1;31"}} {
+	}{{m.live[item.conv.SessionID], liveGlyph, liveColour}, {item.conv.Spawned, "⚙", "90"}, {item.conv.LastError != "", "!", "1;31"}} {
 		if !s.on {
 			continue
 		}

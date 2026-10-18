@@ -44,8 +44,9 @@ type resumeDoneMsg struct {
 type liveMsg struct {
 	live    map[string]bool
 	pids    map[string]int
-	updated []Conversation // live conversations whose transcript grew
-	unknown []string       // live sessions not in the list yet
+	updated []Conversation         // live conversations whose transcript grew
+	unknown []string               // live sessions not in the list yet
+	stats   map[string]sessionStat // each live session's status, from its session file
 	gen     int
 }
 
@@ -75,7 +76,12 @@ func (m model) liveCmd() tea.Cmd {
 		for id := range pids {
 			live[id] = true
 		}
-		msg := liveMsg{live: live, pids: pids, gen: gen}
+		msg := liveMsg{live: live, pids: pids, gen: gen, stats: make(map[string]sessionStat, len(pids))}
+		for id, pid := range pids {
+			if f, err := readSessionFile(pid); err == nil && f.SessionID == id {
+				msg.stats[id] = f.stat()
+			}
+		}
 		check := make(map[string]bool, len(live)+len(wasLive))
 		for id := range live {
 			check[id] = true

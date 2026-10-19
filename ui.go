@@ -476,6 +476,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case answerDoneMsg:
+		switch {
+		case msg.err != nil:
+			m.waitErr = "Answering " + msg.name + " failed (" + msg.err.Error() + "): answer it in its tab"
+		case msg.where == "":
+			m.waitErr = "Couldn't find " + msg.name + "'s terminal: answer it in its tab"
+		}
+		return m, nil
+
 	case focusDoneMsg:
 		m.resuming = false
 		if msg.gone {
@@ -998,10 +1007,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.quitting = true
 				return m, tea.Quit
 			}
-			if m.selectedLive() { // first Enter: the message box; Enter again on it empty opens the session
-				m.chatFocus = true
-				return m, nil
-			}
+			// A live session's tab is focused, not resumed again (resumeCmd checks).
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, false)
 
 		case "ctrl+f":
@@ -1181,7 +1187,7 @@ func (m model) shortcuts() [][2]string {
 		add(true, keyEnter, "send; on an empty box, open the session")
 		add(true, keyEsc, "back to the search")
 	case live:
-		add(true, keyEnter, "message it (enter again to open it)")
+		add(true, keyEnter, "open its tab")
 		add(true, "^S", "message it")
 	default:
 		add(sel, keyEnter, "resume")

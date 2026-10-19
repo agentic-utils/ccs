@@ -198,6 +198,19 @@ func (m model) sessionName(conv Conversation) string {
 	return truncate(getTopic(conv), 30)
 }
 
+// waitingLine says what a waiting session asks and where to answer it.
+func waitingLine(conv Conversation) string {
+	switch qs := conv.questions(); {
+	case answerable(conv) > 0:
+		return cleanText(qs[0].Question) + " · ^Y answers it here, " + keyEnter + " opens its tab"
+	case len(qs) > 0:
+		return cleanText(qs[0].Question) + " · answer it in its tab: " + keyEnter + " opens it"
+	case conv.pending != nil:
+		return "wants to use " + conv.pending.Name + " · approve it in its tab: " + keyEnter + " opens it"
+	}
+	return "its question is only shown in its own tab: " + keyEnter + " opens it"
+}
+
 // chatView draws the status line and message box for the selected session.
 func (m model) chatView() string {
 	return m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.width)
@@ -224,6 +237,8 @@ func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width 
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.sendNote[id] != "":
 		left = "  " + m.sendNote[id]
+	case m.chatStatus[id].status == "waiting": // menus and prompts never reach the transcript
+		left = "\033[1;" + amber + "m  ? " + waitingLine(conv) + "\033[0m"
 	}
 	right := ""
 	if st := m.chatStatus[id]; st.status == "busy" {
@@ -541,6 +556,12 @@ func peerToken(pid int, socket string) string {
 // Enter: its tmux pane, else its iTerm tab. where names what it used ("" if
 // neither found it). A timeout may still have typed it, so it's not retried.
 func typeIntoSession(pid int, text string) (where string, err error) {
+	return typeKeys(pid, text, true)
+}
+
+// typeKeys is typeIntoSession with Enter optional: a digit alone picks a
+// question menu's option.
+func typeKeys(pid int, text string, enter bool) (where string, err error) {
 	if strings.ContainsFunc(text, func(r rune) bool { return r < 0x20 || r == 0x7f || r == utf8.RuneError }) {
 		return "terminal", errors.New("the message contains control characters")
 	}
@@ -553,7 +574,7 @@ func typeIntoSession(pid int, text string) (where string, err error) {
 	if os.Getenv("TMUX") != "" {
 		panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
 		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
-			if _, err := runBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "-l", "--", text); err != nil {
+			if _, err := runBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "-l", "--", text); err != nil || !enter {
 				return "tmux pane", err
 			}
 			_, err := runBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "Enter")
@@ -568,13 +589,13 @@ func typeIntoSession(pid int, text string) (where string, err error) {
 		repeat with t in tabs of w
 			repeat with s in sessions of t
 				if tty of s is %q then
-					tell s to write text %q
+					tell s to write text %q newline %t
 					return "typed"
 				end if
 			end repeat
 		end repeat
 	end repeat
-end tell`, tty, text)
+end tell`, tty, text, enter)
 	out, err = runBounded(5*time.Second, nil, "osascript", "-e", script)
 	if err != nil {
 		return "iTerm tab", err

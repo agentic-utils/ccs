@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -226,9 +228,9 @@ func (m model) bannerLine(conv Conversation, more, width int) string {
 		why = "waiting"
 	}
 	keys := !m.popupAboveWait() && !m.prompting()
-	parts := []string{"\033[1;" + amber + "m? " + m.sessionName(conv) + " is waiting on you\033[0m"}
+	parts := []string{"\033[1;" + amber + "m? " + m.sessionName(conv) + " is waiting on you in its tab\033[0m"}
 	if keys {
-		parts = append(parts, hints("^Y", "answer"))
+		parts = append(parts, hints("^Y", "see it"))
 	}
 	extra := []string{"\033[33m" + why + "\033[0m"}
 	if keys {
@@ -428,6 +430,11 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.sendTo(conv, true)
 		}
 	default:
+		if k := msg.String(); ok && len(k) == 1 && k >= "1" && k <= "9" && m.waitInput.Value() == "" && m.waitSignal(conv) == waitPrompt {
+			if n := int(k[0] - '0'); n <= answerable(conv) {
+				return m, m.answerCmd(conv, n)
+			}
+		}
 		var cmd tea.Cmd
 		m.waitInput, cmd = m.waitInput.Update(msg)
 		return m, cmd
@@ -460,7 +467,82 @@ func (m model) waitLines() []string {
 
 func (m model) maxWaitScroll() int {
 	_, rows := m.waitLayout()
-	return max(0, len(m.waitLines())-rows)
+	return max(0, len(m.waitLines())-max(rows-len(m.waitAsk()), 0))
+}
+
+// waitAsk is what the overlay's session is asking, drawn under its transcript.
+func (m model) waitAsk() []string {
+	conv, ok := m.waitConv()
+	if !ok || m.waitSignal(conv) != waitPrompt {
+		return nil
+	}
+	inner, _ := m.waitLayout()
+	return askLines(conv, inner)
+}
+
+// askLines shows a waiting session's question menu, numbered as claude shows
+// it, or the tool call its permission prompt is about. Neither is in the
+// transcript as text until answered.
+func askLines(conv Conversation, width int) []string {
+	cut := func(s string) string { return ansi.Truncate(s, width, "…") + "\033[0m" }
+	if qs := conv.questions(); len(qs) > 0 {
+		var out []string
+		for _, q := range qs {
+			out = append(out, "", cut("\033[1;"+amber+"m? "+cleanText(q.Question)))
+			for i, o := range q.Options {
+				line := fmt.Sprintf("  \033[1m%d\033[0m  %s", i+1, cleanText(o.Label))
+				if o.Description != "" {
+					line += "\033[90m · " + cleanText(o.Description)
+				}
+				out = append(out, cut(line))
+			}
+		}
+		if answerable(conv) == 0 {
+			out = append(out, cut("\033[90m  answer it in its tab: "+keyEnter+" opens it"))
+		}
+		return out
+	}
+	if conv.pending == nil {
+		return nil
+	}
+	return []string{"", cut("\033[1;" + amber + "m? wants to use " + conv.pending.Name + "\033[0m " + toolSummary(conv.pending.Input) + "\033[90m · approve it in its tab: " + keyEnter + " opens it")}
+}
+
+// answerable is how many options a digit can pick: only a single
+// single-choice question, where claude takes the digit as the answer.
+func answerable(conv Conversation) int {
+	qs := conv.questions()
+	if len(qs) != 1 || qs[0].MultiSelect {
+		return 0
+	}
+	return min(len(qs[0].Options), 9)
+}
+
+// toolSummary is the part of a tool call's input a person would check first.
+func toolSummary(input json.RawMessage) string {
+	var in map[string]any
+	json.Unmarshal(input, &in)
+	for _, k := range []string{"command", "file_path", "url", "pattern", "description"} {
+		if v, ok := in[k].(string); ok && v != "" {
+			return cleanText(strings.Join(strings.Fields(v), " "))
+		}
+	}
+	return ""
+}
+
+type answerDoneMsg struct {
+	name, where string
+	err         error
+}
+
+// answerCmd picks option n of a waiting session's question by pressing the
+// digit in its terminal, as typing it there would.
+func (m model) answerCmd(conv Conversation, n int) tea.Cmd {
+	pid, name := m.livePIDs[conv.SessionID], m.sessionName(conv)
+	return func() tea.Msg {
+		where, err := typeKeys(pid, strconv.Itoa(n), false)
+		return answerDoneMsg{name: name, where: where, err: err}
+	}
 }
 
 // waitPopup draws the overlay: which session and why, its transcript (newest
@@ -487,7 +569,6 @@ func (m model) waitPopup() string {
 		if !st.since.IsZero() {
 			title += fmt.Sprintf(" · %dm", int(time.Since(st.since).Minutes()))
 		}
-		note = "\033[90m  it's showing a menu: answer it in its tab (enter on an empty box goes there); a message sent here may wait until it's answered\033[0m"
 	case m.waitSignal(conv) == waitAsked:
 		title += " · " + m.sessionName(conv) + " · \033[90mits last message asks you something\033[0m"
 	default:
@@ -503,12 +584,17 @@ func (m model) waitPopup() string {
 		note = "\033[31m  " + m.waitErr + "\033[0m"
 	}
 
+	ask := m.waitAsk()
+	if len(ask) > rows {
+		ask = ask[len(ask)-rows:]
+	}
 	lines := m.waitLines()
-	start, end := scrollWindow(len(lines), rows, m.waitScroll)
+	start, end := scrollWindow(len(lines), rows-len(ask), m.waitScroll)
 	visible := append([]string(nil), lines[start:end]...)
-	for len(visible) < rows {
+	for len(visible) < rows-len(ask) {
 		visible = append(visible, "")
 	}
+	visible = append(visible, ask...)
 
 	var b strings.Builder
 	b.WriteString(ansi.Truncate(title, inner, "…") + "\033[0m\n")
@@ -521,7 +607,15 @@ func (m model) waitPopup() string {
 	} else {
 		b.WriteString("\n\n\n")
 	}
-	keys := hints(keyEnter, "send", keyEsc, "snooze "+shortDuration(m.snooze), "↑↓ ^N/P", "next/prev", "pgup/dn ^K/J", "scroll", "^Y", "close", "^C", "quit")
+	enter := "send"
+	if strings.TrimSpace(m.waitInput.Value()) == "" {
+		enter = "open its tab"
+	}
+	var keys string
+	if n := answerable(conv); ok && n > 0 && m.waitSignal(conv) == waitPrompt && m.waitInput.Value() == "" {
+		keys = hints(fmt.Sprintf("1-%d", n), "answer") + "  "
+	}
+	keys += hints(keyEnter, enter, keyEsc, "snooze "+shortDuration(m.snooze), "↑↓ ^N/P", "next/prev", "pgup/dn ^K/J", "scroll", "^Y", "close", "^C", "quit")
 	b.WriteString("\n\033[90m" + ansi.Truncate(keys, inner, "…") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

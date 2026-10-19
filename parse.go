@@ -58,9 +58,10 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	parsedBytes int64
 	sawUser     bool
-	peerQueued  []string // recent messages from other sessions/ccs the session has queued, for delivery status
-	lastUsageID string   // one reply spans several lines with the same id and usage; count it once
-	tailApplied bool     // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
+	peerQueued  []string  // recent messages from other sessions/ccs the session has queued, for delivery status
+	lastUsageID string    // one reply spans several lines with the same id and usage; count it once
+	tailApplied bool      // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
+	pending     *toolCall // the last tool call still without a result: what a waiting session asks about
 
 	// readAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -568,6 +569,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 		if conv.Cwd == "" {
 			conv.Cwd = raw.Cwd
 		}
+		trackTools(conv, raw.Message.Content)
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
 		text := extractText(raw.Message.Content)
 		// "/model" logs its result as command output; a switch after the last
@@ -631,11 +633,67 @@ func parseLine(conv *Conversation, line []byte) bool {
 				conv.Usage.Output += int64(u.OutputTokens)
 			}
 		}
+		trackTools(conv, raw.Message.Content)
 		if text := extractText(raw.Message.Content); strings.TrimSpace(text) != "" {
 			conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: text, Ts: raw.Timestamp})
 		}
 	}
 	return true
+}
+
+// toolCall is a tool_use block: a permission prompt asks about it, and an
+// AskUserQuestion carries the question menu, both only on screen in claude.
+type toolCall struct {
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// askQuestion is one question of an AskUserQuestion call.
+type askQuestion struct {
+	Question    string `json:"question"`
+	MultiSelect bool   `json:"multiSelect"`
+	Options     []struct {
+		Label       string `json:"label"`
+		Description string `json:"description"`
+	} `json:"options"`
+}
+
+// trackTools keeps conv.pending in step with a line's content: a tool call
+// becomes pending, its result clears it.
+func trackTools(conv *Conversation, content json.RawMessage) {
+	if len(content) == 0 || content[0] != '[' {
+		return
+	}
+	var blocks []struct {
+		Type      string `json:"type"`
+		ToolUseID string `json:"tool_use_id"`
+		toolCall
+	}
+	if json.Unmarshal(content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		switch {
+		case b.Type == "tool_use":
+			call := b.toolCall
+			conv.pending = &call
+		case b.Type == "tool_result" && conv.pending != nil && b.ToolUseID == conv.pending.ID:
+			conv.pending = nil
+		}
+	}
+}
+
+// questions is the pending AskUserQuestion's questions, if that's what's pending.
+func (c Conversation) questions() []askQuestion {
+	if c.pending == nil || c.pending.Name != "AskUserQuestion" {
+		return nil
+	}
+	var in struct {
+		Questions []askQuestion `json:"questions"`
+	}
+	json.Unmarshal(c.pending.Input, &in)
+	return in.Questions
 }
 
 func finishParse(conv *Conversation) {

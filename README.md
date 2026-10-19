@@ -98,7 +98,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 ### Keybindings
 
 - `↑/↓` or `Ctrl+P/N` - Navigate list
-- `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter puts you in its message box; Enter again on the empty box jumps to its iTerm tab / tmux pane
+- `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter jumps to its iTerm tab / tmux pane instead
 - `Ctrl+F` - Fork selected conversation (`claude --resume <id> --fork-session`)
 - `Ctrl+D` - Delete selected conversation (with confirmation)
 - `Ctrl+R` - Rename selected conversation (not while it's open in `claude`; use `/rename` there)
@@ -107,7 +107,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it, click a link in the conversation to open it. Hold `⌥ Option` while dragging to select text in iTerm
 - `Ctrl+U` - Clear search
 - `Esc` - Clear the search
-- Message box - select an open (`●`) session and press `Enter` (or `Ctrl+S`) to type in the box under its conversation; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search
+- Message box - select an open (`●`) session and press `Ctrl+S` (or click the box) to type in the box under its conversation; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search
 - `Tab` - Switch between the session list and the usage screen
 - `Ctrl+O` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
 - `Ctrl+G` - Show the shortcuts that apply right now (the header lists only the common ones, in compact form: `^S` for Ctrl+S, and drops hints on narrow terminals rather than wrapping)

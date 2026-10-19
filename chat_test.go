@@ -81,7 +81,7 @@ func TestSendViaSocketExactBytes(t *testing.T) {
 	sum := sha256.Sum256([]byte(sock)) // the path as written, not resolved
 	os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))), []byte(`{"peerToken":"tok123"}`), 0o600)
 
-	note, err := deliverMessage(pid, "live", "busy", `check "it" </cross-session-message> now`)
+	note, err := deliverMessage(pid, "live", "busy", `check "it" </cross-session-message> now`, true)
 	if err != nil || !strings.Contains(note, "via its message socket") {
 		t.Fatalf("note=%q err=%v", note, err)
 	}
@@ -113,7 +113,7 @@ func TestSendFallsBackToTypingOnlyWhenSocketUnreachable(t *testing.T) {
 	pid := os.Getpid()
 	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(`{"sessionId":"live","messagingSocketPath":"/tmp/ccs-no-such.sock"}`), 0o600)
 	log := fakeTerminal(t)
-	note, err := deliverMessage(pid, "live", "busy", "hello there")
+	note, err := deliverMessage(pid, "live", "busy", "hello there", true)
 	if err != nil || note != "✓ Typed into busy's tmux pane (as you)" {
 		t.Fatalf("note=%q err=%v", note, err)
 	}
@@ -133,7 +133,7 @@ func TestSocketSuccessNeverAlsoTypes(t *testing.T) {
 	pid := os.Getpid()
 	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","messagingSocketPath":%q}`, sock)), 0o600)
 	log := fakeTerminal(t)
-	if _, err := deliverMessage(pid, "live", "busy", "once"); err != nil {
+	if _, err := deliverMessage(pid, "live", "busy", "once", true); err != nil {
 		t.Fatal(err)
 	}
 	<-got
@@ -269,7 +269,7 @@ func TestDeliveryReceipts(t *testing.T) {
 	sock, got := fakeSocket(t)
 	pid := os.Getpid()
 	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","messagingSocketPath":%q}`, sock)), 0o600)
-	if _, err := deliverMessage(pid, "live", "busy", "hello"); err != nil {
+	if _, err := deliverMessage(pid, "live", "busy", "hello", true); err != nil {
 		t.Fatal(err)
 	}
 	var msg struct {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -52,10 +51,8 @@ type snoozeRec struct {
 const (
 	waitNone   = iota
 	waitPrompt // its session file says "waiting": a permission prompt or a question menu
-	waitAsked  // idle, and its last message ends in "?": a guess, so it never pops up
+	waitAsked  // idle, and its last message ends in "?": a guess, so it never gets the banner
 )
-
-var inlineCode = regexp.MustCompile("`[^`]*`")
 
 func (m model) waitSignal(conv Conversation) int {
 	if !m.live[conv.SessionID] {
@@ -73,11 +70,10 @@ func (m model) waitSignal(conv Conversation) int {
 }
 
 // asks: the text ends in a question. Markdown closing it ("(yes?)", "push?**")
-// still asks; a bare "?", one in inline code or ending a URL doesn't.
+// still asks; a bare "?" doesn't.
 func asks(text string) bool {
-	t := strings.TrimRight(inlineCode.ReplaceAllString(strings.TrimSpace(text), ""), ")*_ ")
-	words := strings.Fields(t)
-	return strings.HasSuffix(t, "?") && strings.TrimRight(t, "?") != "" && !strings.Contains(words[len(words)-1], "://")
+	t := strings.TrimRight(strings.TrimSpace(text), ")*_` ")
+	return strings.HasSuffix(t, "?") && strings.TrimRight(t, "?") != ""
 }
 
 // snoozedNow reports whether id's wait is snoozed.
@@ -86,10 +82,10 @@ func (m model) snoozedNow(id string) bool {
 	return ok && time.Now().Before(s.Until)
 }
 
-// waitQueue is the overlay's sessions, oldest wait first so a snoozed one
+// waitQueue is the waiting sessions, oldest wait first so a snoozed one
 // coming back can't be starved by newer ones (an unknown wait time goes
-// last). all (opened by hand) adds the snoozed ones and, after the prompts,
-// the waitAsked ones.
+// last). all (the overlay's list) adds the snoozed ones and, after the
+// prompts, the waitAsked ones.
 func (m model) waitQueue(all bool) []Conversation {
 	var prompts, asked []Conversation
 	for _, item := range m.items {
@@ -128,7 +124,8 @@ func (m model) waitPos(q []Conversation) int {
 // waiting; it ends when the session leaves "waiting". A snooze (and whether
 // it was seen) belongs to one wait, so it ends with it. The first sight of a
 // session after ccs starts counts as a new wait, except that a restored
-// snooze for the same statusUpdatedAt still holds.
+// snooze for the same statusUpdatedAt still holds (without one, it can't be
+// matched, so it goes).
 func (m *model) setStat(id string, st sessionStat) {
 	if st.status == "" {
 		return
@@ -143,7 +140,7 @@ func (m *model) setStat(id string, st sessionStat) {
 		delete(m.snoozed, id)
 		delete(m.waitDue, id)
 	case !had:
-		if s, ok := m.snoozed[id]; ok && !s.Since.Equal(st.since) {
+		if s, ok := m.snoozed[id]; ok && (st.since.IsZero() || !s.Since.Equal(st.since)) {
 			delete(m.snoozed, id)
 		}
 		m.markDue(id)
@@ -154,10 +151,9 @@ func (m *model) setStat(id string, st sessionStat) {
 }
 
 // applyStats takes the live tick's statuses, forgets sessions that are gone
-// (the live tick keeps one whose file was unreadable for a tick while its
-// process runs), ends snoozes whose time is up, and pops the overlay when a
-// due wait can show. At startup every waiting session counts as new, so ccs
-// opens on the oldest.
+// (the live tick keeps one whose file is briefly unreadable while its
+// process runs), and ends snoozes whose time is up, so their wait gets the
+// banner again.
 func (m *model) applyStats(stats map[string]sessionStat) {
 	if stats == nil {
 		return
@@ -168,9 +164,9 @@ func (m *model) applyStats(stats map[string]sessionStat) {
 	for id := range m.chatStatus {
 		if !m.live[id] {
 			delete(m.chatStatus, id)
-			delete(m.waitDrafts, id)
 		}
 	}
+	m.dropDrafts()
 	for id, s := range m.snoozed {
 		switch {
 		case !m.live[id]:
@@ -185,9 +181,6 @@ func (m *model) applyStats(stats map[string]sessionStat) {
 			delete(m.waitDue, id)
 		}
 	}
-	if !m.waitOpen && m.canPop() && m.popDue() {
-		m.openWait(false)
-	}
 	if m.waitOpen {
 		m.checkDelivered(m.waitID)
 	}
@@ -200,47 +193,100 @@ func (m *model) markDue(id string) {
 	m.waitDue[id] = true
 }
 
-// popDue: a due wait is in the queue.
-func (m model) popDue() bool {
-	return slices.ContainsFunc(m.waitQueue(false), func(c Conversation) bool { return m.waitDue[c.SessionID] })
+// banner is the wait the one-row banner shows: the oldest not yet seen in the
+// overlay (or whose snooze ran out), and how many more there are. None while
+// the overlay is open: it lists them.
+func (m model) banner() (conv Conversation, more int, ok bool) {
+	if m.waitOpen {
+		return
+	}
+	for _, c := range m.waitQueue(false) {
+		switch {
+		case !m.waitDue[c.SessionID]:
+		case ok:
+			more++
+		default:
+			conv, ok = c, true
+		}
+	}
+	return
 }
 
-// popupAboveWait: a popup drawn over the overlay is open (see popups). It
-// takes the keys and the wheel first, and holds off a pop-up. Nothing opens
-// over the overlay from the keyboard, so in practice it's the update offer.
+// bannerLine draws the banner in the blank row under the search, so the
+// title row keeps its notes and hints. It takes no keys: everything on screen
+// works as without it, and Ctrl+Y opens the overlay on it. While a popup or
+// prompt has the keys Ctrl+Y does nothing there, so it isn't offered. A
+// narrow screen drops the reason first, then the snooze hint, then the count.
+func (m model) bannerLine(conv Conversation, more, width int) string {
+	why := m.chatStatus[conv.SessionID].waitingFor
+	if why == "" {
+		why = "waiting"
+	}
+	keys := !m.popupAboveWait() && !m.prompting()
+	parts := []string{"\033[1;33m? " + m.sessionName(conv) + " is waiting on you\033[0m"}
+	if keys {
+		parts = append(parts, hints("^Y", "answer"))
+	}
+	extra := []string{"\033[33m" + why + "\033[0m"}
+	if keys {
+		extra = append(extra, hints(keyEsc, "there snoozes "+shortDuration(m.snooze)))
+	}
+	if more > 0 {
+		extra = append(extra, fmt.Sprintf("\033[33m+%d more\033[0m", more))
+	}
+	for {
+		s := "  " + strings.Join(append(slices.Clone(parts), extra...), "  ")
+		if ansi.StringWidth(s) <= width || len(extra) == 0 {
+			return ansi.Truncate(s, max(width, 1), "…") + "\033[0m"
+		}
+		extra = extra[1:]
+	}
+}
+
+// popupAboveWait: a popup drawn over the overlay is open (see overPopups). It
+// takes the keys and the wheel first. Nothing opens over the overlay from the
+// keyboard, so in practice it's the update offer.
 func (m model) popupAboveWait() bool {
-	return slices.ContainsFunc(m.popups()[1:], func(p popup) bool { return p.open })
+	return slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open })
 }
 
-// canPop: no popup or prompt is open. A pop-up takes no keys until engaged,
-// so typing never has to hold it off.
-func (m model) canPop() bool {
-	return !m.prompting() && !m.popupAboveWait()
-}
+// waitMinHeight is the shortest terminal the overlay fits: its frame and a
+// transcript row. Shorter, there's only the banner.
+const waitMinHeight = waitChrome + 1
 
-// openWait opens the overlay on the first session in its queue. By hand it
-// has the keyboard at once and also shows snoozed sessions (keeping their
-// snoozes) and the ones whose last message asks something. On its own it
-// waits for Ctrl+Y.
-func (m *model) openWait(byHand bool) {
-	q := m.waitQueue(byHand)
+const waitTooShort = "The window is too short for the waiting sessions: make it taller, or answer in the session's tab"
+
+// openWait opens the overlay, which owns the keyboard until closed. It shows
+// the banner's session first (else the oldest), and lists the snoozed
+// sessions too (keeping their snoozes) and the ones whose last message asks
+// something.
+func (m *model) openWait() {
+	if m.height < waitMinHeight {
+		m.errorMsg = waitTooShort
+		return
+	}
+	q := m.waitQueue(true)
 	if len(q) == 0 {
 		m.errorMsg = "No session is waiting on you"
 		return
 	}
-	m.waitOpen, m.waitAll, m.waitEngaged, m.waitDue, m.waitErr = true, byHand, byHand, nil, ""
-	m.showWait(q[0].SessionID)
+	first := q[0]
+	if c, _, ok := m.banner(); ok {
+		first = c
+	}
+	m.waitOpen, m.waitErr = true, ""
+	m.showWait(first.SessionID)
 	m.waitScroll = 0
 }
 
-// closeWait closes the overlay. What was due has been seen, so only a new
-// wait pops it again.
 func (m *model) closeWait() {
-	m.waitOpen, m.waitEngaged, m.waitDue = false, false, nil
+	m.waitOpen = false
 }
 
-// showWait shows session id, keeping each session's draft with it.
+// showWait shows session id, which marks its wait seen, keeping each
+// session's draft with it.
 func (m *model) showWait(id string) {
+	delete(m.waitDue, id)
 	if id == m.waitID {
 		return
 	}
@@ -256,23 +302,55 @@ func (m *model) showWait(id string) {
 }
 
 // giveBack puts text that never reached session id back in the box it came
-// from, unless that box has moved on (another session, or a new draft).
-func (m *model) giveBack(id, text string, overlay bool) {
-	switch {
-	case overlay && m.waitID == id:
-		if m.waitInput.Value() == "" {
-			m.waitInput.SetValue(text)
-		}
-	case overlay:
-		if m.waitDrafts[id] == "" {
-			if m.waitDrafts == nil {
-				m.waitDrafts = make(map[string]string)
-			}
-			m.waitDrafts[id] = text
-		}
-	case m.selectedLive() && m.filtered[m.cursor].conv.SessionID == id && m.chatInput.Value() == "":
-		m.chatInput.SetValue(text)
+// from (the overlay's or the main one), as that session's draft: in the box
+// if it still shows the session, else kept until it does. A draft written
+// since keeps the text after it, so it's never dropped. It returns what the
+// send note should say.
+func (m *model) giveBack(id, text string, overlay bool) string {
+	m.syncChatDraft()
+	in, shown, drafts, where := &m.chatInput, m.chatFor == id, &m.chatDrafts, "its message box: select it to see it"
+	if overlay {
+		in, shown, drafts, where = &m.waitInput, m.waitID == id, &m.waitDrafts, "its draft in the waiting list (^Y)"
 	}
+	if shown {
+		in.SetValue(joinDraft(in.Value(), text))
+		in.CursorEnd()
+		return "unsent text put back in the box"
+	}
+	if *drafts == nil {
+		*drafts = make(map[string]string)
+	}
+	(*drafts)[id] = joinDraft((*drafts)[id], text)
+	return "unsent text kept in " + where
+}
+
+// dropDrafts throws away the kept drafts of sessions that have exited, and
+// says so: they can't be sent anywhere now.
+func (m *model) dropDrafts() {
+	for _, drafts := range []map[string]string{m.waitDrafts, m.chatDrafts} {
+		for id, d := range drafts {
+			if m.live[id] {
+				continue
+			}
+			delete(drafts, id)
+			if strings.TrimSpace(d) != "" {
+				name := id
+				for _, item := range m.items {
+					if item.conv.SessionID == id {
+						name = m.sessionName(item.conv)
+					}
+				}
+				m.errorMsg = "Unsent text to " + name + " discarded: it has exited"
+			}
+		}
+	}
+}
+
+func joinDraft(draft, text string) string {
+	if draft == "" {
+		return text
+	}
+	return draft + " " + text
 }
 
 // waitConv is the session the overlay shows, as last read.
@@ -288,7 +366,7 @@ func (m model) waitConv() (Conversation, bool) {
 // waitStep shows the session by places away in the queue (clamped); a
 // session no longer in it starts from the top.
 func (m *model) waitStep(by int) {
-	q := m.waitQueue(m.waitAll)
+	q := m.waitQueue(true)
 	if len(q) == 0 {
 		return
 	}
@@ -301,8 +379,7 @@ func (m *model) waitStep(by int) {
 	m.showWait(q[i].SessionID)
 }
 
-// waitKey handles a key while the overlay has the keyboard (only Esc gets
-// here before it's engaged).
+// waitKey handles a key while the overlay is open.
 func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.waitErr = ""
 	conv, ok := m.waitConv()
@@ -312,21 +389,20 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
-	case "esc": // defer: snooze this one, show the one after it
-		before := m.waitQueue(m.waitAll)
-		i := max(m.waitPos(before), 0)
-		if m.snoozed == nil {
-			m.snoozed = make(map[string]snoozeRec)
+	case "esc": // defer: snooze this wait, show the oldest one not snoozed
+		if ok && m.waitSignal(conv) == waitPrompt {
+			if m.snoozed == nil {
+				m.snoozed = make(map[string]snoozeRec)
+			}
+			m.snoozed[m.waitID] = snoozeRec{Since: m.chatStatus[m.waitID].since, Until: time.Now().Add(m.snooze)}
 		}
-		m.snoozed[m.waitID] = snoozeRec{Since: m.chatStatus[m.waitID].since, Until: time.Now().Add(m.snooze)}
-		q := m.waitQueue(m.waitAll)
-		if len(q) == len(before) { // by hand, snoozed sessions stay listed: move past it
-			i++
-		}
-		if i >= len(q) {
-			m.closeWait()
-		} else {
+		q := m.waitQueue(true)
+		if i := slices.IndexFunc(q, func(c Conversation) bool {
+			return c.SessionID != m.waitID && m.waitSignal(c) == waitPrompt && !m.snoozedNow(c.SessionID)
+		}); i >= 0 {
 			m.showWait(q[i].SessionID)
+		} else {
+			m.closeWait()
 		}
 	case "ctrl+n", "down":
 		m.waitStep(1)
@@ -346,7 +422,7 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeWait()
 			return m, m.focusCmd(conv)
 		default:
-			return m, m.sendTo(conv, &m.waitInput)
+			return m, m.sendTo(conv, true)
 		}
 	default:
 		var cmd tea.Cmd
@@ -360,24 +436,14 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // menu note, message box (status line and bordered input) and hints.
 const waitChrome = 2 + 1 + 1 + 4 + 1
 
-// waitLayout: the overlay's text width, how many transcript rows fit, and
-// whether the menu note and the hints get a row. It fits the terminal: a
-// short screen uses all of it, shrinks the transcript first, then drops the
-// note, then the hints.
-func (m model) waitLayout() (inner, rows int, note, hints bool) {
-	width := min(max(m.width*9/10, 30), m.width)
+// waitLayout: the overlay's text width and how many transcript rows fit. A
+// short screen (down to waitMinHeight) gets all of it.
+func (m model) waitLayout() (inner, rows int) {
 	avail := m.height * 9 / 10
 	if avail < waitChrome+3 {
 		avail = m.height
 	}
-	rows, note, hints = avail-waitChrome, true, true
-	if rows < 1 {
-		rows, note = rows+1, false
-	}
-	if rows < 0 {
-		rows, hints = rows+1, false
-	}
-	return max(width-4, 1), max(rows, 0), note, hints
+	return max(min(max(m.width*9/10, 30), m.width)-4, 1), max(avail-waitChrome, 0)
 }
 
 func (m model) waitLines() []string {
@@ -385,21 +451,21 @@ func (m model) waitLines() []string {
 	if !ok {
 		return nil
 	}
-	inner, _, _, _ := m.waitLayout()
+	inner, _ := m.waitLayout()
 	return cachedPreview(m.waitPreview, conv, "", inner)
 }
 
 func (m model) maxWaitScroll() int {
-	_, rows, _, _ := m.waitLayout()
+	_, rows := m.waitLayout()
 	return max(0, len(m.waitLines())-rows)
 }
 
 // waitPopup draws the overlay: which session and why, its transcript (newest
 // at the bottom), a message box and the keys.
 func (m model) waitPopup() string {
-	inner, rows, showNote, showHints := m.waitLayout()
+	inner, rows := m.waitLayout()
 	conv, ok := m.waitConv()
-	q := m.waitQueue(m.waitAll)
+	q := m.waitQueue(true)
 	title := "\033[90mno longer waiting\033[0m"
 	if pos := m.waitPos(q); pos >= 0 {
 		title = fmt.Sprintf("\033[1;33mwaiting %d of %d\033[0m", pos+1, len(q))
@@ -446,21 +512,14 @@ func (m model) waitPopup() string {
 	if rows > 0 {
 		b.WriteString(strings.Join(visible, "\n") + "\n")
 	}
-	if showNote {
-		b.WriteString(ansi.Truncate(note, inner, "…") + "\033[0m\n")
-	}
+	b.WriteString(ansi.Truncate(note, inner, "…") + "\033[0m\n")
 	if ok {
-		b.WriteString(m.chatBox(conv, m.waitInput, m.waitEngaged, inner))
+		b.WriteString(m.chatBox(conv, m.waitInput, true, inner))
 	} else {
 		b.WriteString("\n\n\n")
 	}
-	if showHints {
-		keys := hints("^Y", "answer here", keyEsc, "snooze "+shortDuration(m.snooze)) + "  other keys work as usual"
-		if m.waitEngaged {
-			keys = hints(keyEnter, "send", keyEsc, "snooze "+shortDuration(m.snooze), "↑↓ ^N/P", "next/prev", "pgup/dn ^K/J", "scroll", "^Y", "close")
-		}
-		b.WriteString("\n\033[90m" + ansi.Truncate(keys, inner, "…") + "\033[0m")
-	}
+	keys := hints(keyEnter, "send", keyEsc, "snooze "+shortDuration(m.snooze), "↑↓ ^N/P", "next/prev", "pgup/dn ^K/J", "scroll", "^Y", "close", "^C", "quit")
+	b.WriteString("\n\033[90m" + ansi.Truncate(keys, inner, "…") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("214")).

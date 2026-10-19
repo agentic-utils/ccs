@@ -99,6 +99,31 @@ func (m *model) selectionMoved() {
 	m.chatFocus = false
 }
 
+// syncChatDraft gives the message box the selected session's draft, keeping
+// the one it held with its own session.
+func (m *model) syncChatDraft() {
+	id := ""
+	if len(m.filtered) > 0 {
+		id = m.filtered[m.cursor].conv.SessionID
+	}
+	if id == m.chatFor {
+		return
+	}
+	if v := m.chatInput.Value(); v != "" && m.chatFor != "" {
+		if m.chatDrafts == nil {
+			m.chatDrafts = make(map[string]string)
+		}
+		m.chatDrafts[m.chatFor] = joinDraft(m.chatDrafts[m.chatFor], v)
+		m.chatInput.SetValue("")
+	}
+	if d, ok := m.chatDrafts[id]; ok {
+		m.chatInput.SetValue(joinDraft(m.chatInput.Value(), d))
+		m.chatInput.CursorEnd()
+		delete(m.chatDrafts, id)
+	}
+	m.chatFor = id
+}
+
 // chatRows is the height the message area takes under the preview: a status
 // line and the bordered box. Zero unless a live session is selected.
 func (m model) chatRows() int {
@@ -175,7 +200,7 @@ func (m model) sessionName(conv Conversation) string {
 
 // chatView draws the status line and message box for the selected session.
 func (m model) chatView() string {
-	return m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitEngaged, m.width)
+	return m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.width)
 }
 
 // chatBox draws conv's status line and the message box in, width wide.
@@ -234,16 +259,20 @@ func (m *model) sendCmd() tea.Cmd {
 	if !m.selectedLive() {
 		return nil
 	}
-	return m.sendTo(m.filtered[m.cursor].conv, &m.chatInput)
+	return m.sendTo(m.filtered[m.cursor].conv, false)
 }
 
-// sendTo sends in's text to conv, a live session, and empties in.
-func (m *model) sendTo(conv Conversation, in *textinput.Model) tea.Cmd {
+// sendTo sends the text in the overlay's box (or the main one) to conv, a
+// live session, and empties the box.
+func (m *model) sendTo(conv Conversation, overlay bool) tea.Cmd {
+	in := &m.chatInput
+	if overlay {
+		in = &m.waitInput
+	}
 	text := strings.TrimSpace(in.Value())
 	if text == "" {
 		return nil
 	}
-	overlay := in == &m.waitInput
 	if m.sending {
 		if overlay {
 			m.waitErr = "Still sending the last message…"
@@ -252,7 +281,7 @@ func (m *model) sendTo(conv Conversation, in *textinput.Model) tea.Cmd {
 		}
 		return nil
 	}
-	id, name, pid := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID]
+	id, name, pid, verified := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID], !m.unverified[conv.SessionID]
 	if m.pending == nil {
 		m.pending = make(map[string]string)
 	}
@@ -267,7 +296,7 @@ func (m *model) sendTo(conv Conversation, in *textinput.Model) tea.Cmd {
 				msg = sendDoneMsg{id: id, note: "✗ Internal error, logged to " + workerPanicLog, err: errors.New("panic")}
 			}
 		}()
-		note, err := deliverMessage(pid, id, name, text)
+		note, err := deliverMessage(pid, id, name, text, verified)
 		return sendDoneMsg{id: id, note: note, err: err, text: text, overlay: overlay}
 	}
 }
@@ -282,10 +311,14 @@ var errUnsent = errors.New("not sent")
 // deliverMessage sends text to a live session: through its message socket
 // if it can be reached, else typed into its terminal. Never both: once the
 // socket accepted a connection, a later error isn't retried another way.
-func deliverMessage(pid int, id, name, text string) (string, error) {
+// Typing needs a verified pid: keys typed into a recycled one reach a stranger.
+func deliverMessage(pid int, id, name, text string, verified bool) (string, error) {
+	changed := func(err error) (string, error) {
+		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("%w: session file: %v", errUnsent, err)
+	}
 	f, err := readSessionFile(pid)
 	if err != nil || f.SessionID != id {
-		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("%w: session file: %v", errUnsent, err)
+		return changed(err)
 	}
 	if f.Socket != "" {
 		msgID, err := sendViaSocket(f.Socket, peerToken(pid, f.Socket), text)
@@ -302,9 +335,12 @@ func deliverMessage(pid int, id, name, text string) (string, error) {
 	// Read again: the socket attempt can take seconds and a menu may have come
 	// up since. Typed keys would land in it and could pick an option.
 	if f, err := readSessionFile(pid); err != nil || f.SessionID != id {
-		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("%w: session file: %v", errUnsent, err)
+		return changed(err)
 	} else if f.Status == "waiting" {
 		return "✗ Not typed into " + name + ": it's showing a menu, answer it in its tab", fmt.Errorf("%w: on a menu", errUnsent)
+	}
+	if !verified {
+		return "✗ Not typed into " + name + ": its process couldn't be checked against its session file", fmt.Errorf("%w: unverified pid", errUnsent)
 	}
 	where, err := typeIntoSession(pid, text)
 	switch {

@@ -1421,12 +1421,17 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// cell off on CJK-width terminals - cosmetic only.
 	var icons, colouredIcons string
 	n := 0
+	// Green when idle, amber while busy, an amber ? when it waits on you.
 	liveGlyph, liveColour := "●", "32"
 	switch m.waitSignal(item.conv) {
 	case waitPrompt:
-		liveGlyph, liveColour = "?", "1;33"
+		liveGlyph, liveColour = "?", "1;"+amber
 	case waitAsked:
-		liveGlyph, liveColour = "?", "2;33"
+		liveGlyph, liveColour = "?", "2;"+amber
+	default:
+		if m.chatStatus[item.conv.SessionID].status == "busy" {
+			liveColour = amber
+		}
 	}
 	for _, s := range []struct {
 		on           bool

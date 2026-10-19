@@ -50,6 +50,7 @@ type liveMsg struct {
 	unknown    []string               // live sessions not in the list yet
 	stats      map[string]sessionStat // each live session's status, from its session file
 	unverified map[string]bool        // live sessions whose pid couldn't be checked against the file's procStart
+	scan       map[string]liveSession // this tick's sessions, the next tick's prev
 	gen        int
 }
 
@@ -72,23 +73,16 @@ func (m model) liveCmd() tea.Cmd {
 	for _, item := range m.items {
 		byID[item.conv.SessionID] = item.conv
 	}
-	wasLive, wasPIDs, wasUnverified, gen := maps.Clone(m.live), maps.Clone(m.livePIDs), maps.Clone(m.unverified), m.gen
+	wasLive, prev, gen := maps.Clone(m.live), m.lastScan, m.gen
 	return func() tea.Msg {
-		sessions, unread := scanSessions()
+		sessions := scanSessions(prev)
 		live := make(map[string]bool, len(sessions))
-		msg := liveMsg{live: live, pids: make(map[string]int, len(sessions)), gen: gen, stats: make(map[string]sessionStat, len(sessions)), unverified: make(map[string]bool)}
+		msg := liveMsg{live: live, pids: make(map[string]int, len(sessions)), gen: gen, stats: make(map[string]sessionStat, len(sessions)), unverified: make(map[string]bool), scan: sessions}
 		for id, s := range sessions {
 			live[id], msg.pids[id] = true, s.pid
 			msg.stats[id] = s.stat
 			if s.unverified {
 				msg.unverified[id] = true
-			}
-		}
-		// A file caught mid-write isn't a session that ended: while its pid is
-		// alive, keep what was known (no status, so nothing changes).
-		for id := range wasLive {
-			if pid, ok := wasPIDs[id]; ok && unread[pid] && !live[id] {
-				live[id], msg.pids[id], msg.unverified[id] = true, pid, wasUnverified[id]
 			}
 		}
 		check := make(map[string]bool, len(live)+len(wasLive))
@@ -230,8 +224,7 @@ func readLiveSessions() map[string]bool {
 // liveSessionPIDs maps each live SessionID to the pid of its claude process.
 func liveSessionPIDs() map[string]int {
 	out := make(map[string]int)
-	sessions, _ := scanSessions()
-	for id, s := range sessions {
+	for id, s := range scanSessions(nil) {
 		out[id] = s.pid
 	}
 	return out
@@ -241,8 +234,14 @@ func liveSessionPIDs() map[string]int {
 type liveSession struct {
 	pid        int
 	stat       sessionStat
-	unverified bool // the pid's start time couldn't be checked against the file's: maybe a recycled pid
+	start      string // the file's procStart, so a kept session's pid can be checked later
+	unverified bool   // the pid's start time couldn't be checked against the file's: maybe a recycled pid
+	misses     int    // ticks in a row it was kept without a readable file
 }
+
+// keepTicks is how long a session without a readable file is kept when its
+// process's start time was never known, so a recycled pid can't be ruled out.
+const keepTicks = 3
 
 // pidAlive probes pid with signal 0; EPERM still means the process exists.
 func pidAlive(pid int) bool {
@@ -251,14 +250,17 @@ func pidAlive(pid int) bool {
 }
 
 // scanSessions reads ~/.claude/sessions once: each live SessionID's pid and
-// status, and the live pids whose file couldn't be read or parsed this time.
-func scanSessions() (map[string]liveSession, map[int]bool) {
+// status. A session in prev (the last scan) whose file is missing or can't be
+// read this time isn't one that ended: it's kept, with no status so nothing
+// changes, while its pid is still the process that wrote it (same start time,
+// or for keepTicks when that was never known), and not once its pid's file
+// names another session (/clear).
+func scanSessions(prev map[string]liveSession) map[string]liveSession {
 	type candidate struct {
 		id, start string
 		stat      sessionStat
 	}
 	byPid := make(map[int][]candidate)
-	unread := make(map[int]bool)
 	files, _ := filepath.Glob(filepath.Join(getSessionsDir(), "*.json"))
 	for _, f := range files {
 		var s struct {
@@ -268,31 +270,39 @@ func scanSessions() (map[string]liveSession, map[int]bool) {
 		}
 		data, err := os.ReadFile(f)
 		if err != nil || json.Unmarshal(data, &s) != nil || s.SessionID == "" || s.Pid <= 0 {
-			if pid, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json")); err == nil && pid > 0 && pidAlive(pid) {
-				unread[pid] = true
-			}
 			continue
 		}
 		if pidAlive(s.Pid) {
 			byPid[s.Pid] = append(byPid[s.Pid], candidate{s.SessionID, s.ProcStart, s.stat()})
 		}
 	}
-	// Check each file's process before mapping sessions: a stale file whose
-	// pid was recycled must not overwrite the live file for the same session.
-	pids := make(map[string]int, len(byPid))
+	// Check each process before mapping sessions: a stale file whose pid was
+	// recycled must not overwrite the live file for the same session.
+	pids := make(map[string]int, len(byPid)+len(prev))
 	for pid := range byPid {
 		pids[strconv.Itoa(pid)] = pid
+	}
+	for _, p := range prev {
+		pids[strconv.Itoa(p.pid)] = p.pid
 	}
 	actual := processStartTimes(pids)
 	live := make(map[string]liveSession)
 	for pid, cs := range byPid {
 		for _, c := range cs {
 			if match, checked := sameStart(c.start, actual[pid]); match {
-				live[c.id] = liveSession{pid, c.stat, !checked}
+				live[c.id] = liveSession{pid: pid, stat: c.stat, start: c.start, unverified: !checked}
 			}
 		}
 	}
-	return live, unread
+	for id, p := range prev {
+		if _, ok := live[id]; ok || len(byPid[p.pid]) > 0 || !pidAlive(p.pid) {
+			continue
+		}
+		if match, checked := sameStart(p.start, actual[p.pid]); match && (checked || p.misses < keepTicks) {
+			live[id] = liveSession{pid: p.pid, start: p.start, unverified: p.unverified, misses: p.misses + 1}
+		}
+	}
+	return live
 }
 
 // processStartTimes returns each pid's start time from one ps call. Pids ps

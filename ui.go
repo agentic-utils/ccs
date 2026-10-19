@@ -66,6 +66,8 @@ type model struct {
 	// Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
 	chatInput  textinput.Model
+	chatFor    string                 // the session chatInput's draft belongs to
+	chatDrafts map[string]string      // the other sessions' drafts, so a draft never follows the selection
 	chatTickOn bool                   // the fast refresh for the selected live session is running
 	chatStatus map[string]sessionStat // every live session's last known status (set only by setStat; applyStats drops sessions that are gone)
 	pending    map[string]string      // text sent but not yet seen in the transcript, by SessionID
@@ -75,19 +77,18 @@ type model struct {
 	sending    bool
 
 	// Input-prompt overlay (see wait*): live sessions waiting on the user.
-	waitOpen       bool
-	waitAll        bool              // opened by hand: also sessions whose last message asks something
+	waitOpen       bool              // the overlay is open (Ctrl+Y); it owns the keyboard
 	waitID         string            // the session it shows
 	waitInput      textinput.Model   // the shown session's draft
 	waitDrafts     map[string]string // the other sessions' drafts, so a draft never follows you to another session
-	waitEngaged    bool              // it has the keyboard: opened by hand, or Ctrl+Y on a pop-up
 	waitErr        string            // the overlay's own errors, kept apart from the main screen's
 	waitScroll     int               // like previewScroll, for the overlay's transcript
 	waitPreview    *previewCache     // the overlay's transcript, wrapped to its width
-	waitDue        map[string]bool   // sessions with a wait (or a snooze that ran out) not yet seen: pop up when free
+	waitDue        map[string]bool   // sessions with a wait (or a snooze that ran out) not yet seen: the banner shows them
 	snoozed        map[string]snoozeRec
 	snooze         time.Duration              // CCS_SNOOZE
 	unverified     map[string]bool            // live sessions whose pid couldn't be checked against their file
+	lastScan       map[string]liveSession     // the last live tick's sessions, so the next can keep one whose file is briefly unreadable
 	reload         func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
 	gen            int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
 	refreshStarted time.Time                  // when the in-flight scan began; zero when none
@@ -373,11 +374,13 @@ func (m model) Init() tea.Cmd {
 }
 
 // Update runs update, then keeps the message box in step with the selection:
-// focus only stays in it while the selected session is live, and the fast
-// refresh runs only while a live session is selected.
+// it holds the selected session's draft, focus only stays in it while the
+// selected session is live, and the fast refresh runs only while a live
+// session is selected.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.update(msg)
 	n := res.(model)
+	n.syncChatDraft()
 	if n.chatFocus && !n.selectedLive() {
 		n.chatFocus = false
 	}
@@ -398,8 +401,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.listHeight = 3
 		}
 		// The inputs scroll their text during Update, so their width must be set here, not only on View's copy.
-		inner, _, _, _ := m.waitLayout()
+		inner, _ := m.waitLayout()
 		m.chatInput.Width, m.waitInput.Width = chatInputWidth(m.width), chatInputWidth(inner)
+		if m.waitOpen && m.height < waitMinHeight {
+			m.closeWait()
+			m.errorMsg = waitTooShort
+		}
 		// Clear so a shrink doesn't leave wider stale rows behind.
 		return m, tea.ClearScreen
 
@@ -448,7 +455,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveMsg:
 		m.live = msg.live
 		if msg.pids != nil {
-			m.livePIDs, m.unverified = msg.pids, msg.unverified
+			m.livePIDs, m.unverified, m.lastScan = msg.pids, msg.unverified, msg.scan
 		}
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
@@ -678,7 +685,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			delete(m.pending, msg.id)
 			if errors.Is(msg.err, errUnsent) {
-				m.giveBack(msg.id, msg.text, msg.overlay)
+				m.sendNote[msg.id] += " · " + m.giveBack(msg.id, msg.text, msg.overlay)
 			}
 		} else if strings.Contains(msg.note, "socket") {
 			if m.sentAt == nil {
@@ -693,20 +700,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyRunes && (mouseLeak.MatchString(string(msg.Runes)) || m.mouseFragment(msg)) {
 			return m, nil // a fragmented mouse report, not typing
 		}
-		// An overlay that popped up on its own takes only Ctrl+Y (to answer) and
-		// Esc (snooze); other keys carry on to the search or the message box.
-		// Engaged, it owns the keyboard until closed.
-		if m.waitOpen && !m.popupAboveWait() && (m.waitEngaged || !m.prompting()) {
-			if m.waitEngaged {
-				return m.waitKey(msg)
-			}
-			switch msg.String() {
-			case "ctrl+y":
-				m.waitEngaged, m.waitErr = true, ""
-				return m, nil
-			case "esc":
-				return m.waitKey(msg)
-			}
+		// The overlay owns the keyboard until closed. (A pop-up is only the
+		// banner, which takes no keys.)
+		if m.waitOpen && !m.popupAboveWait() {
+			return m.waitKey(msg)
 		}
 		if m.notesOpen { // owns the keyboard until closed
 			switch msg.String() {
@@ -1043,7 +1040,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "ctrl+y":
-			m.openWait(true)
+			m.openWait()
 			return m, nil
 		}
 	}
@@ -1052,7 +1049,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if _, isKey := msg.(tea.KeyMsg); !isKey {
 		switch {
-		case m.waitOpen && m.waitEngaged:
+		case m.waitOpen:
 			m.waitInput, cmd = m.waitInput.Update(msg)
 			return m, cmd
 		case m.renaming:
@@ -1075,9 +1072,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // here, not by each screen, so every screen (and any added later) shows them.
 func (m model) View() string {
 	screen := m.viewScreen()
-	for _, p := range m.popups() {
+	if m.waitOpen {
+		screen = overlayCentre(screen, m.waitPopup(), m.width, m.height)
+	}
+	for _, p := range m.overPopups() {
 		if p.open {
-			screen = overlayCentre(screen, p.draw(), m.width, m.height)
+			screen = overlayCentre(screen, p.draw(m), m.width, m.height)
 		}
 	}
 	return screen
@@ -1085,19 +1085,18 @@ func (m model) View() string {
 
 type popup struct {
 	open bool
-	draw func() string
+	draw func(model) string // a method expression, so listing popups copies no model
 }
 
-// popups is every popup, bottom first: View draws them in this order, and
-// popupAboveWait is the ones over the overlay.
-func (m model) popups() []popup {
+// overPopups is every popup that can sit over the overlay, bottom first:
+// View draws them in this order, and popupAboveWait checks them.
+func (m model) overPopups() []popup {
 	return []popup{
-		{m.waitOpen, m.waitPopup},
-		{m.updateOpen && !m.prompting(), m.updatePopup},
-		{m.acctOpen, m.acctPopup},
-		{m.helpOpen, m.helpPopup},
-		{m.notesOpen, m.notesPopup},
-		{m.linksOpen, m.linksPopup},
+		{m.updateOpen && !m.prompting(), model.updatePopup},
+		{m.acctOpen, model.acctPopup},
+		{m.helpOpen, model.helpPopup},
+		{m.notesOpen, model.notesPopup},
+		{m.linksOpen, model.linksPopup},
 	}
 }
 
@@ -1311,7 +1310,11 @@ func (m model) viewScreen() string {
 	}
 
 	b.WriteString(strings.Join(sections, "\n"))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	if conv, more, ok := m.banner(); ok { // a session waiting on you takes the blank row
+		b.WriteString(m.bannerLine(conv, more, tableWidth))
+	}
+	b.WriteString("\n")
 
 	if m.showUsage {
 		b.WriteString(m.usageView(m.height - 2 - len(sections)))

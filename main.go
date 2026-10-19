@@ -54,7 +54,7 @@ Examples:
 
 Key bindings:
   ↑/↓, Ctrl+P/N   Move through the list
-  Enter           Resume the conversation, or focus it if it's open in claude
+  Enter           Resume the conversation, or go to its tab if it's open in claude
   Ctrl+S          Message the selected live session (Enter sends, Esc back)
   Ctrl+F          Fork conversation (resume into a new session id)
   Ctrl+R          Rename conversation (not while it's open in claude)

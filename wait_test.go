@@ -122,7 +122,7 @@ func TestWaitBannerShowsTheOldestAndTakesNoKeys(t *testing.T) {
 	m := selectLive(waitModel(t))
 	now := time.Now()
 	m.applyStats(map[string]sessionStat{"live": waiting(now.Add(-time.Minute), "permission prompt"), "menu": waiting(now.Add(-time.Hour), "input needed")})
-	if top := bannerRow(m); m.waitOpen || !strings.Contains(top, "Menu one is waiting on you  ^Y answer  input needed") || !strings.Contains(top, "+1 more") {
+	if top := bannerRow(m); m.waitOpen || !strings.Contains(top, "Menu one is waiting on you in its tab  ^Y see it  input needed") || !strings.Contains(top, "+1 more") {
 		t.Fatalf("a pop-up is a banner on the oldest wait, not the overlay: open=%v top=%q", m.waitOpen, top)
 	}
 	// Every key works as without it: typing and Esc in the main box, then Esc in the search.
@@ -140,7 +140,7 @@ func TestWaitBannerShowsTheOldestAndTakesNoKeys(t *testing.T) {
 	// Ctrl+Y opens the overlay on the banner's session; it owns the keyboard.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
 	view := strip2(m.View())
-	for _, want := range []string{"waiting 1 of 2", "Menu one · input needed", "answer it in its tab"} {
+	for _, want := range []string{"waiting 1 of 2", "Menu one · input needed", "only shown in its own tab"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("overlay should show %q:\n%s", want, view)
 		}
@@ -640,7 +640,7 @@ func TestWaitHintsListEveryKey(t *testing.T) {
 	m := waitModel(t)
 	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
 	pop := strings.Split(strip2(m.waitPopup()), "\n")
-	for _, want := range []string{"enter send", "esc snooze", "↑↓", "pgup", "^Y close", "^C quit"} {
+	for _, want := range []string{"enter open its tab", "esc snooze", "↑↓", "pgup", "^Y close", "^C quit"} {
 		if !strings.Contains(pop[len(pop)-2], want) {
 			t.Errorf("hint row should list %q: %q", want, pop[len(pop)-2])
 		}
@@ -651,7 +651,7 @@ func TestWaitOverlayShowsOnlyItsOwnErrors(t *testing.T) {
 	m := waitModel(t)
 	m = openByHand(m, map[string]sessionStat{"menu": waiting(time.Now(), "permission prompt")})
 	m.errorMsg = "Busy one is no longer running"
-	if v := strip2(m.waitPopup()); strings.Contains(v, "no longer running") || !strings.Contains(v, "showing a menu") {
+	if v := strip2(m.waitPopup()); strings.Contains(v, "no longer running") || !strings.Contains(v, "only shown in its own tab") {
 		t.Fatalf("a main-screen error must not replace the overlay's note:\n%s", v)
 	}
 }
@@ -833,8 +833,8 @@ func TestWaitBannerKeepsTheTitleRow(t *testing.T) {
 	}
 	m.updating = false
 	m.width = 60
-	if b := bannerRow(m); !strings.Contains(b, "^Y answer") || strings.Contains(b, "permission prompt") || ansi.StringWidth(b) > 60 {
-		t.Errorf("narrow: ^Y answer stays, the reason goes first: %q", b)
+	if b := bannerRow(m); !strings.Contains(b, "^Y see it") || strings.Contains(b, "permission prompt") || ansi.StringWidth(b) > 60 {
+		t.Errorf("narrow: ^Y see it stays, the reason goes first: %q", b)
 	}
 }
 
@@ -844,5 +844,40 @@ func TestWaitBannerHintOnlyWhenCtrlYWorks(t *testing.T) {
 	m.helpOpen = true
 	if b := bannerRow(m); b == "" || strings.Contains(b, "^Y") {
 		t.Errorf("while help owns the keys, Ctrl+Y does nothing, so the banner mustn't offer it: %q", b)
+	}
+}
+
+func TestWaitingQuestionShownAndAnswered(t *testing.T) {
+	m := waitModel(t)
+	conv := &m.items[0].conv
+	for i := range m.items {
+		if m.items[i].conv.SessionID == "live" {
+			conv = &m.items[i].conv
+		}
+	}
+	ask := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Pick a colour","options":[{"label":"red"},{"label":"green","description":"calm"}]}]}}]}}`
+	if !parseLine(conv, []byte(ask)) || answerable(*conv) != 2 {
+		t.Fatalf("pending = %+v", conv.pending)
+	}
+	m.filtered = m.items
+	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "input needed")})
+	pop := strip2(m.waitPopup())
+	for _, want := range []string{"? Pick a colour", "1  red", "2  green · calm", "1-2 answer"} {
+		if !strings.Contains(pop, want) {
+			t.Errorf("overlay should show %q:\n%s", want, pop)
+		}
+	}
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	if m = res.(model); cmd == nil || m.waitInput.Value() != "" {
+		t.Error("a digit on an empty box answers, not types")
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("9")})
+	if m = res.(model); m.waitInput.Value() != "9" {
+		t.Error("a digit past the options is typed")
+	}
+	// Its result clears it.
+	parseLine(conv, []byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"green"}]}}`))
+	if conv.pending != nil {
+		t.Error("the tool result should clear the pending question")
 	}
 }

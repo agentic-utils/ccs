@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -321,5 +322,43 @@ func TestUnlistableLiveSessionScansOnce(t *testing.T) {
 	res, _ = m.Update(liveMsg{live: map[string]bool{"x": true}, unknown: []string{"x"}})
 	if m = res.(model); !m.refreshStarted.IsZero() {
 		t.Error("a session an early scan already looked for must not trigger scans forever")
+	}
+}
+
+func TestReopenAfterRestart(t *testing.T) {
+	sessions := t.TempDir()
+	old, oldBoot, oldPath := getSessionsDir, bootID, openRecordPath
+	getSessionsDir = func() string { return sessions }
+	openRecordPath = filepath.Join(t.TempDir(), "open-sessions.json")
+	boot := "boot-1"
+	bootID = func() string { return boot }
+	t.Cleanup(func() { getSessionsDir, bootID, openRecordPath, lastOpenRecord = old, oldBoot, oldPath, "" })
+
+	recordOpen(map[string]bool{"a": true, "b": true})
+	if msg := reopenCheckCmd().(reopenMsg); len(msg.ids) != 0 {
+		t.Fatalf("same boot offered %v", msg.ids)
+	}
+	boot = "boot-2"
+	msg := reopenCheckCmd().(reopenMsg)
+	if !slices.Equal(msg.ids, []string{"a", "b"}) {
+		t.Fatalf("after a restart offered %v, want [a b]", msg.ids)
+	}
+
+	// Only sessions still in the list are offered; esc dismisses.
+	m := initialModel(buildItems([]Conversation{{SessionID: "a", Cwd: "/x/proj"}}), "", nil)
+	res, _ := m.Update(msg)
+	m = res.(model)
+	if len(m.reopen) != 1 || !m.reopenChecked || !strings.Contains(strip2(m.reopenPopup()), "Reopen the session open before the restart?") {
+		t.Fatalf("reopen = %v, popup %q", m.reopen, strip2(m.reopenPopup()))
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m = res.(model); len(m.reopen) != 0 {
+		t.Fatal("esc didn't dismiss")
+	}
+	// Enter starts reopening (and closes the prompt).
+	res, _ = m.Update(msg)
+	res, cmd := res.(model).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m = res.(model); cmd == nil || len(m.reopen) != 0 || !m.resuming {
+		t.Fatal("enter didn't start reopening")
 	}
 }

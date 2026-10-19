@@ -138,6 +138,9 @@ type model struct {
 	// Account switcher (Ctrl+O), backed by the cswap CLI.
 	acctOpen bool
 	helpOpen bool // Ctrl+G shortcut list
+
+	reopen        []Conversation // sessions open before a restart, offered for reopening
+	reopenChecked bool           // the last boot's record has been read, so it may be overwritten
 	// Ctrl+T: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
 	links       []linkItem
@@ -183,7 +186,7 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.linksOpen {
+	if m.linksOpen || len(m.reopen) > 0 {
 		return m // keyboard only while it's open
 	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
@@ -356,7 +359,7 @@ func (m *model) updateFilter() {
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.reload != nil {
-		cmds = append(cmds, refreshTick(), liveTick(), waitReceipt)
+		cmds = append(cmds, refreshTick(), liveTick(), waitReceipt, reopenCheckCmd)
 	}
 	if m.checkLatest != nil {
 		cmds = append(cmds, m.checkUpdateCmd())
@@ -437,6 +440,39 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			conv := msg.conv
 			m.selected, m.fork, m.quitting = &conv, msg.fork, true
 			return m, tea.Quit
+		}
+		return m, nil
+
+	case reopenMsg:
+		m.reopenChecked = true
+		for _, id := range msg.ids {
+			for _, item := range m.items {
+				if item.conv.SessionID == id {
+					m.reopen = append(m.reopen, item.conv)
+					break
+				}
+			}
+		}
+		return m, nil
+
+	case reopenDoneMsg:
+		m.resuming = false
+		live := maps.Clone(m.live)
+		if live == nil {
+			live = make(map[string]bool)
+		}
+		for _, id := range msg.opened {
+			live[id] = true
+			m.opened[id] = time.Now()
+		}
+		m.live = live
+		switch {
+		case msg.err != nil:
+			m.errorMsg = fmt.Sprintf("Reopened %d, then opening a tab timed out: it may still have opened (%v)", len(msg.opened), msg.err)
+		case msg.noTabs:
+			m.errorMsg = fmt.Sprintf("Reopened %d: opening the rest needs iTerm or tmux", len(msg.opened))
+		default:
+			m.errorMsg = fmt.Sprintf("Reopened %d sessions", len(msg.opened))
 		}
 		return m, nil
 
@@ -704,6 +740,24 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// banner, which takes no keys.)
 		if m.waitOpen && !m.popupAboveWait() {
 			return m.waitKey(msg)
+		}
+		if len(m.reopen) > 0 { // owns the keyboard until answered
+			switch msg.String() {
+			case "enter":
+				if m.resuming {
+					m.errorMsg = "Still opening the last one..."
+					return m, nil
+				}
+				convs := m.reopen
+				m.reopen = nil
+				return m, m.reopenCmd(convs)
+			case "esc":
+				m.reopen = nil
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
 		}
 		if m.notesOpen { // owns the keyboard until closed
 			switch msg.String() {
@@ -1097,6 +1151,7 @@ func (m model) overPopups() []popup {
 		{m.helpOpen, model.helpPopup},
 		{m.notesOpen, model.notesPopup},
 		{m.linksOpen, model.linksPopup},
+		{len(m.reopen) > 0, model.reopenPopup},
 	}
 }
 

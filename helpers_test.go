@@ -92,6 +92,7 @@ func TestMain(m *testing.M) {
 	// Keep tests from writing into the real update log.
 	dir, _ := os.MkdirTemp("", "ccs-test-log")
 	updateLogPath = filepath.Join(dir, "update.log")
+	openRecordPath = filepath.Join(dir, "open-sessions.json")
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

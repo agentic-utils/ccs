@@ -1442,11 +1442,12 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	pad := strings.Repeat(" ", colMarks-1-n)
 	marks, colouredMarks := pad+icons+" ", pad+colouredIcons+" "
 	tw := m.topicColWidth()
-	// A trailing ✍ marks a name you set (not the ai-title Claude gives almost
-	// every session); the title is cut short so it always stays visible.
+	// A trailing ✎ marks a name you set (not the ai-title Claude gives almost
+	// every session); the title is cut short so it always stays visible. Not
+	// ✍: some terminals draw that emoji two cells wide, so the row wraps.
 	topic := truncate(getTopic(item.conv), tw-colMarks)
 	if item.conv.IsCustomTitle {
-		topic = truncate(getTopic(item.conv), tw-colMarks-2) + " ✍"
+		topic = truncate(getTopic(item.conv), tw-colMarks-2) + " ✎"
 	}
 
 	// Message count

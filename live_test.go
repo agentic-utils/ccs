@@ -117,14 +117,16 @@ func TestCtrlFForksInPlaceOutsideTabbedTerminals(t *testing.T) {
 
 func TestSameStart(t *testing.T) {
 	actual := time.Date(2026, 9, 23, 16, 52, 33, 0, time.UTC).In(time.FixedZone("NPT", 5*3600+45*60))
-	if !sameStart("Wed Sep 23 16:52:33 2026", actual) {
+	if match, checked := sameStart("Wed Sep 23 16:52:33 2026", actual); !match || !checked {
 		t.Error("same instant in different zones should match")
 	}
-	if sameStart("Wed Sep 23 10:00:00 2026", actual) {
+	if match, _ := sameStart("Wed Sep 23 10:00:00 2026", actual); match {
 		t.Error("a different start time means a recycled pid")
 	}
-	if !sameStart("", actual) || !sameStart("Wed Sep 23 16:52:33 2026", time.Time{}) {
-		t.Error("unknown start on either side must not hide a live session")
+	for _, c := range [][2]any{{"", actual}, {"Wed Sep 23 16:52:33 2026", time.Time{}}} {
+		if match, checked := sameStart(c[0].(string), c[1].(time.Time)); !match || checked {
+			t.Error("unknown start on either side must not hide a live session, and isn't a check")
+		}
 	}
 }
 

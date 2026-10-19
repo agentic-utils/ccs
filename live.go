@@ -30,6 +30,8 @@ type liveTickMsg struct{}
 type focusDoneMsg struct {
 	pid   int
 	found bool
+	gone  bool   // the session wasn't running any more, so nothing was opened
+	name  string // with gone
 }
 
 // resumeDoneMsg reports how Enter/Ctrl+F opened a conversation: in a new
@@ -42,12 +44,13 @@ type resumeDoneMsg struct {
 }
 
 type liveMsg struct {
-	live    map[string]bool
-	pids    map[string]int
-	updated []Conversation         // live conversations whose transcript grew
-	unknown []string               // live sessions not in the list yet
-	stats   map[string]sessionStat // each live session's status, from its session file
-	gen     int
+	live       map[string]bool
+	pids       map[string]int
+	updated    []Conversation         // live conversations whose transcript grew
+	unknown    []string               // live sessions not in the list yet
+	stats      map[string]sessionStat // each live session's status, from its session file
+	unverified map[string]bool        // live sessions whose pid couldn't be checked against the file's procStart
+	gen        int
 }
 
 // openedGrace is how long a session ccs opened in a tab counts as live before
@@ -69,17 +72,23 @@ func (m model) liveCmd() tea.Cmd {
 	for _, item := range m.items {
 		byID[item.conv.SessionID] = item.conv
 	}
-	wasLive, gen := maps.Clone(m.live), m.gen
+	wasLive, wasPIDs, wasUnverified, gen := maps.Clone(m.live), maps.Clone(m.livePIDs), maps.Clone(m.unverified), m.gen
 	return func() tea.Msg {
-		pids := liveSessionPIDs()
-		live := make(map[string]bool, len(pids))
-		for id := range pids {
-			live[id] = true
+		sessions, unread := scanSessions()
+		live := make(map[string]bool, len(sessions))
+		msg := liveMsg{live: live, pids: make(map[string]int, len(sessions)), gen: gen, stats: make(map[string]sessionStat, len(sessions)), unverified: make(map[string]bool)}
+		for id, s := range sessions {
+			live[id], msg.pids[id] = true, s.pid
+			msg.stats[id] = s.stat
+			if s.unverified {
+				msg.unverified[id] = true
+			}
 		}
-		msg := liveMsg{live: live, pids: pids, gen: gen, stats: make(map[string]sessionStat, len(pids))}
-		for id, pid := range pids {
-			if f, err := readSessionFile(pid); err == nil && f.SessionID == id {
-				msg.stats[id] = f.stat()
+		// A file caught mid-write isn't a session that ended: while its pid is
+		// alive, keep what was known (no status, so nothing changes).
+		for id := range wasLive {
+			if pid, ok := wasPIDs[id]; ok && unread[pid] && !live[id] {
+				live[id], msg.pids[id], msg.unverified[id] = true, pid, wasUnverified[id]
 			}
 		}
 		check := make(map[string]bool, len(live)+len(wasLive))
@@ -220,27 +229,52 @@ func readLiveSessions() map[string]bool {
 
 // liveSessionPIDs maps each live SessionID to the pid of its claude process.
 func liveSessionPIDs() map[string]int {
+	out := make(map[string]int)
+	sessions, _ := scanSessions()
+	for id, s := range sessions {
+		out[id] = s.pid
+	}
+	return out
+}
+
+// liveSession is a live session's pid and what its file says, read once.
+type liveSession struct {
+	pid        int
+	stat       sessionStat
+	unverified bool // the pid's start time couldn't be checked against the file's: maybe a recycled pid
+}
+
+// pidAlive probes pid with signal 0; EPERM still means the process exists.
+func pidAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+// scanSessions reads ~/.claude/sessions once: each live SessionID's pid and
+// status, and the live pids whose file couldn't be read or parsed this time.
+func scanSessions() (map[string]liveSession, map[int]bool) {
 	type candidate struct {
 		id, start string
+		stat      sessionStat
 	}
 	byPid := make(map[int][]candidate)
+	unread := make(map[int]bool)
 	files, _ := filepath.Glob(filepath.Join(getSessionsDir(), "*.json"))
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			continue
-		}
 		var s struct {
+			sessionFile
 			Pid       int    `json:"pid"`
-			SessionID string `json:"sessionId"`
 			ProcStart string `json:"procStart"` // UTC, e.g. "Wed Sep 23 16:52:33 2026"
 		}
-		if json.Unmarshal(data, &s) != nil || s.SessionID == "" || s.Pid <= 0 {
+		data, err := os.ReadFile(f)
+		if err != nil || json.Unmarshal(data, &s) != nil || s.SessionID == "" || s.Pid <= 0 {
+			if pid, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), ".json")); err == nil && pid > 0 && pidAlive(pid) {
+				unread[pid] = true
+			}
 			continue
 		}
-		// Signal 0 probes the pid; EPERM still means the process exists.
-		if err := syscall.Kill(s.Pid, 0); err == nil || err == syscall.EPERM {
-			byPid[s.Pid] = append(byPid[s.Pid], candidate{s.SessionID, s.ProcStart})
+		if pidAlive(s.Pid) {
+			byPid[s.Pid] = append(byPid[s.Pid], candidate{s.SessionID, s.ProcStart, s.stat()})
 		}
 	}
 	// Check each file's process before mapping sessions: a stale file whose
@@ -250,15 +284,15 @@ func liveSessionPIDs() map[string]int {
 		pids[strconv.Itoa(pid)] = pid
 	}
 	actual := processStartTimes(pids)
-	live := make(map[string]int)
+	live := make(map[string]liveSession)
 	for pid, cs := range byPid {
 		for _, c := range cs {
-			if sameStart(c.start, actual[pid]) {
-				live[c.id] = pid
+			if match, checked := sameStart(c.start, actual[pid]); match {
+				live[c.id] = liveSession{pid, c.stat, !checked}
 			}
 		}
 	}
-	return live
+	return live, unread
 }
 
 // processStartTimes returns each pid's start time from one ps call. Pids ps
@@ -290,14 +324,14 @@ var processStartTimes = func(live map[string]int) map[int]time.Time {
 
 // sameStart compares the session file's procStart (UTC) with the process's
 // actual start. Unknown on either side counts as a match, so a format change
-// or ps failure never hides a live session.
-func sameStart(recorded string, actual time.Time) bool {
+// or ps failure never hides a live session; checked says whether it was known.
+func sameStart(recorded string, actual time.Time) (match, checked bool) {
 	want, err := time.Parse(time.ANSIC, strings.Join(strings.Fields(recorded), " "))
 	if err != nil || actual.IsZero() {
-		return true
+		return true, false
 	}
 	d := actual.Sub(want)
-	return d > -2*time.Second && d < 2*time.Second
+	return d > -2*time.Second && d < 2*time.Second, true
 }
 
 // isLive re-reads the session files so a prune/rename decision never trusts a
@@ -345,18 +379,46 @@ func resumeInTmuxWindow(cwd string, args []string) (handled bool, err error) {
 	return tabResult(runBounded(5*time.Second, nil, "tmux", tmuxArgs...))
 }
 
+// opening reports (and says why) when id mustn't be opened now: one at a
+// time, so a double Enter can't open two tabs, and not while a tab ccs just
+// opened is still starting (resuming again would start a second copy). A
+// fork is a new session, so only the first applies.
+func (m *model) opening(id string, fork bool) bool {
+	if m.resuming {
+		m.errorMsg = "Still opening the last one..."
+		return true
+	}
+	if t, ok := m.opened[id]; ok && !fork && time.Since(t) < openedGrace {
+		m.errorMsg = "Already opening in another tab"
+		return true
+	}
+	return false
+}
+
+// focusCmd brings a live session's terminal to the front (Enter on an empty
+// message box). Unlike resumeCmd it never starts claude: a session that just
+// exited, or whose file can't be read right now, is reported instead of
+// resumed a second time.
+func (m *model) focusCmd(conv Conversation) tea.Cmd {
+	if m.opening(conv.SessionID, false) {
+		return nil
+	}
+	m.resuming = true
+	name := m.sessionName(conv)
+	return func() tea.Msg {
+		pid, ok := liveSessionPIDs()[conv.SessionID]
+		if !ok {
+			return focusDoneMsg{gone: true, name: name}
+		}
+		return focusDoneMsg{pid: pid, found: focusSession(pid)}
+	}
+}
+
 // resumeCmd opens conv off the UI goroutine. Liveness is checked afresh, so
 // a session resumed elsewhere since the last live tick is focused, not
 // resumed a second time. Forks always open a new session.
 func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
-	if m.resuming {
-		m.errorMsg = "Still opening the last one..."
-		return nil // one at a time: a double Enter mustn't open two tabs
-	}
-	// Just opened in a tab but claude hasn't written its session file yet:
-	// there's nothing to focus, and resuming again would start a second copy.
-	if t, ok := m.opened[conv.SessionID]; ok && !fork && time.Since(t) < openedGrace {
-		m.errorMsg = "Already opening in another tab"
+	if m.opening(conv.SessionID, fork) {
 		return nil
 	}
 	m.resuming = true

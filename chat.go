@@ -44,16 +44,18 @@ type chatTickResult struct {
 }
 
 type sendDoneMsg struct {
-	id   string
-	note string
-	err  error
+	id      string
+	note    string
+	err     error
+	text    string // what was sent, given back to its box when nothing was (errUnsent)
+	overlay bool   // sent from the overlay's box, not the main one
 }
 
 // sessionStat is what a live session's file says about it right now.
 type sessionStat struct {
-	status     string // "busy", "idle", "waiting" (on the user) or "shell"
-	waitingFor string // with "waiting": "permission prompt", "input needed"
-	since      time.Time
+	status     string    // "busy", "idle", "waiting" (on the user) or "shell"
+	waitingFor string    // with "waiting": "permission prompt", "input needed"
+	since      time.Time // statusUpdatedAt; zero when the file has none
 	name       string
 }
 
@@ -68,7 +70,11 @@ type sessionFile struct {
 }
 
 func (f sessionFile) stat() sessionStat {
-	return sessionStat{status: f.Status, waitingFor: f.WaitingFor, since: time.UnixMilli(f.StatusUpdatedAt), name: f.Name}
+	st := sessionStat{status: f.Status, waitingFor: f.WaitingFor, name: f.Name}
+	if f.StatusUpdatedAt > 0 {
+		st.since = time.UnixMilli(f.StatusUpdatedAt)
+	}
+	return st
 }
 
 func readSessionFile(pid int) (sessionFile, error) {
@@ -102,23 +108,37 @@ func (m model) chatRows() int {
 	return 4
 }
 
-// ensureChatTick starts the fast refresh while a live session is selected.
-// Each tick reschedules through Update, so it stops by itself otherwise.
+// chatTarget is the live session the fast refresh follows: the overlay's
+// while it's open, else the selected one.
+func (m model) chatTarget() (Conversation, bool) {
+	if m.waitOpen {
+		c, ok := m.waitConv()
+		return c, ok && m.live[c.SessionID]
+	}
+	if m.showUsage || !m.selectedLive() {
+		return Conversation{}, false
+	}
+	return m.filtered[m.cursor].conv, true
+}
+
+// ensureChatTick starts the fast refresh while there's a chatTarget. Each
+// tick reschedules through Update, so it stops by itself otherwise.
 func (m *model) ensureChatTick() tea.Cmd {
-	if m.chatTickOn || m.quitting || m.showUsage || !m.selectedLive() {
+	if _, ok := m.chatTarget(); m.chatTickOn || m.quitting || !ok {
 		return nil
 	}
 	m.chatTickOn = true
 	return tea.Tick(chatFastRefresh, func(time.Time) tea.Msg { return chatTickMsg{} })
 }
 
-// chatTickCmd reads the selected live session's status and any new
-// transcript lines off the UI goroutine.
+// chatTickCmd reads the chatTarget's status and any new transcript lines
+// off the UI goroutine.
 func (m model) chatTickCmd() tea.Cmd {
-	if !m.selectedLive() {
+	conv, ok := m.chatTarget()
+	if !ok {
 		return func() tea.Msg { return chatTickResult{} }
 	}
-	conv, gen := m.filtered[m.cursor].conv, m.gen
+	gen := m.gen
 	pid := m.livePIDs[conv.SessionID]
 	return func() (msg tea.Msg) {
 		res := chatTickResult{id: conv.SessionID, gen: gen}
@@ -155,7 +175,7 @@ func (m model) sessionName(conv Conversation) string {
 
 // chatView draws the status line and message box for the selected session.
 func (m model) chatView() string {
-	return m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus, m.width)
+	return m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitEngaged, m.width)
 }
 
 // chatBox draws conv's status line and the message box in, width wide.
@@ -168,8 +188,11 @@ func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width 
 	case m.pending[id] != "" && m.held[id]:
 		left = "\033[33m  ⏸ held: approve it in " + name + " · " + chatSnippet(m.pending[id], width-50-len(name)) + "\033[0m"
 	case m.pending[id] != "" && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
-		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], width-90) +
-			" · if it runs with bypass permissions, approve it in that session\033[0m"
+		why := " · if it runs with bypass permissions, approve it in that session"
+		if m.chatStatus[id].status == "waiting" {
+			why = " · it may wait until its menu is answered"
+		}
+		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], width-25-len(why)) + why + "\033[0m"
 	case m.pending[id] != "" && m.chatStatus[id].status == "busy":
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-60) + " · Claude sees it after its current step\033[0m"
 	case m.pending[id] != "":
@@ -181,10 +204,11 @@ func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width 
 	if st := m.chatStatus[id]; st.status == "busy" {
 		right = fmt.Sprintf("\033[33m✻ working %ds\033[0m ", int(time.Since(st.since).Seconds()))
 	}
+	left = ansi.Truncate(left, max(width-lipgloss.Width(right)-1, 1), "…") + "\033[0m"
 	status := left + strings.Repeat(" ", max(width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
 
 	in.Placeholder = "message " + name + "…"
-	in.Width = max(width-8, 10)
+	in.Width = chatInputWidth(width)
 	if !focus {
 		in.Blur() // no cursor while typing goes to the search
 	}
@@ -193,9 +217,12 @@ func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width 
 		border = lipgloss.Color("62")
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
-		Width(max(width-2, 10)).Render(in.View())
+		Width(max(width-2, 1)).Render(in.View())
 	return status + "\n" + box
 }
+
+// chatInputWidth is the text width of a message box width wide.
+func chatInputWidth(width int) int { return max(width-8, 1) }
 
 // chatSnippet is a pending message on one line, cut to width with a single "…".
 func chatSnippet(s string, width int) string {
@@ -213,7 +240,16 @@ func (m *model) sendCmd() tea.Cmd {
 // sendTo sends in's text to conv, a live session, and empties in.
 func (m *model) sendTo(conv Conversation, in *textinput.Model) tea.Cmd {
 	text := strings.TrimSpace(in.Value())
-	if text == "" || m.sending {
+	if text == "" {
+		return nil
+	}
+	overlay := in == &m.waitInput
+	if m.sending {
+		if overlay {
+			m.waitErr = "Still sending the last message…"
+		} else {
+			m.errorMsg = "Still sending the last message…"
+		}
 		return nil
 	}
 	id, name, pid := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID]
@@ -232,7 +268,7 @@ func (m *model) sendTo(conv Conversation, in *textinput.Model) tea.Cmd {
 			}
 		}()
 		note, err := deliverMessage(pid, id, name, text)
-		return sendDoneMsg{id: id, note: note, err: err}
+		return sendDoneMsg{id: id, note: note, err: err, text: text, overlay: overlay}
 	}
 }
 
@@ -240,13 +276,16 @@ func (m *model) sendTo(conv Conversation, in *textinput.Model) tea.Cmd {
 // was sent and the terminal fallback is safe.
 var errNotConnected = errors.New("not connected")
 
+// errUnsent means nothing reached the session, so the text goes back to its box.
+var errUnsent = errors.New("not sent")
+
 // deliverMessage sends text to a live session: through its message socket
 // if it can be reached, else typed into its terminal. Never both: once the
 // socket accepted a connection, a later error isn't retried another way.
 func deliverMessage(pid int, id, name, text string) (string, error) {
 	f, err := readSessionFile(pid)
 	if err != nil || f.SessionID != id {
-		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("session file: %v", err)
+		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("%w: session file: %v", errUnsent, err)
 	}
 	if f.Socket != "" {
 		msgID, err := sendViaSocket(f.Socket, peerToken(pid, f.Socket), text)
@@ -260,10 +299,17 @@ func deliverMessage(pid int, id, name, text string) (string, error) {
 			return "✗ Sending to " + name + " may have failed: " + err.Error(), err
 		}
 	}
+	// Read again: the socket attempt can take seconds and a menu may have come
+	// up since. Typed keys would land in it and could pick an option.
+	if f, err := readSessionFile(pid); err != nil || f.SessionID != id {
+		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("%w: session file: %v", errUnsent, err)
+	} else if f.Status == "waiting" {
+		return "✗ Not typed into " + name + ": it's showing a menu, answer it in its tab", fmt.Errorf("%w: on a menu", errUnsent)
+	}
 	where, err := typeIntoSession(pid, text)
 	switch {
 	case where == "":
-		return "✗ Couldn't reach " + name + ": its message socket isn't reachable and it isn't in iTerm or tmux", errors.New("unreachable")
+		return "✗ Couldn't reach " + name + ": its message socket isn't reachable and it isn't in iTerm or tmux", fmt.Errorf("%w: unreachable", errUnsent)
 	case errors.Is(err, errTimedOut):
 		return "⚠ Typing into " + name + "'s " + where + " timed out; it may have been typed", err
 	case err != nil:

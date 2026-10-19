@@ -143,6 +143,14 @@ func cachedPreview(c *previewCache, conv Conversation, query string, width int) 
 	return c.lines
 }
 
+// scrollWindow is the [start, end) of n lines that rows rows show, scrolled
+// back lines from the newest (clamped), so 0 shows the end.
+func scrollWindow(n, rows, back int) (start, end int) {
+	back = min(back, max(0, n-rows))
+	start = max(0, n-rows-back)
+	return start, min(start+rows, n)
+}
+
 // buildPreviewLines builds the scrollable message lines of a conversation
 // preview (everything below the fixed header). Shared by renderPreview and
 // maxPreviewScroll so the render and the scroll-clamp can never disagree on how
@@ -363,8 +371,8 @@ func (m *model) jumpHit(next bool) {
 		return
 	}
 	rows := m.previewMessageRows(m.filtered[m.cursor].conv)
-	back := min(m.previewScroll, max(0, len(lines)-rows))
-	top := max(0, len(lines)-rows-back)
+	top, _ := scrollWindow(len(lines), rows, m.previewScroll)
+	back := max(0, len(lines)-rows-top) // previewScroll as drawn (clamped)
 	scrollTo := func(line int) int { return min(max(len(lines)-rows-line, 0), m.maxPreviewScroll()) }
 	// Hits in jump order from the top line, wrapping; take the first that
 	// actually moves the view (near the end several hits share one position).
@@ -624,10 +632,8 @@ func (m model) renderPreview(item listItem, height int) string {
 	if msgHeight < 1 {
 		msgHeight = 1
 	}
-	// previewScroll counts back from the newest message, so 0 shows the end.
-	back := min(m.previewScroll, max(0, len(msgLines)-msgHeight))
-	start := max(0, len(msgLines)-msgHeight-back)
-	visibleMsgLines := msgLines[start:min(start+msgHeight, len(msgLines))]
+	start, end := scrollWindow(len(msgLines), msgHeight, m.previewScroll)
+	visibleMsgLines := msgLines[start:end]
 
 	// The header's last (blank) line pins the date of the top visible message,
 	// unless that message's own date row is already at the top.

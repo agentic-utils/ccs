@@ -1177,3 +1177,23 @@ func TestSearchWordStartsAndRanking(t *testing.T) {
 		t.Errorf("narrowing lost results: %d", len(m.filtered))
 	}
 }
+
+func TestLiveMarkerColours(t *testing.T) {
+	conv := Conversation{SessionID: "s", Messages: []Message{{Role: "assistant", Text: "done."}}}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.width = 140
+	m.live = map[string]bool{"s": true}
+	row := func(status string) string {
+		m.chatStatus = map[string]sessionStat{"s": {status: status}}
+		return m.formatListItem(m.filtered[0], false)
+	}
+	if r := row("idle"); !strings.Contains(r, "\033[32m●") {
+		t.Errorf("idle should be a green ●: %q", r)
+	}
+	if r := row("busy"); !strings.Contains(r, "\033["+amber+"m●") {
+		t.Errorf("busy should be an amber ●: %q", r)
+	}
+	if r := row("waiting"); !strings.Contains(r, "\033[1;"+amber+"m?") {
+		t.Errorf("waiting on you should be an amber ?: %q", r)
+	}
+}

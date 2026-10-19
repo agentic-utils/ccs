@@ -47,6 +47,9 @@ type snoozeRec struct {
 	Until time.Time `json:"until"`
 }
 
+// amber marks a live session that's busy, or (as a ?) waiting on you.
+const amber = "38;5;214"
+
 // How a live session waits on the user.
 const (
 	waitNone   = iota
@@ -223,7 +226,7 @@ func (m model) bannerLine(conv Conversation, more, width int) string {
 		why = "waiting"
 	}
 	keys := !m.popupAboveWait() && !m.prompting()
-	parts := []string{"\033[1;33m? " + m.sessionName(conv) + " is waiting on you\033[0m"}
+	parts := []string{"\033[1;" + amber + "m? " + m.sessionName(conv) + " is waiting on you\033[0m"}
 	if keys {
 		parts = append(parts, hints("^Y", "answer"))
 	}
@@ -468,7 +471,7 @@ func (m model) waitPopup() string {
 	q := m.waitQueue(true)
 	title := "\033[90mno longer waiting\033[0m"
 	if pos := m.waitPos(q); pos >= 0 {
-		title = fmt.Sprintf("\033[1;33mwaiting %d of %d\033[0m", pos+1, len(q))
+		title = fmt.Sprintf("\033[1;"+amber+"mwaiting %d of %d\033[0m", pos+1, len(q))
 	}
 	st := m.chatStatus[m.waitID]
 	note := ""

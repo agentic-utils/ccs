@@ -124,13 +124,28 @@ func (m *model) syncChatDraft() {
 	m.chatFor = id
 }
 
-// chatRows is the height the message area takes under the preview: a status
-// line and the bordered box. Zero unless a live session is selected.
+// chatRows is the height the message area takes under the preview: what a
+// waiting session asks, a status line and the bordered box. Zero unless a
+// live session is selected.
 func (m model) chatRows() int {
 	if m.showUsage || !m.selectedLive() {
 		return 0
 	}
-	return 4
+	return 4 + len(m.chatAsk())
+}
+
+// chatAsk is the selected session's question menu (or permission request)
+// while it waits, at most a third of the screen.
+func (m model) chatAsk() []string {
+	conv := m.filtered[m.cursor].conv
+	if m.waitSignal(conv) != waitPrompt {
+		return nil
+	}
+	lines := askLines(conv, m.width-2)
+	for i, l := range lines {
+		lines[i] = "  " + l
+	}
+	return lines[:min(len(lines), max(m.height/3, 2))]
 }
 
 // chatTarget is the live session the fast refresh follows: the overlay's
@@ -200,19 +215,23 @@ func (m model) sessionName(conv Conversation) string {
 
 // waitingLine says what a waiting session asks and where to answer it.
 func waitingLine(conv Conversation) string {
-	switch qs := conv.questions(); {
+	// The question itself is drawn just above (askLines).
+	switch {
 	case answerable(conv) > 0:
-		return cleanText(qs[0].Question) + " · ^Y answers it here, " + keyEnter + " opens its tab"
-	case len(qs) > 0:
-		return cleanText(qs[0].Question) + " · answer it in its tab: " + keyEnter + " opens it"
+		return "waiting on you · ^Y answers it by number, " + keyEnter + " opens its tab"
+	case len(conv.questions()) > 0:
+		return "waiting on you · answer it in its tab: " + keyEnter + " opens it"
 	case conv.pending != nil:
-		return "wants to use " + conv.pending.Name + " · approve it in its tab: " + keyEnter + " opens it"
+		return "waiting on you · approve it in its tab: " + keyEnter + " opens it"
 	}
 	return "its question is only shown in its own tab: " + keyEnter + " opens it"
 }
 
 // chatView draws the status line and message box for the selected session.
 func (m model) chatView() string {
+	if ask := m.chatAsk(); len(ask) > 0 {
+		return strings.Join(ask, "\n") + "\n" + m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.width)
+	}
 	return m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.width)
 }
 

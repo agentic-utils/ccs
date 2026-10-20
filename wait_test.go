@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -879,5 +880,28 @@ func TestWaitingQuestionShownAndAnswered(t *testing.T) {
 	parseLine(conv, []byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"green"}]}}`))
 	if conv.pending != nil {
 		t.Error("the tool result should clear the pending question")
+	}
+}
+
+func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
+	m := waitModel(t)
+	m.width, m.height = 100, 40
+	ask := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Which checks?","multiSelect":true,"options":[{"label":"lint"},{"label":"tests"}]}]}}]}}`
+	for i := range m.items {
+		if m.items[i].conv.SessionID == "live" {
+			parseLine(&m.items[i].conv, []byte(ask))
+		}
+	}
+	m.updateFilter()
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
+	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "input needed")})
+	v := strip2(m.View())
+	for _, want := range []string{"? Which checks?  (pick any)", "1  lint", "2  tests", "answer it in its tab"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("bottom pane should show %q:\n%s", want, v)
+		}
+	}
+	if n := len(strings.Split(v, "\n")); n > m.height {
+		t.Errorf("view is %d rows on a %d-row screen", n, m.height)
 	}
 }

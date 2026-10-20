@@ -488,7 +488,11 @@ func askLines(conv Conversation, width int) []string {
 	if qs := conv.questions(); len(qs) > 0 {
 		var out []string
 		for _, q := range qs {
-			out = append(out, "", cut("\033[1;"+amber+"m? "+cleanText(q.Question)))
+			pick := ""
+			if q.MultiSelect {
+				pick = "\033[0;90m  (pick any)"
+			}
+			out = append(out, "", cut("\033[1;"+amber+"m? "+cleanText(q.Question)+pick))
 			for i, o := range q.Options {
 				line := fmt.Sprintf("  \033[1m%d\033[0m  %s", i+1, cleanText(o.Label))
 				if o.Description != "" {
@@ -497,15 +501,12 @@ func askLines(conv Conversation, width int) []string {
 				out = append(out, cut(line))
 			}
 		}
-		if answerable(conv) == 0 {
-			out = append(out, cut("\033[90m  answer it in its tab: "+keyEnter+" opens it"))
-		}
 		return out
 	}
 	if conv.pending == nil {
 		return nil
 	}
-	return []string{"", cut("\033[1;" + amber + "m? wants to use " + conv.pending.Name + "\033[0m " + toolSummary(conv.pending.Input) + "\033[90m · approve it in its tab: " + keyEnter + " opens it")}
+	return []string{"", cut("\033[1;" + amber + "m? wants to use " + conv.pending.Name + "\033[0m " + toolSummary(conv.pending.Input))}
 }
 
 // answerable is how many options a digit can pick: only a single

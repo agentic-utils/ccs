@@ -65,7 +65,7 @@ Key bindings:
   Tab             Usage screen (Tab again to go back)
   Ctrl+O          Switch Claude account (needs cswap)
   Ctrl+L          Changelog
-  Ctrl+T          Open a link in view
+  Ctrl+T          Open one of the session's PRs or a link in view
   Ctrl+] / Ctrl+\  Next / previous search hit
   Ctrl+G          Show the shortcuts that apply right now
   Ctrl+C          Quit
@@ -220,6 +220,7 @@ func main() {
 		}
 	}
 	m.usageExclude = excludeDirs
+	m.fetchPRs = ghFetchPRs()
 	m.reload = func() ([]listItem, error) {
 		convs, err := getConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {

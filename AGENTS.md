@@ -54,6 +54,7 @@ One package, split by area (all `package main`, same directory):
 - `update.go` - self-update (release check, brew/binary upgraders, `downloadTransport`, update log), changelog fetch and popups, restore-after-restart state
 - `usage.go` - usage screen, allowance, keychain, cswap account switcher
 - `prune.go` - `ccs prune` and the lossless pruning it shares with Ctrl+X
+- `prs.go` - each session's PRs: `pr-link` records, GitHub lookups, the PRS column and the preview's PR lines
 - `mcp.go` - `ccs mcp`: a stdio MCP server (hand-rolled newline-delimited JSON-RPC: initialize, ping, tools/list, tools/call) with `search_sessions`, `list_sessions` and `read_session`. Each call rescans through `getConversations` (cheap after the first, via `parseCache`); stdout is the protocol stream, so nothing else may print to it
 - `<area>_test.go` - tests live next to their code (`preview_test.go` for `preview.go`, and so on); a test that drives the UI goes with the feature it checks. Shared helpers (`TestMain`, `key`, `strip2`, `chatModel`, fake binaries and sockets) are in `helpers_test.go`
 - `.goreleaser.yaml` - Release configuration
@@ -94,6 +95,7 @@ One package, split by area (all `package main`, same directory):
 - `queryMatches()` / `containsAll()` / `nameWords()` / `matchRank()` - the one search rule, shared by the list filter, HITS, the preview's matches, code-block expansion and `ccs mcp`: every word of the query starts a word in the text (`wordStartIndex`: "self" matches "self-revoke" and "selfish", not "itself"; no mid-word fragments), in any order within one part of the search text, i.e. the same message or the id/title/project (parts are joined by `searchSep`, so the list never shows a session with 0 HITS), or every word appears in the session's name with dashes/underscores read as spaces; `highlight` marks each word at word starts. Results rank by `matchRank` (named after the query, then the words together as a phrase via `hasPhrase`, then the rest), newest first within each; typing more narrows from the previous results only when the new query extends the old one (`HasPrefix`)
 - `hitCount()` / `countHits()` - HITS column, shown only while a search is typed (`searching()`; `topicColWidth` takes the space back otherwise). Memoised per-query HITS count (messages containing every query word), keyed by SessionID, so `formatListItem` doesn't rescan every visible row each frame
 - `sortList()` / `liveGroup()` - list order: sessions waiting on a question first, then idle, busy, and those not open in claude; then search rank (`listItem.rank`), then newest. Statuses change on ticks, so `Update` re-sorts after every message (a no-op when already sorted), keeping the cursor on its session
+- `prCmd()` / `ghPRBatch()` / `prInfo.status()` / `prLines()` / `prCell()` - a session's PRs are the `pr-link` records Claude Code writes whenever a gh command in it touches a PR (`Conversation.PRs`, github.com addresses only, validated by `prURL` since they go into a GraphQL query). `prCmd` runs from `Update`, one request at a time: once a minute (`prNext`) every PR not merged or closed of sessions live or active within `prScope` (7 days), and in between the selected session's PRs not looked up yet (`prAsked` stops retries until the next round); merged/closed PRs are asked once. `ghPRBatch` asks about `prBatch` PRs per `gh api graphql` call (aliased fields) and reads the data even when gh exits non-zero over a missing PR. "Ready to merge" is GitHub's `mergeStateStatus` CLEAN/HAS_HOOKS/UNSTABLE on an open non-draft PR; `status()` groups the rest: needs you (conflicts, checks failing, changes requested, behind), waiting (checks running, review required, draft, unknown), then merged, closed. The PRS column counts open PRs (`✓` ready, `✗` needs you, plain waiting); the preview header lists open PRs in that order (at most `maxPRLines`) and one line counting merged/closed; ^T lists all of them first (`linksWithPRs`). No gh on PATH: `fetchPRs` is nil and nothing is looked up
 - `formatAgo()` - WHEN column: time since the last message (`now`, `5m ago` ... `1y ago`), recomputed each frame; replaces the absolute date in the list (full timestamps stay searchable and show per message in the preview)
 - `formatTokens()` / `Conversation.ContextTokens` - CTX column: context size as of the last reply (input + cache reads + cache writes from its `usage`; zero-usage placeholder replies skipped)
 - `contextWindow()` / `ctxColour()` - CTX column traffic light (green/yellow/amber/red/flashing, thresholds scaled to a 200k or 1M window inferred from the model, or proven 1M by a context over 200k)
@@ -145,13 +147,15 @@ One package, split by area (all `package main`, same directory):
   ccs · claude code search · v0.64.0 · refreshed just now · 1 waiting · ^Y                       ^G help  ^C quit
   > type to search...                                                     (N/total)
 
-  WHEN      PROJECT               TOPIC                    MODEL          SIZE   CTX  MSGS  HITS
+  WHEN      PROJECT               TOPIC                    MODEL          SIZE   CTX  MSGS      PRS  HITS
 ──────────────────────────────────────────────────────────────────────────────────────
-  2h ago    project-name          ● Refactor auth flow ✎  opus 5.5 1M   1.2GB  281k    42     3
+  2h ago    project-name          ● Refactor auth flow ✎  opus 5.5 1M   1.2GB  281k    42   ✓1 ✗1     3
 > 3h ago    selected              This one is selected     sonnet 5       12MB   92k    28     1
 ──────────────────────────────────────────────────────────────────────────────────────
 Project: /path/to/project
 Session: abc123...
+PRs:     ✓ repo#12 add the thing · ready to merge
+         4 merged · ^T all
 
   ── 2024-01-08 ──
 

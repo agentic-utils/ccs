@@ -145,9 +145,11 @@ type model struct {
 	reopenChecked bool           // the last boot's record has been read, so it may be overwritten
 	// Each session's PRs (prs.go): what GitHub said, by address.
 	prs        map[string]prInfo
-	prAsked    map[string]bool // asked since the last full round
-	prNext     time.Time       // when the next full round is due
-	prFetching bool
+	prNext     time.Time       // when the next round is due
+	prQueue    [][]string      // the round's requests not sent yet
+	prRound    int             // the round's requests in flight
+	prSelBusy  bool            // the selected session's own request is in flight
+	prSelAsked map[string]bool // asked for the selected session since the last round
 	prErr      string
 	fetchPRs   func([]string) (map[string]prInfo, error) // nil: never look PRs up
 	// Ctrl+T: the links in the visible part of the preview, to open by key.
@@ -314,6 +316,7 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		kicked:      make(map[string]bool),
 		hits:        &hitCounter{byID: make(map[string]int)},
 		prs:         make(map[string]prInfo),
+		prSelAsked:  make(map[string]bool),
 	}
 	if !ok {
 		m.errorMsg = fmt.Sprintf("CCS_SNOOZE=%q isn't a duration like 15m; snoozing for %s", os.Getenv("CCS_SNOOZE"), shortDuration(snooze))

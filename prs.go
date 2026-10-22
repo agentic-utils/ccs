@@ -53,6 +53,8 @@ func (p prInfo) status() (int, string) {
 		return prMerged, "merged"
 	case p.State == "CLOSED":
 		return prClosed, "closed"
+	case p.State == "GONE":
+		return prClosed, "not found: deleted, or gh can't see it"
 	case p.State == "":
 		return prWaiting, "checking…"
 	case p.Draft:
@@ -107,6 +109,9 @@ func (m model) sessionPRs(conv Conversation) []string {
 // prCounts is how many of conv's open PRs are ready, need fixing, or wait.
 func (m model) prCounts(conv Conversation) (ready, fix, waiting int) {
 	for _, u := range conv.PRs {
+		if m.prs[u].State == "" { // not looked up yet: not known to be open
+			continue
+		}
 		switch g, _ := m.prs[u].status(); g {
 		case prReady:
 			ready++
@@ -152,11 +157,13 @@ func (m model) prLines(conv Conversation, width int) []string {
 		return nil
 	}
 	var lines []string
-	merged, closed := 0, 0
+	merged, closed, gone := 0, 0, 0
 	for _, u := range urls {
 		switch g, _ := m.prs[u].status(); {
 		case g == prMerged:
 			merged++
+		case m.prs[u].State == "GONE":
+			gone++
 		case g == prClosed:
 			closed++
 		case len(lines) < maxPRLines:
@@ -164,7 +171,7 @@ func (m model) prLines(conv Conversation, width int) []string {
 		}
 	}
 	var rest []string
-	if more := len(urls) - merged - closed - len(lines); more > 0 {
+	if more := len(urls) - merged - closed - gone - len(lines); more > 0 {
 		rest = append(rest, fmt.Sprintf("+%d more open", more))
 	}
 	if merged > 0 {
@@ -172,6 +179,9 @@ func (m model) prLines(conv Conversation, width int) []string {
 	}
 	if closed > 0 {
 		rest = append(rest, fmt.Sprintf("%d closed", closed))
+	}
+	if gone > 0 {
+		rest = append(rest, fmt.Sprintf("%d not found", gone))
 	}
 	if len(rest) > 0 {
 		lines = append(lines, "\033[90m"+strings.Join(rest, " · ")+" · ^T all\033[0m")
@@ -193,6 +203,9 @@ func (m model) prLines(conv Conversation, width int) []string {
 func (m model) prLine(u string) string {
 	p := m.prs[u]
 	g, why := p.status()
+	if p.State == "" && m.fetchPRs == nil {
+		why = "needs gh to look it up"
+	}
 	glyph, colour := prMark(g)
 	name := prName(u)
 	title := p.Title
@@ -224,57 +237,82 @@ const prScope = 7 * 24 * time.Hour
 type prDoneMsg struct {
 	infos map[string]prInfo
 	err   error
+	round bool // from the minute's round, not the selected session's own request
 }
 
-// prCmd asks GitHub about PRs, at most one request at a time. Once a minute
-// (prNext) that's every PR not yet merged or closed of the sessions that are
-// live or active within prScope; in between, only the selected session's PRs
-// not looked up yet. Merged and closed PRs never change, so they're asked once.
+// prParallel is how many of a round's requests run at once.
+const prParallel = 4
+
+// prCmd asks GitHub about PRs. The selected session's PRs not looked up yet
+// go first, in a request of their own that never waits behind a round. Once a
+// minute (prNext, after the last round has finished) a round asks about every
+// PR not yet merged or closed of the sessions that are live, active within
+// prScope or selected, prBatch at a time, prParallel requests at once, each
+// shown as it lands. Merged and closed PRs never change, so they're asked once.
 func (m *model) prCmd() tea.Cmd {
-	if m.fetchPRs == nil || m.prFetching {
+	if m.fetchPRs == nil {
 		return nil
 	}
-	var urls []string
-	seen := map[string]bool{}
-	want := func(conv Conversation, all bool) {
-		for _, u := range conv.PRs {
-			p, have := m.prs[u]
-			if seen[u] || p.final() || have && !all || m.prAsked[u] && !all {
+	var cmds []tea.Cmd
+	fetch := func(urls []string, round bool) tea.Cmd {
+		f := m.fetchPRs
+		return func() tea.Msg {
+			infos, err := f(urls)
+			return prDoneMsg{infos, err, round}
+		}
+	}
+	if m.prRound == 0 && len(m.prQueue) == 0 && time.Now().After(m.prNext) {
+		m.prNext, m.prSelAsked = time.Now().Add(refreshInterval), map[string]bool{} // failures are retried once a round
+		cutoff := time.Now().Add(-prScope).UTC().Format(time.RFC3339)
+		selected := ""
+		if len(m.filtered) > 0 {
+			selected = m.filtered[m.cursor].conv.SessionID
+		}
+		var urls []string
+		seen := map[string]bool{}
+		for _, it := range m.items {
+			if !m.live[it.conv.SessionID] && it.conv.LastTimestamp < cutoff && it.conv.SessionID != selected {
 				continue
 			}
-			seen[u] = true
-			urls = append(urls, u)
-		}
-	}
-	if time.Now().After(m.prNext) {
-		m.prNext, m.prAsked = time.Now().Add(refreshInterval), map[string]bool{}
-		cutoff := time.Now().Add(-prScope).UTC().Format(time.RFC3339)
-		for _, it := range m.items {
-			if m.live[it.conv.SessionID] || it.conv.LastTimestamp >= cutoff {
-				want(it.conv, true)
+			for _, u := range it.conv.PRs {
+				if !seen[u] && !m.prs[u].final() {
+					seen[u] = true
+					urls = append(urls, u)
+				}
 			}
 		}
+		for i := 0; i < len(urls); i += prBatch {
+			m.prQueue = append(m.prQueue, urls[i:min(i+prBatch, len(urls))])
+		}
 	}
-	if len(m.filtered) > 0 {
-		want(m.filtered[m.cursor].conv, false)
+	if !m.prSelBusy && len(m.filtered) > 0 {
+		var urls []string
+		for _, u := range m.filtered[m.cursor].conv.PRs {
+			if _, have := m.prs[u]; !have && !m.prSelAsked[u] && len(urls) < prBatch {
+				urls = append(urls, u)
+				m.prSelAsked[u] = true
+			}
+		}
+		if len(urls) > 0 {
+			m.prSelBusy = true
+			cmds = append(cmds, fetch(urls, false))
+		}
 	}
-	if len(urls) == 0 {
-		return nil
+	for m.prRound < prParallel && len(m.prQueue) > 0 {
+		m.prRound++
+		cmds = append(cmds, fetch(m.prQueue[0], true))
+		m.prQueue = m.prQueue[1:]
 	}
-	for _, u := range urls {
-		m.prAsked[u] = true
-	}
-	m.prFetching = true
-	fetch := m.fetchPRs
-	return func() tea.Msg {
-		infos, err := fetch(urls)
-		return prDoneMsg{infos, err}
-	}
+	return tea.Batch(cmds...)
 }
 
 // applyPRs takes in what GitHub said.
 func (m *model) applyPRs(msg prDoneMsg) {
-	m.prFetching = false
+	if msg.round {
+		m.prRound--
+	} else {
+		m.prSelBusy = false
+	}
 	m.prErr = ""
 	if msg.err != nil {
 		m.prErr = truncate(strings.TrimSpace(msg.err.Error()), 80)
@@ -291,20 +329,7 @@ func ghFetchPRs() func([]string) (map[string]prInfo, error) {
 	if err != nil {
 		return nil
 	}
-	return func(urls []string) (map[string]prInfo, error) {
-		out := map[string]prInfo{}
-		var firstErr error
-		for i := 0; i < len(urls); i += prBatch {
-			got, err := ghPRBatch(gh, urls[i:min(i+prBatch, len(urls))])
-			for u, p := range got {
-				out[u] = p
-			}
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		return out, firstErr
-	}
+	return func(urls []string) (map[string]prInfo, error) { return ghPRBatch(gh, urls) }
 }
 
 // prBatch is how many PRs one GraphQL request asks about.
@@ -349,8 +374,12 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 	}
 	out := map[string]prInfo{}
 	for i, u := range urls {
-		r := resp.Data[fmt.Sprintf("p%d", i)]
-		if r == nil || r.PullRequest == nil {
+		r, answered := resp.Data[fmt.Sprintf("p%d", i)]
+		if !answered {
+			continue
+		}
+		if r == nil || r.PullRequest == nil { // deleted, or gh's account can't see it
+			out[u] = prInfo{State: "GONE"}
 			continue
 		}
 		pr := r.PullRequest

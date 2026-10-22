@@ -288,11 +288,15 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 }
 
 func TestTopicColWidthFlexes(t *testing.T) {
-	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colHits + colSize + numGaps*colGap
+	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colSize + (numGaps-1)*colGap
 	for _, w := range []int{100, 120, 200} {
 		m := model{width: w}
 		if got, want := m.topicColWidth(), w-fixed; got != want {
 			t.Errorf("topicColWidth(width=%d) = %d, want %d", w, got, want)
+		}
+		m.textInput.SetValue("auth") // HITS takes its column only while searching
+		if got, want := m.topicColWidth(), w-fixed-colHits-colGap; got != want {
+			t.Errorf("searching: topicColWidth(width=%d) = %d, want %d", w, got, want)
 		}
 	}
 	// Tiny terminal clamps to a minimum rather than going negative.
@@ -1031,7 +1035,7 @@ func TestHelpPopup(t *testing.T) {
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 120, 40
 	v := strip2(m.View())
-	if !strings.Contains(v, "enter resume  ^S msg  tab usage  ^G help  ^C quit") || strings.Contains(v, "prune") {
+	if !strings.Contains(v, "^G help  ^C quit") || strings.Contains(v, "HITS") || strings.Contains(v, "prune") {
 		t.Errorf("header should list only the essentials:\n%s", v)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
@@ -1098,9 +1102,6 @@ func TestHeaderNeverWraps(t *testing.T) {
 		plain := strip2(first)
 		if w >= 70 && (!strings.Contains(plain, "^G help") || !strings.Contains(plain, "^C quit")) {
 			t.Errorf("width %d: help and quit should stay: %q", w, plain)
-		}
-		if w == 140 && !strings.Contains(plain, "enter resume") {
-			t.Errorf("wide header should keep every hint: %q", plain)
 		}
 	}
 }

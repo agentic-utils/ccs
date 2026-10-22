@@ -217,35 +217,16 @@ func (m model) banner() (conv Conversation, more int, ok bool) {
 	return
 }
 
-// bannerLine draws the banner in the blank row under the search, so the
-// title row keeps its notes and hints. It takes no keys: everything on screen
-// works as without it, and Ctrl+Y opens the overlay on it. While a popup or
-// prompt has the keys Ctrl+Y does nothing there, so it isn't offered. A
-// narrow screen drops the reason first, then the snooze hint, then the count.
-func (m model) bannerLine(conv Conversation, more, width int) string {
-	why := m.chatStatus[conv.SessionID].waitingFor
-	if why == "" {
-		why = "waiting"
-	}
-	keys := !m.popupAboveWait() && !m.prompting()
-	parts := []string{"\033[1;" + amber + "m? " + m.sessionName(conv) + " is waiting on you in its tab\033[0m"}
-	if keys {
-		parts = append(parts, hints("^Y", "see it"))
-	}
-	extra := []string{"\033[33m" + why + "\033[0m"}
-	if keys {
-		extra = append(extra, hints(keyEsc, "there snoozes "+shortDuration(m.snooze)))
-	}
-	if more > 0 {
-		extra = append(extra, fmt.Sprintf("\033[33m+%d more\033[0m", more))
-	}
-	for {
-		s := "  " + strings.Join(append(slices.Clone(parts), extra...), "  ")
-		if ansi.StringWidth(s) <= width || len(extra) == 0 {
-			return ansi.Truncate(s, max(width, 1), "…") + "\033[0m"
+// waitingCount is how many live sessions wait on a menu or prompt, for the
+// header (a dim ? guess isn't counted).
+func (m model) waitingCount() int {
+	n := 0
+	for _, it := range m.items {
+		if m.waitSignal(it.conv) == waitPrompt {
+			n++
 		}
-		extra = extra[1:]
 	}
+	return n
 }
 
 // popupAboveWait: a popup drawn over the overlay is open (see overPopups). It

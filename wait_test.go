@@ -123,7 +123,7 @@ func TestWaitBannerShowsTheOldestAndTakesNoKeys(t *testing.T) {
 	m := selectLive(waitModel(t))
 	now := time.Now()
 	m.applyStats(map[string]sessionStat{"live": waiting(now.Add(-time.Minute), "permission prompt"), "menu": waiting(now.Add(-time.Hour), "input needed")})
-	if top := bannerRow(m); m.waitOpen || !strings.Contains(top, "Menu one is waiting on you in its tab  ^Y see it  input needed") || !strings.Contains(top, "+1 more") {
+	if top := bannerRow(m); m.waitOpen || !strings.Contains(top, "Menu one is waiting on you") || !strings.Contains(top, "+1 more") {
 		t.Fatalf("a pop-up is a banner on the oldest wait, not the overlay: open=%v top=%q", m.waitOpen, top)
 	}
 	// Every key works as without it: typing and Esc in the main box (of a
@@ -385,8 +385,8 @@ func TestWaitMarkersAndHeaderCount(t *testing.T) {
 	m := waitModel(t)
 	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt"), "asks": {status: "idle", since: time.Now()}})
 	m.closeWait() // seen: the title row is back
-	if view := strip2(m.View()); !strings.Contains(view, "2 waiting") {
-		t.Errorf("header should count both signals:\n%s", view)
+	if view := strip2(m.View()); !strings.Contains(view, "1 waiting") {
+		t.Errorf("header counts menus and prompts, not the dim ? guess:\n%s", view)
 	}
 	for _, id := range []string{"live", "asks"} {
 		for _, item := range m.filtered {
@@ -776,14 +776,13 @@ func TestPasteGoesToTheFocusedInput(t *testing.T) {
 	}
 }
 
-// bannerRow is the screen row holding the banner, or "".
+// bannerRow describes the wait due to be shown (the overlay opens on it), or "".
 func bannerRow(m model) string {
-	for _, l := range strings.Split(strip2(m.View()), "\n") {
-		if strings.Contains(l, "waiting on you") {
-			return l
-		}
+	c, more, ok := m.banner()
+	if !ok {
+		return ""
 	}
-	return ""
+	return fmt.Sprintf("%s is waiting on you +%d more", m.sessionName(c), more)
 }
 
 func TestWaitMainBoxTextComesBackWhenReselected(t *testing.T) {
@@ -826,27 +825,20 @@ func TestWaitDiscardedDraftIsReported(t *testing.T) {
 	}
 }
 
-func TestWaitBannerKeepsTheTitleRow(t *testing.T) {
+func TestWaitHeaderCountKeepsTheTitleRow(t *testing.T) {
 	m := waitModel(t)
 	m.updating, m.updateTo = true, "v9.9.9"
 	m.progress = &updateProgress{step: "downloading", started: time.Now()}
 	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
-	if top := topRow(m); !strings.Contains(top, "updating to v9.9.9") || !strings.Contains(top, "quit") || bannerRow(m) == "" {
-		t.Fatalf("the banner must not hide the title row's notes or hints: top=%q banner=%q", top, bannerRow(m))
+	if top := topRow(m); !strings.Contains(top, "updating to v9.9.9") || !strings.Contains(top, "1 waiting · ^Y") || !strings.Contains(top, "quit") {
+		t.Fatalf("the waiting count sits with the title row's notes and hints: %q", top)
 	}
-	m.updating = false
-	m.width = 60
-	if b := bannerRow(m); !strings.Contains(b, "^Y see it") || strings.Contains(b, "permission prompt") || ansi.StringWidth(b) > 60 {
-		t.Errorf("narrow: ^Y see it stays, the reason goes first: %q", b)
+	if strings.Contains(strip2(m.View()), "waiting on you") {
+		t.Error("no banner row under the search")
 	}
-}
-
-func TestWaitBannerHintOnlyWhenCtrlYWorks(t *testing.T) {
-	m := waitModel(t)
-	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
 	m.helpOpen = true
-	if b := bannerRow(m); b == "" || strings.Contains(b, "^Y") {
-		t.Errorf("while help owns the keys, Ctrl+Y does nothing, so the banner mustn't offer it: %q", b)
+	if top := topRow(m); !strings.Contains(top, "1 waiting") || strings.Contains(top, "^Y") {
+		t.Errorf("while help owns the keys, Ctrl+Y does nothing, so it isn't offered: %q", top)
 	}
 }
 

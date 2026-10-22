@@ -288,7 +288,7 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 }
 
 func TestTopicColWidthFlexes(t *testing.T) {
-	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colSize + (numGaps-1)*colGap
+	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colPRs + colSize + numGaps*colGap
 	for _, w := range []int{100, 120, 200} {
 		m := model{width: w}
 		if got, want := m.topicColWidth(), w-fixed; got != want {

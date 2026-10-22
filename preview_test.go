@@ -431,7 +431,7 @@ func TestPinnedDate(t *testing.T) {
 	m.width, m.height = 100, 40
 	day := dateRow(formatTimestamp(msgs[0].Ts)[:10])
 	// At the bottom, the day's own row has scrolled away, so it's pinned.
-	if lines := strings.Split(m.renderPreview(item, 12), "\n"); !slices.Contains(lines[:len(previewHeader(conv, ""))], day) {
+	if lines := strings.Split(m.renderPreview(item, 12), "\n"); !slices.Contains(lines[:len(m.previewHeader(conv, ""))], day) {
 		t.Errorf("date should be pinned above the messages:\n%s", strings.Join(lines, "\n"))
 	}
 	// At the top, the date row itself is shown, not pinned twice.

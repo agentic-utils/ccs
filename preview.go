@@ -474,6 +474,21 @@ func (m model) visibleLinks() []linkItem {
 	return out
 }
 
+// linksWithPRs is what ^T lists: the selected session's PRs, then the other
+// links in view.
+func (m model) linksWithPRs() []linkItem {
+	if len(m.filtered) == 0 {
+		return nil
+	}
+	out := m.prLinks(m.filtered[m.cursor].conv)
+	for _, l := range m.visibleLinks() {
+		if !slices.ContainsFunc(out, func(p linkItem) bool { return p.url == l.url }) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 // linksPopup lists visibleLinks, numbered, with the cursor on one.
 func (m model) linksPopup() string {
 	width := min(max(m.width-12, 30), 90)
@@ -601,18 +616,19 @@ func (m model) maxPreviewScroll() int {
 // header, matching what View gives renderPreview.
 func (m model) previewMessageRows(conv Conversation) int {
 	_, _, previewTop := m.listLayout()
-	return max(m.height-previewTop-m.chatRows()-len(previewHeader(conv, m.textInput.Value())), 1)
+	return max(m.height-previewTop-m.chatRows()-len(m.previewHeader(conv, m.textInput.Value())), 1)
 }
 
 // previewHeader is the preview's fixed header (always visible above the
 // scrolling messages).
-func previewHeader(conv Conversation, query string) []string {
+func (m model) previewHeader(conv Conversation, query string) []string {
 	header := []string{"\033[1;33mProject:\033[0m " + highlight(conv.Cwd, query)}
 	if conv.Title != "" {
 		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
 	}
 	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
 	header = append(header, sessionStats(conv)...)
+	header = append(header, m.prLines(conv, m.width)...)
 	return append(header, "")
 }
 
@@ -620,7 +636,7 @@ func (m model) renderPreview(item listItem, height int) string {
 	query := m.textInput.Value()
 	conv := item.conv
 
-	header := previewHeader(conv, query) // fixed, always visible
+	header := m.previewHeader(conv, query) // fixed, always visible
 
 	msgLines := m.previewLines() // memoised; item is always the selected conversation
 

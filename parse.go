@@ -62,6 +62,7 @@ type Conversation struct {
 	lastUsageID string    // one reply spans several lines with the same id and usage; count it once
 	tailApplied bool      // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
 	pending     *toolCall // the last tool call still without a result: what a waiting session asks about
+	PRs         []string  // PRs Claude Code linked to the session (pr-link), first touched first
 
 	// readAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -96,6 +97,7 @@ type RawMessage struct {
 	Entrypoint     string `json:"entrypoint"` // cli / claude-desktop = interactive, sdk-cli = claude -p or SDK
 	TeamName       string `json:"teamName"`   // set on teammate transcripts spawned by a team lead
 	CustomTitle    string `json:"customTitle"`
+	PrURL          string `json:"prUrl"` // pr-link: a PR a gh command in the session touched
 	AiTitle        string `json:"aiTitle"`
 	// A message that arrived mid-turn (typed by the user, or from another
 	// session or ccs) is logged as an attachment, not a user line.
@@ -556,6 +558,10 @@ func parseLine(conv *Conversation, line []byte) bool {
 	case "custom-title":
 		conv.Title = raw.CustomTitle // user-set name wins over ai-title
 		conv.IsCustomTitle = raw.CustomTitle != ""
+	case "pr-link":
+		if prURL.MatchString(raw.PrURL) && !slices.Contains(conv.PRs, raw.PrURL) {
+			conv.PRs = append(conv.PRs, raw.PrURL)
+		}
 	case "ai-title":
 		if conv.Title == "" {
 			conv.Title = raw.AiTitle

@@ -143,6 +143,13 @@ type model struct {
 
 	reopen        []Conversation // sessions open before a restart, offered for reopening
 	reopenChecked bool           // the last boot's record has been read, so it may be overwritten
+	// Each session's PRs (prs.go): what GitHub said, by address.
+	prs        map[string]prInfo
+	prAsked    map[string]bool // asked since the last full round
+	prNext     time.Time       // when the next full round is due
+	prFetching bool
+	prErr      string
+	fetchPRs   func([]string) (map[string]prInfo, error) // nil: never look PRs up
 	// Ctrl+T: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
 	links       []linkItem
@@ -306,6 +313,7 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		opened:      make(map[string]time.Time),
 		kicked:      make(map[string]bool),
 		hits:        &hitCounter{byID: make(map[string]int)},
+		prs:         make(map[string]prInfo),
 	}
 	if !ok {
 		m.errorMsg = fmt.Sprintf("CCS_SNOOZE=%q isn't a duration like 15m; snoozing for %s", os.Getenv("CCS_SNOOZE"), shortDuration(snooze))
@@ -421,6 +429,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	n.syncChatDraft()
 	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
 		n.chatFocus = false
+	}
+	if pr := n.prCmd(); pr != nil {
+		cmd = tea.Batch(cmd, pr)
 	}
 	if tick := n.ensureChatTick(); tick != nil {
 		return n, tea.Batch(cmd, tick)
@@ -574,6 +585,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, tea.Batch(cmds...)
+
+	case prDoneMsg:
+		m.applyPRs(msg)
+		return m, nil
 
 	case refreshMsg:
 		m.refreshStarted = time.Time{}
@@ -852,7 +867,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
-			if m.links = m.visibleLinks(); len(m.links) == 0 {
+			if m.links = m.linksWithPRs(); len(m.links) == 0 {
 				m.errorMsg = "No links in view"
 				return m, nil
 			}
@@ -1240,7 +1255,7 @@ func (m model) shortcuts() [][2]string {
 	add(!m.chatFocus && m.textInput.Value() != "", keyEsc+" ^U", "clear the search")
 	add(len(m.waitQueue(true)) > 0, "^Y", "sessions waiting on you")
 	add(hasCswap, "^O", "switch account")
-	add(sel && len(m.visibleLinks()) > 0, "^T", "open a link in view")
+	add(sel && len(m.linksWithPRs()) > 0, "^T", "open a link in view or one of its PRs")
 	add(true, "^L", "changelog")
 	add(true, "^C", "quit")
 	return out
@@ -1431,7 +1446,7 @@ func (m model) viewScreen() string {
 		hitsHead = fmt.Sprintf("  %*s", colHits, "HITS")
 	}
 	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %-*s  %*s  %*s  %*s%s\033[0m\n",
-		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colModel, "MODEL", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", hitsHead))
+		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colModel, "MODEL", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", fmt.Sprintf("  %*s", colPRs, "PRS")+hitsHead))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -1490,6 +1505,7 @@ const (
 	colModel   = 12
 	colCtx     = 5
 	colMsgs    = 5
+	colPRs     = 7 // "✓1 ✗1 2"
 	colHits    = 4
 	colSize    = 6
 	colGap     = 2 // spaces between columns
@@ -1503,7 +1519,7 @@ func (m model) searching() bool { return strings.TrimSpace(m.textInput.Value()) 
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
 func (m model) topicColWidth() int {
-	used := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colSize + (numGaps-1)*colGap
+	used := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colPRs + colSize + numGaps*colGap
 	if m.searching() { // HITS only means something with a search typed
 		used += colHits + colGap
 	}
@@ -1581,7 +1597,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// Format: when | project | topic | model | size | ctx | msgs | hits (aligned columns)
 	if selected {
 		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %-*s  %*s  %*s  %*d%s",
-			colWhen, when, colProject, project, marks, tw-colMarks, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits)
+			colWhen, when, colProject, project, marks, tw-colMarks, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, "  "+m.prCell(item.conv, false)+hits)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
@@ -1590,8 +1606,8 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	if flash && time.Now().Unix()%2 == 1 {
 		ctxCode = "2;31" // flashing: dim every other second
 	}
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[37m%-*s\033[0m  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d\033[36m%s\033[0m",
-		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[37m%-*s\033[0m  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d  %s\033[36m%s\033[0m",
+		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, m.prCell(item.conv, true), hits)
 }
 
 // renameConversation sets a custom title the same way /rename does: by

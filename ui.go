@@ -1352,11 +1352,14 @@ func (m model) viewScreen() string {
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
-	if n := len(m.waitQueue(true)); n > 0 && !m.showUsage {
+	if n := m.waitingCount(); n > 0 && !m.showUsage {
 		status += fmt.Sprintf(" · %d waiting", n)
+		if !m.popupAboveWait() && !m.prompting() { // otherwise Ctrl+Y does nothing
+			status += " · ^Y"
+		}
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
-	pairs, keep := []string{keyEnter, "resume", "^S", "msg", keyTab, "usage", "^G", "help", "^C", "quit"}, 2
+	pairs, keep := []string{"^G", "help", "^C", "quit"}, 2
 	if m.showUsage { // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^O", "account", "^L", "changelog"}, 1 // every key it has, so no ^G help
 		if len(m.waitQueue(true)) > 0 {
@@ -1408,11 +1411,7 @@ func (m model) viewScreen() string {
 	}
 
 	b.WriteString(strings.Join(sections, "\n"))
-	b.WriteString("\n")
-	if conv, more, ok := m.banner(); ok { // a session waiting on you takes the blank row
-		b.WriteString(m.bannerLine(conv, more, tableWidth))
-	}
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	if m.showUsage {
 		b.WriteString(m.usageView(m.height - 2 - len(sections)))
@@ -1427,8 +1426,12 @@ func (m model) viewScreen() string {
 	previewHeight := m.previewRenderHeight() + m.chatRows()
 
 	// Column headers
-	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %-*s  %*s  %*s  %*s  %*s\033[0m\n",
-		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colModel, "MODEL", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", colHits, "HITS"))
+	hitsHead := ""
+	if m.searching() {
+		hitsHead = fmt.Sprintf("  %*s", colHits, "HITS")
+	}
+	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %-*s  %*s  %*s  %*s%s\033[0m\n",
+		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colModel, "MODEL", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", hitsHead))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -1495,9 +1498,15 @@ const (
 	colMarks   = 4 // status icons (● ⚙ !) packed right, then a space
 )
 
+// searching: a search is typed, so HITS has something to count.
+func (m model) searching() bool { return strings.TrimSpace(m.textInput.Value()) != "" }
+
 // topicColWidth flexes the TOPIC column to fill the terminal width.
 func (m model) topicColWidth() int {
-	used := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colHits + colSize + numGaps*colGap
+	used := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colSize + (numGaps-1)*colGap
+	if m.searching() { // HITS only means something with a search typed
+		used += colHits + colGap
+	}
 	if w := m.width - used; w > 10 {
 		return w
 	}
@@ -1557,7 +1566,10 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	msgs := len(item.conv.Messages)
 
 	// Number of messages containing the query (memoised per query).
-	hits := m.hitCount(item)
+	hits := ""
+	if m.searching() {
+		hits = fmt.Sprintf("  %*d", colHits, m.hitCount(item))
+	}
 
 	size := formatBytes(item.conv.Size)
 
@@ -1568,8 +1580,8 @@ func (m model) formatListItem(item listItem, selected bool) string {
 
 	// Format: when | project | topic | model | size | ctx | msgs | hits (aligned columns)
 	if selected {
-		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %-*s  %*s  %*s  %*d  %*d",
-			colWhen, when, colProject, project, marks, tw-colMarks, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
+		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %-*s  %*s  %*s  %*d%s",
+			colWhen, when, colProject, project, marks, tw-colMarks, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits)
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
@@ -1578,8 +1590,8 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	if flash && time.Now().Unix()%2 == 1 {
 		ctxCode = "2;31" // flashing: dim every other second
 	}
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[37m%-*s\033[0m  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d  \033[36m%*d\033[0m",
-		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, colHits, hits)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[37m%-*s\033[0m  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d\033[36m%s\033[0m",
+		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits)
 }
 
 // renameConversation sets a custom title the same way /rename does: by

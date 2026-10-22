@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 const (
@@ -68,29 +70,59 @@ func TestPRFetchScope(t *testing.T) {
 		{SessionID: "old", LastTimestamp: "2020-01-01T00:00:00Z", PRs: []string{prC}},
 	}), "", nil)
 	m.fetchPRs = func(urls []string) (map[string]prInfo, error) { asked = append(asked, urls); return nil, nil }
-	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "new" })
+	sel := func(id string) {
+		m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+	}
+	// run sends what prCmd wants and applies the answers (none: the fake knows nothing).
 	run := func() {
+		var msgs []prDoneMsg
+		var collect func(tea.Msg)
+		collect = func(msg tea.Msg) {
+			switch msg := msg.(type) {
+			case tea.BatchMsg:
+				for _, c := range msg {
+					if c != nil {
+						collect(c())
+					}
+				}
+			case prDoneMsg:
+				msgs = append(msgs, msg)
+			}
+		}
 		if cmd := m.prCmd(); cmd != nil {
-			m.applyPRs(cmd().(prDoneMsg))
+			collect(cmd())
+		}
+		for _, msg := range msgs {
+			m.applyPRs(msg)
 		}
 	}
+	sel("old")
 	run()
-	if len(asked) != 1 || !slices.Equal(asked[0], []string{prA, prB}) {
-		t.Fatalf("a full round asks about recent sessions' PRs, not old ones: %v", asked)
+	if len(asked) != 2 || !slices.Equal(asked[0], []string{prC}) || !slices.Equal(asked[1], []string{prA, prB, prC}) {
+		t.Fatalf("the selected session's PRs go first on their own, then a round of recent and selected sessions: %v", asked)
+	}
+	asked = nil
+	run()
+	if len(asked) != 0 {
+		t.Fatalf("nothing more until the next round: %v", asked)
 	}
 	m.prs[prA] = prInfo{State: "MERGED"}
 	m.prs[prB] = prInfo{State: "OPEN"}
-	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "old" })
-	run()
-	run() // asked already: not again until the next round
-	if len(asked) != 2 || !slices.Equal(asked[1], []string{prC}) {
-		t.Fatalf("selecting an old session looks its PRs up once: %v", asked)
-	}
 	m.prs[prC] = prInfo{State: "CLOSED"}
 	m.prNext = time.Time{}
 	run()
-	if len(asked) != 3 || !slices.Equal(asked[2], []string{prB}) {
-		t.Errorf("the next round re-asks open PRs only, never merged ones: %v", asked)
+	if len(asked) != 1 || !slices.Equal(asked[0], []string{prB}) {
+		t.Errorf("a round re-asks open PRs only, never merged or closed ones: %v", asked)
+	}
+	// While a round is out, a newly selected session isn't kept waiting.
+	m.prs = map[string]prInfo{}
+	m.prSelAsked = map[string]bool{}
+	m.prNext, m.prRound = time.Time{}, prParallel
+	asked = nil
+	sel("new")
+	run()
+	if len(asked) != 1 || !slices.Equal(asked[0], []string{prA, prB}) {
+		t.Errorf("the selected session is asked about at once: %v", asked)
 	}
 }
 
@@ -108,7 +140,7 @@ exit 1
 	if err != nil || got[prA] != (prInfo{Number: 1, Title: "t", State: "OPEN", MergeState: "CLEAN", Review: "APPROVED", Checks: "SUCCESS"}) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
-	if _, ok := got[prB]; ok {
-		t.Error("a PR GitHub couldn't find stays unknown")
+	if got[prB].State != "GONE" {
+		t.Errorf("a PR GitHub couldn't find says so instead of checking forever: %+v", got[prB])
 	}
 }

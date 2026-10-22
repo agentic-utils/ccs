@@ -125,13 +125,22 @@ func (m *model) syncChatDraft() {
 }
 
 // chatRows is the height the message area takes under the preview: what a
-// waiting session asks, a status line and the bordered box. Zero unless a
-// live session is selected.
+// waiting session asks, a status line and the bordered box (hidden while it
+// waits). Zero unless a live session is selected.
 func (m model) chatRows() int {
 	if m.showUsage || !m.selectedLive() {
 		return 0
 	}
-	return 4 + len(m.chatAsk())
+	if m.boxHidden() {
+		return 1 + len(m.chatAsk())
+	}
+	return 4
+}
+
+// boxHidden: the selected session waits on a menu or prompt, which holds any
+// message until it's answered, so the bottom pane shows the question instead.
+func (m model) boxHidden() bool {
+	return m.selectedLive() && m.waitSignal(m.filtered[m.cursor].conv) == waitPrompt
 }
 
 // chatAsk is the selected session's question menu (or permission request)
@@ -229,10 +238,12 @@ func waitingLine(conv Conversation) string {
 
 // chatView draws the status line and message box for the selected session.
 func (m model) chatView() string {
-	if ask := m.chatAsk(); len(ask) > 0 {
-		return strings.Join(ask, "\n") + "\n" + m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.width)
+	box := m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.width)
+	if m.boxHidden() {
+		status, _, _ := strings.Cut(box, "\n")
+		return strings.Join(append(m.chatAsk(), status), "\n")
 	}
-	return m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.width)
+	return box
 }
 
 // chatBox draws conv's status line and the message box in, width wide.

@@ -765,7 +765,7 @@ func TestWaitUncheckedPidGetsTheBannerWithANote(t *testing.T) {
 
 func TestPasteGoesToTheFocusedInput(t *testing.T) {
 	m := waitModel(t)
-	m.cursor = 0 // the idle conversation, which can be renamed
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return !m.live[it.conv.SessionID] }) // can be renamed
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlR})
 	if !m.renaming {
 		t.Fatal("ctrl+r should start a rename")
@@ -794,7 +794,7 @@ func TestWaitMainBoxTextComesBackWhenReselected(t *testing.T) {
 	m.chatFocus = true
 	m = typeIn(m, "my long answer")
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m.cursor = 0 // moved on before the send failed
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return !m.live[it.conv.SessionID] }) // moved on before the send failed
 	res, _ := m.Update(cmd())
 	m = res.(model)
 	if strings.Contains(m.chatInput.Value(), "my long answer") {
@@ -912,5 +912,21 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 	}
 	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlS}); m.chatFocus {
 		t.Error("^S can't focus a hidden box")
+	}
+}
+
+func TestListOrdersWaitingThenIdleThenBusy(t *testing.T) {
+	m := selectLive(waitModel(t))
+	m.applyStats(map[string]sessionStat{"menu": waiting(time.Now(), "input needed"), "asks": {status: "idle"}, "live": {status: "busy"}})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG}) // any update re-sorts
+	var got []string
+	for _, it := range m.filtered {
+		got = append(got, it.conv.SessionID)
+	}
+	if len(got) < 4 || strings.Join(got[:3], ",") != "menu,asks,live" || m.live[got[3]] {
+		t.Errorf("waiting, idle, busy, then sessions not open: got %v", got)
+	}
+	if m.filtered[m.cursor].conv.SessionID != "live" {
+		t.Errorf("the cursor stays on its session while rows move: %s", m.filtered[m.cursor].conv.SessionID)
 	}
 }

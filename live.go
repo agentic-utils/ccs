@@ -152,6 +152,7 @@ func (m *model) applyLive(updated []Conversation) {
 		// A full scan may have read this file after the live tick did.
 		if u, ok := byID[item.conv.SessionID]; ok && !item.conv.readAt.After(u.conv.readAt) {
 			newMessages[item.conv.SessionID] = len(u.conv.Messages) != len(item.conv.Messages)
+			u.rank = item.rank
 			item = u
 		} else {
 			delete(byID, item.conv.SessionID)

@@ -126,7 +126,9 @@ func TestWaitBannerShowsTheOldestAndTakesNoKeys(t *testing.T) {
 	if top := bannerRow(m); m.waitOpen || !strings.Contains(top, "Menu one is waiting on you in its tab  ^Y see it  input needed") || !strings.Contains(top, "+1 more") {
 		t.Fatalf("a pop-up is a banner on the oldest wait, not the overlay: open=%v top=%q", m.waitOpen, top)
 	}
-	// Every key works as without it: typing and Esc in the main box, then Esc in the search.
+	// Every key works as without it: typing and Esc in the main box (of a
+	// session that isn't waiting, the waiting one has none), then Esc in the search.
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "asks" })
 	m.chatFocus = true
 	m = typeIn(m, "please run the tests")
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
@@ -903,5 +905,12 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 	}
 	if n := len(strings.Split(v, "\n")); n > m.height {
 		t.Errorf("view is %d rows on a %d-row screen", n, m.height)
+	}
+	// Its message box is hidden: a message would wait for the menu anyway.
+	if strings.Contains(v, "message ") || strings.Contains(v, "╭") {
+		t.Errorf("no message box while it waits:\n%s", v)
+	}
+	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlS}); m.chatFocus {
+		t.Error("^S can't focus a hidden box")
 	}
 }

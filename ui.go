@@ -240,7 +240,7 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			m.chatFocus = false
 			return m
 		}
-		if m.chatRows() > 0 && msg.Y >= m.height-3 { // the message box
+		if m.chatRows() > 0 && !m.boxHidden() && msg.Y >= m.height-3 { // the message box
 			m.chatFocus = true
 			return m
 		}
@@ -384,7 +384,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.update(msg)
 	n := res.(model)
 	n.syncChatDraft()
-	if n.chatFocus && !n.selectedLive() {
+	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
 		n.chatFocus = false
 	}
 	if tick := n.ensureChatTick(); tick != nil {
@@ -979,7 +979,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+s":
 			// Keyboard way into the message box of the selected live session
 			// (clicking it is the mouse way).
-			if m.selectedLive() && !m.showUsage {
+			if m.boxHidden() && !m.showUsage {
+				m.errorMsg = "It's waiting on you: answer its question first (" + keyEnter + " opens its tab)"
+			} else if m.selectedLive() && !m.showUsage {
 				m.chatFocus = true
 			} else if len(m.filtered) > 0 {
 				m.errorMsg = "Only a session open in claude (●) can receive messages"
@@ -1188,7 +1190,7 @@ func (m model) shortcuts() [][2]string {
 		add(true, keyEsc, "back to the search")
 	case live:
 		add(true, keyEnter, "open its tab")
-		add(true, "^S", "message it")
+		add(!m.boxHidden(), "^S", "message it")
 	default:
 		add(sel, keyEnter, "resume")
 	}

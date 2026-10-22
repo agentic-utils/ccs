@@ -147,9 +147,9 @@ One package, split by area (all `package main`, same directory):
   ccs · claude code search · v0.64.0 · refreshed just now · 1 waiting · ^Y                       ^G help  ^C quit
   > type to search...                                                     (N/total)
 
-  WHEN      PROJECT               TOPIC                    MODEL          SIZE   CTX  MSGS      PRS  HITS
+  WHEN      PROJECT               TOPIC                    MODEL          SIZE   CTX  MSGS  HITS      PRS
 ──────────────────────────────────────────────────────────────────────────────────────
-  2h ago    project-name          ● Refactor auth flow ✎  opus 5.5 1M   1.2GB  281k    42   ✓1 ✗1     3
+  2h ago    project-name          ● Refactor auth flow ✎  opus 5.5 1M   1.2GB  281k    42     3   ✓1 ✗1
 > 3h ago    selected              This one is selected     sonnet 5       12MB   92k    28     1
 ──────────────────────────────────────────────────────────────────────────────────────
 Project: /path/to/project

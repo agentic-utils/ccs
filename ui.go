@@ -1446,7 +1446,7 @@ func (m model) viewScreen() string {
 		hitsHead = fmt.Sprintf("  %*s", colHits, "HITS")
 	}
 	b.WriteString(fmt.Sprintf("  \033[90m%-*s  %-*s  %-*s  %-*s  %*s  %*s  %*s%s\033[0m\n",
-		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colModel, "MODEL", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", fmt.Sprintf("  %*s", colPRs, "PRS")+hitsHead))
+		colWhen, "WHEN", colProject, "PROJECT", m.topicColWidth(), strings.Repeat(" ", colMarks)+"TOPIC", colModel, "MODEL", colSize, "SIZE", colCtx, "CTX", colMsgs, "MSGS", hitsHead+fmt.Sprintf("  %*s", colPRs, "PRS")))
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
@@ -1594,10 +1594,10 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	ctx := formatTokens(item.conv.ContextTokens)
 	model := truncate(shortModel(item.conv), colModel)
 
-	// Format: when | project | topic | model | size | ctx | msgs | hits (aligned columns)
+	// Format: when | project | topic | model | size | ctx | msgs | hits | prs (aligned columns)
 	if selected {
 		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %-*s  %*s  %*s  %*d%s",
-			colWhen, when, colProject, project, marks, tw-colMarks, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, "  "+m.prCell(item.conv, false)+hits)
+			colWhen, when, colProject, project, marks, tw-colMarks, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits+"  "+m.prCell(item.conv, false))
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-colMarks)
@@ -1606,8 +1606,8 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	if flash && time.Now().Unix()%2 == 1 {
 		ctxCode = "2;31" // flashing: dim every other second
 	}
-	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[37m%-*s\033[0m  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d  %s\033[36m%s\033[0m",
-		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, m.prCell(item.conv, true), hits)
+	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[37m%-*s\033[0m  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d\033[36m%s\033[0m  %s",
+		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits, m.prCell(item.conv, true))
 }
 
 // renameConversation sets a custom title the same way /rename does: by

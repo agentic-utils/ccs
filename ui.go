@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ type listItem struct {
 	conv        Conversation
 	searchText  string // All searchable content
 	searchLower string // searchText lowercased once, for case-insensitive filtering
+	rank        int    // matchRank for the current search, 0 without one
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -333,27 +335,59 @@ func (m *model) updateFilter() {
 				next = append(next, item)
 			}
 		}
-		// Best matches first (named after the query, then the words as a
-		// phrase), newest first within each.
-		rank := make(map[string]int, len(next))
-		for _, it := range next {
-			rank[it.conv.SessionID] = matchRank(it.searchLower, it.conv.Title, terms)
+		for i := range next {
+			next[i].rank = matchRank(next[i].searchLower, next[i].conv.Title, terms)
 		}
-		sort.SliceStable(next, func(i, j int) bool {
-			ri, rj := rank[next[i].conv.SessionID], rank[next[j].conv.SessionID]
-			if ri != rj {
-				return ri < rj
-			}
-			return next[i].conv.LastTimestamp > next[j].conv.LastTimestamp
-		})
 		m.filtered = next
 	}
+	m.sortList()
 	m.lastFilterQuery = queryLower
 	// Keep cursor in bounds
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(0, len(m.filtered)-1)
 	}
 	m.previewScroll = 0
+}
+
+// liveGroup is where a session sits in the list: waiting on a question,
+// then idle, then busy, then not open in claude.
+func (m model) liveGroup(c Conversation) int {
+	switch {
+	case !m.live[c.SessionID]:
+		return 3
+	case m.waitSignal(c) == waitPrompt:
+		return 0
+	case m.chatStatus[c.SessionID].status == "busy":
+		return 2
+	}
+	return 1
+}
+
+// sortList orders the list by liveGroup, then best search match (named after
+// the query, then the words as a phrase), then newest, keeping the cursor on
+// the same session. Statuses change on ticks, so Update runs it every time.
+func (m *model) sortList() {
+	less := func(i, j int) bool {
+		a, b := m.filtered[i], m.filtered[j]
+		if ga, gb := m.liveGroup(a.conv), m.liveGroup(b.conv); ga != gb {
+			return ga < gb
+		}
+		if a.rank != b.rank {
+			return a.rank < b.rank
+		}
+		return a.conv.LastTimestamp > b.conv.LastTimestamp
+	}
+	if sort.SliceIsSorted(m.filtered, less) {
+		return
+	}
+	id := ""
+	if m.cursor < len(m.filtered) {
+		id = m.filtered[m.cursor].conv.SessionID
+	}
+	sort.SliceStable(m.filtered, less)
+	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
+		m.cursor = i
+	}
 }
 
 func (m model) Init() tea.Cmd {
@@ -383,6 +417,7 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.update(msg)
 	n := res.(model)
+	n.sortList()
 	n.syncChatDraft()
 	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
 		n.chatFocus = false

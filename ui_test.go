@@ -1400,3 +1400,21 @@ func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
 		t.Errorf("a child is marked └: %q", row)
 	}
 }
+
+func TestViewIsRememberedAcrossRestarts(t *testing.T) {
+	defer func(p string) { settingsPath = p }(settingsPath)
+	settingsPath = filepath.Join(t.TempDir(), "ccs", "settings.json")
+	if (loadSettings() != settings{}) {
+		t.Fatal("no file: the defaults")
+	}
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	if got := loadSettings(); !got.Grouped || !got.Table {
+		t.Errorf("^E and ^B should be saved, got %+v", got)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if got := loadSettings(); got.Grouped || !got.Table {
+		t.Errorf("^E again should be saved too, got %+v", got)
+	}
+}

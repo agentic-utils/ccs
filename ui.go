@@ -1508,8 +1508,11 @@ func (m model) viewScreen() string {
 		sections = append(sections, "  "+errorStyle.Render(ansi.Truncate(msg, max(m.width-3, 1), "…")))
 	}
 
-	b.WriteString(strings.Join(sections, "\n"))
-	b.WriteString("\n\n")
+	b.WriteString(strings.Join(sections, "\n") + "\n")
+	if sw := m.sidebarWidth(); sw > 0 && !m.showUsage { // a rule over the list and preview, joining the divider
+		b.WriteString("\033[90m" + strings.Repeat("─", sw) + "┬" + strings.Repeat("─", max(m.width-sw-1, 0)) + "\033[0m")
+	}
+	b.WriteString("\n")
 
 	if m.showUsage {
 		b.WriteString(m.usageView(m.height - 2 - len(sections)))
@@ -1549,7 +1552,7 @@ func (m model) viewScreen() string {
 			line = "  " + m.formatListItem(m.filtered[rows[i].item], isSelected)
 			if isSelected {
 				// Pad to full width for selection highlight
-				line = selectedStyle.Render(padRight("> "+line[2:], m.width-1))
+				line = selectedStyle.Render(padRight(line, m.width-1)) // the highlight marks it, no >
 			}
 		}
 		if bar {
@@ -1591,7 +1594,7 @@ const (
 	colHits    = 4
 	colSize    = 6
 	colGap     = 2 // spaces between columns
-	listIndent = 2 // leading "  " / "> " on each row
+	listIndent = 2 // leading "  " on each row
 	numGaps    = 7
 	colMarks   = 4 // status icons (● ⚙ !) packed right, then a space
 )
@@ -1782,7 +1785,11 @@ func (m model) listStart(rows []listRow, h int) int {
 			last = r
 		}
 	}
-	return max(0, last-h+1)
+	start := max(0, last-h+1)
+	for start < len(rows) && rows[start].part > 0 { // never open on half a session
+		start++
+	}
+	return start
 }
 
 // groupKey is the folder a session is grouped under: its working directory,
@@ -1804,7 +1811,8 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if m.searching() {
 		hits = fmt.Sprint(m.hitCount(item))
 	}
-	tw := w - listIndent - colMarks - ansi.StringWidth(hits) - 1
+	// No indent before the marks: their glyphs sit under the search's >.
+	tw := w - colMarks - ansi.StringWidth(hits) - 1
 	topic := padRight(listTopic(conv, tw), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
 	stats := strings.TrimSuffix(formatAgo(conv.LastTimestamp, time.Now()), " ago")
@@ -1812,17 +1820,17 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
 	}
 	stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
-	sw := w - listIndent - colMarks - ansi.StringWidth(prs) - 1
+	sw := w - colMarks - ansi.StringWidth(prs) - 1
 	stats = padRight(truncate(stats, sw), sw)
-	indent := strings.Repeat(" ", listIndent+colMarks)
-	if selected {
+	indent := strings.Repeat(" ", colMarks)
+	if selected { // the highlight marks it, no >
 		return [2]string{
-			selectedStyle.Render(padRight("> "+marks+topic+" "+hits, w)),
+			selectedStyle.Render(padRight(marks+topic+" "+hits, w)),
 			selectedStyle.Render(padRight(indent+stats+" "+prs, w)),
 		}
 	}
 	return [2]string{
-		"  " + colouredMarks + topic + " \033[36m" + hits + "\033[0m",
+		colouredMarks + topic + " \033[36m" + hits + "\033[0m",
 		indent + "\033[90m" + stats + "\033[0m " + prs,
 	}
 }

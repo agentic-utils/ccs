@@ -1767,12 +1767,16 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	project := truncate(projectName(item.conv.Cwd), colProject)
 
 	marks, colouredMarks := m.listMarks(item)
+	mw := colMarks // the marks' width, and with ^E an indent under the folder's header
+	if m.grouped {
+		marks, colouredMarks, mw = "  "+marks, "  "+colouredMarks, colMarks+2
+	}
 	tw := m.topicColWidth()
 	// A trailing ✎ marks a name you set (not the ai-title Claude gives almost
 	// every session); the title is cut short so it always stays visible. Not
 	// ✍: some terminals draw that emoji two cells wide, so the row wraps.
 	nest := nestPrefix(item.depth)
-	topic := nest + listTopic(item.conv, tw-colMarks-ansi.StringWidth(nest))
+	topic := nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest))
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -1793,10 +1797,10 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// Format: when | project | topic | model | size | ctx | msgs | hits | prs (aligned columns)
 	if selected {
 		return fmt.Sprintf("%-*s  %-*s  %s%-*s  %-*s  %*s  %*s  %*d%s",
-			colWhen, when, colProject, project, marks, tw-colMarks, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits+"  "+m.prCell(item.conv, false))
+			colWhen, when, colProject, project, marks, tw-mw, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits+"  "+m.prCell(item.conv, false))
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
-	topic = colouredMarks + padRight(topic, tw-colMarks)
+	topic = colouredMarks + padRight(topic, tw-mw)
 	// CTX is coloured by how full the context is (see ctxColour).
 	ctxCode, flash := ctxColour(item.conv.ContextTokens, contextWindow(item.conv.ActiveModel, item.conv.PeakContext))
 	if flash && time.Now().Unix()%2 == 1 {
@@ -1978,8 +1982,13 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if m.searching() {
 		hits = fmt.Sprint(m.hitCount(item))
 	}
-	// One space before the marks, so their glyphs sit under the search's >.
-	tw := w - 1 - colMarks - ansi.StringWidth(hits) - 1
+	// One space before the marks, so their glyphs sit under the search's >;
+	// with ^E two more, so sessions sit in from their folder's header.
+	lead := " "
+	if m.grouped {
+		lead = "   "
+	}
+	tw := w - len(lead) - colMarks - ansi.StringWidth(hits) - 1
 	nest := nestPrefix(item.depth)
 	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
@@ -1988,17 +1997,17 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
 	}
 	stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
-	sw := w - 1 - colMarks - ansi.StringWidth(prs) - 1
+	sw := w - len(lead) - colMarks - ansi.StringWidth(prs) - 1
 	stats = padRight(truncate(stats, sw), sw)
-	indent := strings.Repeat(" ", 1+colMarks)
+	indent := strings.Repeat(" ", len(lead)+colMarks)
 	if selected { // the highlight marks it, no >
 		return [2]string{
-			selectedStyle.Render(padRight(" "+marks+topic+" "+hits, w)),
+			selectedStyle.Render(padRight(lead+marks+topic+" "+hits, w)),
 			selectedStyle.Render(padRight(indent+stats+" "+prs, w)),
 		}
 	}
 	return [2]string{
-		" " + colouredMarks + topic + " \033[36m" + hits + "\033[0m",
+		lead + colouredMarks + topic + " \033[36m" + hits + "\033[0m",
 		indent + "\033[90m" + stats + "\033[0m " + prs,
 	}
 }

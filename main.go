@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"os"
 	"os/exec"
 	"strings"
@@ -228,7 +230,7 @@ func main() {
 		}
 		return buildItems(convs), nil
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(eraseSavedLines{os.Stdout}))
 
 	finalModel, err := p.Run()
 	closeInboxes()
@@ -333,3 +335,22 @@ func runCommand(timeout time.Duration, env []string, detach bool, name string, a
 func withEnvClaudeArgs(env string, flags []string) []string {
 	return append(strings.Fields(env), flags...)
 }
+
+// eraseSavedLines follows every screen clear with an erase of the saved
+// lines. iTerm keeps lines cleared off the alternate screen as scrollback,
+// and the wheel then scrolls the window into those old frames: the title row
+// goes off the top and stale rows show. Embedding the *os.File keeps it a
+// terminal to bubbletea (Fd, raw mode, size).
+type eraseSavedLines struct{ *os.File }
+
+func (e eraseSavedLines) Write(p []byte) (int, error) {
+	if !bytes.Contains(p, []byte(ansi.EraseEntireScreen)) {
+		return e.File.Write(p)
+	}
+	_, err := e.File.Write(bytes.ReplaceAll(p, []byte(ansi.EraseEntireScreen), []byte(ansi.EraseEntireScreen+ansi.EraseEntireDisplay)))
+	return len(p), err
+}
+
+// WriteString too: io.WriteString (bubbletea's clears) would otherwise use
+// the embedded file's WriteString and skip Write.
+func (e eraseSavedLines) WriteString(s string) (int, error) { return e.Write([]byte(s)) }

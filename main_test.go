@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -38,5 +39,21 @@ func TestWithEnvClaudeArgs(t *testing.T) {
 	}
 	if got := withEnvClaudeArgs("", nil); len(got) != 0 {
 		t.Errorf("empty env: got %q", got)
+	}
+}
+
+func TestEraseSavedLinesAfterClear(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := eraseSavedLines{w}
+	if n, err := io.WriteString(e, "a\x1b[2Jb"); n != 6 || err != nil { // how bubbletea sends its clears
+		t.Fatalf("WriteString = %d, %v; want 6, nil", n, err)
+	}
+	w.Close()
+	got, _ := io.ReadAll(r)
+	if string(got) != "a\x1b[2J\x1b[3Jb" {
+		t.Errorf("a clear should be followed by an erase of the saved lines, got %q", got)
 	}
 }

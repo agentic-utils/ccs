@@ -673,3 +673,22 @@ func TestLinksPopupEmpty(t *testing.T) {
 		t.Errorf("with no links, ^T should say so instead of opening an empty popup:\n%s", strip2(m.View()))
 	}
 }
+
+func TestLinksNeverCarryStyleCodes(t *testing.T) {
+	osc := regexp.MustCompile(`\x1b\]8;;([^\x1b]*)(\x1b.)`)
+	for _, in := range []string{
+		"**https://github.com/o/r/pull/144** (plugin 2.2.0)",
+		"see **[the PR](https://github.com/o/r/pull/1)** and `https://example.com/x`",
+		"**bold** https://example.com/a*b*, then `code`",
+	} {
+		out := inlineMarkdown(in)
+		for _, m := range osc.FindAllStringSubmatch(out, -1) {
+			if m[2] != "\x1b\\" {
+				t.Errorf("%q: a link's sequence must hold only its address, got %q", in, m[0])
+			}
+		}
+	}
+	if out := ansi.Strip(inlineMarkdown("**https://github.com/o/r/pull/144**")); out != "github.com/o/r/pull/144" {
+		t.Errorf("a bold bare address should show as the address alone, got %q", out)
+	}
+}

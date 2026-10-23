@@ -857,7 +857,7 @@ func TestWaitingQuestionShownAndAnswered(t *testing.T) {
 	m.filtered = m.items
 	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "input needed")})
 	pop := strip2(m.waitPopup())
-	for _, want := range []string{"? Pick a colour", "1  red", "2  green · calm", "1-2 answer"} {
+	for _, want := range []string{"? Pick a colour", "1  red", "2  green", "     calm", "1-2 answer"} {
 		if !strings.Contains(pop, want) {
 			t.Errorf("overlay should show %q:\n%s", want, pop)
 		}
@@ -920,5 +920,30 @@ func TestListOrdersWaitingThenIdleThenBusy(t *testing.T) {
 	}
 	if m.filtered[m.cursor].conv.SessionID != "live" {
 		t.Errorf("the cursor stays on its session while rows move: %s", m.filtered[m.cursor].conv.SessionID)
+	}
+}
+
+func TestLongQuestionWrapsInFull(t *testing.T) {
+	long := strings.Repeat("the question goes on ", 12) + "END"
+	desc := strings.Repeat("a long description ", 10) + "TAIL"
+	var conv Conversation
+	in := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":%q,"options":[{"label":"yes","description":%q}]}]}}]}}`, long, desc)
+	if !parseLine(&conv, []byte(in)) {
+		t.Fatal("not parsed")
+	}
+	lines := askLines(conv, 60)
+	text := strip2(strings.Join(lines, "\n"))
+	for _, want := range []string{"END", "TAIL", "1  yes"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the whole question should show, missing %q:\n%s", want, text)
+		}
+	}
+	for _, l := range lines {
+		if w := ansi.StringWidth(l); w > 60 {
+			t.Errorf("line %d wide: %q", w, l)
+		}
+	}
+	if strings.Contains(text, "…") {
+		t.Errorf("nothing should be cut:\n%s", text)
 	}
 }

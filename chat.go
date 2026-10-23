@@ -154,7 +154,10 @@ func (m model) chatAsk() []string {
 	for i, l := range lines {
 		lines[i] = "  " + l
 	}
-	return lines[:min(len(lines), max(m.height/3, 2))]
+	if limit := max(m.height/2, 3); len(lines) > limit { // the overlay shows the rest
+		lines = append(lines[:limit-1], "  \033[90m… ^Y shows the rest\033[0m")
+	}
+	return lines
 }
 
 // chatTarget is the live session the fast refresh follows: the overlay's

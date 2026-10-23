@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1265,5 +1266,53 @@ func TestSidebarAndTable(t *testing.T) {
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
 	if m.table {
 		t.Error("^B again should go back to the sidebar")
+	}
+}
+
+func TestGroupByFolder(t *testing.T) {
+	conv := func(id, cwd, ts string) Conversation {
+		return Conversation{SessionID: id, Title: id, Cwd: cwd, LastTimestamp: ts, Messages: []Message{{Role: "user", Text: "hi"}}}
+	}
+	m := initialModel(buildItems([]Conversation{
+		conv("api-new", "/c/api", "2026-10-23T12:00:00Z"),
+		conv("ccs-tree", "/c/ccs/.claude/worktrees/x", "2026-10-23T11:00:00Z"),
+		conv("api-old", "/c/api", "2026-10-23T10:00:00Z"),
+		conv("ccs-main", "/c/ccs", "2026-10-23T09:00:00Z"),
+	}), "", nil)
+	m.width, m.height = 120, 30
+	m.live = map[string]bool{"ccs-main": true} // open in claude, so its group goes first
+	m.livePIDs = map[string]int{"ccs-main": os.Getpid()}
+	m.sortList()
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "api-old" })
+
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
+	var order []string
+	for _, it := range m.filtered {
+		order = append(order, it.conv.SessionID)
+	}
+	if got := strings.Join(order, " "); got != "ccs-main ccs-tree api-new api-old" {
+		t.Errorf("groups by folder, worktrees with their repo, the live one's group first: %s", got)
+	}
+	if m.filtered[m.cursor].conv.SessionID != "api-old" {
+		t.Error("grouping should keep the selection on its session")
+	}
+	listTop, _, _ := m.listLayout()
+	lines := strings.Split(strip2(m.View()), "\n")
+	if !strings.Contains(lines[listTop], "ccs 2") || !strings.Contains(lines[listTop+5], "api 2") {
+		t.Errorf("each group should start with its name and count:\n%s", strings.Join(lines[listTop:listTop+8], "\n"))
+	}
+	cur := m.cursor
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.cursor != cur {
+		t.Error("clicking a group's header selects nothing")
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 6, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.filtered[m.cursor].conv.SessionID != "api-new" {
+		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
+	}
+
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
+	if m.grouped || m.filtered[0].conv.SessionID != "ccs-main" || m.filtered[1].conv.SessionID != "api-new" {
+		t.Error("^E again should go back to the usual order")
 	}
 }

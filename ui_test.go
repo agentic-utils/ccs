@@ -976,7 +976,7 @@ func TestWheelScrollsWhateverIsUnderThePointer(t *testing.T) {
 	}
 
 	// Clicking a row selects it.
-	m = m.handleMouse(tea.MouseMsg{X: 10, Y: listTop + 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: listTop + 4*m.rowsPerItem(), Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.cursor != 4 {
 		t.Errorf("click should select row 4, cursor=%d", m.cursor)
 	}
@@ -1247,7 +1247,10 @@ func TestSidebarAndTable(t *testing.T) {
 	if last := lines[len(lines)-1]; !strings.HasSuffix(last, "┃") {
 		t.Errorf("the preview opens at the newest message, so its thumb is at the bottom: %q", last)
 	}
-	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 3, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if !strings.Contains(ansi.Cut(lines[listTop+1], 0, sw), "now · p") {
+		t.Errorf("a session's second row should say when it was active and its project: %q", lines[listTop+1])
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 7, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.cursor != 3 {
 		t.Errorf("clicking a sidebar row should select it, cursor=%d", m.cursor)
 	}

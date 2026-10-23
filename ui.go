@@ -1777,6 +1777,9 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// ✍: some terminals draw that emoji two cells wide, so the row wraps.
 	nest := nestPrefix(item.depth)
 	topic := nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest))
+	if tasks := m.taskCell(item.conv, false); tasks != "" { // running background tasks, after the title
+		topic = nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest)-ansi.StringWidth(tasks)-1) + " " + tasks
+	}
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -1992,6 +1995,9 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	nest := nestPrefix(item.depth)
 	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
+	if tasks := m.taskCell(conv, !selected); tasks != "" { // running background tasks, before the PRs
+		prs = strings.TrimSpace(tasks + " " + prs)
+	}
 	stats := strings.TrimSuffix(formatAgo(conv.LastTimestamp, time.Now()), " ago")
 	if conv.ContextTokens > 0 {
 		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"

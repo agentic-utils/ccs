@@ -632,6 +632,7 @@ func (m model) previewHeader(conv Conversation, query string) []string {
 		header = append(header, fmt.Sprintf("\033[1;33mSize:\033[0m    %s · %d messages · %s", formatBytes(conv.Size), len(conv.Messages), formatAgo(conv.LastTimestamp, time.Now())))
 	}
 	header = append(header, m.prLines(conv, m.paneWidth())...)
+	header = append(header, m.taskLines(conv, m.paneWidth())...)
 	return append(header, "")
 }
 

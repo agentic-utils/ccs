@@ -1249,7 +1249,24 @@ func (m model) View() string {
 			screen = overlayCentre(screen, p.draw(m), m.width, m.height)
 		}
 	}
-	return screen
+	return clampFrame(screen, m.width, m.height)
+}
+
+// clampFrame keeps the frame inside the terminal, whatever drew it: a row
+// that wraps or one too many scrolls the screen, which takes the title row
+// off the top and leaves stale rows behind.
+func clampFrame(s string, w, h int) string {
+	if w <= 0 || h <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	lines = lines[:min(len(lines), h)]
+	for i, l := range lines {
+		if ansi.StringWidth(l) > w {
+			lines[i] = ansi.Truncate(l, w, "") + "\033[0m"
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 type popup struct {
@@ -1487,7 +1504,8 @@ func (m model) viewScreen() string {
 	// Show error message if set
 	if m.errorMsg != "" {
 		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-		sections = append(sections, "  "+errorStyle.Render(m.errorMsg))
+		msg := strings.Join(strings.Fields(m.errorMsg), " ") // one row: listLayout counts it as one
+		sections = append(sections, "  "+errorStyle.Render(ansi.Truncate(msg, max(m.width-3, 1), "…")))
 	}
 
 	b.WriteString(strings.Join(sections, "\n"))

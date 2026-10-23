@@ -24,8 +24,8 @@ func TestPadRight(t *testing.T) {
 		{"short string", "hello", 10, "hello     "},
 		{"exact length", "hello", 5, "hello"},
 		{"needs truncation", "hello world", 8, "hello wo"},
-		{"multibyte pads by rune count", "世界", 5, "世界   "},
-		{"multibyte truncates on rune boundary", "世界世界世界", 4, "世界世界"},
+		{"wide chars pad by screen width", "世界", 5, "世界 "},
+		{"wide chars cut by screen width", "世界世界世界", 4, "世界"},
 	}
 
 	for _, tt := range tests {

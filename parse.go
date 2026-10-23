@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"io"
 	"os"
 	"path/filepath"
@@ -897,14 +898,13 @@ func formatBytes(n int64) string {
 
 func truncate(s string, maxLen int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	r := []rune(s)
-	if len(r) <= maxLen {
+	if ansi.StringWidth(s) <= maxLen { // screen cells, so emoji and CJK count double
 		return s
 	}
 	if maxLen < 3 {
-		return string(r[:maxLen]) // no room for the ellipsis
+		return ansi.Truncate(s, max(maxLen, 0), "") // no room for the ellipsis
 	}
-	return string(r[:maxLen-3]) + "..."
+	return ansi.Truncate(s, maxLen, "...")
 }
 
 // getTopic returns the session name (custom/ai title), else first user message, else session ID

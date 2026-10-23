@@ -143,6 +143,7 @@ One package, split by area (all `package main`, same directory):
 - `getTopic()` - Title, else first real user message (skips tag-wrapped harness text, shows `/cmd` or `! cmd` for command-only sessions), else session id
 - `renameConversation()` / `appendLine()` - Ctrl+R rename: appends a `custom-title` line like `/rename`; refused on live sessions since a running claude re-appends its own title
 - `Conversation.Spawned` - first user line has `entrypoint: sdk-cli` or a `teamName`; shown as `⚙`
+- `nestFamilies()` / `spawnParent()` / `findSpawnParent()` / `spawnCmd` - a spawned session sits under the session that started it, marked `└` (`listItem.depth`). Claude Code records no parent, so `trackTools` keeps each `claude -p` / `cswap run` Bash command a session runs (`Conversation.spawns`, text normalised by `spawnText`), and the parent is the session whose command holds the child's first prompt within 10 minutes before it began (2 for a prompt under 20 characters), the closest in time; found once and cached in `m.parents`, a miss retried when the list grows. `sortList` nests after sorting: a family sits where its first member landed, so a waiting child brings it up; ^E groups a family by its top session's folder (`familyCwd`). A child is nested only when its parent is shown
 - `pruneFile()` / `pruneStream()` - Shrink a conversation by dropping duplicate/redundant data (never touches user/assistant lines)
 - `runPrune()` - `ccs prune` subcommand driver
 

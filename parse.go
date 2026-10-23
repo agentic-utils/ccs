@@ -59,11 +59,12 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	parsedBytes int64
 	sawUser     bool
-	peerQueued  []string  // recent messages from other sessions/ccs the session has queued, for delivery status
-	lastUsageID string    // one reply spans several lines with the same id and usage; count it once
-	tailApplied bool      // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
-	pending     *toolCall // the last tool call still without a result: what a waiting session asks about
-	PRs         []string  // PRs Claude Code linked to the session (pr-link), first touched first
+	peerQueued  []string   // recent messages from other sessions/ccs the session has queued, for delivery status
+	lastUsageID string     // one reply spans several lines with the same id and usage; count it once
+	tailApplied bool       // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
+	pending     *toolCall  // the last tool call still without a result: what a waiting session asks about
+	PRs         []string   // PRs Claude Code linked to the session (pr-link), first touched first
+	spawns      []spawnCmd // claude -p commands it ran, to find the sessions they started
 
 	// readAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -576,7 +577,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 		if conv.Cwd == "" {
 			conv.Cwd = raw.Cwd
 		}
-		trackTools(conv, raw.Message.Content)
+		trackTools(conv, raw.Message.Content, raw.Timestamp)
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
 		text := extractText(raw.Message.Content)
 		// "/model" logs its result as command output; a switch after the last
@@ -640,7 +641,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 				conv.Usage.Output += int64(u.OutputTokens)
 			}
 		}
-		trackTools(conv, raw.Message.Content)
+		trackTools(conv, raw.Message.Content, raw.Timestamp)
 		if text := extractText(raw.Message.Content); strings.TrimSpace(text) != "" {
 			conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: text, Ts: raw.Timestamp})
 		}
@@ -668,7 +669,7 @@ type askQuestion struct {
 
 // trackTools keeps conv.pending in step with a line's content: a tool call
 // becomes pending, its result clears it.
-func trackTools(conv *Conversation, content json.RawMessage) {
+func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 	if len(content) == 0 || content[0] != '[' {
 		return
 	}
@@ -685,10 +686,40 @@ func trackTools(conv *Conversation, content json.RawMessage) {
 		case b.Type == "tool_use":
 			call := b.toolCall
 			conv.pending = &call
+			if call.Name == "Bash" {
+				var in struct {
+					Command string `json:"command"`
+				}
+				if json.Unmarshal(call.Input, &in) == nil && isSpawn(in.Command) {
+					conv.spawns = append(conv.spawns, spawnCmd{ts, spawnText(in.Command)})
+				}
+			}
 		case b.Type == "tool_result" && conv.pending != nil && b.ToolUseID == conv.pending.ID:
 			conv.pending = nil
 		}
 	}
+}
+
+// spawnCmd is a claude -p command a session ran: when, and its text as
+// spawnText leaves it, to match against a spawned session's first prompt.
+type spawnCmd struct{ ts, text string }
+
+// isSpawn: a command that starts a headless claude (claude -p, cswap run … -p).
+func isSpawn(cmd string) bool {
+	return strings.Contains(cmd, "claude") && (strings.Contains(cmd, " -p") || strings.Contains(cmd, "--print")) ||
+		strings.Contains(cmd, "cswap run")
+}
+
+// spawnText is s lowercased, without quotes or backslashes and with runs of
+// whitespace as one space, so a prompt matches however the shell quoted it.
+func spawnText(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '"' || r == '\'' || r == '\\' {
+			return -1
+		}
+		return r
+	}, strings.ToLower(s))
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // questions is the pending AskUserQuestion's questions, if that's what's pending.

@@ -1339,3 +1339,25 @@ func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestSidebarNeverOpensOnHalfASession(t *testing.T) {
+	var convs []Conversation
+	for i := range 20 {
+		convs = append(convs, Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p",
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)})
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 16 // 13 list rows: an odd number of rows for two-row sessions
+	m.cursor = len(m.filtered) - 1
+	listTop, _, _ := m.listLayout()
+	lines := strings.Split(strip2(m.View()), "\n")
+	if !strings.Contains(lines[listTop], "session ") {
+		t.Errorf("the list's top row should be a title, got %q", lines[listTop])
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "session 19") {
+		t.Error("the selection should still be in view")
+	}
+	if !strings.HasPrefix(lines[listTop-1], "───") || !strings.Contains(lines[listTop-1], "┬") {
+		t.Errorf("a rule should sit over the list, joining the divider: %q", lines[listTop-1])
+	}
+}

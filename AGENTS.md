@@ -151,18 +151,18 @@ The default, a sidebar (^B switches to the table below it):
 ```
   ccs · claude code search · v0.66.0 · refreshed just now · 1 waiting · ^Y        ^B table  ^G help  ^C quit
   > type to search...                                                                          (N/total)
-
-    ? fix login flow         ┃Project: /path/to/project
-      5m · 92k ctx · app     ┃Session: abc123...
-    ● refactor auth          │Size:    12MB · 28 messages · 3h ago
-      now · 281k ctx · api ✓1│PRs:     ✓ repo#12 add the thing · ready to merge
->     sidebar idea           │         4 merged · ^T all
-      3h · 40k ctx · ccs     │
-                             │  ── 2024-01-08 ──
-                             │  User
-                             │  12:00 message text here...                                  │
-                             │  Claude                                                      ┃
-                             │  12:01 response text here...                                 ┃
+───────────────────────────┬────────────────────────────────────────────────
+  ? fix login flow         ┃Project: /path/to/project
+    5m · 92k ctx · app     ┃Session: abc123...
+  ● refactor auth          │Size:    12MB · 28 messages · 3h ago
+    now · 281k ctx · api ✓1│PRs:     ✓ repo#12 add the thing · ready to merge
+    sidebar idea           │         4 merged · ^T all      (selected: highlighted, no marker)
+    3h · 40k ctx · ccs     │
+                           │  ── 2024-01-08 ──
+                           │  User
+                           │  12:00 message text here...                                  │
+                           │  Claude                                                      ┃
+                           │  12:01 response text here...                                 ┃
 ```
 
 The table (^B):
@@ -171,7 +171,7 @@ The table (^B):
   WHEN      PROJECT               TOPIC                    MODEL          SIZE   CTX  MSGS  HITS      PRS
 ──────────────────────────────────────────────────────────────────────────────────────
   2h ago    project-name          ● Refactor auth flow ✎  opus 5.5 1M   1.2GB  281k    42     3   ✓1 ✗1┃
-> 3h ago    selected              This one is selected     sonnet 5       12MB   92k    28     1        │
+  3h ago    selected              This one is selected     sonnet 5       12MB   92k    28     1        │
 ──────────────────────────────────────────────────────────────────────────────────────
 Project: /path/to/project
 ...the conversation, as in the sidebar

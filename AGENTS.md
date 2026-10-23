@@ -126,7 +126,7 @@ One package, split by area (all `package main`, same directory):
 - `usageSummary()` / `usageView()` panels - below the charts, SUMMARY, CACHE MIX and ALLOWANCE sit in three equal columns across the screen, values right-aligned
 - `allowanceSummary()` / `accountEmail()` - the search row shows the Claude account (`oauthAccount.emailAddress` from `.claude.json`) and 5h/weekly % with the 5h reset; the allowance is fetched at startup and each minute. On the usage screen the search box and list-only shortcuts are hidden (`tab back  ^O account  ^L changelog  ^C quit`, every key it has, so Ctrl+G does nothing there)
 - `fetchAllowance()` / `keychainRead` - ALLOWANCE panel: Claude Code's OAuth token read-only (`/usr/bin/security find-generic-password` for `keychainService()`, which hashes CLAUDE_CONFIG_DIR like Claude Code, else `.credentials.json`), then GET `api/oauth/usage` (`limits`: `session`, `weekly_all`). An expired/missing token or a 401 shows "open claude to refresh the allowance"; ccs never refreshes or writes the credential. At most once a minute, only while the usage screen is open
-- `sidebarView()` / `sidebarRow()` / `table` - two layouts, ^B switches (`table`, kept across an update restart in `uiState`). The default is a sidebar (`sidebarWidth`: a quarter of the width, 30-48) of marks, title and the PR cell (HITS while searching) beside the preview (`paneWidth`), which fills the rows under the search and gains a `Size:` line in its header for the columns it lost; `table` is the full-width table above the preview. Anything sized to the preview uses `paneWidth`, never `m.width`, and the mouse tells list from preview by X as well as Y (`paneX`)
+- `sidebarView()` / `sidebarRow()` / `table` - two layouts, ^B switches (`table`, kept across an update restart in `uiState`). The default is a sidebar (`sidebarWidth`: a quarter of the width, 30-48), two rows a session (`rowsPerItem`, which the mouse and scroll offset use): marks, title and HITS while searching, then a grey row of age · context · project with the PR cell on the right; beside it the preview (`paneWidth`), which fills the rows under the search and gains a `Size:` line in its header for the columns it lost; `table` is the full-width table above the preview. Anything sized to the preview uses `paneWidth`, never `m.width`, and the mouse tells list from preview by X as well as Y (`paneX`)
 - `scrollThumb()` / `barCell()` / `withBar()` - scrollbars: the thumb's size is the share in view, its position where the view starts. The preview's messages keep their last column for it (wrapped to `paneWidth()-1`); the list's is the sidebar's divider, or the table rows' last column (`topicColWidth` leaves it). No bar when everything fits
 - `headerLine()` - the title row never wraps (`listLayout` counts it as one row): on a narrow terminal hint pairs drop from the end, keeping help and quit, then the title is cut with …
 - `shortcuts()` / `hints()` / `helpPopup()` - key hints everywhere use the compact labels (`keyEnter` enter, `keyTab` tab, `keyEsc` esc, `^S` for Ctrl+S; keys bold) via `hints()`. The header shows only the common keys; Ctrl+G opens a popup of the keys that work right now, from `shortcuts()` (screen, selection, live or not, message box focus, a search typed, cswap installed; add new keys there with their condition). The popup owns the keyboard (Ctrl+G/Esc close, Ctrl+C quits) and is overlaid last
@@ -152,10 +152,11 @@ The default, a sidebar (^B switches to the table below it):
   > type to search...                                                                          (N/total)
 
     ? fix login flow         ┃Project: /path/to/project
-    ● refactor auth   ✓1 ✗1 ┃Session: abc123...
->     sidebar idea           │Size:    12MB · 28 messages · 3h ago
-      infra sweep         ✗2 │PRs:     ✓ repo#12 add the thing · ready to merge
-                             │         4 merged · ^T all
+      5m · 92k ctx · app     ┃Session: abc123...
+    ● refactor auth          │Size:    12MB · 28 messages · 3h ago
+      now · 281k ctx · api ✓1│PRs:     ✓ repo#12 add the thing · ready to merge
+>     sidebar idea           │         4 merged · ^T all
+      3h · 40k ctx · ccs     │
                              │  ── 2024-01-08 ──
                              │  User
                              │  12:00 message text here...                                  │

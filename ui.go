@@ -291,11 +291,13 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		if msg.Y < listTop || msg.Y >= listTop+listHeight {
 			return m
 		}
+		per := m.rowsPerItem()
+		visible := max(listHeight/per, 1)
 		start := 0 // same scroll offset View uses
-		if m.cursor >= listHeight {
-			start = m.cursor - listHeight + 1
+		if m.cursor >= visible {
+			start = m.cursor - visible + 1
 		}
-		if i := start + msg.Y - listTop; i < len(m.filtered) && i != m.cursor {
+		if i := start + (msg.Y-listTop)/per; i < len(m.filtered) && i != m.cursor {
 			m.cursor = i
 			m.previewScroll = 0
 			m.selectionMoved()
@@ -1574,11 +1576,7 @@ func (m model) topicColWidth() int {
 }
 
 func (m model) formatListItem(item listItem, selected bool) string {
-	project := item.conv.Cwd
-	if idx := strings.LastIndex(project, "/"); idx >= 0 {
-		project = project[idx+1:]
-	}
-	project = truncate(project, colProject)
+	project := truncate(projectName(item.conv.Cwd), colProject)
 
 	marks, colouredMarks := m.listMarks(item.conv)
 	tw := m.topicColWidth()
@@ -1669,9 +1667,10 @@ func (m model) listMarks(conv Conversation) (string, string) {
 func (m model) sidebarView() string {
 	_, h, _ := m.listLayout()
 	sw, pw := m.sidebarWidth(), m.paneWidth()
-	start := 0 // same scroll offset handleMouse uses
-	if m.cursor >= h {
-		start = m.cursor - h + 1
+	visible := max(h/2, 1) // two rows a session
+	start := 0             // same scroll offset handleMouse uses
+	if m.cursor >= visible {
+		start = m.cursor - visible + 1
 	}
 	var pane []string
 	if len(m.filtered) > 0 {
@@ -1684,12 +1683,12 @@ func (m model) sidebarView() string {
 			pane = append(pane[:h-rows], strings.Split(m.chatView(), "\n")...)
 		}
 	}
-	top, size, bar := scrollThumb(len(m.filtered), start, h)
+	top, size, bar := scrollThumb(2*len(m.filtered), 2*start, h)
 	lines := make([]string, h)
 	for r := range lines {
 		left := strings.Repeat(" ", sw)
-		if i := start + r; i < len(m.filtered) {
-			left = m.sidebarRow(m.filtered[i], i == m.cursor, sw)
+		if i := start + r/2; i < len(m.filtered) {
+			left = m.sidebarRow(m.filtered[i], i == m.cursor, sw)[r%2]
 		}
 		lines[r] = left + "\033[90m│\033[0m" // the divider doubles as the list's scrollbar
 		if bar {
@@ -1702,23 +1701,53 @@ func (m model) sidebarView() string {
 	return strings.Join(lines, "\n")
 }
 
-// sidebarRow is one session in the sidebar, w wide: its marks, its title and,
-// on the right, its HITS while searching, else its PR counts.
-func (m model) sidebarRow(item listItem, selected bool, w int) string {
-	marks, colouredMarks := m.listMarks(item.conv)
-	cell := strings.TrimLeft(m.prCell(item.conv, !selected), " ")
+// rowsPerItem is how many screen rows a session takes in the list.
+func (m model) rowsPerItem() int {
+	if m.table {
+		return 1
+	}
+	return 2
+}
+
+// sidebarRow is one session in the sidebar, w wide, on two rows: its marks
+// and title (and HITS while searching), then a grey line of when it was
+// last active, its context and project, with its PR counts on the right.
+func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
+	conv := item.conv
+	marks, colouredMarks := m.listMarks(conv)
+	hits := ""
 	if m.searching() {
-		cell = fmt.Sprintf("\033[36m%d\033[0m", m.hitCount(item))
-		if selected {
-			cell = fmt.Sprint(m.hitCount(item))
+		hits = fmt.Sprint(m.hitCount(item))
+	}
+	tw := w - listIndent - colMarks - ansi.StringWidth(hits) - 1
+	topic := padRight(listTopic(conv, tw), tw)
+	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
+	stats := strings.TrimSuffix(formatAgo(conv.LastTimestamp, time.Now()), " ago")
+	if conv.ContextTokens > 0 {
+		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
+	}
+	stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
+	sw := w - listIndent - colMarks - ansi.StringWidth(prs) - 1
+	stats = padRight(truncate(stats, sw), sw)
+	indent := strings.Repeat(" ", listIndent+colMarks)
+	if selected {
+		return [2]string{
+			selectedStyle.Render(padRight("> "+marks+topic+" "+hits, w)),
+			selectedStyle.Render(padRight(indent+stats+" "+prs, w)),
 		}
 	}
-	tw := w - listIndent - colMarks - ansi.StringWidth(cell) - 1
-	topic := padRight(listTopic(item.conv, tw), tw)
-	if selected {
-		return selectedStyle.Render(padRight("> "+marks+topic+" "+cell, w))
+	return [2]string{
+		"  " + colouredMarks + topic + " \033[36m" + hits + "\033[0m",
+		indent + "\033[90m" + stats + "\033[0m " + prs,
 	}
-	return "  " + colouredMarks + topic + " " + cell
+}
+
+// projectName is the last part of a session's working directory.
+func projectName(cwd string) string {
+	if i := strings.LastIndex(cwd, "/"); i >= 0 {
+		return cwd[i+1:]
+	}
+	return cwd
 }
 
 // renameConversation sets a custom title the same way /rename does: by

@@ -81,6 +81,9 @@ func (p prInfo) status() (int, string) {
 	return prWaiting, "blocked"
 }
 
+// GitHub's colours: green ready, amber waiting, red to fix or closed, purple merged.
+const prPurple = "38;5;141"
+
 // prMark is a group's glyph and colour.
 func prMark(group int) (string, string) {
 	switch group {
@@ -89,7 +92,11 @@ func prMark(group int) (string, string) {
 	case prFix:
 		return "✗", "31"
 	case prWaiting:
-		return "○", "33"
+		return "○", amber
+	case prMerged:
+		return "●", prPurple
+	case prClosed:
+		return "●", "31"
 	}
 	return " ", "90"
 }
@@ -141,7 +148,7 @@ func (m model) prCell(conv Conversation, coloured bool) string {
 	}
 	add(ready, "✓", "32")
 	add(fix, "✗", "31")
-	add(waiting, "", "33")
+	add(waiting, "", amber)
 	s := strings.Join(parts, " ")
 	return strings.Repeat(" ", max(colPRs-ansi.StringWidth(s), 0)) + s
 }
@@ -175,10 +182,10 @@ func (m model) prLines(conv Conversation, width int) []string {
 		rest = append(rest, fmt.Sprintf("+%d more open", more))
 	}
 	if merged > 0 {
-		rest = append(rest, fmt.Sprintf("%d merged", merged))
+		rest = append(rest, fmt.Sprintf("\033[%sm%d merged\033[90m", prPurple, merged))
 	}
 	if closed > 0 {
-		rest = append(rest, fmt.Sprintf("%d closed", closed))
+		rest = append(rest, fmt.Sprintf("\033[31m%d closed\033[90m", closed))
 	}
 	if gone > 0 {
 		rest = append(rest, fmt.Sprintf("%d not found", gone))
@@ -207,6 +214,9 @@ func (m model) prLine(u string) string {
 		why = "needs gh to look it up"
 	}
 	glyph, colour := prMark(g)
+	if p.Draft || p.State == "" { // grey on GitHub too: nothing is happening to it yet
+		colour = "90"
+	}
 	name := prName(u)
 	title := p.Title
 	return "\033[" + colour + "m" + glyph + "\033[0m " + hyperlink(u, name) + " " + title + " \033[" + colour + "m· " + why + "\033[0m"

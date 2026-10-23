@@ -687,6 +687,7 @@ type uiState struct {
 	PreviewScroll int                  `json:"preview_scroll"`
 	Snoozes       map[string]snoozeRec `json:"snoozes,omitempty"` // input-prompt overlay snoozes, by SessionID
 	Table         bool                 `json:"table,omitempty"`   // ^B: the full table, not the sidebar
+	Grouped       bool                 `json:"grouped,omitempty"` // ^E: grouped by folder
 }
 
 func (m model) screenName() string {
@@ -704,6 +705,7 @@ func (m model) uiState() uiState {
 		PreviewScroll: m.previewScroll,
 		Snoozes:       m.snoozed,
 		Table:         m.table,
+		Grouped:       m.grouped,
 	}
 	if len(m.filtered) > 0 {
 		s.Selected = m.filtered[m.cursor].conv.SessionID
@@ -716,6 +718,7 @@ func (m model) uiState() uiState {
 func (m *model) restore(s uiState) {
 	m.textInput.SetValue(s.Query)
 	m.textInput.SetCursor(s.QueryCursor)
+	m.grouped = s.Grouped // before updateFilter, which sorts
 	m.updateFilter()
 	for i, item := range m.filtered {
 		if item.conv.SessionID == s.Selected {

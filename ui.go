@@ -43,6 +43,7 @@ type model struct {
 	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width           int
 	table           bool // ^B: the full-width table instead of the sidebar
+	grouped         bool // ^E: sessions grouped by folder
 	height          int
 	listHeight      int // Calculated visible list height
 	selected        *Conversation
@@ -291,13 +292,12 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		if msg.Y < listTop || msg.Y >= listTop+listHeight {
 			return m
 		}
-		per := m.rowsPerItem()
-		visible := max(listHeight/per, 1)
-		start := 0 // same scroll offset View uses
-		if m.cursor >= visible {
-			start = m.cursor - visible + 1
+		rows := m.listRows()
+		r := m.listStart(rows, listHeight) + msg.Y - listTop
+		if r >= len(rows) || rows[r].item < 0 { // a group's header
+			return m
 		}
-		if i := start + (msg.Y-listTop)/per; i < len(m.filtered) && i != m.cursor {
+		if i := rows[r].item; i != m.cursor {
 			m.cursor = i
 			m.previewScroll = 0
 			m.selectionMoved()
@@ -415,14 +415,31 @@ func (m *model) sortList() {
 		}
 		return a.conv.LastTimestamp > b.conv.LastTimestamp
 	}
-	if sort.SliceIsSorted(m.filtered, less) {
+	sorted := sort.SliceIsSorted(m.filtered, less)
+	if sorted && !m.grouped {
 		return
 	}
 	id := ""
 	if m.cursor < len(m.filtered) {
 		id = m.filtered[m.cursor].conv.SessionID
 	}
-	sort.SliceStable(m.filtered, less)
+	if !sorted {
+		sort.SliceStable(m.filtered, less)
+	}
+	if m.grouped {
+		// A group goes where its first session lands in the usual order, so
+		// the group holding a question comes first.
+		// ponytail: regroups on every Update; cache per list change if it shows in profiles.
+		first := map[string]int{}
+		for i, it := range m.filtered {
+			if k := groupKey(it.conv.Cwd); first[k] == 0 {
+				first[k] = i + 1
+			}
+		}
+		sort.SliceStable(m.filtered, func(i, j int) bool {
+			return first[groupKey(m.filtered[i].conv.Cwd)] < first[groupKey(m.filtered[j].conv.Cwd)]
+		})
+	}
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
 		m.cursor = i
 	}
@@ -900,6 +917,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
+		if msg.String() == "ctrl+e" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen, m.grouped = false, !m.grouped
+			m.sortList()
+			return m, nil
+		}
 		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			if m.links = m.linksWithPRs(); len(m.links) == 0 {
@@ -1293,6 +1315,8 @@ func (m model) shortcuts() [][2]string {
 	add(sel && len(m.linksWithPRs()) > 0, "^T", "open a link in view or one of its PRs")
 	add(!m.table, "^B", "the full table, every column")
 	add(m.table, "^B", "back to the sidebar")
+	add(!m.grouped, "^E", "group by folder")
+	add(m.grouped, "^E", "ungroup")
 	add(true, "^L", "changelog")
 	add(true, "^C", "quit")
 	return out
@@ -1495,31 +1519,25 @@ func (m model) viewScreen() string {
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	visibleItems := listHeight
-	start := 0
-	if m.cursor >= visibleItems {
-		start = m.cursor - visibleItems + 1
-	}
-
-	top, size, bar := scrollThumb(len(m.filtered), start, visibleItems)
-	for i := start; i < min(start+visibleItems, len(m.filtered)); i++ {
-		item := m.filtered[i]
-		isSelected := i == m.cursor
-		line := "  " + m.formatListItem(item, isSelected)
-		if isSelected {
-			// Pad to full width for selection highlight
-			line = selectedStyle.Render(padRight("> "+line[2:], m.width-1))
+	rows := m.listRows()
+	start := m.listStart(rows, listHeight)
+	top, size, bar := scrollThumb(len(rows), start, listHeight)
+	for r := range listHeight {
+		line := ""
+		if i := start + r; i < len(rows) && rows[i].item < 0 {
+			line = rows[i].header
+		} else if i < len(rows) {
+			isSelected := rows[i].item == m.cursor
+			line = "  " + m.formatListItem(m.filtered[rows[i].item], isSelected)
+			if isSelected {
+				// Pad to full width for selection highlight
+				line = selectedStyle.Render(padRight("> "+line[2:], m.width-1))
+			}
 		}
 		if bar {
-			line = withBar(line, m.width, barCell(i-start, top, size))
+			line = withBar(line, m.width, barCell(r, top, size))
 		}
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-
-	// Fill remaining list space
-	for i := len(m.filtered) - start; i < visibleItems; i++ {
-		b.WriteString("\n")
+		b.WriteString(line + "\n")
 	}
 
 	// Preview section
@@ -1667,11 +1685,8 @@ func (m model) listMarks(conv Conversation) (string, string) {
 func (m model) sidebarView() string {
 	_, h, _ := m.listLayout()
 	sw, pw := m.sidebarWidth(), m.paneWidth()
-	visible := max(h/2, 1) // two rows a session
-	start := 0             // same scroll offset handleMouse uses
-	if m.cursor >= visible {
-		start = m.cursor - visible + 1
-	}
+	rows := m.listRows()
+	start := m.listStart(rows, h)
 	var pane []string
 	if len(m.filtered) > 0 {
 		rows := m.chatRows()
@@ -1683,12 +1698,14 @@ func (m model) sidebarView() string {
 			pane = append(pane[:h-rows], strings.Split(m.chatView(), "\n")...)
 		}
 	}
-	top, size, bar := scrollThumb(2*len(m.filtered), 2*start, h)
+	top, size, bar := scrollThumb(len(rows), start, h)
 	lines := make([]string, h)
 	for r := range lines {
 		left := strings.Repeat(" ", sw)
-		if i := start + r/2; i < len(m.filtered) {
-			left = m.sidebarRow(m.filtered[i], i == m.cursor, sw)[r%2]
+		if i := start + r; i < len(rows) && rows[i].item < 0 {
+			left = padRight(rows[i].header, sw)
+		} else if i < len(rows) {
+			left = m.sidebarRow(m.filtered[rows[i].item], rows[i].item == m.cursor, sw)[rows[i].part]
 		}
 		lines[r] = left + "\033[90m│\033[0m" // the divider doubles as the list's scrollbar
 		if bar {
@@ -1707,6 +1724,56 @@ func (m model) rowsPerItem() int {
 		return 1
 	}
 	return 2
+}
+
+// listRow is one screen row of the list: row part of session item, or, when
+// item is -1, a group's header.
+type listRow struct {
+	item, part int
+	header     string
+}
+
+// listRows lays the list out in screen rows, a header before each group
+// when grouped (sortList keeps a group's sessions together).
+func (m model) listRows() []listRow {
+	var counts map[string]int
+	if m.grouped {
+		counts = map[string]int{}
+		for _, it := range m.filtered {
+			counts[groupKey(it.conv.Cwd)]++
+		}
+	}
+	var rows []listRow
+	for i, it := range m.filtered {
+		if k := groupKey(it.conv.Cwd); m.grouped && (i == 0 || k != groupKey(m.filtered[i-1].conv.Cwd)) {
+			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[1;33m%s\033[0m \033[90m%d\033[0m", projectName(k), counts[k])})
+		}
+		for p := range m.rowsPerItem() {
+			rows = append(rows, listRow{item: i, part: p})
+		}
+	}
+	return rows
+}
+
+// listStart is the first of h rows in view: the top, until the selection's
+// last row would pass the bottom, then that row at the bottom.
+func (m model) listStart(rows []listRow, h int) int {
+	last := 0
+	for r, row := range rows {
+		if row.item == m.cursor {
+			last = r
+		}
+	}
+	return max(0, last-h+1)
+}
+
+// groupKey is the folder a session is grouped under: its working directory,
+// with a worktree under .claude/worktrees counted as its repo.
+func groupKey(cwd string) string {
+	if i := strings.Index(cwd, "/.claude/worktrees/"); i >= 0 {
+		return cwd[:i]
+	}
+	return cwd
 }
 
 // sidebarRow is one session in the sidebar, w wide, on two rows: its marks

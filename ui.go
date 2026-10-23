@@ -8,7 +8,6 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -378,7 +377,7 @@ func (m *model) updateFilter() {
 		}
 		m.filtered = next
 	}
-	m.sortList()
+	m.sortList(false)
 	m.lastFilterQuery = queryLower
 	// Keep cursor in bounds
 	if m.cursor >= len(m.filtered) {
@@ -404,45 +403,49 @@ func (m model) liveGroup(c Conversation) int {
 // sortList orders the list by liveGroup, then best search match (named after
 // the query, then the words as a phrase), then newest, keeping the cursor on
 // the same session. Statuses change on ticks, so Update runs it every time.
-func (m *model) sortList() {
-	less := func(i, j int) bool {
-		a, b := m.filtered[i], m.filtered[j]
-		if ga, gb := m.liveGroup(a.conv), m.liveGroup(b.conv); ga != gb {
-			return ga < gb
-		}
-		if a.rank != b.rank {
-			return a.rank < b.rank
-		}
-		return a.conv.LastTimestamp > b.conv.LastTimestamp
-	}
-	sorted := sort.SliceIsSorted(m.filtered, less)
-	if sorted && !m.grouped {
+func (m *model) sortList(pin bool) {
+	if len(m.filtered) == 0 {
 		return
 	}
-	id := ""
-	if m.cursor < len(m.filtered) {
-		id = m.filtered[m.cursor].conv.SessionID
+	order := func(a, b listItem) int {
+		if ga, gb := m.liveGroup(a.conv), m.liveGroup(b.conv); ga != gb {
+			return ga - gb
+		}
+		if a.rank != b.rank {
+			return a.rank - b.rank
+		}
+		return strings.Compare(b.conv.LastTimestamp, a.conv.LastTimestamp)
 	}
-	if !sorted {
-		sort.SliceStable(m.filtered, less)
+	cur := min(m.cursor, len(m.filtered)-1)
+	sel := m.filtered[cur]
+	list := m.filtered
+	if pin {
+		// The selected session keeps its row, so a status change (Enter
+		// making it busy) never moves it, and the highlight with it, from
+		// under the user; it sorts in once something else is selected.
+		list = slices.Delete(slices.Clone(list), cur, cur+1)
+	} else if !m.grouped && slices.IsSortedFunc(list, order) {
+		return
 	}
+	slices.SortStableFunc(list, order)
 	if m.grouped {
 		// A group goes where its first session lands in the usual order, so
 		// the group holding a question comes first.
-		// ponytail: regroups on every Update; cache per list change if it shows in profiles.
 		first := map[string]int{}
-		for i, it := range m.filtered {
+		for i, it := range list {
 			if k := groupKey(it.conv.Cwd); first[k] == 0 {
 				first[k] = i + 1
 			}
 		}
-		sort.SliceStable(m.filtered, func(i, j int) bool {
-			return first[groupKey(m.filtered[i].conv.Cwd)] < first[groupKey(m.filtered[j].conv.Cwd)]
+		slices.SortStableFunc(list, func(a, b listItem) int {
+			return first[groupKey(a.conv.Cwd)] - first[groupKey(b.conv.Cwd)]
 		})
 	}
-	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
-		m.cursor = i
+	if pin {
+		list = slices.Insert(list, cur, sel)
 	}
+	m.filtered = list
+	m.cursor = max(slices.IndexFunc(list, func(it listItem) bool { return it.conv.SessionID == sel.conv.SessionID }), 0)
 }
 
 func (m model) Init() tea.Cmd {
@@ -472,7 +475,7 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.update(msg)
 	n := res.(model)
-	n.sortList()
+	n.sortList(true)
 	n.syncChatDraft()
 	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
 		n.chatFocus = false
@@ -922,7 +925,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+e" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.grouped = false, !m.grouped
-			m.sortList()
+			m.sortList(false)
 			return m, nil
 		}
 		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {

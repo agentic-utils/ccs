@@ -909,17 +909,31 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 
 func TestListOrdersWaitingThenIdleThenBusy(t *testing.T) {
 	m := selectLive(waitModel(t))
+	row := m.cursor
 	m.applyStats(map[string]sessionStat{"menu": waiting(time.Now(), "input needed"), "asks": {status: "idle"}, "live": {status: "busy"}})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG}) // any update re-sorts
-	var got []string
-	for _, it := range m.filtered {
-		got = append(got, it.conv.SessionID)
+	ids := func() (got []string) {
+		for _, it := range m.filtered {
+			got = append(got, it.conv.SessionID)
+		}
+		return got
 	}
-	if len(got) < 4 || strings.Join(got[:3], ",") != "menu,asks,live" || m.live[got[3]] {
-		t.Errorf("waiting, idle, busy, then sessions not open: got %v", got)
+	// The selected session (now busy) keeps its row; the rest sort around it.
+	if m.cursor != row || m.filtered[row].conv.SessionID != "live" {
+		t.Errorf("the selected session should keep its row %d while selected: cursor %d, %v", row, m.cursor, ids())
 	}
-	if m.filtered[m.cursor].conv.SessionID != "live" {
-		t.Errorf("the cursor stays on its session while rows move: %s", m.filtered[m.cursor].conv.SessionID)
+	rest := slices.DeleteFunc(ids(), func(id string) bool { return id == "live" })
+	if len(rest) < 3 || strings.Join(rest[:2], ",") != "menu,asks" || m.live[rest[2]] {
+		t.Errorf("the others: waiting, idle, then sessions not open: got %v", rest)
+	}
+	// Once something else is selected it sorts in: waiting, idle, busy.
+	m.cursor = slices.Index(ids(), "idle")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	if got := slices.DeleteFunc(ids(), func(id string) bool { return id == "idle" }); strings.Join(got[:3], ",") != "menu,asks,live" {
+		t.Errorf("waiting, idle, busy: got %v", ids())
+	}
+	if m.filtered[m.cursor].conv.SessionID != "idle" {
+		t.Errorf("the selection stays on its session: %s", m.filtered[m.cursor].conv.SessionID)
 	}
 }
 

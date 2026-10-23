@@ -42,6 +42,7 @@ type model struct {
 	cursor          int
 	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width           int
+	table           bool // ^B: the full-width table instead of the sidebar
 	height          int
 	listHeight      int // Calculated visible list height
 	selected        *Conversation
@@ -188,9 +189,29 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 	if m.errorMsg != "" {
 		sections++
 	}
+	if !m.table { // the sidebar and the preview beside it, under title, sections, blank
+		listTop = sections + 2
+		return listTop, max(m.height-listTop, 1), listTop
+	}
 	listHeight = max(m.height*30/100, 3)
 	listTop = sections + 4 // title, sections, blank, column header, rule
 	return listTop, listHeight, listTop + listHeight + 1
+}
+
+// sidebarWidth is the session list's width beside the preview, 0 in the table.
+func (m model) sidebarWidth() int {
+	if m.table {
+		return 0
+	}
+	return min(max(m.width/4, 30), 48)
+}
+
+// paneWidth is the preview's width: beside the sidebar and its │, or the whole terminal.
+func (m model) paneWidth() int {
+	if sw := m.sidebarWidth(); sw > 0 {
+		return max(m.width-sw-1, 20)
+	}
+	return m.width
 }
 
 // handleMouse sends the wheel to whatever is under the pointer: the
@@ -228,7 +249,11 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		}
 	}
 	listTop, listHeight, previewTop := m.listLayout()
-	onPreview := msg.Y >= previewTop
+	paneX := 0 // where the preview's columns start
+	if sw := m.sidebarWidth(); sw > 0 {
+		paneX = sw + 1
+	}
+	onPreview := msg.Y >= previewTop && msg.X >= paneX
 	switch msg.Button {
 	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
 		up := msg.Button == tea.MouseButtonWheelUp
@@ -251,7 +276,7 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			m.chatFocus = false
 			return m
 		}
-		if m.chatRows() > 0 && !m.boxHidden() && msg.Y >= m.height-3 { // the message box
+		if m.chatRows() > 0 && !m.boxHidden() && msg.Y >= m.height-3 && msg.X >= paneX { // the message box
 			m.chatFocus = true
 			return m
 		}
@@ -259,7 +284,7 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			// ccs has the mouse, so the terminal never sees a click on a link: open it here.
 			lines := strings.Split(m.renderPreview(m.filtered[m.cursor], m.previewRenderHeight()), "\n")
 			if row := msg.Y - previewTop; row >= 0 && row < len(lines) {
-				m.linkPending = linkAt(lines[row], msg.X)
+				m.linkPending = linkAt(lines[row], msg.X-paneX)
 			}
 			return m
 		}
@@ -454,7 +479,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The inputs scroll their text during Update, so their width must be set here, not only on View's copy.
 		inner, _ := m.waitLayout()
-		m.chatInput.Width, m.waitInput.Width = chatInputWidth(m.width), chatInputWidth(inner)
+		m.chatInput.Width, m.waitInput.Width = chatInputWidth(m.paneWidth()), chatInputWidth(inner)
 		if m.waitOpen && m.height < waitMinHeight {
 			m.closeWait()
 			m.errorMsg = waitTooShort
@@ -868,6 +893,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if msg.String() == "ctrl+b" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen, m.table = false, !m.table
+			m.chatInput.Width = chatInputWidth(m.paneWidth())
+			return m, nil
+		}
 		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			if m.links = m.linksWithPRs(); len(m.links) == 0 {
@@ -1259,6 +1289,8 @@ func (m model) shortcuts() [][2]string {
 	add(len(m.waitQueue(true)) > 0, "^Y", "sessions waiting on you")
 	add(hasCswap, "^O", "switch account")
 	add(sel && len(m.linksWithPRs()) > 0, "^T", "open a link in view or one of its PRs")
+	add(!m.table, "^B", "the full table, every column")
+	add(m.table, "^B", "back to the sidebar")
 	add(true, "^L", "changelog")
 	add(true, "^C", "quit")
 	return out
@@ -1377,7 +1409,11 @@ func (m model) viewScreen() string {
 		}
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
-	pairs, keep := []string{"^G", "help", "^C", "quit"}, 2
+	layout := "table"
+	if m.table {
+		layout = "sidebar"
+	}
+	pairs, keep := []string{"^B", layout, "^G", "help", "^C", "quit"}, 2
 	if m.showUsage { // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^O", "account", "^L", "changelog"}, 1 // every key it has, so no ^G help
 		if len(m.waitQueue(true)) > 0 {
@@ -1435,6 +1471,10 @@ func (m model) viewScreen() string {
 		b.WriteString(m.usageView(m.height - 2 - len(sections)))
 		return b.String()
 	}
+	if !m.table {
+		b.WriteString(m.sidebarView())
+		return b.String()
+	}
 
 	// Calculate heights
 	listHeight := m.height * 30 / 100
@@ -1459,18 +1499,19 @@ func (m model) viewScreen() string {
 		start = m.cursor - visibleItems + 1
 	}
 
+	top, size, bar := scrollThumb(len(m.filtered), start, visibleItems)
 	for i := start; i < min(start+visibleItems, len(m.filtered)); i++ {
 		item := m.filtered[i]
 		isSelected := i == m.cursor
-		line := m.formatListItem(item, isSelected)
-
+		line := "  " + m.formatListItem(item, isSelected)
 		if isSelected {
 			// Pad to full width for selection highlight
-			line = padRight("> "+line, m.width)
-			b.WriteString(selectedStyle.Render(line))
-		} else {
-			b.WriteString("  " + line)
+			line = selectedStyle.Render(padRight("> "+line[2:], m.width-1))
 		}
+		if bar {
+			line = withBar(line, m.width, barCell(i-start, top, size))
+		}
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
@@ -1522,8 +1563,8 @@ func (m model) searching() bool { return strings.TrimSpace(m.textInput.Value()) 
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
 func (m model) topicColWidth() int {
-	used := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colPRs + colSize + numGaps*colGap
-	if m.searching() { // HITS only means something with a search typed
+	used := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colPRs + colSize + numGaps*colGap + 1 // +1: the scrollbar
+	if m.searching() {                                                                                              // HITS only means something with a search typed
 		used += colHits + colGap
 	}
 	if w := m.width - used; w > 10 {
@@ -1539,47 +1580,12 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	}
 	project = truncate(project, colProject)
 
-	// Status icons, packed right against the topic so titles stay aligned:
-	// ● open in a running claude (? instead when it waits on you: bright for
-	// a prompt, dim when its last message asks something), ⚙ started by a
-	// script or another session.
-	// ponytail: the glyphs are ambiguous-width, so a marked row may sit one
-	// cell off on CJK-width terminals - cosmetic only.
-	var icons, colouredIcons string
-	n := 0
-	// Green when idle, amber while busy, an amber ? when it waits on you.
-	liveGlyph, liveColour := "●", "32"
-	switch m.waitSignal(item.conv) {
-	case waitPrompt:
-		liveGlyph, liveColour = "?", "1;"+amber
-	case waitAsked:
-		liveGlyph, liveColour = "?", "2;"+amber
-	default:
-		if m.chatStatus[item.conv.SessionID].status == "busy" {
-			liveColour = amber
-		}
-	}
-	for _, s := range []struct {
-		on           bool
-		glyph, color string
-	}{{m.live[item.conv.SessionID], liveGlyph, liveColour}, {item.conv.Spawned, "⚙", "90"}, {item.conv.LastError != "", "!", "1;31"}} {
-		if !s.on {
-			continue
-		}
-		n++
-		icons += s.glyph
-		colouredIcons += "\033[" + s.color + "m" + s.glyph + "\033[0m"
-	}
-	pad := strings.Repeat(" ", colMarks-1-n)
-	marks, colouredMarks := pad+icons+" ", pad+colouredIcons+" "
+	marks, colouredMarks := m.listMarks(item.conv)
 	tw := m.topicColWidth()
 	// A trailing ✎ marks a name you set (not the ai-title Claude gives almost
 	// every session); the title is cut short so it always stays visible. Not
 	// ✍: some terminals draw that emoji two cells wide, so the row wraps.
-	topic := truncate(getTopic(item.conv), tw-colMarks)
-	if item.conv.IsCustomTitle {
-		topic = truncate(getTopic(item.conv), tw-colMarks-2) + " ✎"
-	}
+	topic := listTopic(item.conv, tw-colMarks)
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -1611,6 +1617,108 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	}
 	return fmt.Sprintf("\033[90m%-*s\033[0m  \033[1;33m%-*s\033[0m  %s  \033[37m%-*s\033[0m  \033[35m%*s\033[0m  \033["+ctxCode+"m%*s\033[0m  %*d\033[36m%s\033[0m  %s",
 		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits, m.prCell(item.conv, true))
+}
+
+// listTopic is the session's title cut to w, a trailing ✎ when you named it.
+func listTopic(conv Conversation, w int) string {
+	if conv.IsCustomTitle {
+		return truncate(getTopic(conv), w-2) + " ✎"
+	}
+	return truncate(getTopic(conv), w)
+}
+
+// listMarks is a row's colMarks-wide status column, plain and coloured.
+func (m model) listMarks(conv Conversation) (string, string) {
+	// Status icons, packed right against the topic so titles stay aligned:
+	// ● open in a running claude (? instead when it waits on you: bright for
+	// a prompt, dim when its last message asks something), ⚙ started by a
+	// script or another session.
+	// ponytail: the glyphs are ambiguous-width, so a marked row may sit one
+	// cell off on CJK-width terminals - cosmetic only.
+	var icons, colouredIcons string
+	n := 0
+	// Green when idle, amber while busy, an amber ? when it waits on you.
+	liveGlyph, liveColour := "●", "32"
+	switch m.waitSignal(conv) {
+	case waitPrompt:
+		liveGlyph, liveColour = "?", "1;"+amber
+	case waitAsked:
+		liveGlyph, liveColour = "?", "2;"+amber
+	default:
+		if m.chatStatus[conv.SessionID].status == "busy" {
+			liveColour = amber
+		}
+	}
+	for _, s := range []struct {
+		on           bool
+		glyph, color string
+	}{{m.live[conv.SessionID], liveGlyph, liveColour}, {conv.Spawned, "⚙", "90"}, {conv.LastError != "", "!", "1;31"}} {
+		if !s.on {
+			continue
+		}
+		n++
+		icons += s.glyph
+		colouredIcons += "\033[" + s.color + "m" + s.glyph + "\033[0m"
+	}
+	pad := strings.Repeat(" ", colMarks-1-n)
+	return pad + icons + " ", pad + colouredIcons + " "
+}
+
+// sidebarView is the session list as a sidebar with the preview (and message
+// box) beside it, filling the rows under the search. listLayout must match.
+func (m model) sidebarView() string {
+	_, h, _ := m.listLayout()
+	sw, pw := m.sidebarWidth(), m.paneWidth()
+	start := 0 // same scroll offset handleMouse uses
+	if m.cursor >= h {
+		start = m.cursor - h + 1
+	}
+	var pane []string
+	if len(m.filtered) > 0 {
+		rows := m.chatRows()
+		pane = strings.Split(m.renderPreview(m.filtered[m.cursor], h-rows), "\n")
+		if rows > 0 { // pin the message box to the bottom whatever the preview's length
+			for len(pane) < h-rows {
+				pane = append(pane, "")
+			}
+			pane = append(pane[:h-rows], strings.Split(m.chatView(), "\n")...)
+		}
+	}
+	top, size, bar := scrollThumb(len(m.filtered), start, h)
+	lines := make([]string, h)
+	for r := range lines {
+		left := strings.Repeat(" ", sw)
+		if i := start + r; i < len(m.filtered) {
+			left = m.sidebarRow(m.filtered[i], i == m.cursor, sw)
+		}
+		lines[r] = left + "\033[90m│\033[0m" // the divider doubles as the list's scrollbar
+		if bar {
+			lines[r] = left + barCell(r, top, size)
+		}
+		if r < len(pane) {
+			lines[r] += ansi.Truncate(pane[r], pw, "…")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// sidebarRow is one session in the sidebar, w wide: its marks, its title and,
+// on the right, its HITS while searching, else its PR counts.
+func (m model) sidebarRow(item listItem, selected bool, w int) string {
+	marks, colouredMarks := m.listMarks(item.conv)
+	cell := strings.TrimLeft(m.prCell(item.conv, !selected), " ")
+	if m.searching() {
+		cell = fmt.Sprintf("\033[36m%d\033[0m", m.hitCount(item))
+		if selected {
+			cell = fmt.Sprint(m.hitCount(item))
+		}
+	}
+	tw := w - listIndent - colMarks - ansi.StringWidth(cell) - 1
+	topic := padRight(listTopic(item.conv, tw), tw)
+	if selected {
+		return selectedStyle.Render(padRight("> "+marks+topic+" "+cell, w))
+	}
+	return "  " + colouredMarks + topic + " " + cell
 }
 
 // renameConversation sets a custom title the same way /rename does: by

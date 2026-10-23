@@ -124,7 +124,7 @@ func (m model) previewLines() []string {
 	if len(m.filtered) == 0 {
 		return nil
 	}
-	return cachedPreview(m.preview, m.filtered[m.cursor].conv, m.textInput.Value(), m.width)
+	return cachedPreview(m.preview, m.filtered[m.cursor].conv, m.textInput.Value(), m.paneWidth()-1) // the last column is the scrollbar
 }
 
 // cachedPreview is buildPreviewLines memoised in c; a nil c (a model built
@@ -399,8 +399,8 @@ func (m *model) jumpHit(next bool) {
 
 // previewRenderHeight is the height View gives renderPreview.
 func (m model) previewRenderHeight() int {
-	_, listHeight, _ := m.listLayout()
-	return m.height - listHeight - 6 - m.chatRows() // 6 for title + search + blank + header + borders
+	_, _, previewTop := m.listLayout()
+	return m.height - previewTop - m.chatRows()
 }
 
 type linkErrMsg struct{ err error }
@@ -628,7 +628,10 @@ func (m model) previewHeader(conv Conversation, query string) []string {
 	}
 	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
 	header = append(header, sessionStats(conv)...)
-	header = append(header, m.prLines(conv, m.width)...)
+	if !m.table { // the list's columns aren't beside it
+		header = append(header, fmt.Sprintf("\033[1;33mSize:\033[0m    %s · %d messages · %s", formatBytes(conv.Size), len(conv.Messages), formatAgo(conv.LastTimestamp, time.Now())))
+	}
+	header = append(header, m.prLines(conv, m.paneWidth())...)
 	return append(header, "")
 }
 
@@ -666,6 +669,13 @@ func (m model) renderPreview(item listItem, height int) string {
 	if hits := hitLinesIn(msgLines); query != "" && len(hits) > 0 {
 		i := sort.SearchInts(hits, start) + 1 // first hit at or below the top
 		header[len(header)-1] += fmt.Sprintf("  \033[90mhit %d/%d · ^] next ^\\ prev\033[0m", min(i, len(hits)), len(hits))
+	}
+
+	if top, size, ok := scrollThumb(len(msgLines), start, msgHeight); ok {
+		visibleMsgLines = slices.Clone(visibleMsgLines) // the cache's lines stay bare
+		for i := range visibleMsgLines {
+			visibleMsgLines[i] = withBar(visibleMsgLines[i], m.paneWidth(), barCell(i, top, size))
+		}
 	}
 
 	// Combine header + scrolled messages
@@ -1003,4 +1013,29 @@ func padRight(s string, length int) string {
 	// ponytail: pads by rune count, not display width; CJK/emoji rows can still
 	// look a cell narrow. Swap in go-runewidth if column alignment matters.
 	return s + strings.Repeat(" ", length-len(r))
+}
+
+// scrollThumb places a scrollbar's thumb on a track of h rows, for h of total
+// lines in view from start: its size is the share in view, so a long
+// conversation gets a short thumb. ok is false when everything fits.
+func scrollThumb(total, start, h int) (top, size int, ok bool) {
+	if h <= 0 || total <= h {
+		return 0, 0, false
+	}
+	size = max(h*h/total, 1)
+	return min(start*(h-size)/(total-h), h-size), size, true
+}
+
+// barCell is row r of a scrollbar whose thumb is size rows from top.
+func barCell(r, top, size int) string {
+	if r >= top && r < top+size {
+		return "\033[37m┃\033[0m"
+	}
+	return "\033[90m│\033[0m"
+}
+
+// withBar puts cell in the last of w columns of line.
+func withBar(line string, w int, cell string) string {
+	line = ansi.Truncate(line, w-1, "")
+	return line + "\033[0m" + strings.Repeat(" ", max(w-1-ansi.StringWidth(line), 0)) + cell
 }

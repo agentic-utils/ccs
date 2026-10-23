@@ -150,7 +150,7 @@ func (m model) chatAsk() []string {
 	if m.waitSignal(conv) != waitPrompt {
 		return nil
 	}
-	lines := askLines(conv, m.width-2)
+	lines := askLines(conv, m.paneWidth()-2)
 	for i, l := range lines {
 		lines[i] = "  " + l
 	}
@@ -238,7 +238,7 @@ func waitingLine(conv Conversation) string {
 
 // chatView draws the status line and message box for the selected session.
 func (m model) chatView() string {
-	box := m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.width)
+	box := m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.paneWidth())
 	if m.boxHidden() {
 		status, _, _ := strings.Cut(box, "\n")
 		return strings.Join(append(m.chatAsk(), status), "\n")
@@ -262,7 +262,7 @@ func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width 
 		}
 		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], width-25-len(why)) + why + "\033[0m"
 	case m.pending[id] != "" && m.chatStatus[id].status == "busy":
-		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-60) + " · Claude sees it after its current step\033[0m"
+		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-66) + " · Claude sees it after its current step\033[0m"
 	case m.pending[id] != "":
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.sendNote[id] != "":

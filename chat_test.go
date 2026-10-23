@@ -41,7 +41,7 @@ func TestMessageBoxFocusRules(t *testing.T) {
 		t.Error("esc should return focus to the search")
 	}
 	// Clicking the box focuses it; clicking the search row leaves it.
-	m = m.handleMouse(tea.MouseMsg{Y: m.height - 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: m.width - 5, Y: m.height - 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if !m.chatFocus {
 		t.Error("clicking the message box should focus it")
 	}

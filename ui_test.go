@@ -288,7 +288,7 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 }
 
 func TestTopicColWidthFlexes(t *testing.T) {
-	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colPRs + colSize + numGaps*colGap
+	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colPRs + colSize + numGaps*colGap + 1 // +1: the scrollbar
 	for _, w := range []int{100, 120, 200} {
 		m := model{width: w}
 		if got, want := m.topicColWidth(), w-fixed; got != want {
@@ -317,8 +317,8 @@ func TestFormatListItemFillsWidth(t *testing.T) {
 		m.width = w
 		// Selected row has no ANSI codes; its width + the 2-char row prefix
 		// added by View should fill the terminal exactly.
-		if got := len(m.formatListItem(item, true)); got != w-listIndent {
-			t.Errorf("width=%d: row length = %d, want %d", w, got, w-listIndent)
+		if got := len(m.formatListItem(item, true)); got != w-listIndent-1 { // the last column is the scrollbar
+			t.Errorf("width=%d: row length = %d, want %d", w, got, w-listIndent-1)
 		}
 	}
 }
@@ -491,6 +491,7 @@ func TestViewRendering(t *testing.T) {
 	m := initialModel(items, "", nil)
 	m.width = 120
 	m.height = 30
+	m.table = true // the column headers are the table's
 
 	output := m.View()
 
@@ -959,11 +960,11 @@ func TestWheelScrollsWhateverIsUnderThePointer(t *testing.T) {
 
 	// Over the preview: the conversation scrolls, the selection stays.
 	// (The preview opens at the newest message, so wheel up goes back first.)
-	m = m.handleMouse(tea.MouseMsg{X: 10, Y: previewTop + 2, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: m.width - 10, Y: previewTop + 2, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 	if m.previewScroll != 3 || m.cursor != 0 {
 		t.Fatalf("wheel up over preview: scroll=%d cursor=%d", m.previewScroll, m.cursor)
 	}
-	m = m.handleMouse(tea.MouseMsg{X: 10, Y: previewTop + 2, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: m.width - 10, Y: previewTop + 2, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
 	if m.previewScroll != 0 {
 		t.Errorf("wheel down over preview should come forward again, got %d", m.previewScroll)
 	}
@@ -983,7 +984,7 @@ func TestWheelScrollsWhateverIsUnderThePointer(t *testing.T) {
 	// The layout matches what View draws: the preview's first line is the Project header.
 	strip := regexp.MustCompile("\033\\[[0-9;]*m")
 	lines := strings.Split(strip.ReplaceAllString(m.View(), ""), "\n")
-	if !strings.HasPrefix(lines[previewTop], "Project:") {
+	if !strings.HasPrefix(ansi.Cut(lines[previewTop], m.sidebarWidth()+1, m.width), "Project:") {
 		t.Errorf("previewTop %d doesn't match the screen: %q", previewTop, lines[previewTop])
 	}
 }
@@ -1012,6 +1013,7 @@ func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
 	}
 	m := initialModel(buildItems([]Conversation{mk(60)}), "", nil)
 	m.width, m.height = 120, 40
+	m.table = true       // the sidebar's Size line changes with the messages
 	m.previewScroll = 20 // reading back in the history
 	before := m.View()
 	grown := mk(62) // two new messages arrive
@@ -1020,7 +1022,7 @@ func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
 	b, a := strings.Split(strip2(before), "\n"), strings.Split(strip2(m.View()), "\n")
 	_, _, previewTop := m.listLayout()
 	for i := previewTop; i < len(b) && i < len(a); i++ {
-		if b[i] != a[i] {
+		if bare := func(s string) string { return strings.TrimRight(s, "┃│ ") }; bare(b[i]) != bare(a[i]) { // the scrollbar may move
 			t.Errorf("preview row %d moved:\n was %q\n now %q", i, b[i], a[i])
 		}
 	}
@@ -1196,5 +1198,69 @@ func TestLiveMarkerColours(t *testing.T) {
 	}
 	if r := row("waiting"); !strings.Contains(r, "\033[1;"+amber+"m?") {
 		t.Errorf("waiting on you should be an amber ?: %q", r)
+	}
+}
+
+func TestScrollThumb(t *testing.T) {
+	if _, _, ok := scrollThumb(10, 0, 10); ok {
+		t.Error("no bar when everything fits")
+	}
+	for _, c := range []struct{ total, start, h, top, size int }{
+		{100, 0, 10, 0, 1},  // a tenth in view: one cell, at the top
+		{100, 90, 10, 9, 1}, // the end: at the bottom
+		{20, 5, 10, 2, 5},   // half in view: half the track, halfway down
+	} {
+		if top, size, _ := scrollThumb(c.total, c.start, c.h); top != c.top || size != c.size {
+			t.Errorf("scrollThumb(%d, %d, %d) = %d, %d; want %d, %d", c.total, c.start, c.h, top, size, c.top, c.size)
+		}
+	}
+}
+
+func TestSidebarAndTable(t *testing.T) {
+	var convs []Conversation
+	for i := range 40 {
+		c := Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p", Size: 2048,
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)}
+		for j := range 80 {
+			c.Messages = append(c.Messages, Message{Role: "user", Text: fmt.Sprint("line-", j)})
+		}
+		convs = append(convs, c)
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 30
+	lines := strings.Split(strip2(m.View()), "\n")
+	if len(lines) != m.height {
+		t.Fatalf("sidebar view is %d rows, want %d", len(lines), m.height)
+	}
+	listTop, _, _ := m.listLayout()
+	sw := m.sidebarWidth()
+	row := lines[listTop]
+	if !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(row, sw+1, m.width), "Project:") {
+		t.Errorf("sidebar row and preview should sit side by side: %q", row)
+	}
+	if ansi.Cut(row, sw, sw+1) != "┃" {
+		t.Errorf("the divider should show the list's thumb at the top, got %q", row)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "Size:") {
+		t.Error("the sidebar's preview header should show the size and message count")
+	}
+	if last := lines[len(lines)-1]; !strings.HasSuffix(last, "┃") {
+		t.Errorf("the preview opens at the newest message, so its thumb is at the bottom: %q", last)
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 3, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.cursor != 3 {
+		t.Errorf("clicking a sidebar row should select it, cursor=%d", m.cursor)
+	}
+
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	if !m.table || !strings.Contains(m.View(), "PROJECT") {
+		t.Fatal("^B should show the full table with its columns")
+	}
+	if m.uiState().Table != true {
+		t.Error("the table choice should survive a restart after an update")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	if m.table {
+		t.Error("^B again should go back to the sidebar")
 	}
 }

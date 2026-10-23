@@ -489,7 +489,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		// The last column stays empty: a row reaching it wraps if the terminal
+		// draws any character in it one cell wider than we measure (emoji
+		// widths vary by terminal), which scrolls the screen and leaves stale rows.
+		m.width = max(msg.Width-1, 1)
 		m.height = msg.Height
 		// Calculate visible list height
 		m.listHeight = m.height * 30 / 100

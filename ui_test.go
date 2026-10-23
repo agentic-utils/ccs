@@ -1361,3 +1361,14 @@ func TestSidebarNeverOpensOnHalfASession(t *testing.T) {
 		t.Errorf("a rule should sit over the list, joining the divider: %q", lines[listTop-1])
 	}
 }
+
+func TestLastColumnStaysEmpty(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Title: "t", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	res, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = res.(model)
+	for i, l := range strings.Split(m.View(), "\n") {
+		if w := ansi.StringWidth(l); w >= 120 {
+			t.Errorf("row %d is %d wide: it reaches the terminal's last column", i, w)
+		}
+	}
+}

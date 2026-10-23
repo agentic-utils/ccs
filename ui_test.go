@@ -1308,6 +1308,9 @@ func TestGroupByFolder(t *testing.T) {
 			t.Errorf("row %d should be the header %q:\n%s", at, want, strings.Join(lines[listTop:listTop+13], "\n"))
 		}
 	}
+	if folder, title := strings.Index(lines[listTop+1], "ccs"), strings.Index(lines[listTop+2], "ccs-main"); title <= folder {
+		t.Errorf("a session should sit in from its folder's header: header at %d, title at %d", folder, title)
+	}
 	cur := m.cursor
 	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.cursor != cur {

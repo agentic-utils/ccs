@@ -1282,7 +1282,7 @@ func TestGroupByFolder(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.live = map[string]bool{"ccs-main": true} // open in claude, so its group goes first
 	m.livePIDs = map[string]int{"ccs-main": os.Getpid()}
-	m.sortList()
+	m.sortList(false)
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "api-old" })
 
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})

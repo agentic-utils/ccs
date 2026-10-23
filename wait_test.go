@@ -947,3 +947,24 @@ func TestLongQuestionWrapsInFull(t *testing.T) {
 		t.Errorf("nothing should be cut:\n%s", text)
 	}
 }
+
+func TestStatusChangeMovesTheSessionNotTheCursor(t *testing.T) {
+	m := selectLive(waitModel(t))
+	m.applyStats(map[string]sessionStat{"live": {status: "idle"}, "asks": {status: "idle"}})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
+	row := m.cursor
+	// It goes busy (say Enter resumed it): busy sorts below idle.
+	m.applyStats(map[string]sessionStat{"live": {status: "busy"}, "asks": {status: "idle"}})
+	res, _ := m.Update(struct{}{}) // a tick, not a key
+	m = res.(model)
+	if m.cursor != row {
+		t.Errorf("the cursor should stay on row %d, got %d", row, m.cursor)
+	}
+	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" }); i <= row {
+		t.Errorf("the busy session should move below row %d, it's at %d", row, i)
+	}
+	if m.filtered[m.cursor].conv.SessionID == "live" {
+		t.Error("the selection should be whatever moved into the row")
+	}
+}

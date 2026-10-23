@@ -466,20 +466,33 @@ func (m model) waitAsk() []string {
 // transcript as text until answered.
 func askLines(conv Conversation, width int) []string {
 	cut := func(s string) string { return ansi.Truncate(s, width, "…") + "\033[0m" }
+	// wrapped is s wrapped to width after prefix, its other lines indented
+	// to match and each line in style, so a long question reads in full.
+	wrapped := func(prefix, style, s string) []string {
+		indent := strings.Repeat(" ", ansi.StringWidth(prefix))
+		var out []string
+		for i, l := range strings.Split(ansi.Wrap(s, max(width-len(indent), 10), " "), "\n") {
+			if i == 0 {
+				out = append(out, cut(prefix+style+l))
+			} else {
+				out = append(out, cut(indent+style+l))
+			}
+		}
+		return out
+	}
 	if qs := conv.questions(); len(qs) > 0 {
 		var out []string
 		for _, q := range qs {
-			pick := ""
+			question := cleanText(q.Question)
 			if q.MultiSelect {
-				pick = "\033[0;90m  (pick any)"
+				question += "  (pick any)"
 			}
-			out = append(out, "", cut("\033[1;"+amber+"m? "+cleanText(q.Question)+pick))
+			out = append(append(out, ""), wrapped("\033[1;"+amber+"m? ", "\033[1;"+amber+"m", question)...)
 			for i, o := range q.Options {
-				line := fmt.Sprintf("  \033[1m%d\033[0m  %s", i+1, cleanText(o.Label))
+				out = append(out, wrapped(fmt.Sprintf("  \033[1m%d\033[0m  ", i+1), "", cleanText(o.Label))...)
 				if o.Description != "" {
-					line += "\033[90m · " + cleanText(o.Description)
+					out = append(out, wrapped("     ", "\033[90m", cleanText(o.Description))...)
 				}
-				out = append(out, cut(line))
 			}
 		}
 		return out

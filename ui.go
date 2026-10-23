@@ -387,18 +387,21 @@ func (m *model) updateFilter() {
 	m.previewScroll = 0
 }
 
-// liveGroup is where a session sits in the list: waiting on a question,
+// liveGroup is where a session sits in the list: waiting on a menu or
+// prompt (amber ?), then idle with a question in its last message (green ?),
 // then idle, then busy, then not open in claude.
 func (m model) liveGroup(c Conversation) int {
 	switch {
 	case !m.live[c.SessionID]:
-		return 3
+		return 4
 	case m.waitSignal(c) == waitPrompt:
 		return 0
+	case m.waitSignal(c) == waitAsked: // idle, its last message asks something
+		return 1
 	case m.chatStatus[c.SessionID].status == "busy":
-		return 2
+		return 3
 	}
-	return 1
+	return 2
 }
 
 // sortList orders the list by liveGroup, then best search match (named after

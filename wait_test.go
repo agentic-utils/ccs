@@ -982,3 +982,20 @@ func TestQuestionMarkColours(t *testing.T) {
 		t.Errorf("a menu or prompt waiting: an amber ?, got %q", marks)
 	}
 }
+
+func TestAskedSortsBetweenWaitingAndIdle(t *testing.T) {
+	mk := func(id, last string) Conversation {
+		return Conversation{SessionID: id, LastTimestamp: "2026-10-23T10:00:00Z", Messages: []Message{{Role: "assistant", Text: last}}}
+	}
+	m := initialModel(buildItems([]Conversation{mk("busy", "working"), mk("idle", "done."), mk("asked", "Want that?"), mk("menu", "pick one")}), "", nil)
+	m.live = map[string]bool{"busy": true, "idle": true, "asked": true, "menu": true}
+	m.chatStatus = map[string]sessionStat{"busy": {status: "busy"}, "idle": {status: "idle"}, "asked": {status: "idle"}, "menu": {status: "waiting"}}
+	m.sortList(false)
+	var got []string
+	for _, it := range m.filtered {
+		got = append(got, it.conv.SessionID)
+	}
+	if strings.Join(got, ",") != "menu,asked,idle,busy" {
+		t.Errorf("amber ?, green ?, idle, busy: got %v", got)
+	}
+}

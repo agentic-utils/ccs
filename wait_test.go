@@ -948,7 +948,7 @@ func TestLongQuestionWrapsInFull(t *testing.T) {
 	}
 }
 
-func TestStatusChangeMovesTheSessionNotTheCursor(t *testing.T) {
+func TestStatusChangeKeepsTheSelectionOnItsSession(t *testing.T) {
 	m := selectLive(waitModel(t))
 	m.applyStats(map[string]sessionStat{"live": {status: "idle"}, "asks": {status: "idle"}})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
@@ -958,14 +958,11 @@ func TestStatusChangeMovesTheSessionNotTheCursor(t *testing.T) {
 	m.applyStats(map[string]sessionStat{"live": {status: "busy"}, "asks": {status: "idle"}})
 	res, _ := m.Update(struct{}{}) // a tick, not a key
 	m = res.(model)
-	if m.cursor != row {
-		t.Errorf("the cursor should stay on row %d, got %d", row, m.cursor)
+	if m.filtered[m.cursor].conv.SessionID != "live" {
+		t.Errorf("the selection should stay on its session, got %s", m.filtered[m.cursor].conv.SessionID)
 	}
-	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" }); i <= row {
-		t.Errorf("the busy session should move below row %d, it's at %d", row, i)
-	}
-	if m.filtered[m.cursor].conv.SessionID == "live" {
-		t.Error("the selection should be whatever moved into the row")
+	if m.cursor <= row {
+		t.Errorf("the busy session should have moved below row %d, it's at %d", row, m.cursor)
 	}
 }
 
@@ -990,7 +987,7 @@ func TestAskedSortsBetweenWaitingAndIdle(t *testing.T) {
 	m := initialModel(buildItems([]Conversation{mk("busy", "working"), mk("idle", "done."), mk("asked", "Want that?"), mk("menu", "pick one")}), "", nil)
 	m.live = map[string]bool{"busy": true, "idle": true, "asked": true, "menu": true}
 	m.chatStatus = map[string]sessionStat{"busy": {status: "busy"}, "idle": {status: "idle"}, "asked": {status: "idle"}, "menu": {status: "waiting"}}
-	m.sortList(false)
+	m.sortList()
 	var got []string
 	for _, it := range m.filtered {
 		got = append(got, it.conv.SessionID)

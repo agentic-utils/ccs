@@ -382,7 +382,7 @@ func (m *model) updateFilter() {
 		}
 		m.filtered = next
 	}
-	m.sortList(false)
+	m.sortList()
 	m.lastFilterQuery = queryLower
 	// Keep cursor in bounds
 	if m.cursor >= len(m.filtered) {
@@ -411,7 +411,7 @@ func (m model) liveGroup(c Conversation) int {
 // sortList orders the list by liveGroup, then best search match (named after
 // the query, then the words as a phrase), then newest, keeping the cursor on
 // the same session. Statuses change on ticks, so Update runs it every time.
-func (m *model) sortList(keepRow bool) {
+func (m *model) sortList() {
 	if len(m.filtered) == 0 {
 		return
 	}
@@ -443,17 +443,6 @@ func (m *model) sortList(keepRow bool) {
 		sort.SliceStable(m.filtered, func(i, j int) bool {
 			return first[groupKey(m.filtered[i].familyCwd)] < first[groupKey(m.filtered[j].familyCwd)]
 		})
-	}
-	if keepRow && !m.chatFocus && !m.waitOpen {
-		// A status change (Enter making it busy) moves the session, not the
-		// cursor: the row stays put and the selection becomes whatever slid
-		// into it. Not while typing a message, which must keep its recipient.
-		m.cursor = min(m.cursor, len(m.filtered)-1)
-		if m.filtered[m.cursor].conv.SessionID != id {
-			m.previewScroll = 0
-			m.selectionMoved()
-		}
-		return
 	}
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
 		m.cursor = i
@@ -595,9 +584,7 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.update(msg)
 	n := res.(model)
-	_, key := msg.(tea.KeyMsg)
-	_, mouse := msg.(tea.MouseMsg)
-	n.sortList(!key && !mouse) // what the user just selected stays selected
+	n.sortList()
 	n.syncChatDraft()
 	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
 		n.chatFocus = false
@@ -1047,7 +1034,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+e" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.grouped = false, !m.grouped
-			m.sortList(false)
+			m.sortList()
 			return m, nil
 		}
 		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {

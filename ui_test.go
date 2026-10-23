@@ -1282,7 +1282,7 @@ func TestGroupByFolder(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.live = map[string]bool{"ccs-main": true} // open in claude, so its group goes first
 	m.livePIDs = map[string]int{"ccs-main": os.Getpid()}
-	m.sortList(false)
+	m.sortList()
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "api-old" })
 
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
@@ -1385,7 +1385,7 @@ func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.live = map[string]bool{"child": true}
 	m.chatStatus = map[string]sessionStat{"child": {status: "waiting"}}
-	m.sortList(false)
+	m.sortList()
 	var got []string
 	for _, it := range m.filtered {
 		got = append(got, fmt.Sprintf("%s:%d", it.conv.SessionID, it.depth))

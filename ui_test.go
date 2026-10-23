@@ -1394,7 +1394,10 @@ func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
 	if strings.Join(got, " ") != "parent:0 child:1 late:0 other:0" {
 		t.Errorf("a spawned session sits under its parent, its family where its most urgent member is: %v", got)
 	}
-	if row := m.sidebarRow(m.filtered[1], false, 40)[0]; !strings.Contains(strip2(row), "└ Test of a skill") {
-		t.Errorf("a child is marked └: %q", strip2(row))
+	if row := strip2(m.sidebarRow(m.filtered[1], false, 40)[0]); !strings.Contains(row, "└ Test of a skill") || strings.Contains(row, "⚙") {
+		t.Errorf("a child is marked └, without ⚙: %q", row)
+	}
+	if row := strip2(m.sidebarRow(m.filtered[2], false, 40)[0]); !strings.Contains(row, "⚙") {
+		t.Errorf("a spawned session with no parent found keeps its ⚙: %q", row)
 	}
 }

@@ -65,6 +65,8 @@ type Conversation struct {
 	pending     *toolCall  // the last tool call still without a result: what a waiting session asks about
 	PRs         []string   // PRs Claude Code linked to the session (pr-link), first touched first
 	spawns      []spawnCmd // claude -p commands it ran, to find the sessions they started
+	calls       []bgTask   // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
+	tasks       []bgTask   // its background tasks (tasks.go)
 
 	// readAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -556,6 +558,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return false
 	}
+	noteEnds(conv, line)
 	switch raw.Type {
 	case "custom-title":
 		conv.Title = raw.CustomTitle // user-set name wins over ai-title
@@ -674,18 +677,23 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 		return
 	}
 	var blocks []struct {
-		Type      string `json:"type"`
-		ToolUseID string `json:"tool_use_id"`
+		Type      string          `json:"type"`
+		ToolUseID string          `json:"tool_use_id"`
+		Content   json.RawMessage `json:"content"`
 		toolCall
 	}
 	if json.Unmarshal(content, &blocks) != nil {
 		return
 	}
 	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			noteResult(conv, b.ToolUseID, b.Content)
+		}
 		switch {
 		case b.Type == "tool_use":
 			call := b.toolCall
 			conv.pending = &call
+			noteCall(conv, call, ts)
 			if call.Name == "Bash" {
 				var in struct {
 					Command string `json:"command"`

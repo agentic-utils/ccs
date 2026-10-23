@@ -977,7 +977,7 @@ func TestWheelScrollsWhateverIsUnderThePointer(t *testing.T) {
 	}
 
 	// Clicking a row selects it.
-	m = m.handleMouse(tea.MouseMsg{X: 10, Y: listTop + 4*m.rowsPerItem(), Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: listTop + rowOf(m, 4), Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.cursor != 4 {
 		t.Errorf("click should select row 4, cursor=%d", m.cursor)
 	}
@@ -1235,12 +1235,14 @@ func TestSidebarAndTable(t *testing.T) {
 	}
 	listTop, _, _ := m.listLayout()
 	sw := m.sidebarWidth()
-	row := lines[listTop]
-	if !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(row, sw+1, m.width), "Project:") {
+	if !strings.Contains(lines[listTop], "not open in claude 40") {
+		t.Errorf("the list opens with its state section's header: %q", lines[listTop])
+	}
+	if row := lines[listTop+1]; !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(lines[listTop], sw+1, m.width), "Project:") {
 		t.Errorf("sidebar row and preview should sit side by side: %q", row)
 	}
-	if ansi.Cut(row, sw, sw+1) != "┃" {
-		t.Errorf("the divider should show the list's thumb at the top, got %q", row)
+	if ansi.Cut(lines[listTop], sw, sw+1) != "┃" {
+		t.Errorf("the divider should show the list's thumb at the top, got %q", lines[listTop])
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "Size:") {
 		t.Error("the sidebar's preview header should show the size and message count")
@@ -1248,10 +1250,10 @@ func TestSidebarAndTable(t *testing.T) {
 	if last := lines[len(lines)-1]; !strings.HasSuffix(last, "┃") {
 		t.Errorf("the preview opens at the newest message, so its thumb is at the bottom: %q", last)
 	}
-	if !strings.Contains(ansi.Cut(lines[listTop+1], 0, sw), "now · p") {
-		t.Errorf("a session's second row should say when it was active and its project: %q", lines[listTop+1])
+	if !strings.Contains(ansi.Cut(lines[listTop+2], 0, sw), "now · p") {
+		t.Errorf("a session's second row should say when it was active and its project: %q", lines[listTop+2])
 	}
-	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 7, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + rowOf(m, 3) + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.cursor != 3 {
 		t.Errorf("clicking a sidebar row should select it, cursor=%d", m.cursor)
 	}
@@ -1300,15 +1302,18 @@ func TestGroupByFolder(t *testing.T) {
 	}
 	listTop, _, _ := m.listLayout()
 	lines := strings.Split(strip2(m.View()), "\n")
-	if !strings.Contains(lines[listTop], "ccs 1") || !strings.Contains(lines[listTop+3], "api 2") || !strings.Contains(lines[listTop+8], "ccs 1") {
-		t.Errorf("each group should start with its name and count:\n%s", strings.Join(lines[listTop:listTop+11], "\n"))
+	// State sections first (idle, then not open), folders within each.
+	for at, want := range map[int]string{0: "idle 1", 1: "ccs 1", 4: "not open in claude 3", 5: "api 2", 10: "ccs 1"} {
+		if !strings.Contains(lines[listTop+at], want) {
+			t.Errorf("row %d should be the header %q:\n%s", at, want, strings.Join(lines[listTop:listTop+13], "\n"))
+		}
 	}
 	cur := m.cursor
 	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.cursor != cur {
 		t.Error("clicking a group's header selects nothing")
 	}
-	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 6, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.filtered[m.cursor].conv.SessionID != "api-new" {
 		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
 	}
@@ -1417,4 +1422,9 @@ func TestViewIsRememberedAcrossRestarts(t *testing.T) {
 	if got := loadSettings(); got.Grouped || !got.Table {
 		t.Errorf("^E again should be saved too, got %+v", got)
 	}
+}
+
+// rowOf is the list row (from the list's top) where session i's first line is drawn.
+func rowOf(m model, i int) int {
+	return slices.IndexFunc(m.listRows(), func(r listRow) bool { return r.item == i })
 }

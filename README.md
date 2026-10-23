@@ -98,7 +98,8 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 ### Keybindings
 
 - `↑/↓` or `Ctrl+P/N` - Navigate list
-- `Ctrl+E` - Group sessions by folder (a worktree under `.claude/worktrees` counts as its repo); folders with sessions open in `claude` come first, then (grey headers) folders whose sessions aren't open, each half with the most urgent group first. Again to ungroup. ccs remembers this and the ^B layout, and reopens the way you left it
+- The list is in sections by state, each with a header: waiting on you, asked you something, idle, busy, not open in `claude`
+- `Ctrl+E` - Group sessions by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^B layout, and reopens the way you left it
 - `Ctrl+B` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view
 - `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter jumps to its iTerm tab / tmux pane instead
 - `Ctrl+F` - Fork selected conversation (`claude --resume <id> --fork-session`)

@@ -27,6 +27,7 @@ type listItem struct {
 	rank        int    // matchRank for the current search, 0 without one
 	depth       int    // nested under the session that started it (sortList)
 	familyCwd   string // its top-level session's cwd, which ^E groups the family by
+	familyLive  bool   // a session of its family is open in claude: ^E puts it in the open half
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -431,17 +432,22 @@ func (m *model) sortList() {
 	sort.SliceStable(m.filtered, less)
 	m.nestFamilies()
 	if m.grouped {
-		// A group goes where its first session lands in the usual order, so
-		// the group holding a question comes first. Families stay together
-		// under their top session's folder.
+		// Folders with a session open in claude first, then the rest; within
+		// each half a group goes where its first session lands in the usual
+		// order, so the group holding a question comes first. Families stay
+		// together under their top session's folder.
 		first := map[string]int{}
 		for i, it := range m.filtered {
-			if k := groupKey(it.familyCwd); first[k] == 0 {
+			if k := groupOf(it); first[k] == 0 {
 				first[k] = i + 1
 			}
 		}
 		sort.SliceStable(m.filtered, func(i, j int) bool {
-			return first[groupKey(m.filtered[i].familyCwd)] < first[groupKey(m.filtered[j].familyCwd)]
+			a, b := m.filtered[i], m.filtered[j]
+			if a.familyLive != b.familyLive {
+				return a.familyLive
+			}
+			return first[groupOf(a)] < first[groupOf(b)]
 		})
 	}
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
@@ -493,7 +499,27 @@ func (m *model) nestFamilies() {
 		walk(r, 0, m.filtered[r].conv.Cwd)
 		walk(i, 0, m.filtered[i].conv.Cwd) // only reached by a cycle
 	}
+	for start := 0; start < len(out); { // families are contiguous, each from its depth-0 session
+		end := start + 1
+		for end < len(out) && out[end].depth > 0 {
+			end++
+		}
+		live := slices.ContainsFunc(out[start:end], func(it listItem) bool { return m.live[it.conv.SessionID] })
+		for i := start; i < end; i++ {
+			out[i].familyLive = live
+		}
+		start = end
+	}
 	m.filtered = out
+}
+
+// groupOf is the ^E group a session is listed under: its family's folder,
+// in the open half or the not-open half.
+func groupOf(it listItem) string {
+	if it.familyLive {
+		return "open " + groupKey(it.familyCwd)
+	}
+	return "closed " + groupKey(it.familyCwd)
 }
 
 // spawnParent is the session whose claude -p started c, "" if none is known.
@@ -1890,13 +1916,17 @@ func (m model) listRows() []listRow {
 	if m.grouped {
 		counts = map[string]int{}
 		for _, it := range m.filtered {
-			counts[groupKey(it.conv.Cwd)]++
+			counts[groupOf(it)]++
 		}
 	}
 	var rows []listRow
 	for i, it := range m.filtered {
-		if k := groupKey(it.conv.Cwd); m.grouped && (i == 0 || k != groupKey(m.filtered[i-1].conv.Cwd)) {
-			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[1;33m%s\033[0m \033[90m%d\033[0m", projectName(k), counts[k])})
+		if k := groupOf(it); m.grouped && (i == 0 || k != groupOf(m.filtered[i-1])) {
+			style := "1;33" // open in claude; the not-open half's folders are grey
+			if !it.familyLive {
+				style = "90"
+			}
+			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", style, projectName(groupKey(it.familyCwd)), counts[k])})
 		}
 		for p := range m.rowsPerItem() {
 			rows = append(rows, listRow{item: i, part: p})

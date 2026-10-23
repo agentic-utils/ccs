@@ -614,7 +614,7 @@ func typeKeys(pid int, text string, enter bool) (where string, err error) {
 			return "tmux pane", err
 		}
 	}
-	if os.Getenv("TERM_PROGRAM") != "iTerm.app" {
+	if !inITerm() {
 		return "", nil
 	}
 	script := fmt.Sprintf(`tell application "iTerm2"

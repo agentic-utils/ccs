@@ -89,6 +89,11 @@ func mustStat(t *testing.T, path string) os.FileInfo {
 }
 
 func TestMain(m *testing.M) {
+	// Not in iTerm unless a test says so: inITerm also reads these, and a
+	// test must never drive the real iTerm (open tabs, type into sessions).
+	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX"} {
+		os.Unsetenv(k)
+	}
 	// Keep tests from writing into the real update log.
 	dir, _ := os.MkdirTemp("", "ccs-test-log")
 	updateLogPath = filepath.Join(dir, "update.log")

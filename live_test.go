@@ -358,3 +358,14 @@ func TestReopenAfterRestart(t *testing.T) {
 		t.Fatal("enter didn't start reopening")
 	}
 }
+
+func TestInITermThroughTmux(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "tmux") // tmux overrides it inside its panes
+	if inITerm() {
+		t.Error("tmux alone isn't iTerm")
+	}
+	t.Setenv("LC_TERMINAL", "iTerm2") // what iTerm sets, and tmux passes through
+	if !inITerm() {
+		t.Error("tmux inside iTerm should still find iTerm tabs")
+	}
+}

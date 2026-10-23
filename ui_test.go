@@ -1290,23 +1290,25 @@ func TestGroupByFolder(t *testing.T) {
 	for _, it := range m.filtered {
 		order = append(order, it.conv.SessionID)
 	}
-	if got := strings.Join(order, " "); got != "ccs-main ccs-tree api-new api-old" {
-		t.Errorf("groups by folder, worktrees with their repo, the live one's group first: %s", got)
+	// ccs-main is open in claude: its folder in the open half; then the
+	// not-open half, where ccs comes again for its worktree session.
+	if got := strings.Join(order, " "); got != "ccs-main api-new api-old ccs-tree" {
+		t.Errorf("open sessions' folders first, then the rest, worktrees with their repo: %s", got)
 	}
 	if m.filtered[m.cursor].conv.SessionID != "api-old" {
 		t.Error("grouping should keep the selection on its session")
 	}
 	listTop, _, _ := m.listLayout()
 	lines := strings.Split(strip2(m.View()), "\n")
-	if !strings.Contains(lines[listTop], "ccs 2") || !strings.Contains(lines[listTop+5], "api 2") {
-		t.Errorf("each group should start with its name and count:\n%s", strings.Join(lines[listTop:listTop+8], "\n"))
+	if !strings.Contains(lines[listTop], "ccs 1") || !strings.Contains(lines[listTop+3], "api 2") || !strings.Contains(lines[listTop+8], "ccs 1") {
+		t.Errorf("each group should start with its name and count:\n%s", strings.Join(lines[listTop:listTop+11], "\n"))
 	}
 	cur := m.cursor
 	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.cursor != cur {
 		t.Error("clicking a group's header selects nothing")
 	}
-	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 6, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.filtered[m.cursor].conv.SessionID != "api-new" {
 		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
 	}

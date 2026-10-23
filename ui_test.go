@@ -1372,3 +1372,29 @@ func TestLastColumnStaysEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
+	parent := Conversation{SessionID: "parent", Title: "parent", LastTimestamp: "2026-10-23T10:00:00Z",
+		spawns: []spawnCmd{{"2026-10-23T09:00:00Z", spawnText(`claude -p "Test of a skill's exit step, then report back" --output-format json`)}}}
+	child := Conversation{SessionID: "child", Spawned: true, FirstTimestamp: "2026-10-23T09:00:05Z", LastTimestamp: "2026-10-23T09:01:00Z",
+		Messages: []Message{{Role: "user", Text: "Test of a skill's exit step, then report back"}}}
+	late := child // the same prompt an hour later: not started by that command
+	late.SessionID, late.FirstTimestamp, late.LastTimestamp = "late", "2026-10-23T10:30:00Z", "2026-10-23T10:31:00Z"
+	other := Conversation{SessionID: "other", Title: "other", LastTimestamp: "2026-10-23T09:30:00Z"}
+	m := initialModel(buildItems([]Conversation{child, other, parent, late}), "", nil)
+	m.width, m.height = 120, 30
+	m.live = map[string]bool{"child": true}
+	m.chatStatus = map[string]sessionStat{"child": {status: "waiting"}}
+	m.sortList(false)
+	var got []string
+	for _, it := range m.filtered {
+		got = append(got, fmt.Sprintf("%s:%d", it.conv.SessionID, it.depth))
+	}
+	// The child waits on a menu, so its family comes first, parent on top.
+	if strings.Join(got, " ") != "parent:0 child:1 late:0 other:0" {
+		t.Errorf("a spawned session sits under its parent, its family where its most urgent member is: %v", got)
+	}
+	if row := m.sidebarRow(m.filtered[1], false, 40)[0]; !strings.Contains(strip2(row), "└ Test of a skill") {
+		t.Errorf("a child is marked └: %q", strip2(row))
+	}
+}

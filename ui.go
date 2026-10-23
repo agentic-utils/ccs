@@ -25,6 +25,8 @@ type listItem struct {
 	searchText  string // All searchable content
 	searchLower string // searchText lowercased once, for case-insensitive filtering
 	rank        int    // matchRank for the current search, 0 without one
+	depth       int    // nested under the session that started it (sortList)
+	familyCwd   string // its top-level session's cwd, which ^E groups the family by
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -42,8 +44,10 @@ type model struct {
 	cursor          int
 	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width           int
-	table           bool // ^B: the full-width table instead of the sidebar
-	grouped         bool // ^E: sessions grouped by folder
+	table           bool              // ^B: the full-width table instead of the sidebar
+	parents         map[string]string // spawned SessionID -> the session whose claude -p started it
+	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
+	grouped         bool              // ^E: sessions grouped by folder
 	height          int
 	listHeight      int // Calculated visible list height
 	selected        *Conversation
@@ -408,6 +412,9 @@ func (m model) liveGroup(c Conversation) int {
 // the query, then the words as a phrase), then newest, keeping the cursor on
 // the same session. Statuses change on ticks, so Update runs it every time.
 func (m *model) sortList(keepRow bool) {
+	if len(m.filtered) == 0 {
+		return
+	}
 	less := func(i, j int) bool {
 		a, b := m.filtered[i], m.filtered[j]
 		if ga, gb := m.liveGroup(a.conv), m.liveGroup(b.conv); ga != gb {
@@ -418,29 +425,23 @@ func (m *model) sortList(keepRow bool) {
 		}
 		return a.conv.LastTimestamp > b.conv.LastTimestamp
 	}
-	sorted := sort.SliceIsSorted(m.filtered, less)
-	if sorted && !m.grouped {
-		return
-	}
-	id := ""
-	if m.cursor < len(m.filtered) {
-		id = m.filtered[m.cursor].conv.SessionID
-	}
-	if !sorted {
-		sort.SliceStable(m.filtered, less)
-	}
+	id := m.filtered[min(m.cursor, len(m.filtered)-1)].conv.SessionID
+	// ponytail: sorts on every Update (the families and groups move with
+	// statuses); a few hundred rows, cache it if it shows in profiles.
+	sort.SliceStable(m.filtered, less)
+	m.nestFamilies()
 	if m.grouped {
 		// A group goes where its first session lands in the usual order, so
-		// the group holding a question comes first.
-		// ponytail: regroups on every Update; cache per list change if it shows in profiles.
+		// the group holding a question comes first. Families stay together
+		// under their top session's folder.
 		first := map[string]int{}
 		for i, it := range m.filtered {
-			if k := groupKey(it.conv.Cwd); first[k] == 0 {
+			if k := groupKey(it.familyCwd); first[k] == 0 {
 				first[k] = i + 1
 			}
 		}
 		sort.SliceStable(m.filtered, func(i, j int) bool {
-			return first[groupKey(m.filtered[i].conv.Cwd)] < first[groupKey(m.filtered[j].conv.Cwd)]
+			return first[groupKey(m.filtered[i].familyCwd)] < first[groupKey(m.filtered[j].familyCwd)]
 		})
 	}
 	if keepRow && !m.chatFocus && !m.waitOpen {
@@ -457,6 +458,114 @@ func (m *model) sortList(keepRow bool) {
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
 		m.cursor = i
 	}
+}
+
+// nestFamilies puts each shown spawned session right under the shown session
+// that started it (depth 1, its own children depth 2…). A family sits where
+// its first member was in the sorted list, so a child waiting on a question
+// still brings its family up.
+func (m *model) nestFamilies() {
+	n := len(m.filtered)
+	at := make(map[string]int, n)
+	for i, it := range m.filtered {
+		at[it.conv.SessionID] = i
+	}
+	parent := make([]int, n)
+	kids := map[int][]int{}
+	for i, it := range m.filtered {
+		parent[i] = -1
+		if it.conv.Spawned {
+			if p, ok := at[m.spawnParent(it.conv)]; ok && p != i {
+				parent[i] = p
+				kids[p] = append(kids[p], i)
+			}
+		}
+	}
+	out := make([]listItem, 0, n)
+	seen := make([]bool, n)
+	var walk func(i, depth int, cwd string)
+	walk = func(i, depth int, cwd string) {
+		if seen[i] {
+			return
+		}
+		seen[i] = true
+		it := m.filtered[i]
+		it.depth, it.familyCwd = depth, cwd
+		out = append(out, it)
+		for _, k := range kids[i] {
+			walk(k, depth+1, cwd)
+		}
+	}
+	for i := range m.filtered {
+		r := i
+		for d := 0; parent[r] >= 0 && d < n; d++ { // up to its top session (d guards a cycle)
+			r = parent[r]
+		}
+		walk(r, 0, m.filtered[r].conv.Cwd)
+		walk(i, 0, m.filtered[i].conv.Cwd) // only reached by a cycle
+	}
+	m.filtered = out
+}
+
+// spawnParent is the session whose claude -p started c, "" if none is known.
+// Found once and kept; a miss is retried when the list grows.
+func (m *model) spawnParent(c Conversation) string {
+	if p := m.parents[c.SessionID]; p != "" {
+		return p
+	}
+	if n, ok := m.noParent[c.SessionID]; ok && n == len(m.items) {
+		return ""
+	}
+	if m.parents == nil {
+		m.parents, m.noParent = map[string]string{}, map[string]int{}
+	}
+	p := findSpawnParent(c, m.items)
+	if p == "" {
+		m.noParent[c.SessionID] = len(m.items)
+	} else {
+		m.parents[c.SessionID] = p
+	}
+	return p
+}
+
+// findSpawnParent finds the session that ran a claude -p holding c's first
+// prompt within ten minutes before c began (two for a short prompt); Claude
+// Code records no parent.
+// ponytail: matched on the prompt's start, so two sessions sending the same
+// prompt at the same moment can't be told apart.
+func findSpawnParent(c Conversation, items []listItem) string {
+	first := ""
+	for _, msg := range c.Messages {
+		if msg.Role == "user" {
+			first = spawnText(msg.Text)
+			break
+		}
+	}
+	if first == "" {
+		return ""
+	}
+	window := 10 * time.Minute
+	if len(first) < 20 { // a short prompt ("reply ok") is common: only trust it close in time
+		window = 2 * time.Minute
+	}
+	first = first[:min(len(first), 60)]
+	start, err := time.Parse(time.RFC3339, c.FirstTimestamp)
+	if err != nil {
+		return ""
+	}
+	best, bestGap := "", window
+	for _, it := range items {
+		if it.conv.SessionID == c.SessionID {
+			continue
+		}
+		for _, s := range it.conv.spawns {
+			t, err := time.Parse(time.RFC3339, s.ts)
+			if gap := start.Sub(t); err == nil && gap > -time.Minute && gap < bestGap && strings.Contains(s.text, first) {
+				best, bestGap = it.conv.SessionID, max(gap, -gap)
+			}
+		}
+	}
+	return best
 }
 
 func (m model) Init() tea.Cmd {
@@ -1641,7 +1750,8 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// A trailing ✎ marks a name you set (not the ai-title Claude gives almost
 	// every session); the title is cut short so it always stays visible. Not
 	// ✍: some terminals draw that emoji two cells wide, so the row wraps.
-	topic := listTopic(item.conv, tw-colMarks)
+	nest := nestPrefix(item.depth)
+	topic := nest + listTopic(item.conv, tw-colMarks-ansi.StringWidth(nest))
 
 	// Message count
 	msgs := len(item.conv.Messages)
@@ -1676,6 +1786,15 @@ func (m model) formatListItem(item listItem, selected bool) string {
 }
 
 // listTopic is the session's title cut to w, a trailing ✎ when you named it.
+// nestPrefix marks a session started by the one above it: "└ ", indented
+// two more per level below the first.
+func nestPrefix(depth int) string {
+	if depth == 0 {
+		return ""
+	}
+	return strings.Repeat("  ", depth-1) + "└ "
+}
+
 func listTopic(conv Conversation, w int) string {
 	if conv.IsCustomTitle {
 		return truncate(getTopic(conv), w-2) + " ✎"
@@ -1833,7 +1952,8 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	}
 	// No indent before the marks: their glyphs sit under the search's >.
 	tw := w - colMarks - ansi.StringWidth(hits) - 1
-	topic := padRight(listTopic(conv, tw), tw)
+	nest := nestPrefix(item.depth)
+	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
 	stats := strings.TrimSuffix(formatAgo(conv.LastTimestamp, time.Now()), " ago")
 	if conv.ContextTokens > 0 {

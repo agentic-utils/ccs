@@ -282,12 +282,12 @@ func TestPreviewOpensAtNewestAndScrollsBackToFirst(t *testing.T) {
 	// Scrolling back stops with the first message just under the header.
 	_, _, previewTop := m.listLayout()
 	for i := 0; i < 100; i++ {
-		m = m.handleMouse(tea.MouseMsg{Y: previewTop + 1, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+		m = m.handleMouse(tea.MouseMsg{X: m.width - 10, Y: previewTop + 1, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 	}
 	if m.previewScroll != m.maxPreviewScroll() {
 		t.Errorf("scroll %d should stop at the max %d", m.previewScroll, m.maxPreviewScroll())
 	}
-	if !strings.Contains(strings.Join(screen(), "\n"), "line-0\n") {
+	if !regexp.MustCompile(`line-0\b`).MatchString(strings.Join(screen(), "\n")) {
 		t.Error("scrolled all the way back, the first message should be visible")
 	}
 }
@@ -544,7 +544,7 @@ func TestClickOpensLink(t *testing.T) {
 	for row, l := range lines {
 		plain := ansiSeq.ReplaceAllString(l, "")
 		if x := strings.Index(plain, "example.com"); x >= 0 {
-			nm, cmd := m.Update(tea.MouseMsg{X: ansi.StringWidth(plain[:x]) + 2, Y: previewTop + row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+			nm, cmd := m.Update(tea.MouseMsg{X: m.sidebarWidth() + 1 + ansi.StringWidth(plain[:x]) + 2, Y: previewTop + row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 			m = nm.(model)
 			if cmd == nil {
 				t.Fatal("clicking a link should open it")
@@ -582,6 +582,7 @@ func TestJumpBetweenSearchHits(t *testing.T) {
 	conv := Conversation{SessionID: "s", Cwd: "/p", Messages: msgs}
 	m := initialModel(buildItems([]Conversation{conv}), "needle", nil)
 	m.width, m.height = 100, 30
+	m.table = true // the hit positions below assume the table's preview height
 	hits := m.hitLines()
 	if len(hits) != 3 {
 		t.Fatalf("want 3 hits, got %v", hits)

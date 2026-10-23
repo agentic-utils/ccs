@@ -968,3 +968,17 @@ func TestStatusChangeMovesTheSessionNotTheCursor(t *testing.T) {
 		t.Error("the selection should be whatever moved into the row")
 	}
 }
+
+func TestQuestionMarkColours(t *testing.T) {
+	conv := Conversation{SessionID: "s", Messages: []Message{{Role: "assistant", Text: "Want me to add that?"}}}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.live = map[string]bool{"s": true}
+	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
+	if _, marks := m.listMarks(conv); !strings.Contains(marks, "\033[32m?") {
+		t.Errorf("idle with a question in its last message: a green ?, got %q", marks)
+	}
+	m.chatStatus["s"] = sessionStat{status: "waiting"}
+	if _, marks := m.listMarks(conv); !strings.Contains(marks, "\033[1;"+amber+"m?") {
+		t.Errorf("a menu or prompt waiting: an amber ?, got %q", marks)
+	}
+}

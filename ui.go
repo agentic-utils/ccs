@@ -1690,13 +1690,14 @@ func (m model) listMarks(conv Conversation) (string, string) {
 	// cell off on CJK-width terminals - cosmetic only.
 	var icons, colouredIcons string
 	n := 0
-	// Green when idle, amber while busy, an amber ? when it waits on you.
+	// Green when idle, amber while busy, an amber ? when a menu or prompt
+	// waits on you; a green ? when idle and its last message asks something.
 	liveGlyph, liveColour := "●", "32"
 	switch m.waitSignal(conv) {
 	case waitPrompt:
 		liveGlyph, liveColour = "?", "1;"+amber
 	case waitAsked:
-		liveGlyph, liveColour = "?", "2;"+amber
+		liveGlyph = "?"
 	default:
 		if m.chatStatus[conv.SessionID].status == "busy" {
 			liveColour = amber

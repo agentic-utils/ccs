@@ -98,6 +98,7 @@ func TestMain(m *testing.M) {
 	dir, _ := os.MkdirTemp("", "ccs-test-log")
 	updateLogPath = filepath.Join(dir, "update.log")
 	openRecordPath = filepath.Join(dir, "open-sessions.json")
+	settingsPath = filepath.Join(dir, "settings.json")
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

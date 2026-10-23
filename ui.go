@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -1055,11 +1056,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+b" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.table = false, !m.table
+			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
 		if msg.String() == "ctrl+e" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.grouped = false, !m.grouped
+			saveSettings(m.settings())
 			m.sortList()
 			return m, nil
 		}
@@ -2134,4 +2137,42 @@ func (m *model) pruneConversation() {
 		}
 	}
 	m.errorMsg = ""
+}
+
+// settingsPath keeps the view ccs reopens in (^B layout, ^E grouping)
+// across restarts.
+var settingsPath = func() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "ccs", "settings.json")
+}()
+
+type settings struct {
+	Table   bool `json:"table,omitempty"`
+	Grouped bool `json:"grouped,omitempty"`
+}
+
+func (m model) settings() settings { return settings{Table: m.table, Grouped: m.grouped} }
+
+// loadSettings reads them; a missing or unreadable file means the defaults.
+func loadSettings() (s settings) {
+	if b, err := os.ReadFile(settingsPath); err == nil {
+		json.Unmarshal(b, &s)
+	}
+	return s
+}
+
+// saveSettings writes them atomically. A failure only means the next start
+// opens in the default view, so it isn't reported.
+func saveSettings(s settings) {
+	data, _ := json.Marshal(s)
+	if os.MkdirAll(filepath.Dir(settingsPath), 0o700) != nil {
+		return
+	}
+	tmp := settingsPath + ".tmp"
+	if os.WriteFile(tmp, data, 0o600) == nil {
+		os.Rename(tmp, settingsPath)
+	}
 }

@@ -198,6 +198,9 @@ func main() {
 	// pointer (see listLayout). A report that arrives fragmented can reach
 	// Update as typed text; mouseLeak drops those before the search box.
 	m := initialModel(items, filterQuery, claudeFlags)
+	s := loadSettings() // the view it was left in
+	m.table, m.grouped = s.Table, s.Grouped
+	m.sortList()
 	if saved := os.Getenv(restoreEnv); saved != "" {
 		os.Unsetenv(restoreEnv) // once only: not inherited by claude or a later ccs
 		var state uiState

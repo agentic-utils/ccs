@@ -387,18 +387,21 @@ func (m *model) updateFilter() {
 	m.previewScroll = 0
 }
 
-// liveGroup is where a session sits in the list: waiting on a question,
+// liveGroup is where a session sits in the list: waiting on a menu or
+// prompt (amber ?), then idle with a question in its last message (green ?),
 // then idle, then busy, then not open in claude.
 func (m model) liveGroup(c Conversation) int {
 	switch {
 	case !m.live[c.SessionID]:
-		return 3
+		return 4
 	case m.waitSignal(c) == waitPrompt:
 		return 0
+	case m.waitSignal(c) == waitAsked: // idle, its last message asks something
+		return 1
 	case m.chatStatus[c.SessionID].status == "busy":
-		return 2
+		return 3
 	}
-	return 1
+	return 2
 }
 
 // sortList orders the list by liveGroup, then best search match (named after
@@ -1690,13 +1693,14 @@ func (m model) listMarks(conv Conversation) (string, string) {
 	// cell off on CJK-width terminals - cosmetic only.
 	var icons, colouredIcons string
 	n := 0
-	// Green when idle, amber while busy, an amber ? when it waits on you.
+	// Green when idle, amber while busy, an amber ? when a menu or prompt
+	// waits on you; a green ? when idle and its last message asks something.
 	liveGlyph, liveColour := "●", "32"
 	switch m.waitSignal(conv) {
 	case waitPrompt:
 		liveGlyph, liveColour = "?", "1;"+amber
 	case waitAsked:
-		liveGlyph, liveColour = "?", "2;"+amber
+		liveGlyph = "?"
 	default:
 		if m.chatStatus[conv.SessionID].status == "busy" {
 			liveColour = amber

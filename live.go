@@ -455,6 +455,13 @@ func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
 
 // focusSession brings the terminal running pid to the front: its tmux pane
 // when ccs is in tmux, else its iTerm tab. Matched by the process's tty.
+// inITerm: running in iTerm, directly or in tmux inside it. tmux sets
+// TERM_PROGRAM to tmux, but iTerm's LC_TERMINAL and ITERM_SESSION_ID get
+// through, so a session in an ordinary iTerm tab can still be found.
+func inITerm() bool {
+	return os.Getenv("TERM_PROGRAM") == "iTerm.app" || os.Getenv("LC_TERMINAL") == "iTerm2" || os.Getenv("ITERM_SESSION_ID") != ""
+}
+
 func focusSession(pid int) bool {
 	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
 	tty := strings.TrimSpace(string(out))
@@ -469,7 +476,7 @@ func focusSession(pid int) bool {
 			return err == nil
 		}
 	}
-	if os.Getenv("TERM_PROGRAM") != "iTerm.app" {
+	if !inITerm() {
 		return false
 	}
 	script := fmt.Sprintf(`tell application "iTerm2"
@@ -511,7 +518,7 @@ func shellQuote(s string) string {
 // if we're not in iTerm or osascript failed, so the caller can exec in place.
 // ponytail: osascript, not the iTerm python API - no deps, no daemon.
 func resumeInITermTab(cwd string, args []string) (handled bool, err error) {
-	if os.Getenv("TERM_PROGRAM") != "iTerm.app" || !shellSafe(cwd) || slices.IndexFunc(args, func(a string) bool { return !shellSafe(a) }) >= 0 {
+	if !inITerm() || !shellSafe(cwd) || slices.IndexFunc(args, func(a string) bool { return !shellSafe(a) }) >= 0 {
 		return false, nil // exec in place instead: no shell involved
 	}
 	quoted := make([]string, len(args))

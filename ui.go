@@ -1724,7 +1724,7 @@ const (
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " on each row
 	numGaps    = 7
-	colMarks   = 4 // status icons (● ⚙ !) packed right, then a space
+	colMarks   = 3 // status icons (● !) packed right, then a space
 )
 
 // searching: a search is typed, so HITS has something to count.
@@ -1807,8 +1807,10 @@ func (m model) listMarks(item listItem) (string, string) {
 	conv := item.conv
 	// Status icons, packed right against the topic so titles stay aligned:
 	// ● open in a running claude (? instead when it waits on you: bright for
-	// a prompt, green when its last message asks something), ⚙ started by a
-	// script or another session that ccs couldn't find (nested ones have └).
+	// a prompt, green when its last message asks something), ! its last
+	// action errored. A session another one started sits └ under it instead
+	// of a mark: entrypoint sdk-cli alone can't tell a script's claude -p from
+	// a session typed in through an app.
 	// ponytail: the glyphs are ambiguous-width, so a marked row may sit one
 	// cell off on CJK-width terminals - cosmetic only.
 	var icons, colouredIcons string
@@ -1829,7 +1831,7 @@ func (m model) listMarks(item listItem) (string, string) {
 	for _, s := range []struct {
 		on           bool
 		glyph, color string
-	}{{m.live[conv.SessionID], liveGlyph, liveColour}, {conv.Spawned && item.depth == 0, "⚙", "90"}, {conv.LastError != "", "!", "1;31"}} {
+	}{{m.live[conv.SessionID], liveGlyph, liveColour}, {conv.LastError != "", "!", "1;31"}} {
 		if !s.on {
 			continue
 		}
@@ -1951,8 +1953,8 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if m.searching() {
 		hits = fmt.Sprint(m.hitCount(item))
 	}
-	// No indent before the marks: their glyphs sit under the search's >.
-	tw := w - colMarks - ansi.StringWidth(hits) - 1
+	// One space before the marks, so their glyphs sit under the search's >.
+	tw := w - 1 - colMarks - ansi.StringWidth(hits) - 1
 	nest := nestPrefix(item.depth)
 	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
@@ -1961,17 +1963,17 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
 	}
 	stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
-	sw := w - colMarks - ansi.StringWidth(prs) - 1
+	sw := w - 1 - colMarks - ansi.StringWidth(prs) - 1
 	stats = padRight(truncate(stats, sw), sw)
-	indent := strings.Repeat(" ", colMarks)
+	indent := strings.Repeat(" ", 1+colMarks)
 	if selected { // the highlight marks it, no >
 		return [2]string{
-			selectedStyle.Render(padRight(marks+topic+" "+hits, w)),
+			selectedStyle.Render(padRight(" "+marks+topic+" "+hits, w)),
 			selectedStyle.Render(padRight(indent+stats+" "+prs, w)),
 		}
 	}
 	return [2]string{
-		colouredMarks + topic + " \033[36m" + hits + "\033[0m",
+		" " + colouredMarks + topic + " \033[36m" + hits + "\033[0m",
 		indent + "\033[90m" + stats + "\033[0m " + prs,
 	}
 }

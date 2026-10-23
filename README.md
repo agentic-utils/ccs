@@ -15,7 +15,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Preview conversation context with search term highlighting
 - See context size (tokens as of the last reply), message counts, hit counts, and file size per conversation
 - Resume conversations directly from the search interface
-- Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, ones started by another session's `claude -p` sit `└` under it, and a `⚙` marks ones started by a script, `claude -p` or a team lead when ccs can't tell which session
+- Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, and ones started by another session's `claude -p` sit `└` under it
 - Rename conversations (`Ctrl+R`)
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)

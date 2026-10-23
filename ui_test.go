@@ -733,16 +733,16 @@ func TestFormatListItemLiveMarker(t *testing.T) {
 	}
 }
 
-func TestFormatListItemSpawnedAndLiveMarkers(t *testing.T) {
-	item := listItem{conv: Conversation{SessionID: "s1", Title: "Topic", Spawned: true, Messages: []Message{{Role: "user", Text: "x"}}}}
+func TestFormatListItemErrorAndLiveMarkers(t *testing.T) {
+	item := listItem{conv: Conversation{SessionID: "s1", Title: "Topic", Spawned: true, LastError: "429", Messages: []Message{{Role: "user", Text: "x"}}}}
 	m := initialModel([]listItem{item}, "", nil)
 	m.width = 120
 	m.live = map[string]bool{"s1": true}
-	if got := m.formatListItem(item, true); !strings.Contains(got, " ●⚙ Topic") {
+	if got := m.formatListItem(item, true); !strings.Contains(got, "●! Topic") {
 		t.Errorf("selected row = %q", got)
 	}
 	got := m.formatListItem(item, false)
-	if !strings.Contains(got, " \033[32m●\033[0m\033[90m⚙\033[0m Topic") {
+	if !strings.Contains(got, "\033[32m●\033[0m\033[1;31m!\033[0m Topic") {
 		t.Errorf("unselected row = %q", got)
 	}
 	// Same visible width as an unmarked row.
@@ -1394,10 +1394,7 @@ func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
 	if strings.Join(got, " ") != "parent:0 child:1 late:0 other:0" {
 		t.Errorf("a spawned session sits under its parent, its family where its most urgent member is: %v", got)
 	}
-	if row := strip2(m.sidebarRow(m.filtered[1], false, 40)[0]); !strings.Contains(row, "└ Test of a skill") || strings.Contains(row, "⚙") {
-		t.Errorf("a child is marked └, without ⚙: %q", row)
-	}
-	if row := strip2(m.sidebarRow(m.filtered[2], false, 40)[0]); !strings.Contains(row, "⚙") {
-		t.Errorf("a spawned session with no parent found keeps its ⚙: %q", row)
+	if row := strip2(m.sidebarRow(m.filtered[1], false, 40)[0]); !strings.Contains(row, "└ Test of a skill") {
+		t.Errorf("a child is marked └: %q", row)
 	}
 }

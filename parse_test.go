@@ -25,8 +25,8 @@ func TestTruncate(t *testing.T) {
 		{"with newlines", "hello\nworld", 20, "hello world"},
 		{"multiple spaces", "hello   world", 20, "hello world"},
 		{"multibyte fits", "世界", 5, "世界"},
-		{"multibyte truncates on rune boundary", "世界世界世界", 5, "世界..."},
-		{"tiny maxLen no ellipsis", "世界世界", 2, "世界"},
+		{"wide chars cut by screen width", "世界世界世界", 5, "世..."},
+		{"tiny maxLen no ellipsis", "世界世界", 2, "世"},
 	}
 
 	for _, tt := range tests {

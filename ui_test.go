@@ -1316,3 +1316,26 @@ func TestGroupByFolder(t *testing.T) {
 		t.Error("^E again should go back to the usual order")
 	}
 }
+
+func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "a", Title: "🚀 漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字 a long wide title", IsCustomTitle: true, Cwd: "/p/漢字漢字漢字漢字漢字漢字漢字", LastTimestamp: "2026-10-23T00:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}},
+		{SessionID: "b", Title: "plain", Cwd: "/p", LastTimestamp: "2026-10-22T00:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}},
+	}
+	for _, table := range []bool{false, true} {
+		for _, msg := range []string{"", strings.Repeat("long error ", 40), "two\nlines"} {
+			m := initialModel(buildItems(convs), "", nil)
+			m.width, m.height, m.errorMsg = 120, 30, msg
+			m.table = table
+			lines := strings.Split(m.View(), "\n")
+			if len(lines) > m.height || !strings.Contains(lines[0], "ccs") {
+				t.Errorf("table=%v error %.12q: %d rows for a %d-row terminal, first %q", table, msg, len(lines), m.height, lines[0])
+			}
+			for i, l := range lines {
+				if ansi.StringWidth(l) > m.width {
+					t.Errorf("table=%v error %.12q: row %d is %d wide, would wrap", table, msg, i, ansi.StringWidth(l))
+				}
+			}
+		}
+	}
+}

@@ -1006,13 +1006,10 @@ func highlight(text, query string) string {
 }
 
 func padRight(s string, length int) string {
-	r := []rune(s)
-	if len(r) >= length {
-		return string(r[:length])
+	if w := ansi.StringWidth(s); w < length { // screen cells, so emoji and CJK count double
+		return s + strings.Repeat(" ", length-w)
 	}
-	// ponytail: pads by rune count, not display width; CJK/emoji rows can still
-	// look a cell narrow. Swap in go-runewidth if column alignment matters.
-	return s + strings.Repeat(" ", length-len(r))
+	return ansi.Truncate(s, max(length, 0), "")
 }
 
 // scrollThumb places a scrollbar's thumb on a track of h rows, for h of total

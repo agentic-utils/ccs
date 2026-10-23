@@ -1745,7 +1745,7 @@ func (m model) topicColWidth() int {
 func (m model) formatListItem(item listItem, selected bool) string {
 	project := truncate(projectName(item.conv.Cwd), colProject)
 
-	marks, colouredMarks := m.listMarks(item.conv)
+	marks, colouredMarks := m.listMarks(item)
 	tw := m.topicColWidth()
 	// A trailing ✎ marks a name you set (not the ai-title Claude gives almost
 	// every session); the title is cut short so it always stays visible. Not
@@ -1803,11 +1803,12 @@ func listTopic(conv Conversation, w int) string {
 }
 
 // listMarks is a row's colMarks-wide status column, plain and coloured.
-func (m model) listMarks(conv Conversation) (string, string) {
+func (m model) listMarks(item listItem) (string, string) {
+	conv := item.conv
 	// Status icons, packed right against the topic so titles stay aligned:
 	// ● open in a running claude (? instead when it waits on you: bright for
-	// a prompt, dim when its last message asks something), ⚙ started by a
-	// script or another session.
+	// a prompt, green when its last message asks something), ⚙ started by a
+	// script or another session that ccs couldn't find (nested ones have └).
 	// ponytail: the glyphs are ambiguous-width, so a marked row may sit one
 	// cell off on CJK-width terminals - cosmetic only.
 	var icons, colouredIcons string
@@ -1828,7 +1829,7 @@ func (m model) listMarks(conv Conversation) (string, string) {
 	for _, s := range []struct {
 		on           bool
 		glyph, color string
-	}{{m.live[conv.SessionID], liveGlyph, liveColour}, {conv.Spawned, "⚙", "90"}, {conv.LastError != "", "!", "1;31"}} {
+	}{{m.live[conv.SessionID], liveGlyph, liveColour}, {conv.Spawned && item.depth == 0, "⚙", "90"}, {conv.LastError != "", "!", "1;31"}} {
 		if !s.on {
 			continue
 		}
@@ -1945,7 +1946,7 @@ func groupKey(cwd string) string {
 // last active, its context and project, with its PR counts on the right.
 func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	conv := item.conv
-	marks, colouredMarks := m.listMarks(conv)
+	marks, colouredMarks := m.listMarks(item)
 	hits := ""
 	if m.searching() {
 		hits = fmt.Sprint(m.hitCount(item))

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -142,5 +143,27 @@ exit 1
 	}
 	if got[prB].State != "GONE" {
 		t.Errorf("a PR GitHub couldn't find says so instead of checking forever: %+v", got[prB])
+	}
+}
+
+func TestPRColoursMatchGitHub(t *testing.T) {
+	u := func(n int) string { return fmt.Sprint("https://github.com/o/r/pull/", n) }
+	conv := Conversation{SessionID: "s", PRs: []string{u(1), u(2), u(3), u(4), u(5)}}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.prs = map[string]prInfo{
+		u(1): {State: "OPEN", MergeState: "CLEAN"},
+		u(2): {State: "OPEN", Checks: "PENDING", MergeState: "BLOCKED"},
+		u(3): {State: "OPEN", Draft: true},
+		u(4): {State: "MERGED"},
+		u(5): {State: "CLOSED"},
+	}
+	lines := m.prLines(conv, 200)
+	for i, want := range []string{"\033[32m✓", "\033[" + amber + "m○", "\033[90m○"} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("line %d should start %q: %q", i, want, lines[i])
+		}
+	}
+	if last := lines[len(lines)-1]; !strings.Contains(last, "\033["+prPurple+"m1 merged") || !strings.Contains(last, "\033[31m1 closed") {
+		t.Errorf("merged should be purple and closed red: %q", last)
 	}
 }

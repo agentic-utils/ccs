@@ -144,7 +144,8 @@ One package, split by area (all `package main`, same directory):
 - `deleteConversation()` - Removes conversation file and updates UI state
 - `pruneConversation()` - Prunes the selected conversation in place (Ctrl+X) and refreshes its size
 - `getTopic()` - Title, else first real user message (skips tag-wrapped harness text, shows `/cmd` or `! cmd` for command-only sessions), else session id
-- `renameConversation()` / `appendLine()` - Ctrl+R rename: appends a `custom-title` line like `/rename`; refused on live sessions since a running claude re-appends its own title
+- `refreshNow()` - Ctrl+R: the minute's work now: a session rescan (`startRefresh(true)`, not if one is running), a PR round (`prNext` reset), the allowance and a ccs update check
+- `renameConversation()` / `appendLine()` - Ctrl+E (edit its name) rename: appends a `custom-title` line like `/rename`; refused on live sessions since a running claude re-appends its own title
 - `Conversation.Spawned` - first user line has `entrypoint: sdk-cli` or a `teamName`: a candidate for nesting under the session that started it. No mark of its own: sdk-cli is also what an app (the desktop app, an editor) starts a session you type in with
 - `nestFamilies()` / `spawnParent()` / `findSpawnParent()` / `spawnCmd` - a spawned session sits under the session that started it, marked `└` (`listItem.depth`). Claude Code records no parent, so `trackTools` keeps each `claude -p` / `cswap run` Bash command a session runs (`Conversation.spawns`, text normalised by `spawnText`), and the parent is the session whose command holds the child's first prompt within 10 minutes before it began (2 for a prompt under 20 characters), the closest in time; found once and cached in `m.parents`, a miss retried when the list grows. `sortList` nests after sorting: a family sits where its first member landed, so a waiting child brings it up; ^G groups a family by its top session's folder (`familyCwd`). A child is nested only when its parent is shown
 - `pruneFile()` / `pruneStream()` - Shrink a conversation by dropping duplicate/redundant data (never touches user/assistant lines)
@@ -189,7 +190,7 @@ Project: /path/to/project
 
 ## Conventions
 
-- Shortcuts are mnemonic: the letter starts the action's word (^A auto-focus, ^G group, ^T table, ^W waiting, ^O open a link, ^U user account, ^S send, ^R rename, ^D delete, ^F fork, ^X prune, ^L changelog log). A new key follows the rule; when its letter is taken, pick the action's next clear word rather than an unrelated letter. Not available: ^C ^H ^I ^M ^[ ^Z (the terminal's), ^P ^N ^J ^K (moving), and ? opens help only on an empty search, so it can't be a key inside a text box. Update the header hints, `shortcuts()`, `--help`, the README and the tests together
+- Shortcuts are mnemonic: the letter starts the action's word (^A auto-focus, ^G group, ^T table, ^W waiting, ^O open a link, ^U user account, ^S send, ^R refresh, ^E edit its name, ^D delete, ^F fork, ^X prune, ^L changelog log). A new key follows the rule; when its letter is taken, pick the action's next clear word rather than an unrelated letter. Not available: ^C ^H ^I ^M ^[ ^Z (the terminal's), ^P ^N ^J ^K (moving), and ? opens help only on an empty search, so it can't be a key inside a text box. Update the header hints, `shortcuts()`, `--help`, the README and the tests together
 
 - Every interaction must be possible from the keyboard; the mouse (click, wheel) is only ever a shortcut for something a key already does
 

@@ -63,7 +63,8 @@ Key bindings:
   Ctrl+G          Group sessions by folder
   Ctrl+T          Table: every column, instead of the sidebar
   Ctrl+F          Fork conversation (resume into a new session id)
-  Ctrl+R          Rename conversation (not while it's open in claude)
+  Ctrl+R          Refresh now: rescan sessions, PRs and usage, check for a ccs update
+  Ctrl+E          Edit the conversation's name (not while it's open in claude)
   Ctrl+D          Delete conversation (with confirmation)
   Ctrl+X          Prune conversation - shrink it losslessly (with confirmation)
   Ctrl+J/K        Scroll the conversation preview (also the mouse wheel)

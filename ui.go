@@ -1244,7 +1244,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.focusCmd(m.filtered[m.cursor].conv)
 				}
 				return m, m.sendCmd()
-			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x", "ctrl+]", "ctrl+\\", "ctrl+w":
+			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+e", "ctrl+x", "ctrl+]", "ctrl+\\", "ctrl+w":
 				// fall through to the list's handling below
 			default:
 				var cmd tea.Cmd
@@ -1305,6 +1305,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "ctrl+r":
+			return m, m.refreshNow()
+
+		case "ctrl+e":
 			if len(m.filtered) > 0 {
 				conv := m.filtered[m.cursor].conv
 				// A running claude re-appends its own title and would undo ours.
@@ -1485,7 +1488,8 @@ func (m model) shortcuts() [][2]string {
 		add(sel, keyEnter, "resume")
 	}
 	add(sel, "^F", "fork")
-	add(sel && !live, "^R", "rename")
+	add(sel && !live, "^E", "edit its name")
+	add(true, "^R", "refresh now, and check for a ccs update")
 	add(sel, "^D", "delete")
 	add(sel, "^X", "prune")
 	add(sel, "^J/K", "scroll the conversation")
@@ -1637,7 +1641,7 @@ func (m model) viewScreen() string {
 		group = "ungroup"
 	}
 	pairs, keep := []string{"^G", group, "?", "help", "^C", "quit"}, 2 // ^A is beside auto-focus in the title
-	if m.showUsage { // only Tab, account, help and quit do anything there
+	if m.showUsage {                                                   // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
 		if len(m.waitQueue(true)) > 0 {
 			pairs = append(pairs, "^W", "waiting")
@@ -2232,4 +2236,23 @@ func saveSettings(s settings) {
 	if os.WriteFile(tmp, data, 0o600) == nil {
 		os.Rename(tmp, settingsPath)
 	}
+}
+
+// refreshNow (^R) does now what the minute's ticks do: rescans the sessions,
+// re-asks GitHub about PRs and the allowance, and checks for a ccs update.
+// A scan already running isn't started twice; the one-minute chain carries on.
+func (m *model) refreshNow() tea.Cmd {
+	var cmds []tea.Cmd
+	if m.refreshStarted.IsZero() {
+		cmds = append(cmds, m.startRefresh(true))
+	}
+	m.prNext = time.Time{} // the next Update starts a PR round
+	if m.allowanceEnabled {
+		m.allowanceAt = time.Time{}
+		cmds = append(cmds, m.allowanceCmd())
+	}
+	if m.checkLatest != nil {
+		cmds = append(cmds, m.checkUpdateCmd())
+	}
+	return tea.Batch(cmds...)
 }

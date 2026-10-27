@@ -155,7 +155,7 @@ One package, split by area (all `package main`, same directory):
 The default, a sidebar (^B switches to the table below it):
 
 ```
-  ccs · claude code search · v0.66.0 · refreshed just now · 1 waiting · ^Y        ^B table  ^G help  ^C quit
+  ccs · claude code search · v0.66.0 · refreshed just now · 1 waiting · ^Y   ^A auto-focus  ^B table  ^G help  ^C quit
   > type to search...                                                                          (N/total)
 ───────────────────────────┬────────────────────────────────────────────────
   ? fix login flow         ┃Project: /path/to/project

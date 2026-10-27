@@ -1617,7 +1617,7 @@ func (m model) viewScreen() string {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
 	if m.autoFocus && !m.showUsage {
-		status += " · auto-focus"
+		status += " · auto-focus on"
 	}
 	if n := m.waitingCount(); n > 0 && !m.showUsage {
 		status += fmt.Sprintf(" · %d waiting", n)
@@ -1630,7 +1630,7 @@ func (m model) viewScreen() string {
 	if m.table {
 		layout = "sidebar"
 	}
-	pairs, keep := []string{"^B", layout, "^G", "help", "^C", "quit"}, 2
+	pairs, keep := []string{"^A", "auto-focus", "^B", layout, "^G", "help", "^C", "quit"}, 2
 	if m.showUsage { // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^O", "account", "^L", "changelog"}, 1 // every key it has, so no ^G help
 		if len(m.waitQueue(true)) > 0 {

@@ -853,16 +853,26 @@ var updateLogPath = func() string {
 
 var updateLogMu sync.Mutex
 
-func logUpdate(format string, args ...any) {
+func logUpdate(format string, args ...any) { appendLog(updateLogPath, format, args...) }
+
+// activityLogPath is beside the update log: what ccs did on its own, such as
+// auto-focus switching tabs (logActivity).
+var activityLogPath = filepath.Join(filepath.Dir(updateLogPath), "activity.log")
+
+func logActivity(format string, args ...any) { appendLog(activityLogPath, format, args...) }
+
+// appendLog adds a timestamped line to a log, capped at 1MB (the previous
+// 1MB kept as .1).
+func appendLog(path, format string, args ...any) {
 	updateLogMu.Lock()
 	defer updateLogMu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(updateLogPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
-	if info, err := os.Stat(updateLogPath); err == nil && info.Size() > 1<<20 {
-		os.Rename(updateLogPath, updateLogPath+".1")
+	if info, err := os.Stat(path); err == nil && info.Size() > 1<<20 {
+		os.Rename(path, path+".1")
 	}
-	f, err := os.OpenFile(updateLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
 	}

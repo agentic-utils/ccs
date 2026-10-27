@@ -97,6 +97,7 @@ func TestMain(m *testing.M) {
 	// Keep tests from writing into the real update log.
 	dir, _ := os.MkdirTemp("", "ccs-test-log")
 	updateLogPath = filepath.Join(dir, "update.log")
+	activityLogPath = filepath.Join(dir, "activity.log")
 	openRecordPath = filepath.Join(dir, "open-sessions.json")
 	previewDebounce = 0 // tests check the preview right after moving
 	settingsPath = filepath.Join(dir, "settings.json")

@@ -57,6 +57,7 @@ type model struct {
 	focusBusy       bool                 // an auto-focus attempt is in flight
 	focusHeld       string               // the session auto-focus switched to; none other until it's answered
 	focusHandled    map[string]time.Time // SessionID -> the wait (statusUpdatedAt) auto-focus has dealt with
+	focusNoted      map[string]bool      // auto-focus steps logged, by session, step and wait
 	height          int
 	listHeight      int // Calculated visible list height
 	selected        *Conversation

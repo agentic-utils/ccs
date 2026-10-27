@@ -46,10 +46,15 @@ type model struct {
 	cursor          int
 	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width           int
-	table           bool              // ^B: the full-width table instead of the sidebar
-	parents         map[string]string // spawned SessionID -> the session whose claude -p started it
-	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
-	grouped         bool              // ^E: sessions grouped by folder
+	table           bool                 // ^B: the full-width table instead of the sidebar
+	parents         map[string]string    // spawned SessionID -> the session whose claude -p started it
+	noParent        map[string]int       // spawned SessionID -> len(items) when no parent was found
+	grouped         bool                 // ^E: sessions grouped by folder
+	autoFocus       bool                 // ^A: switch to a session that starts waiting on you (autoFocusCmd)
+	focusArmed      bool                 // waits seen before this were there when auto-focus started
+	focusBusy       bool                 // an auto-focus attempt is in flight
+	focusHeld       string               // the session auto-focus switched to; none other until it's answered
+	focusHandled    map[string]time.Time // SessionID -> the wait (statusUpdatedAt) auto-focus has dealt with
 	height          int
 	listHeight      int // Calculated visible list height
 	selected        *Conversation
@@ -760,7 +765,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyLive(msg.updated)
 		}
 		m.applyStats(msg.stats)
-		cmds := []tea.Cmd{liveTick()}
+		cmds := []tea.Cmd{liveTick(), m.autoFocusCmd()}
 		// A session that went live but isn't listed (a brand-new conversation):
 		// scan now rather than at the next minute, at most every 15s.
 		if len(msg.unknown) > 0 && m.refreshStarted.IsZero() && time.Since(m.lastKick) > 15*time.Second {
@@ -782,6 +787,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case prDoneMsg:
 		m.applyPRs(msg)
+		return m, nil
+
+	case autoFocusMsg:
+		m.applyAutoFocus(msg)
 		return m, nil
 
 	case refreshMsg:
@@ -1063,6 +1072,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpOpen, m.table = false, !m.table
 			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
+			return m, nil
+		}
+		if msg.String() == "ctrl+a" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen, m.autoFocus = false, !m.autoFocus
+			m.focusArmed, m.focusHeld = false, "" // waits already there aren't news
+			saveSettings(m.settings())
 			return m, nil
 		}
 		if msg.String() == "ctrl+e" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
@@ -1481,6 +1496,8 @@ func (m model) shortcuts() [][2]string {
 	add(sel && len(m.linksWithPRs()) > 0, "^T", "open a link in view or one of its PRs")
 	add(!m.table, "^B", "the full table, every column")
 	add(m.table, "^B", "back to the sidebar")
+	add(!m.autoFocus, "^A", "switch to a session when it starts waiting on you")
+	add(m.autoFocus, "^A", "stop switching to waiting sessions")
 	add(!m.grouped, "^E", "group by folder")
 	add(m.grouped, "^E", "ungroup")
 	add(true, "^L", "changelog")
@@ -1593,6 +1610,9 @@ func (m model) viewScreen() string {
 	}
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
+	}
+	if m.autoFocus && !m.showUsage {
+		status += " · auto-focus"
 	}
 	if n := m.waitingCount(); n > 0 && !m.showUsage {
 		status += fmt.Sprintf(" · %d waiting", n)
@@ -2170,11 +2190,14 @@ var settingsPath = func() string {
 }()
 
 type settings struct {
-	Table   bool `json:"table,omitempty"`
-	Grouped bool `json:"grouped,omitempty"`
+	Table     bool `json:"table,omitempty"`
+	Grouped   bool `json:"grouped,omitempty"`
+	AutoFocus bool `json:"auto_focus,omitempty"`
 }
 
-func (m model) settings() settings { return settings{Table: m.table, Grouped: m.grouped} }
+func (m model) settings() settings {
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus}
+}
 
 // loadSettings reads them; a missing or unreadable file means the defaults.
 func loadSettings() (s settings) {

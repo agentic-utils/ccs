@@ -199,7 +199,7 @@ func main() {
 	// Update as typed text; mouseLeak drops those before the search box.
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
-	m.table, m.grouped = s.Table, s.Grouped
+	m.table, m.grouped, m.autoFocus = s.Table, s.Grouped, s.AutoFocus
 	m.sortList()
 	if saved := os.Getenv(restoreEnv); saved != "" {
 		os.Unsetenv(restoreEnv) // once only: not inherited by claude or a later ccs

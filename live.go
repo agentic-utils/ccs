@@ -426,7 +426,7 @@ func (m *model) focusCmd(conv Conversation) tea.Cmd {
 		if !ok {
 			return focusDoneMsg{gone: true, name: name}
 		}
-		return focusDoneMsg{pid: pid, found: focusSession(pid)}
+		return focusDoneMsg{pid: pid, found: focusSession(pid, true)}
 	}
 }
 
@@ -445,7 +445,7 @@ func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
 	return func() tea.Msg {
 		if !fork {
 			if pid, ok := liveSessionPIDs()[conv.SessionID]; ok {
-				return focusDoneMsg{pid: pid, found: focusSession(pid)}
+				return focusDoneMsg{pid: pid, found: focusSession(pid, true)}
 			}
 		}
 		opened, err := openResumeTab(conv, flags)
@@ -462,7 +462,7 @@ func inITerm() bool {
 	return os.Getenv("TERM_PROGRAM") == "iTerm.app" || os.Getenv("LC_TERMINAL") == "iTerm2" || os.Getenv("ITERM_SESSION_ID") != ""
 }
 
-func focusSession(pid int) bool {
+func focusSession(pid int, activate bool) bool {
 	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
 	tty := strings.TrimSpace(string(out))
 	if err != nil || tty == "" || tty == "??" {
@@ -479,6 +479,10 @@ func focusSession(pid int) bool {
 	if !inITerm() {
 		return false
 	}
+	front := "" // activate brings iTerm in front of other apps; auto-focus doesn't
+	if activate {
+		front = "activate"
+	}
 	script := fmt.Sprintf(`tell application "iTerm2"
 	repeat with w in windows
 		repeat with t in tabs of w
@@ -487,13 +491,13 @@ func focusSession(pid int) bool {
 					select w
 					tell t to select
 					tell s to select
-					activate
+					%s
 					return "found"
 				end if
 			end repeat
 		end repeat
 	end repeat
-end tell`, tty)
+end tell`, tty, front)
 	out, err = runBounded(5*time.Second, nil, "osascript", "-e", script)
 	return err == nil && strings.TrimSpace(string(out)) == "found"
 }

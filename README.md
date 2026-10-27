@@ -100,7 +100,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 
 - `↑/↓` or `Ctrl+P/N` - Navigate list
 - The list is in sections by state, each with a header: waiting on you, asked you something, idle, busy, not open in `claude`
-- `Ctrl+A` - Auto-focus: when a session starts waiting on a question or permission prompt, switch to its iTerm tab or tmux pane (without pulling iTerm in front of another app), once you've stopped typing for 3 seconds, and not again until that question is answered. Off by default, remembered across restarts
+- `Ctrl+A` - Auto-focus: when a session starts waiting on a question or permission prompt, switch to its iTerm tab or tmux pane (without pulling iTerm in front of another app), once you've stopped typing for 3 seconds, and not again until that question is answered. Questions already waiting when ccs starts count too; one it already switched to before a restart doesn't. Off by default, remembered across restarts
 - `Ctrl+E` - Group sessions by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^B layout, and reopens the way you left it
 - `Ctrl+B` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view
 - `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter jumps to its iTerm tab / tmux pane instead

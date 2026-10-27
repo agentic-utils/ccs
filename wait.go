@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -654,9 +656,10 @@ type autoFocusMsg struct {
 
 // autoFocusCmd (^A) switches to a session that starts waiting on a menu or
 // prompt: once per wait, after autoFocusIdle without input, and not again
-// until the question it switched to is answered (focusHeld). Waits already
-// there when it was turned on aren't news. Each step goes to the activity
-// log once per wait (focusNoted).
+// until the question it switched to is answered (focusHeld). That includes
+// waits already there when it starts; the waits it has dealt with are kept
+// across restarts (focusRecordPath), so a restart doesn't switch to them
+// again. Each step goes to the activity log once per wait (focusNoted).
 func (m *model) autoFocusCmd() tea.Cmd {
 	if !m.autoFocus || m.focusBusy {
 		return nil
@@ -676,22 +679,13 @@ func (m *model) autoFocusCmd() tea.Cmd {
 		logActivity("auto-focus: %s answered, free to switch again", m.focusName(held))
 		m.focusHeld = ""
 	}
-	id, skipped := "", 0
+	id := ""
 	for sid, st := range m.chatStatus {
 		if h, ok := m.focusHandled[sid]; st.status != "waiting" || ok && h.Equal(st.since) {
 			continue
 		}
-		if !m.focusArmed {
-			m.focusHandled[sid] = st.since
-			skipped++
-			continue
-		}
-		id = sid // ponytail: any one of several new waits; the rest follow once it's answered
+		id = sid // ponytail: any one of several waits; the rest follow once it's answered
 	}
-	if !m.focusArmed {
-		logActivity("auto-focus on: %d session(s) already waiting, left alone", skipped)
-	}
-	m.focusArmed = true
 	pid, ok := m.livePIDs[id]
 	if id == "" || !ok {
 		return nil
@@ -729,6 +723,7 @@ func (m *model) applyAutoFocus(msg autoFocusMsg) {
 	}
 	if msg.tried {
 		m.focusHandled[msg.id] = msg.since
+		m.saveFocusRecord()
 	}
 	if msg.focused {
 		m.focusHeld = msg.id
@@ -751,4 +746,43 @@ func (m model) focusName(id string) string {
 		return n
 	}
 	return id[:min(8, len(id))]
+}
+
+// focusRecordPath keeps the waits auto-focus has dealt with, so after a
+// restart (an update, a crash) a question that came up meanwhile is still
+// news and one already dealt with isn't.
+var focusRecordPath = func() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "ccs", "auto-focus.json")
+}()
+
+// loadFocusRecord reads it; ok is false when there's none yet.
+func loadFocusRecord() (handled map[string]time.Time, ok bool) {
+	data, err := os.ReadFile(focusRecordPath)
+	if err != nil || json.Unmarshal(data, &handled) != nil {
+		return nil, false
+	}
+	return handled, true
+}
+
+// saveFocusRecord writes the waits still open that auto-focus has dealt
+// with (the rest can't come back: a new wait has a new statusUpdatedAt).
+func (m *model) saveFocusRecord() {
+	open := map[string]time.Time{}
+	for id, since := range m.focusHandled {
+		if m.chatStatus[id].status == "waiting" {
+			open[id] = since
+		}
+	}
+	data, _ := json.Marshal(open)
+	if os.MkdirAll(filepath.Dir(focusRecordPath), 0o700) != nil {
+		return
+	}
+	tmp := focusRecordPath + ".tmp"
+	if os.WriteFile(tmp, data, 0o600) == nil {
+		os.Rename(tmp, focusRecordPath)
+	}
 }

@@ -1003,12 +1003,21 @@ func TestAutoFocus(t *testing.T) {
 	defer func(u func() (time.Duration, bool), f func(int) bool) { userIdle, autoFocusTab = u, f }(userIdle, autoFocusTab)
 	userIdle = func() (time.Duration, bool) { return idle, true }
 	autoFocusTab = func(pid int) bool { switched = append(switched, pid); return true }
+	os.Remove(focusRecordPath)
+	os.Remove(activityLogPath)
 
 	now := time.Now()
-	m := initialModel(nil, "", nil)
-	m.live = map[string]bool{"a": true, "b": true, "c": true}
-	m.livePIDs = map[string]int{"a": 1, "b": 2, "c": 3}
-	m.autoFocus = true
+	start := func() model {
+		m := initialModel(nil, "", nil)
+		if handled, ok := loadFocusRecord(); ok { // as main does
+			m.focusHandled, m.focusNoted = handled, map[string]bool{}
+		}
+		m.live = map[string]bool{"a": true, "b": true, "c": true, "d": true}
+		m.livePIDs = map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
+		m.autoFocus = true
+		return m
+	}
+	m := start()
 	tick := func(stats map[string]sessionStat) {
 		t.Helper()
 		m.applyStats(stats)
@@ -1017,36 +1026,48 @@ func TestAutoFocus(t *testing.T) {
 		}
 	}
 	wait := func(at time.Time) sessionStat { return sessionStat{status: "waiting", since: at} }
+	busy := sessionStat{status: "busy"}
 
-	tick(map[string]sessionStat{"a": wait(now), "b": {status: "busy"}, "c": {status: "busy"}})
-	if len(switched) != 0 {
-		t.Fatal("a wait already there when auto-focus started isn't news")
+	idle = 5 * time.Second
+	tick(map[string]sessionStat{"a": wait(now), "b": busy, "c": busy})
+	if len(switched) != 1 || switched[0] != 1 {
+		t.Fatalf("a question already waiting at startup is switched to: %v", switched)
 	}
-	tick(map[string]sessionStat{"a": wait(now), "b": wait(now.Add(time.Second)), "c": {status: "busy"}})
-	if len(switched) != 0 {
+	idle = 0
+	tick(map[string]sessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": busy})
+	if len(switched) != 1 {
 		t.Fatal("while the user is typing, it waits rather than switch under them")
 	}
 	idle = 5 * time.Second
-	tick(map[string]sessionStat{"a": wait(now), "b": wait(now.Add(time.Second)), "c": {status: "busy"}})
-	if len(switched) != 1 || switched[0] != 2 {
+	tick(map[string]sessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": busy})
+	if len(switched) != 2 || switched[1] != 2 {
 		t.Fatalf("once the user is still, it switches to b: %v", switched)
 	}
-	tick(map[string]sessionStat{"a": wait(now), "b": wait(now.Add(time.Second)), "c": wait(now.Add(2 * time.Second))})
-	if len(switched) != 1 {
+	tick(map[string]sessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": wait(now.Add(2 * time.Second))})
+	if len(switched) != 2 {
 		t.Fatalf("not again until b's question is answered: %v", switched)
 	}
-	tick(map[string]sessionStat{"a": wait(now), "b": {status: "busy"}, "c": wait(now.Add(2 * time.Second))})
-	if len(switched) != 2 || switched[1] != 3 {
+	tick(map[string]sessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second))})
+	if len(switched) != 3 || switched[2] != 3 {
 		t.Fatalf("b answered, so on to c: %v", switched)
 	}
-	tick(map[string]sessionStat{"a": wait(now), "b": {status: "busy"}, "c": wait(now.Add(2 * time.Second))})
-	if len(switched) != 2 {
+	tick(map[string]sessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second))})
+	if len(switched) != 3 {
 		t.Fatalf("once per wait: %v", switched)
 	}
+
+	// A restart (say an update) remembers c was dealt with, but d's question,
+	// which came up meanwhile, is still news.
+	m = start()
+	tick(map[string]sessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second)), "d": wait(now.Add(3 * time.Second))})
+	if len(switched) != 4 || switched[3] != 4 {
+		t.Fatalf("after a restart: d, not c again: %v", switched)
+	}
+
 	// Each step is in the activity log, once.
 	data, _ := os.ReadFile(activityLogPath)
 	log := string(data)
-	for _, want := range []string{"1 session(s) already waiting, left alone", "b is waiting", "you're active (idle 0.0s); switching to b", "switched to b", "c is waiting too; holding on b", "b answered, free to switch again", "switched to c"} {
+	for _, want := range []string{"switched to a", "b is waiting", "you're active (idle 0.0s); switching to b", "switched to b", "c is waiting too; holding on b", "b answered, free to switch again", "switched to c", "switched to d"} {
 		if strings.Count(log, want) != 1 {
 			t.Errorf("the activity log should say %q once:\n%s", want, log)
 		}

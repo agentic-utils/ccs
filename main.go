@@ -200,6 +200,9 @@ func main() {
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus = s.Table, s.Grouped, s.AutoFocus
+	if handled, ok := loadFocusRecord(); ok { // waits it switched to before a restart aren't switched to again
+		m.focusHandled, m.focusNoted = handled, map[string]bool{}
+	}
 	m.sortList()
 	if saved := os.Getenv(restoreEnv); saved != "" {
 		os.Unsetenv(restoreEnv) // once only: not inherited by claude or a later ccs

@@ -830,7 +830,7 @@ func TestWaitHeaderCountKeepsTheTitleRow(t *testing.T) {
 	m.updating, m.updateTo = true, "v9.9.9"
 	m.progress = &updateProgress{step: "downloading", started: time.Now()}
 	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
-	if top := topRow(m); !strings.Contains(top, "updating to v9.9.9") || !strings.Contains(top, "1 waiting · ^W") || !strings.Contains(top, "quit") {
+	if top := topRow(m); !strings.Contains(top, "updating to v9.9.9") || !strings.Contains(top, "^W 1 waiting") || !strings.Contains(top, "quit") {
 		t.Fatalf("the waiting count sits with the title row's notes and hints: %q", top)
 	}
 	if strings.Contains(strip2(m.View()), "waiting on you") {

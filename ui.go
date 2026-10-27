@@ -1613,19 +1613,23 @@ func (m model) viewScreen() string {
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
 	}
+	// Each state with its key in front, in bold, as the hints read.
+	key := func(k string) string { return "\033[1m" + k + "\033[22m " }
 	if n := m.waitingCount(); n > 0 && !m.showUsage {
-		status += fmt.Sprintf(" · %d waiting", n)
+		status += " · "
 		if !m.popupAboveWait() && !m.prompting() { // otherwise Ctrl+W does nothing
-			status += " · ^W"
+			status += key("^W")
 		}
+		status += fmt.Sprintf("%d waiting", n)
 	}
-	// Auto-focus on or off, so you know which you're in, with the key that
-	// toggles it; after the waiting count, which matters more when a narrow
-	// screen cuts the title.
-	if m.autoFocus && !m.showUsage {
-		status += " · auto-focus on · ^A"
-	} else if !m.showUsage {
-		status += " · auto-focus off · ^A"
+	// Auto-focus on or off, so you know which you're in; after the waiting
+	// count, which matters more when a narrow screen cuts the title.
+	if !m.showUsage {
+		state := "off"
+		if m.autoFocus {
+			state = "on"
+		}
+		status += " · " + key("^A") + "auto-focus " + state
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
 	group := "group" // the modes toggled while working; ^T and the rest are in ? help

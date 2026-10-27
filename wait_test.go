@@ -1043,4 +1043,12 @@ func TestAutoFocus(t *testing.T) {
 	if len(switched) != 2 {
 		t.Fatalf("once per wait: %v", switched)
 	}
+	// Each step is in the activity log, once.
+	data, _ := os.ReadFile(activityLogPath)
+	log := string(data)
+	for _, want := range []string{"1 session(s) already waiting, left alone", "b is waiting", "you're active (idle 0.0s); switching to b", "switched to b", "c is waiting too; holding on b", "b answered, free to switch again", "switched to c"} {
+		if strings.Count(log, want) != 1 {
+			t.Errorf("the activity log should say %q once:\n%s", want, log)
+		}
+	}
 }

@@ -646,6 +646,8 @@ var autoFocusTab = func(pid int) bool { return focusSession(pid, false) }
 type autoFocusMsg struct {
 	id      string
 	since   time.Time
+	idle    time.Duration
+	idleOK  bool // the idle time could be read
 	tried   bool // false: the user was busy, so try again on a later tick
 	focused bool
 }
@@ -653,41 +655,60 @@ type autoFocusMsg struct {
 // autoFocusCmd (^A) switches to a session that starts waiting on a menu or
 // prompt: once per wait, after autoFocusIdle without input, and not again
 // until the question it switched to is answered (focusHeld). Waits already
-// there when it was turned on aren't news.
+// there when it was turned on aren't news. Each step goes to the activity
+// log once per wait (focusNoted).
 func (m *model) autoFocusCmd() tea.Cmd {
 	if !m.autoFocus || m.focusBusy {
 		return nil
 	}
-	if m.chatStatus[m.focusHeld].status == "waiting" {
-		return nil
-	}
-	m.focusHeld = ""
 	if m.focusHandled == nil {
-		m.focusHandled = map[string]time.Time{}
+		m.focusHandled, m.focusNoted = map[string]time.Time{}, map[string]bool{}
 	}
-	id := ""
+	if held := m.focusHeld; held != "" {
+		if m.chatStatus[held].status == "waiting" {
+			for sid, st := range m.chatStatus {
+				if h, ok := m.focusHandled[sid]; sid != held && st.status == "waiting" && !(ok && h.Equal(st.since)) {
+					m.noteFocus(sid, "held", "auto-focus: %s is waiting too; holding on %s until it's answered", m.focusName(sid), m.focusName(held))
+				}
+			}
+			return nil
+		}
+		logActivity("auto-focus: %s answered, free to switch again", m.focusName(held))
+		m.focusHeld = ""
+	}
+	id, skipped := "", 0
 	for sid, st := range m.chatStatus {
 		if h, ok := m.focusHandled[sid]; st.status != "waiting" || ok && h.Equal(st.since) {
 			continue
 		}
 		if !m.focusArmed {
 			m.focusHandled[sid] = st.since
+			skipped++
 			continue
 		}
 		id = sid // ponytail: any one of several new waits; the rest follow once it's answered
+	}
+	if !m.focusArmed {
+		logActivity("auto-focus on: %d session(s) already waiting, left alone", skipped)
 	}
 	m.focusArmed = true
 	pid, ok := m.livePIDs[id]
 	if id == "" || !ok {
 		return nil
 	}
+	why := ""
+	if w := m.chatStatus[id].waitingFor; w != "" {
+		why = " (" + w + ")"
+	}
+	m.noteFocus(id, "waiting", "auto-focus: %s is waiting%s", m.focusName(id), why)
 	m.focusBusy = true
 	since := m.chatStatus[id].since
 	return func() tea.Msg {
-		if idle, ok := userIdle(); !ok || idle < autoFocusIdle {
-			return autoFocusMsg{id: id, since: since}
+		idle, ok := userIdle()
+		if !ok || idle < autoFocusIdle {
+			return autoFocusMsg{id: id, since: since, idle: idle, idleOK: ok}
 		}
-		return autoFocusMsg{id: id, since: since, tried: true, focused: autoFocusTab(pid)}
+		return autoFocusMsg{id: id, since: since, idle: idle, idleOK: true, tried: true, focused: autoFocusTab(pid)}
 	}
 }
 
@@ -695,10 +716,39 @@ func (m *model) autoFocusCmd() tea.Cmd {
 // it switched to holds auto-focus until it's answered.
 func (m *model) applyAutoFocus(msg autoFocusMsg) {
 	m.focusBusy = false
+	name := m.focusName(msg.id)
+	switch {
+	case !msg.idleOK:
+		m.noteFocus(msg.id, "noidle", "auto-focus: can't read keyboard idle time, so not switching to %s", name)
+	case !msg.tried:
+		m.noteFocus(msg.id, "busy", "auto-focus: you're active (idle %.1fs); switching to %s once you're still for %v", msg.idle.Seconds(), name, autoFocusIdle)
+	case msg.focused:
+		logActivity("auto-focus: switched to %s", name)
+	default:
+		logActivity("auto-focus: couldn't find %s's tab or pane", name)
+	}
 	if msg.tried {
 		m.focusHandled[msg.id] = msg.since
 	}
 	if msg.focused {
 		m.focusHeld = msg.id
 	}
+}
+
+// noteFocus logs a step of a wait once (by kind), not on every tick it lasts.
+func (m *model) noteFocus(id, kind, format string, args ...any) {
+	key := id + " " + kind + " " + m.chatStatus[id].since.String()
+	if m.focusNoted[key] {
+		return
+	}
+	m.focusNoted[key] = true
+	logActivity(format, args...)
+}
+
+// focusName names a session for the log.
+func (m model) focusName(id string) string {
+	if n := m.chatStatus[id].name; n != "" {
+		return n
+	}
+	return id[:min(8, len(id))]
 }

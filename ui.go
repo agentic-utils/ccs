@@ -1619,19 +1619,20 @@ func (m model) viewScreen() string {
 			status += " · ^W"
 		}
 	}
-	// Auto-focus on or off, so you know which you're in; after the waiting
-	// count, which matters more when a narrow screen cuts the title.
+	// Auto-focus on or off, so you know which you're in, with the key that
+	// toggles it; after the waiting count, which matters more when a narrow
+	// screen cuts the title.
 	if m.autoFocus && !m.showUsage {
-		status += " · auto-focus on"
+		status += " · auto-focus on · ^A"
 	} else if !m.showUsage {
-		status += " · auto-focus off"
+		status += " · auto-focus off · ^A"
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
 	group := "group" // the modes toggled while working; ^T and the rest are in ? help
 	if m.grouped {
 		group = "ungroup"
 	}
-	pairs, keep := []string{"^A", "auto-focus", "^G", group, "?", "help", "^C", "quit"}, 2
+	pairs, keep := []string{"^G", group, "?", "help", "^C", "quit"}, 2 // ^A is beside auto-focus in the title
 	if m.showUsage { // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
 		if len(m.waitQueue(true)) > 0 {

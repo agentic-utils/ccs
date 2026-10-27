@@ -1435,11 +1435,11 @@ func rowOf(m model, i int) int {
 func TestHeaderShowsAutoFocusKey(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 150, 20
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^A auto-focus") || !strings.Contains(head, "auto-focus off") {
-		t.Errorf("the header should offer ^A and say auto-focus is off: %q", head)
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "auto-focus off · ^A") {
+		t.Errorf("the header should say auto-focus is off, with its key: %q", head)
 	}
 	m.autoFocus = true
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "auto-focus on") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "auto-focus on · ^A") {
 		t.Errorf("the header should say auto-focus is on: %q", head)
 	}
 }
@@ -1458,7 +1458,7 @@ func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
 	if m, _ = key(m, q); m.helpOpen || m.textInput.Value() != "why?" {
 		t.Errorf("with a search typed, ? is text: help=%v search=%q", m.helpOpen, m.textInput.Value())
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^A auto-focus  ^G group  ? help  ^C quit") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^G group  ? help  ^C quit") {
 		t.Errorf("header keys: %q", head)
 	}
 }

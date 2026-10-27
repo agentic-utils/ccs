@@ -62,3 +62,18 @@ func TestBackgroundTasks(t *testing.T) {
 		t.Error("tasks started before the current process aren't running")
 	}
 }
+
+func TestTaskCountOnTheTitleRow(t *testing.T) {
+	conv := Conversation{SessionID: "s", Title: "work", PRs: []string{"https://github.com/o/r/pull/1"},
+		tasks: []bgTask{{id: "b1", kind: "bash", desc: "watch", started: time.Now().UTC().Format(time.RFC3339)}}}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.live = map[string]bool{"s": true}
+	m.prs = map[string]prInfo{"https://github.com/o/r/pull/1": {State: "OPEN", MergeState: "CLEAN"}}
+	row := m.sidebarRow(m.filtered[0], false, 40)
+	if !strings.Contains(row[0], "\033["+taskColour+"m⧗1") {
+		t.Errorf("the task count goes on the title row, in its own colour: %q", row[0])
+	}
+	if strings.Contains(row[1], "⧗") || !strings.Contains(strip2(row[1]), "✓1") {
+		t.Errorf("the grey row keeps the PRs to itself: %q", strip2(row[1]))
+	}
+}

@@ -117,6 +117,10 @@ func (m model) runningTasks(conv Conversation) []bgTask {
 	return out
 }
 
+// taskColour is the tasks' own colour, a light blue no other mark uses
+// (PRs are green, amber, red and purple; HITS cyan; busy amber).
+const taskColour = "38;5;75"
+
 // taskCell is the list's count of running tasks, "" when none.
 func (m model) taskCell(conv Conversation, coloured bool) string {
 	n := len(m.runningTasks(conv))
@@ -124,7 +128,7 @@ func (m model) taskCell(conv Conversation, coloured bool) string {
 		return ""
 	}
 	if coloured {
-		return fmt.Sprintf("\033[%sm⧗%d\033[0m", amber, n)
+		return fmt.Sprintf("\033[%sm⧗%d\033[0m", taskColour, n)
 	}
 	return fmt.Sprintf("⧗%d", n)
 }
@@ -142,7 +146,7 @@ func (m model) taskLines(conv Conversation, width int) []string {
 	var lines []string
 	for _, t := range running[:min(len(running), maxTaskLines)] {
 		age := strings.TrimSuffix(formatAgo(t.started, time.Now()), " ago")
-		lines = append(lines, fmt.Sprintf("\033[%sm⧗\033[0m %s \033[90m· %s · %s\033[0m", amber, t.desc, t.kind, age))
+		lines = append(lines, fmt.Sprintf("\033[%sm⧗\033[0m %s \033[90m· %s · %s\033[0m", taskColour, t.desc, t.kind, age))
 	}
 	ended := map[string]int{}
 	for _, t := range conv.tasks {

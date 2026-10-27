@@ -766,7 +766,7 @@ func TestWaitUncheckedPidGetsTheBannerWithANote(t *testing.T) {
 func TestPasteGoesToTheFocusedInput(t *testing.T) {
 	m := waitModel(t)
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return !m.live[it.conv.SessionID] }) // can be renamed
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlR})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
 	if !m.renaming {
 		t.Fatal("ctrl+r should start a rename")
 	}

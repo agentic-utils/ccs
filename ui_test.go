@@ -773,7 +773,7 @@ func TestRename(t *testing.T) {
 	item := buildItems([]Conversation{{SessionID: "s1", FilePath: path, Messages: []Message{{Role: "user", Text: "hi"}}}})[0]
 	m := initialModel([]listItem{item}, "", nil)
 
-	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	m = res.(model)
 	if !m.renaming {
 		t.Fatal("ctrl+r should start renaming")
@@ -798,7 +798,7 @@ func TestRename(t *testing.T) {
 	m.textInput.SetValue("")
 	m.updateFilter()
 	m.live = map[string]bool{"s1": true}
-	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if m = res.(model); m.renaming || m.errorMsg == "" {
 		t.Error("rename should be refused on a live session")
 	}
@@ -1049,7 +1049,7 @@ func TestHelpPopup(t *testing.T) {
 		}
 	}
 	// Only what applies: one idle conversation, no search typed.
-	if !strings.Contains(v, "resume") || !strings.Contains(v, "rename") || strings.Contains(v, "message it") ||
+	if !strings.Contains(v, "resume") || !strings.Contains(v, "edit its name") || !strings.Contains(v, "refresh now") || strings.Contains(v, "message it") ||
 		strings.Contains(v, "clear the search") || strings.Contains(v, "move through the list") {
 		t.Errorf("popup should list only the keys that apply:\n%s", v)
 	}
@@ -1460,5 +1460,34 @@ func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
 	}
 	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^G group  ? help  ^C quit") {
 		t.Errorf("header keys: %q", head)
+	}
+}
+
+func TestCtrlRRefreshesNowAndChecksForUpdates(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	scanned, checked := false, false
+	m.reload = func() ([]listItem, error) { scanned = true; return m.items, nil }
+	m.checkLatest = func() (string, error) { checked = true; return "", nil }
+	m.prNext = time.Now().Add(time.Hour)
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = res.(model)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		if batch, ok := c().(tea.BatchMsg); ok {
+			for _, b := range batch {
+				run(b)
+			}
+		}
+	}
+	run(cmd)
+	if !scanned || !checked {
+		t.Errorf("^R should rescan (%v) and check for an update (%v)", scanned, checked)
+	}
+	if m.refreshStarted.IsZero() || !m.prNext.Before(time.Now().Add(time.Minute)) {
+		t.Error("^R should mark the scan started and bring the PR round forward")
 	}
 }

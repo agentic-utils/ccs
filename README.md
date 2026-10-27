@@ -17,7 +17,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Resume conversations directly from the search interface
 - Background tasks: a session open in `claude` shows `⧗N` for the background commands, subagents and monitors it has running, and the preview lists them with how long each has run
 - Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, and ones started by another session's `claude -p` sit `└` under it
-- Rename conversations (`Ctrl+R`)
+- Rename conversations (`Ctrl+E`)
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Pass flags through to `claude` (e.g., `--plan`)
@@ -107,7 +107,8 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter jumps to its iTerm tab / tmux pane instead
 - `Ctrl+F` - Fork selected conversation (`claude --resume <id> --fork-session`)
 - `Ctrl+D` - Delete selected conversation (with confirmation)
-- `Ctrl+R` - Rename selected conversation (not while it's open in `claude`; use `/rename` there)
+- `Ctrl+E` - Edit the selected conversation's name (not while it's open in `claude`; use `/rename` there)
+- `Ctrl+R` - Refresh now: rescan sessions, re-check PRs and the usage allowance, and check for a ccs update
 - `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
 - `Ctrl+J/K` - Scroll preview
 - Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it, click a link in the conversation to open it. Hold `⌥ Option` while dragging to select text in iTerm

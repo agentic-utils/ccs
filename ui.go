@@ -2003,15 +2003,15 @@ func groupKey(cwd string) string {
 func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	conv := item.conv
 	marks, colouredMarks := m.listMarks(item)
-	// The title row's right: HITS while searching, then running tasks; the
-	// PR counts have the grey row below to themselves.
+	// The title row's right: running tasks, then HITS while searching, so the
+	// HITS stay lined up at the edge; the PR counts have the grey row below.
 	hits, colouredHits := "", ""
 	if m.searching() {
 		hits = fmt.Sprint(m.hitCount(item))
 		colouredHits = "\033[36m" + hits + "\033[0m"
 	}
 	if tasks := m.taskCell(conv, false); tasks != "" {
-		hits, colouredHits = strings.TrimSpace(hits+" "+tasks), strings.TrimSpace(colouredHits+" "+m.taskCell(conv, true))
+		hits, colouredHits = strings.TrimSpace(tasks+" "+hits), strings.TrimSpace(m.taskCell(conv, true)+" "+colouredHits)
 	}
 	// One space before the marks, so their glyphs sit under the search's >;
 	// with ^G two more, so sessions sit in from their folder's header.

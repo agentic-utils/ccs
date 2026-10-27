@@ -77,3 +77,13 @@ func TestTaskCountOnTheTitleRow(t *testing.T) {
 		t.Errorf("the grey row keeps the PRs to itself: %q", strip2(row[1]))
 	}
 }
+
+func TestTasksBeforeHits(t *testing.T) {
+	conv := Conversation{SessionID: "s", Title: "work", Messages: []Message{{Role: "user", Text: "needle"}},
+		tasks: []bgTask{{id: "b1", kind: "bash", desc: "watch", started: time.Now().UTC().Format(time.RFC3339)}}}
+	m := initialModel(buildItems([]Conversation{conv}), "needle", nil)
+	m.live = map[string]bool{"s": true}
+	if row := strip2(m.sidebarRow(m.filtered[0], false, 40)[0]); !strings.HasSuffix(strings.TrimRight(row, " "), "⧗1 1") {
+		t.Errorf("tasks first, then the hits at the edge: %q", row)
+	}
+}

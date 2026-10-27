@@ -53,7 +53,6 @@ type model struct {
 	selectedID      string               // the selected session, to see when it changes
 	selectedAt      time.Time            // when it was selected: its preview waits previewDebounce
 	autoFocus       bool                 // ^A: switch to a session that starts waiting on you (autoFocusCmd)
-	focusArmed      bool                 // waits seen before this were there when auto-focus started
 	focusBusy       bool                 // an auto-focus attempt is in flight
 	focusHeld       string               // the session auto-focus switched to; none other until it's answered
 	focusHandled    map[string]time.Time // SessionID -> the wait (statusUpdatedAt) auto-focus has dealt with
@@ -1082,7 +1081,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "ctrl+a" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.autoFocus = false, !m.autoFocus
-			m.focusArmed, m.focusHeld = false, "" // waits already there aren't news
+			m.focusHeld = ""
 			saveSettings(m.settings())
 			return m, nil
 		}

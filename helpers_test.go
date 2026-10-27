@@ -98,6 +98,7 @@ func TestMain(m *testing.M) {
 	dir, _ := os.MkdirTemp("", "ccs-test-log")
 	updateLogPath = filepath.Join(dir, "update.log")
 	activityLogPath = filepath.Join(dir, "activity.log")
+	focusRecordPath = filepath.Join(dir, "auto-focus.json")
 	openRecordPath = filepath.Join(dir, "open-sessions.json")
 	previewDebounce = 0 // tests check the preview right after moving
 	settingsPath = filepath.Join(dir, "settings.json")

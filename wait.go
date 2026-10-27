@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -618,4 +619,86 @@ func (m model) waitPopup() string {
 		Padding(0, 1).
 		Width(inner + 2).
 		Render(b.String())
+}
+
+// autoFocusIdle is how long keyboard and mouse must be still before auto-focus
+// switches tabs, so keystrokes meant for another session never land in a
+// waiting session's menu, where a digit or Enter would answer it.
+const autoFocusIdle = 3 * time.Second
+
+var hidIdle = regexp.MustCompile(`"HIDIdleTime" = (\d+)`)
+
+// userIdle is how long since the last keyboard or mouse input (macOS); not ok
+// when unknown, and then auto-focus never switches.
+var userIdle = func() (time.Duration, bool) {
+	out, err := runBounded(2*time.Second, nil, "ioreg", "-c", "IOHIDSystem", "-d", "4")
+	m := hidIdle.FindSubmatch(out)
+	if err != nil || m == nil {
+		return 0, false
+	}
+	ns, err := strconv.ParseInt(string(m[1]), 10, 64)
+	return time.Duration(ns), err == nil
+}
+
+// autoFocusTab selects a session's tab or pane without bringing iTerm in front.
+var autoFocusTab = func(pid int) bool { return focusSession(pid, false) }
+
+type autoFocusMsg struct {
+	id      string
+	since   time.Time
+	tried   bool // false: the user was busy, so try again on a later tick
+	focused bool
+}
+
+// autoFocusCmd (^A) switches to a session that starts waiting on a menu or
+// prompt: once per wait, after autoFocusIdle without input, and not again
+// until the question it switched to is answered (focusHeld). Waits already
+// there when it was turned on aren't news.
+func (m *model) autoFocusCmd() tea.Cmd {
+	if !m.autoFocus || m.focusBusy {
+		return nil
+	}
+	if m.chatStatus[m.focusHeld].status == "waiting" {
+		return nil
+	}
+	m.focusHeld = ""
+	if m.focusHandled == nil {
+		m.focusHandled = map[string]time.Time{}
+	}
+	id := ""
+	for sid, st := range m.chatStatus {
+		if h, ok := m.focusHandled[sid]; st.status != "waiting" || ok && h.Equal(st.since) {
+			continue
+		}
+		if !m.focusArmed {
+			m.focusHandled[sid] = st.since
+			continue
+		}
+		id = sid // ponytail: any one of several new waits; the rest follow once it's answered
+	}
+	m.focusArmed = true
+	pid, ok := m.livePIDs[id]
+	if id == "" || !ok {
+		return nil
+	}
+	m.focusBusy = true
+	since := m.chatStatus[id].since
+	return func() tea.Msg {
+		if idle, ok := userIdle(); !ok || idle < autoFocusIdle {
+			return autoFocusMsg{id: id, since: since}
+		}
+		return autoFocusMsg{id: id, since: since, tried: true, focused: autoFocusTab(pid)}
+	}
+}
+
+// applyAutoFocus records an attempt: a tried wait isn't tried again, and one
+// it switched to holds auto-focus until it's answered.
+func (m *model) applyAutoFocus(msg autoFocusMsg) {
+	m.focusBusy = false
+	if msg.tried {
+		m.focusHandled[msg.id] = msg.since
+	}
+	if msg.focused {
+		m.focusHeld = msg.id
+	}
 }

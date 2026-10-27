@@ -996,3 +996,51 @@ func TestAskedSortsBetweenWaitingAndIdle(t *testing.T) {
 		t.Errorf("amber ?, green ?, idle, busy: got %v", got)
 	}
 }
+
+func TestAutoFocus(t *testing.T) {
+	idle := time.Duration(0)
+	var switched []int
+	defer func(u func() (time.Duration, bool), f func(int) bool) { userIdle, autoFocusTab = u, f }(userIdle, autoFocusTab)
+	userIdle = func() (time.Duration, bool) { return idle, true }
+	autoFocusTab = func(pid int) bool { switched = append(switched, pid); return true }
+
+	now := time.Now()
+	m := initialModel(nil, "", nil)
+	m.live = map[string]bool{"a": true, "b": true, "c": true}
+	m.livePIDs = map[string]int{"a": 1, "b": 2, "c": 3}
+	m.autoFocus = true
+	tick := func(stats map[string]sessionStat) {
+		t.Helper()
+		m.applyStats(stats)
+		if cmd := m.autoFocusCmd(); cmd != nil {
+			m.applyAutoFocus(cmd().(autoFocusMsg))
+		}
+	}
+	wait := func(at time.Time) sessionStat { return sessionStat{status: "waiting", since: at} }
+
+	tick(map[string]sessionStat{"a": wait(now), "b": {status: "busy"}, "c": {status: "busy"}})
+	if len(switched) != 0 {
+		t.Fatal("a wait already there when auto-focus started isn't news")
+	}
+	tick(map[string]sessionStat{"a": wait(now), "b": wait(now.Add(time.Second)), "c": {status: "busy"}})
+	if len(switched) != 0 {
+		t.Fatal("while the user is typing, it waits rather than switch under them")
+	}
+	idle = 5 * time.Second
+	tick(map[string]sessionStat{"a": wait(now), "b": wait(now.Add(time.Second)), "c": {status: "busy"}})
+	if len(switched) != 1 || switched[0] != 2 {
+		t.Fatalf("once the user is still, it switches to b: %v", switched)
+	}
+	tick(map[string]sessionStat{"a": wait(now), "b": wait(now.Add(time.Second)), "c": wait(now.Add(2 * time.Second))})
+	if len(switched) != 1 {
+		t.Fatalf("not again until b's question is answered: %v", switched)
+	}
+	tick(map[string]sessionStat{"a": wait(now), "b": {status: "busy"}, "c": wait(now.Add(2 * time.Second))})
+	if len(switched) != 2 || switched[1] != 3 {
+		t.Fatalf("b answered, so on to c: %v", switched)
+	}
+	tick(map[string]sessionStat{"a": wait(now), "b": {status: "busy"}, "c": wait(now.Add(2 * time.Second))})
+	if len(switched) != 2 {
+		t.Fatalf("once per wait: %v", switched)
+	}
+}

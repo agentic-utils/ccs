@@ -1435,11 +1435,11 @@ func rowOf(m model, i int) int {
 func TestHeaderShowsAutoFocusKey(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 150, 20
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "auto-focus off · ^A") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^A auto-focus off") {
 		t.Errorf("the header should say auto-focus is off, with its key: %q", head)
 	}
 	m.autoFocus = true
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "auto-focus on · ^A") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^A auto-focus on") {
 		t.Errorf("the header should say auto-focus is on: %q", head)
 	}
 }

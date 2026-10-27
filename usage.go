@@ -264,7 +264,9 @@ type allowanceMsg struct {
 }
 
 // accountEmail is the logged-in Claude account, as Claude Code records it in
-// its config (.claude.json in the home folder, or in CLAUDE_CONFIG_DIR).
+// its config (.claude.json in the home folder, or in CLAUDE_CONFIG_DIR), with
+// its organisation as cswap shows it ("me@x.com [Org]"): one email can be in
+// several organisations, and the allowance is the organisation's.
 var accountEmail = func() string {
 	path := filepath.Join(claudeConfigHome(), ".claude.json")
 	if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
@@ -277,11 +279,15 @@ var accountEmail = func() string {
 	}
 	var cfg struct {
 		OauthAccount struct {
-			EmailAddress string `json:"emailAddress"`
+			EmailAddress     string `json:"emailAddress"`
+			OrganizationName string `json:"organizationName"`
 		} `json:"oauthAccount"`
 	}
 	if json.Unmarshal(data, &cfg) != nil {
 		return ""
+	}
+	if a := cfg.OauthAccount; a.EmailAddress != "" && a.OrganizationName != "" {
+		return a.EmailAddress + " [" + a.OrganizationName + "]"
 	}
 	return cfg.OauthAccount.EmailAddress
 }

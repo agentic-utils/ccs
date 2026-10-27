@@ -2003,9 +2003,15 @@ func groupKey(cwd string) string {
 func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	conv := item.conv
 	marks, colouredMarks := m.listMarks(item)
-	hits := ""
+	// The title row's right: HITS while searching, then running tasks; the
+	// PR counts have the grey row below to themselves.
+	hits, colouredHits := "", ""
 	if m.searching() {
 		hits = fmt.Sprint(m.hitCount(item))
+		colouredHits = "\033[36m" + hits + "\033[0m"
+	}
+	if tasks := m.taskCell(conv, false); tasks != "" {
+		hits, colouredHits = strings.TrimSpace(hits+" "+tasks), strings.TrimSpace(colouredHits+" "+m.taskCell(conv, true))
 	}
 	// One space before the marks, so their glyphs sit under the search's >;
 	// with ^G two more, so sessions sit in from their folder's header.
@@ -2017,9 +2023,6 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	nest := nestPrefix(item.depth)
 	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
-	if tasks := m.taskCell(conv, !selected); tasks != "" { // running background tasks, before the PRs
-		prs = strings.TrimSpace(tasks + " " + prs)
-	}
 	stats := strings.TrimSuffix(formatAgo(conv.LastTimestamp, time.Now()), " ago")
 	if conv.ContextTokens > 0 {
 		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
@@ -2035,7 +2038,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		}
 	}
 	return [2]string{
-		lead + colouredMarks + topic + " \033[36m" + hits + "\033[0m",
+		lead + colouredMarks + topic + " " + colouredHits,
 		indent + "\033[90m" + stats + "\033[0m " + prs,
 	}
 }

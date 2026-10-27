@@ -27,7 +27,7 @@ type listItem struct {
 	searchLower string // searchText lowercased once, for case-insensitive filtering
 	rank        int    // matchRank for the current search, 0 without one
 	depth       int    // nested under the session that started it (sortList)
-	familyCwd   string // its top-level session's cwd, which ^E groups the family by
+	familyCwd   string // its top-level session's cwd, which ^G groups the family by
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
 }
 
@@ -46,10 +46,10 @@ type model struct {
 	cursor          int
 	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width           int
-	table           bool                 // ^B: the full-width table instead of the sidebar
+	table           bool                 // ^T: the full-width table instead of the sidebar
 	parents         map[string]string    // spawned SessionID -> the session whose claude -p started it
 	noParent        map[string]int       // spawned SessionID -> len(items) when no parent was found
-	grouped         bool                 // ^E: sessions grouped by folder
+	grouped         bool                 // ^G: sessions grouped by folder
 	selectedID      string               // the selected session, to see when it changes
 	selectedAt      time.Time            // when it was selected: its preview waits previewDebounce
 	autoFocus       bool                 // ^A: switch to a session that starts waiting on you (autoFocusCmd)
@@ -94,7 +94,7 @@ type model struct {
 	sending    bool
 
 	// Input-prompt overlay (see wait*): live sessions waiting on the user.
-	waitOpen       bool              // the overlay is open (Ctrl+Y); it owns the keyboard
+	waitOpen       bool              // the overlay is open (Ctrl+W); it owns the keyboard
 	waitID         string            // the session it shows
 	waitInput      textinput.Model   // the shown session's draft
 	waitDrafts     map[string]string // the other sessions' drafts, so a draft never follows you to another session
@@ -152,9 +152,9 @@ type model struct {
 	account          string // Claude account email, from Claude Code's config
 	allowanceStale   bool   // the account changed while a fetch was in flight: fetch again
 
-	// Account switcher (Ctrl+O), backed by the cswap CLI.
+	// Account switcher (Ctrl+U), backed by the cswap CLI.
 	acctOpen bool
-	helpOpen bool // Ctrl+G shortcut list
+	helpOpen bool // ? shortcut list
 
 	reopen        []Conversation // sessions open before a restart, offered for reopening
 	reopenChecked bool           // the last boot's record has been read, so it may be overwritten
@@ -167,7 +167,7 @@ type model struct {
 	prSelAsked map[string]bool // asked for the selected session since the last round
 	prErr      string
 	fetchPRs   func([]string) (map[string]prInfo, error) // nil: never look PRs up
-	// Ctrl+T: the links in the visible part of the preview, to open by key.
+	// Ctrl+O: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
 	links       []linkItem
 	linksCursor int
@@ -440,7 +440,7 @@ func (m *model) sortList() {
 	sort.SliceStable(m.filtered, less)
 	m.nestFamilies()
 	// State sections (waiting, asked, idle, busy, not open), a family in its
-	// most urgent session's; with ^E, folders within each, a group where its
+	// most urgent session's; with ^G, folders within each, a group where its
 	// first session lands, so the one holding a question comes first.
 	// Families stay together under their top session's folder.
 	first := map[string]int{}
@@ -524,7 +524,7 @@ func (m *model) nestFamilies() {
 	m.filtered = out
 }
 
-// groupOf is the ^E group a session is listed under: its family's folder,
+// groupOf is the ^G group a session is listed under: its family's folder,
 // within its state section.
 func groupOf(it listItem) string {
 	return fmt.Sprint(it.familyState, " ", groupKey(it.familyCwd))
@@ -1051,7 +1051,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.linksOpen { // owns the keyboard until closed
 			switch k := msg.String(); k {
-			case "ctrl+t", "esc":
+			case "ctrl+o", "esc":
 				m.linksOpen = false
 			case "ctrl+c":
 				m.quitting = true
@@ -1073,7 +1073,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if msg.String() == "ctrl+b" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.table = false, !m.table
 			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
@@ -1085,13 +1085,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			saveSettings(m.settings())
 			return m, nil
 		}
-		if msg.String() == "ctrl+e" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if msg.String() == "ctrl+g" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.grouped = false, !m.grouped
 			saveSettings(m.settings())
 			m.sortList()
 			return m, nil
 		}
-		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if msg.String() == "ctrl+o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			if m.links = m.linksWithPRs(); len(m.links) == 0 {
 				m.errorMsg = "No links in view"
@@ -1110,7 +1110,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.helpOpen { // owns the keyboard until closed
 			switch msg.String() {
-			case "ctrl+g", "esc":
+			case "?", "esc":
 				m.helpOpen = false
 			case "ctrl+c":
 				m.quitting = true
@@ -1121,11 +1121,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.acctOpen {
 			return m.acctKey(msg)
 		}
-		if msg.String() == "ctrl+g" && !m.prompting() && !m.showUsage && !m.waitOpen {
+		// ? opens help when it can't be meant as text: an empty search, the
+		// message box not focused.
+		if msg.String() == "?" && m.textInput.Value() == "" && !m.chatFocus && !m.prompting() && !m.showUsage && !m.waitOpen {
 			m.helpOpen = true
 			return m, nil
 		}
-		if msg.String() == "ctrl+o" && !m.prompting() && !m.waitOpen {
+		if msg.String() == "ctrl+u" && !m.prompting() && !m.waitOpen {
 			return m.openAccounts()
 		}
 		// The popup waits behind rename/delete/prune prompts, so it never takes
@@ -1226,7 +1228,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.showUsage && msg.String() != "ctrl+c" && msg.String() != "ctrl+y" {
+		if m.showUsage && msg.String() != "ctrl+c" && msg.String() != "ctrl+w" {
 			return m, nil // the usage screen has no other keys; typing mustn't edit a hidden search
 		}
 
@@ -1242,7 +1244,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.focusCmd(m.filtered[m.cursor].conv)
 				}
 				return m, m.sendCmd()
-			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x", "ctrl+]", "ctrl+\\", "ctrl+y":
+			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+x", "ctrl+]", "ctrl+\\", "ctrl+w":
 				// fall through to the list's handling below
 			default:
 				var cmd tea.Cmd
@@ -1372,12 +1374,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.previewScroll = max(0, m.previewScroll-10) // forward
 			return m, nil
 
-		case "ctrl+u":
-			m.textInput.SetValue("")
-			m.updateFilter()
-			return m, nil
-
-		case "ctrl+y":
+		case "ctrl+w":
 			m.openWait()
 			return m, nil
 		}
@@ -1464,7 +1461,7 @@ const (
 )
 
 // shortcuts is the keys that do something right now on the list, for the
-// Ctrl+G popup (the usage screen's header and the overlay's hint row list
+// ? popup (the usage screen's header and the overlay's hint row list
 // their own): whether a conversation is selected and live, and whether the
 // message box has focus.
 func (m model) shortcuts() [][2]string {
@@ -1495,16 +1492,16 @@ func (m model) shortcuts() [][2]string {
 	add(sel && m.textInput.Value() != "" && len(m.hitLines()) > 0, "^] ^\\", "next / previous search hit")
 	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
 	add(true, keyTab, "usage")
-	add(!m.chatFocus && m.textInput.Value() != "", keyEsc+" ^U", "clear the search")
-	add(len(m.waitQueue(true)) > 0, "^Y", "sessions waiting on you")
-	add(hasCswap, "^O", "switch account")
-	add(sel && len(m.linksWithPRs()) > 0, "^T", "open a link in view or one of its PRs")
-	add(!m.table, "^B", "the full table, every column")
-	add(m.table, "^B", "back to the sidebar")
+	add(!m.chatFocus && m.textInput.Value() != "", keyEsc, "clear the search")
+	add(len(m.waitQueue(true)) > 0, "^W", "sessions waiting on you")
+	add(hasCswap, "^U", "switch account")
+	add(sel && len(m.linksWithPRs()) > 0, "^O", "open a link in view or one of its PRs")
+	add(!m.table, "^T", "the full table, every column")
+	add(m.table, "^T", "back to the sidebar")
 	add(!m.autoFocus, "^A", "switch to a session when it starts waiting on you")
 	add(m.autoFocus, "^A", "stop switching to waiting sessions")
-	add(!m.grouped, "^E", "group by folder")
-	add(m.grouped, "^E", "ungroup")
+	add(!m.grouped, "^G", "group by folder")
+	add(m.grouped, "^G", "ungroup")
 	add(true, "^L", "changelog")
 	add(true, "^C", "quit")
 	return out
@@ -1546,14 +1543,14 @@ func hints(pairs ...string) string {
 	return strings.Join(parts, "  ")
 }
 
-// helpPopup lists the shortcuts that apply now; Ctrl+G or Esc closes it.
+// helpPopup lists the shortcuts that apply now; ? or Esc closes it.
 func (m model) helpPopup() string {
 	var b strings.Builder
 	b.WriteString("\033[1mshortcuts\033[0m\n\n")
 	for _, s := range m.shortcuts() {
 		fmt.Fprintf(&b, "\033[33m%-8s\033[0m %s\n", s[0], s[1])
 	}
-	b.WriteString("\n\033[90m" + hints("^G/"+keyEsc, "close") + "\033[0m")
+	b.WriteString("\n\033[90m" + hints("?/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
@@ -1621,24 +1618,24 @@ func (m model) viewScreen() string {
 	}
 	if n := m.waitingCount(); n > 0 && !m.showUsage {
 		status += fmt.Sprintf(" · %d waiting", n)
-		if !m.popupAboveWait() && !m.prompting() { // otherwise Ctrl+Y does nothing
-			status += " · ^Y"
+		if !m.popupAboveWait() && !m.prompting() { // otherwise Ctrl+W does nothing
+			status += " · ^W"
 		}
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
-	layout := "table"
-	if m.table {
-		layout = "sidebar"
+	group := "group" // the modes toggled while working; ^T and the rest are in ? help
+	if m.grouped {
+		group = "ungroup"
 	}
-	pairs, keep := []string{"^A", "auto-focus", "^B", layout, "^G", "help", "^C", "quit"}, 2
+	pairs, keep := []string{"^A", "auto-focus", "^G", group, "?", "help", "^C", "quit"}, 2
 	if m.showUsage { // only Tab, account, help and quit do anything there
-		pairs, keep = []string{keyTab, "back", "^O", "account", "^L", "changelog"}, 1 // every key it has, so no ^G help
+		pairs, keep = []string{keyTab, "back", "^U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
 		if len(m.waitQueue(true)) > 0 {
-			pairs = append(pairs, "^Y", "waiting")
+			pairs = append(pairs, "^W", "waiting")
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chatFocus {
-		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "^J/K", "scroll", "^G", "help"}, 1
+		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "^J/K", "scroll"}, 1 // ? types into the box here
 	}
 	b.WriteString(headerLine(tableWidth, title, pairs, keep) + "\n")
 
@@ -1792,7 +1789,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	project := truncate(projectName(item.conv.Cwd), colProject)
 
 	marks, colouredMarks := m.listMarks(item)
-	mw := colMarks // the marks' width, and with ^E an indent under the folder's header
+	mw := colMarks // the marks' width, and with ^G an indent under the folder's header
 	if m.grouped {
 		marks, colouredMarks, mw = "  "+marks, "  "+colouredMarks, colMarks+2
 	}
@@ -1950,7 +1947,7 @@ type listRow struct {
 }
 
 // listRows lays the list out in screen rows: a header before each state
-// section, and with ^E before each folder within it (sortList keeps a
+// section, and with ^G before each folder within it (sortList keeps a
 // section's and a group's sessions together).
 func (m model) listRows() []listRow {
 	counts := map[string]int{}
@@ -2011,7 +2008,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		hits = fmt.Sprint(m.hitCount(item))
 	}
 	// One space before the marks, so their glyphs sit under the search's >;
-	// with ^E two more, so sessions sit in from their folder's header.
+	// with ^G two more, so sessions sit in from their folder's header.
 	lead := " "
 	if m.grouped {
 		lead = "   "
@@ -2184,7 +2181,7 @@ func (m *model) pruneConversation() {
 	m.errorMsg = ""
 }
 
-// settingsPath keeps the view ccs reopens in (^B layout, ^E grouping)
+// settingsPath keeps the view ccs reopens in (^T layout, ^G grouping)
 // across restarts.
 var settingsPath = func() string {
 	dir, err := os.UserConfigDir()

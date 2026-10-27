@@ -100,9 +100,10 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 
 - `↑/↓` or `Ctrl+P/N` - Navigate list
 - The list is in sections by state, each with a header: waiting on you, asked you something, idle, busy, not open in `claude`
+- `Ctrl+W` - Sessions waiting on you: their question, a box to answer, Enter opens the session's tab, Esc snoozes
 - `Ctrl+A` - Auto-focus: when a session starts waiting on a question or permission prompt, switch to its iTerm tab or tmux pane (without pulling iTerm in front of another app), once you've stopped typing for 2 seconds (moving the mouse doesn't count), and not again until that question is answered. Questions already waiting when ccs starts count too; one it already switched to before a restart doesn't. Off by default, remembered across restarts
-- `Ctrl+E` - Group sessions by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^B layout, and reopens the way you left it
-- `Ctrl+B` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view
+- `Ctrl+G` - Group sessions by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^T layout, and reopens the way you left it
+- `Ctrl+T` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view
 - `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter jumps to its iTerm tab / tmux pane instead
 - `Ctrl+F` - Fork selected conversation (`claude --resume <id> --fork-session`)
 - `Ctrl+D` - Delete selected conversation (with confirmation)
@@ -110,14 +111,13 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
 - `Ctrl+J/K` - Scroll preview
 - Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it, click a link in the conversation to open it. Hold `⌥ Option` while dragging to select text in iTerm
-- `Ctrl+U` - Clear search
 - `Esc` - Clear the search
 - Message box - select an open (`●`) session and press `Ctrl+S` (or click the box) to type in the box under its conversation; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search
 - `Tab` - Switch between the session list and the usage screen
-- `Ctrl+O` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
-- `Ctrl+G` - Show the shortcuts that apply right now (the header lists only the common ones, in compact form: `^S` for Ctrl+S, and drops hints on narrow terminals rather than wrapping)
+- `Ctrl+U` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
+- `?` - Show the shortcuts that apply right now (the header lists only the common ones, in compact form: `^S` for Ctrl+S, and drops hints on narrow terminals rather than wrapping)
 - `Ctrl+L` - Changelog: what changed in every release, newest first, the installed and newer ones marked; scroll with ↑↓, PgUp/PgDn or the wheel
-- `Ctrl+T` - Links: the selected session's PRs, then the links in the visible part of the conversation, numbered; `1`-`9` or ↑↓ and Enter open one in the browser (clicking a link works too)
+- `Ctrl+O` - Links: the selected session's PRs, then the links in the visible part of the conversation, numbered; `1`-`9` or ↑↓ and Enter open one in the browser (clicking a link works too)
 - `Ctrl+]` / `Ctrl+\` - With a search typed, jump to the next / previous matching message in the conversation (wraps round); the preview shows `hit 2/5`
 - `Ctrl+C` - Quit
 

@@ -466,11 +466,11 @@ func TestUpdateCtrlU(t *testing.T) {
 		t.Errorf("initial query should be set")
 	}
 
-	// Test Ctrl+U clears search
-	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	// Esc clears the search
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = result.(model)
 	if m.textInput.Value() != "" {
-		t.Errorf("Ctrl+U should clear search, got %q", m.textInput.Value())
+		t.Errorf("Esc should clear search, got %q", m.textInput.Value())
 	}
 }
 
@@ -1038,10 +1038,10 @@ func TestHelpPopup(t *testing.T) {
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 120, 40
 	v := strip2(m.View())
-	if !strings.Contains(v, "^G help  ^C quit") || strings.Contains(v, "HITS") || strings.Contains(v, "prune") {
+	if !strings.Contains(v, "? help  ^C quit") || strings.Contains(v, "HITS") || strings.Contains(v, "prune") {
 		t.Errorf("header should list only the essentials:\n%s", v)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	v = strip2(m.View())
 	for _, s := range m.shortcuts() {
 		if !strings.Contains(v, s[0]) || !strings.Contains(v, s[1]) {
@@ -1055,11 +1055,11 @@ func TestHelpPopup(t *testing.T) {
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	m.showUsage = true
-	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG}); m.helpOpen {
-		t.Error("the usage screen lists all its keys, so ^G should do nothing there")
+	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}); m.helpOpen {
+		t.Error("the usage screen lists all its keys, so ? should do nothing there")
 	}
 	m.showUsage = false
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if !m.helpOpen || m.textInput.Value() != "" {
 		t.Error("popup should own the keyboard while open")
@@ -1068,8 +1068,8 @@ func TestHelpPopup(t *testing.T) {
 	if m.helpOpen || strings.Contains(strip2(m.View()), "changelog") {
 		t.Error("esc should close the popup")
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	if m.helpOpen {
 		t.Error("ctrl+g should toggle the popup")
 	}
@@ -1103,7 +1103,7 @@ func TestHeaderNeverWraps(t *testing.T) {
 			t.Errorf("width %d: header is %d wide: %q", w, got, strip2(first))
 		}
 		plain := strip2(first)
-		if w >= 70 && (!strings.Contains(plain, "^G help") || !strings.Contains(plain, "^C quit")) {
+		if w >= 70 && (!strings.Contains(plain, "? help") || !strings.Contains(plain, "^C quit")) {
 			t.Errorf("width %d: help and quit should stay: %q", w, plain)
 		}
 	}
@@ -1258,16 +1258,16 @@ func TestSidebarAndTable(t *testing.T) {
 		t.Errorf("clicking a sidebar row should select it, cursor=%d", m.cursor)
 	}
 
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
 	if !m.table || !strings.Contains(m.View(), "PROJECT") {
-		t.Fatal("^B should show the full table with its columns")
+		t.Fatal("^T should show the full table with its columns")
 	}
 	if m.uiState().Table != true {
 		t.Error("the table choice should survive a restart after an update")
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
 	if m.table {
-		t.Error("^B again should go back to the sidebar")
+		t.Error("^T again should go back to the sidebar")
 	}
 }
 
@@ -1287,7 +1287,7 @@ func TestGroupByFolder(t *testing.T) {
 	m.sortList()
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "api-old" })
 
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
 	var order []string
 	for _, it := range m.filtered {
 		order = append(order, it.conv.SessionID)
@@ -1321,9 +1321,9 @@ func TestGroupByFolder(t *testing.T) {
 		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
 	}
 
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
 	if m.grouped || m.filtered[0].conv.SessionID != "ccs-main" || m.filtered[1].conv.SessionID != "api-new" {
-		t.Error("^E again should go back to the usual order")
+		t.Error("^G again should go back to the usual order")
 	}
 }
 
@@ -1416,14 +1416,14 @@ func TestViewIsRememberedAcrossRestarts(t *testing.T) {
 		t.Fatal("no file: the defaults")
 	}
 	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
 	if got := loadSettings(); !got.Grouped || !got.Table {
-		t.Errorf("^E and ^B should be saved, got %+v", got)
+		t.Errorf("^G and ^T should be saved, got %+v", got)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlE})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
 	if got := loadSettings(); got.Grouped || !got.Table {
-		t.Errorf("^E again should be saved too, got %+v", got)
+		t.Errorf("^G again should be saved too, got %+v", got)
 	}
 }
 
@@ -1441,5 +1441,24 @@ func TestHeaderShowsAutoFocusKey(t *testing.T) {
 	m.autoFocus = true
 	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "auto-focus on") {
 		t.Errorf("the header should say auto-focus is on: %q", head)
+	}
+}
+
+func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	q := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
+	if m, _ = key(m, q); !m.helpOpen {
+		t.Fatal("? on an empty search opens help")
+	}
+	if m, _ = key(m, q); m.helpOpen {
+		t.Fatal("? again closes it")
+	}
+	m.textInput.SetValue("why")
+	if m, _ = key(m, q); m.helpOpen || m.textInput.Value() != "why?" {
+		t.Errorf("with a search typed, ? is text: help=%v search=%q", m.helpOpen, m.textInput.Value())
+	}
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^A auto-focus  ^G group  ? help  ^C quit") {
+		t.Errorf("header keys: %q", head)
 	}
 }

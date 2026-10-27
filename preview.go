@@ -442,7 +442,7 @@ func openLinkCmd(u string) tea.Cmd {
 	}
 }
 
-// linkItem is one link in the Ctrl+T popup: where it goes and the text shown for it.
+// linkItem is one link in the Ctrl+O popup: where it goes and the text shown for it.
 type linkItem struct{ url, text string }
 
 // visibleLinks lists the links in the preview as drawn now, top to bottom,
@@ -502,7 +502,7 @@ func (m model) visibleLinks() []linkItem {
 	return out
 }
 
-// linksWithPRs is what ^T lists: the selected session's PRs, then the other
+// linksWithPRs is what ^O lists: the selected session's PRs, then the other
 // links in view.
 func (m model) linksWithPRs() []linkItem {
 	if len(m.filtered) == 0 {
@@ -540,7 +540,7 @@ func (m model) linksPopup() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "open", "1-9", "open", "^T/"+keyEsc, "close") + "\033[0m")
+	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "open", "1-9", "open", "^O/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).

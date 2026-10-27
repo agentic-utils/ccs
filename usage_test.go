@@ -225,7 +225,7 @@ func TestAllowanceInSearchRowAndUsageScreenHidesSearch(t *testing.T) {
 	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "tab back") {
 		t.Error("the usage screen should replace the search box with a back hint")
 	}
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "tab back  ^O account  ^L changelog  ^C quit") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "tab back  ^U account  ^L changelog  ^C quit") {
 		t.Error("the usage screen header should list only its own keys")
 	}
 }
@@ -350,7 +350,7 @@ func TestAccountSwitcherListsAndSwitches(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 140, 40
 
-	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyCtrlU})
 	if !m.acctOpen || len(m.accts) != 3 {
 		t.Fatalf("ctrl+o should open and list 3 accounts, open=%v n=%d msg=%q", m.acctOpen, len(m.accts), m.acctMsg)
 	}
@@ -393,7 +393,7 @@ func TestAccountSwitchFailureIsShown(t *testing.T) {
 	fakeCswap(t)
 	t.Setenv("CSWAP_FAIL", "1")
 	m := initialModel(nil, "", nil)
-	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyCtrlU})
 	m = runAcct(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 	if !strings.Contains(m.acctMsg, "needs re-login") {
 		t.Errorf("failure should show cswap's reason, got %q", m.acctMsg)
@@ -419,7 +419,7 @@ func TestSwitchRefetchesAllowance(t *testing.T) {
 func TestAccountSwitcherWithoutCswap(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	m := initialModel(nil, "", nil)
-	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
 	if m = res.(model); m.acctOpen || cmd != nil || !strings.Contains(m.errorMsg, "install cswap") {
 		t.Errorf("without cswap, ctrl+o should explain, got open=%v msg=%q", m.acctOpen, m.errorMsg)
 	}

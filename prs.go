@@ -153,7 +153,7 @@ func (m model) prCell(conv Conversation, coloured bool) string {
 	return strings.Repeat(" ", max(colPRs-ansi.StringWidth(s), 0)) + s
 }
 
-// maxPRLines is how many PRs the preview header lists; ^T lists them all.
+// maxPRLines is how many PRs the preview header lists; ^O lists them all.
 const maxPRLines = 5
 
 // prLines is the preview header's PRs, width wide: one line, a link, for each
@@ -191,7 +191,7 @@ func (m model) prLines(conv Conversation, width int) []string {
 		rest = append(rest, fmt.Sprintf("%d not found", gone))
 	}
 	if len(rest) > 0 {
-		lines = append(lines, "\033[90m"+strings.Join(rest, " · ")+" · ^T all\033[0m")
+		lines = append(lines, "\033[90m"+strings.Join(rest, " · ")+" · ^O all\033[0m")
 	}
 	if m.prErr != "" && slices.ContainsFunc(urls, func(u string) bool { return m.prs[u].State == "" }) {
 		lines = append(lines, "\033[90mcouldn't ask GitHub: "+m.prErr+"\033[0m")
@@ -230,7 +230,7 @@ func prName(u string) string {
 	return u
 }
 
-// prLinks is conv's PRs for the ^T popup, in the order the header lists them.
+// prLinks is conv's PRs for the ^O popup, in the order the header lists them.
 func (m model) prLinks(conv Conversation) []linkItem {
 	var out []linkItem
 	for _, u := range m.sessionPRs(conv) {

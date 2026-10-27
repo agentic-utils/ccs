@@ -686,8 +686,8 @@ type uiState struct {
 	Selected      string               `json:"selected"` // SessionID, so it survives a reordered list
 	PreviewScroll int                  `json:"preview_scroll"`
 	Snoozes       map[string]snoozeRec `json:"snoozes,omitempty"` // input-prompt overlay snoozes, by SessionID
-	Table         bool                 `json:"table,omitempty"`   // ^B: the full table, not the sidebar
-	Grouped       bool                 `json:"grouped,omitempty"` // ^E: grouped by folder
+	Table         bool                 `json:"table,omitempty"`   // ^T: the full table, not the sidebar
+	Grouped       bool                 `json:"grouped,omitempty"` // ^G: grouped by folder
 }
 
 func (m model) screenName() string {

@@ -46,11 +46,11 @@ func typeIn(m model, s string) model {
 	return m
 }
 
-// openByHand applies stats and opens the overlay with Ctrl+Y.
+// openByHand applies stats and opens the overlay with Ctrl+W.
 func openByHand(m model, stats map[string]sessionStat) model {
 	m.applyStats(stats)
 	m.closeWait()
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	return m
 }
 
@@ -140,8 +140,8 @@ func TestWaitBannerShowsTheOldestAndTakesNoKeys(t *testing.T) {
 	if m.textInput.Value() != "" || m.snoozedNow("menu") || m.waitOpen {
 		t.Fatalf("esc clears the search: search=%q snoozed=%v", m.textInput.Value(), m.snoozedNow("menu"))
 	}
-	// Ctrl+Y opens the overlay on the banner's session; it owns the keyboard.
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	// Ctrl+W opens the overlay on the banner's session; it owns the keyboard.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	view := strip2(m.View())
 	for _, want := range []string{"waiting 1 of 2", "Menu one · input needed", "only shown in its own tab"} {
 		if !strings.Contains(view, want) {
@@ -152,7 +152,7 @@ func TestWaitBannerShowsTheOldestAndTakesNoKeys(t *testing.T) {
 	if m.waitID != "live" {
 		t.Errorf("ctrl+n should show the next session, got %q", m.waitID)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	if m.waitOpen || strings.Contains(bannerRow(m), "waiting on you") {
 		t.Errorf("both were seen, so after closing there's no banner: open=%v top=%q", m.waitOpen, bannerRow(m))
 	}
@@ -168,9 +168,9 @@ func TestWaitBannerNeverHidesALaterWait(t *testing.T) {
 		t.Fatalf("the banner should move on to the new wait: %q", bannerRow(m))
 	}
 	// Seen and closed, while yet another wait arrives: that one still gets the banner.
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	m.applyStats(map[string]sessionStat{"live": waiting(now.Add(time.Second), "permission prompt"), "menu": waiting(now, "input needed")})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	if m.waitOpen || !strings.Contains(bannerRow(m), "Busy one is waiting on you") {
 		t.Fatalf("a wait that arrived while the overlay was open was never shown, so it gets the banner: open=%v top=%q", m.waitOpen, bannerRow(m))
 	}
@@ -196,7 +196,7 @@ func TestWaitAskedGetsNoBannerButOpensByHand(t *testing.T) {
 	if strings.Contains(bannerRow(m), "waiting on you") {
 		t.Error("an asking (idle) session gets no banner")
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	if !m.waitOpen || m.waitID != "asks" {
 		t.Errorf("ctrl+y opens by hand, asking sessions included: open=%v id=%q", m.waitOpen, m.waitID)
 	}
@@ -238,7 +238,7 @@ func TestWaitWithoutATimestamp(t *testing.T) {
 	if q := m.waitQueue(false); len(q) != 2 || q[0].SessionID != "menu" {
 		t.Errorf("an unknown wait time sorts last: %v", q)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlN})
 	if title := strings.Split(strip2(m.waitPopup()), "\n")[1]; regexp.MustCompile(`\d{4,}m`).MatchString(title) {
 		t.Errorf("no age without a timestamp: %q", title)
@@ -454,7 +454,7 @@ func TestWaitSeenAndClosedGetsNoBanner(t *testing.T) {
 	m := waitModel(t)
 	stats := map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")}
 	m = openByHand(m, stats)
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY}) // close
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW}) // close
 	m.applyStats(stats)
 	if m.waitOpen || strings.Contains(bannerRow(m), "waiting on you") {
 		t.Fatal("seen and closed: the same wait gets no banner again")
@@ -466,11 +466,11 @@ func TestWaitCtrlYShowsSnoozedAndKeepsTheirSnoozes(t *testing.T) {
 	stats := map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")}
 	m = openByHand(m, stats)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	if _, ok := m.snoozed["live"]; !m.waitOpen || m.waitID != "live" || !ok || !strings.Contains(strip2(m.waitPopup()), "snoozed") {
 		t.Fatalf("ctrl+y shows a snoozed session and keeps its snooze: open=%v snoozed=%v err=%q", m.waitOpen, ok, m.errorMsg)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	rec := m.snoozed["live"]
 	rec.Until = time.Now().Add(-time.Second)
 	m.snoozed["live"] = rec
@@ -541,7 +541,7 @@ func TestWaitOwnsTheKeyboardAndMouse(t *testing.T) {
 	withOffer := open
 	withOffer.updateOpen, withOffer.updateTo = true, "v9.9.9"
 	for name, s := range map[string]model{"open": open, "under the update offer": withOffer} {
-		for _, k := range []tea.KeyType{tea.KeyCtrlL, tea.KeyCtrlT, tea.KeyCtrlG, tea.KeyCtrlO} {
+		for _, k := range []tea.KeyType{tea.KeyCtrlL, tea.KeyCtrlO, tea.KeyCtrlU} {
 			if n, _ := key(s, tea.KeyMsg{Type: k}); n.notesOpen || n.linksOpen || n.helpOpen || n.acctOpen {
 				t.Errorf("%s: %v opened a popup over the overlay", name, k)
 			}
@@ -561,7 +561,7 @@ func TestWaitCtrlYWorksOnTheUsageScreen(t *testing.T) {
 	if !strings.Contains(bannerRow(m), "Busy one is waiting on you") {
 		t.Errorf("the banner shows on the usage screen too: %q", bannerRow(m))
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	if !m.waitOpen {
 		t.Fatal("ctrl+y should open the overlay from the usage screen too")
 	}
@@ -622,17 +622,17 @@ func TestWaitFitsATinyTerminal(t *testing.T) {
 			t.Errorf("%dx%d terminal: the key hints fell off: %q", sz[0], sz[1], strip2(pop[len(pop)-2]))
 		}
 	}
-	// Shorter, there's only the banner, and Ctrl+Y says why.
+	// Shorter, there's only the banner, and Ctrl+W says why.
 	m := waitModel(t)
 	m.height = waitMinHeight - 1
 	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	if m.waitOpen || !strings.Contains(m.errorMsg, "taller") || !strings.Contains(bannerRow(m), "waiting on you") {
 		t.Fatalf("a terminal too short for the overlay keeps the banner and says why: open=%v err=%q", m.waitOpen, m.errorMsg)
 	}
 	// Shrinking under it closes the overlay.
 	m.height = 40
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	res, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: waitMinHeight - 1})
 	if res.(model).waitOpen {
 		t.Error("a window shrunk under the overlay's height closes it")
@@ -643,7 +643,7 @@ func TestWaitHintsListEveryKey(t *testing.T) {
 	m := waitModel(t)
 	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
 	pop := strings.Split(strip2(m.waitPopup()), "\n")
-	for _, want := range []string{"enter open its tab", "esc snooze", "↑↓", "pgup", "^Y close", "^C quit"} {
+	for _, want := range []string{"enter open its tab", "esc snooze", "↑↓", "pgup", "^W close", "^C quit"} {
 		if !strings.Contains(pop[len(pop)-2], want) {
 			t.Errorf("hint row should list %q: %q", want, pop[len(pop)-2])
 		}
@@ -750,7 +750,7 @@ func TestWaitUncheckedPidGetsTheBannerWithANote(t *testing.T) {
 	if !strings.Contains(bannerRow(m), "Busy one is waiting on you") {
 		t.Fatalf("an unchecked pid still gets the banner: %q", bannerRow(m))
 	}
-	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY}); !strings.Contains(strip2(m.waitPopup()), "unverified") {
+	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW}); !strings.Contains(strip2(m.waitPopup()), "unverified") {
 		t.Fatal("the overlay notes an unchecked pid")
 	}
 	sessionFileFor(t, body("Fri Sep 25 10:00:00 2026"))
@@ -817,7 +817,7 @@ func TestWaitDiscardedDraftIsReported(t *testing.T) {
 	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt"), "menu": waiting(time.Now(), "permission prompt")})
 	m = typeIn(m, "half an answer")
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlN}) // the draft is kept with its session
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
 	m.live = map[string]bool{"menu": true}
 	m.applyStats(map[string]sessionStat{"menu": waiting(time.Now(), "permission prompt")})
 	if !strings.Contains(m.errorMsg, "discarded") {
@@ -830,15 +830,15 @@ func TestWaitHeaderCountKeepsTheTitleRow(t *testing.T) {
 	m.updating, m.updateTo = true, "v9.9.9"
 	m.progress = &updateProgress{step: "downloading", started: time.Now()}
 	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
-	if top := topRow(m); !strings.Contains(top, "updating to v9.9.9") || !strings.Contains(top, "1 waiting · ^Y") || !strings.Contains(top, "quit") {
+	if top := topRow(m); !strings.Contains(top, "updating to v9.9.9") || !strings.Contains(top, "1 waiting · ^W") || !strings.Contains(top, "quit") {
 		t.Fatalf("the waiting count sits with the title row's notes and hints: %q", top)
 	}
 	if strings.Contains(strip2(m.View()), "waiting on you") {
 		t.Error("no banner row under the search")
 	}
 	m.helpOpen = true
-	if top := topRow(m); !strings.Contains(top, "1 waiting") || strings.Contains(top, "^Y") {
-		t.Errorf("while help owns the keys, Ctrl+Y does nothing, so it isn't offered: %q", top)
+	if top := topRow(m); !strings.Contains(top, "1 waiting") || strings.Contains(top, "^W") {
+		t.Errorf("while help owns the keys, Ctrl+W does nothing, so it isn't offered: %q", top)
 	}
 }
 
@@ -910,7 +910,7 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 func TestListOrdersWaitingThenIdleThenBusy(t *testing.T) {
 	m := selectLive(waitModel(t))
 	m.applyStats(map[string]sessionStat{"menu": waiting(time.Now(), "input needed"), "asks": {status: "idle"}, "live": {status: "busy"}})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG}) // any update re-sorts
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}) // any update re-sorts
 	var got []string
 	for _, it := range m.filtered {
 		got = append(got, it.conv.SessionID)
@@ -951,7 +951,7 @@ func TestLongQuestionWrapsInFull(t *testing.T) {
 func TestStatusChangeKeepsTheSelectionOnItsSession(t *testing.T) {
 	m := selectLive(waitModel(t))
 	m.applyStats(map[string]sessionStat{"live": {status: "idle"}, "asks": {status: "idle"}})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
 	row := m.cursor
 	// It goes busy (say Enter resumed it): busy sorts below idle.

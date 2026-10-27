@@ -58,18 +58,22 @@ Key bindings:
   ↑/↓, Ctrl+P/N   Move through the list
   Enter           Resume the conversation, or go to its tab if it's open in claude
   Ctrl+S          Message the selected live session (Enter sends, Esc back)
+  Ctrl+W          Sessions waiting on you: answer, open or snooze them
+  Ctrl+A          Auto-focus: switch to a session's tab when it starts waiting on you
+  Ctrl+G          Group sessions by folder
+  Ctrl+T          Table: every column, instead of the sidebar
   Ctrl+F          Fork conversation (resume into a new session id)
   Ctrl+R          Rename conversation (not while it's open in claude)
   Ctrl+D          Delete conversation (with confirmation)
   Ctrl+X          Prune conversation - shrink it losslessly (with confirmation)
   Ctrl+J/K        Scroll the conversation preview (also the mouse wheel)
-  Esc, Ctrl+U     Clear the search
+  Esc             Clear the search
   Tab             Usage screen (Tab again to go back)
-  Ctrl+O          Switch Claude account (needs cswap)
+  Ctrl+U          Switch Claude account (needs cswap)
   Ctrl+L          Changelog
-  Ctrl+T          Open one of the session's PRs or a link in view
+  Ctrl+O          Open one of the session's PRs or a link in view
   Ctrl+] / Ctrl+\  Next / previous search hit
-  Ctrl+G          Show the shortcuts that apply right now
+  ?               Show the shortcuts that apply right now (on an empty search)
   Ctrl+C          Quit
 
   Click a row to select it, click a link in the preview to open it.

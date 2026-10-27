@@ -47,7 +47,7 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 		t.Errorf("ready, needs you, waiting, merged: %v", got)
 	}
 	lines := m.prLines(conv, 100)
-	for i, want := range []string{"r#3 go · ready to merge", "r#4 broken · checks failing", "r#2 waits · review required", "1 merged · ^T all"} {
+	for i, want := range []string{"r#3 go · ready to merge", "r#4 broken · checks failing", "r#2 waits · review required", "1 merged · ^O all"} {
 		if !strings.Contains(strip2(lines[i]), want) {
 			t.Errorf("line %d = %q, want %q", i, strip2(lines[i]), want)
 		}

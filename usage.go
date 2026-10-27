@@ -657,7 +657,7 @@ func resetLabel(iso string, now time.Time) string {
 	return "ends " + lt.Format("Mon 15:04")
 }
 
-// ---- account switcher (Ctrl+O), backed by the cswap CLI ----
+// ---- account switcher (Ctrl+U), backed by the cswap CLI ----
 
 // cswapAccount is one entry of `cswap list --json`.
 type cswapAccount struct {
@@ -789,7 +789,7 @@ func (m model) acctKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key == "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
-	case key == "esc" || key == "ctrl+o":
+	case key == "esc" || key == "ctrl+u":
 		m.acctOpen = false
 		return m, nil
 	case m.acctBusy: // one cswap command at a time

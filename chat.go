@@ -155,7 +155,7 @@ func (m model) chatAsk() []string {
 		lines[i] = "  " + l
 	}
 	if limit := max(m.height/2, 3); len(lines) > limit { // the overlay shows the rest
-		lines = append(lines[:limit-1], "  \033[90m… ^Y shows the rest\033[0m")
+		lines = append(lines[:limit-1], "  \033[90m… ^W shows the rest\033[0m")
 	}
 	return lines
 }
@@ -230,7 +230,7 @@ func waitingLine(conv Conversation) string {
 	// The question itself is drawn just above (askLines).
 	switch {
 	case answerable(conv) > 0:
-		return "waiting on you · ^Y answers it by number, " + keyEnter + " opens its tab"
+		return "waiting on you · ^W answers it by number, " + keyEnter + " opens its tab"
 	case len(conv.questions()) > 0:
 		return "waiting on you · answer it in its tab: " + keyEnter + " opens it"
 	case conv.pending != nil:

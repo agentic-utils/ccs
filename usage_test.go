@@ -256,6 +256,13 @@ func TestAccountEmailFromClaudeConfig(t *testing.T) {
 	if got := accountEmail(); got != "other@example.com" {
 		t.Errorf("CLAUDE_CONFIG_DIR profile: got %q", got)
 	}
+	// The same email can be in several organisations: name it, as cswap does.
+	if err := os.WriteFile(filepath.Join(alt, ".claude.json"), []byte(`{"oauthAccount":{"emailAddress":"me@two.inc","organizationName":"Two AS"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := accountEmail(); got != "me@two.inc [Two AS]" {
+		t.Errorf("with its organisation: got %q", got)
+	}
 }
 
 func TestResampleBucketsFillsAnyWidth(t *testing.T) {

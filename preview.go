@@ -121,10 +121,38 @@ func (m model) hitCount(item listItem) int {
 // rebuilding only when the selection or query changes. Keyed by SessionID (not
 // cursor index) so it stays correct when the filtered list shifts.
 func (m model) previewLines() []string {
-	if len(m.filtered) == 0 {
-		return nil
+	if len(m.filtered) == 0 || !m.previewSettled() {
+		return nil // still scrolling through the list: the header alone
 	}
 	return cachedPreview(m.preview, m.filtered[m.cursor].conv, m.textInput.Value(), m.paneWidth()-1) // the last column is the scrollbar
+}
+
+// previewDebounce is how long the selection must rest before its
+// conversation is built: scrolling through the list draws only each
+// preview's header, so a big conversation passed on the way costs nothing.
+var previewDebounce = 150 * time.Millisecond
+
+// previewSettledMsg redraws once the selection has rested.
+type previewSettledMsg struct{}
+
+func (m model) previewSettled() bool { return time.Since(m.selectedAt) >= previewDebounce }
+
+// noteSelection starts the rest period when the selected session changes.
+func (m *model) noteSelection() tea.Cmd {
+	id := ""
+	if len(m.filtered) > 0 {
+		id = m.filtered[min(m.cursor, len(m.filtered)-1)].conv.SessionID
+	}
+	if id == m.selectedID {
+		return nil
+	}
+	first := m.selectedID == ""
+	m.selectedID = id
+	if first || previewDebounce == 0 {
+		return nil // the first selection isn't scrolling past anything
+	}
+	m.selectedAt = time.Now()
+	return tea.Tick(previewDebounce, func(time.Time) tea.Msg { return previewSettledMsg{} })
 }
 
 // cachedPreview is buildPreviewLines memoised in c; a nil c (a model built

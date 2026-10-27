@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -623,23 +622,23 @@ func (m model) waitPopup() string {
 		Render(b.String())
 }
 
-// autoFocusIdle is how long keyboard and mouse must be still before auto-focus
-// switches tabs, so keystrokes meant for another session never land in a
-// waiting session's menu, where a digit or Enter would answer it.
-const autoFocusIdle = 3 * time.Second
+// autoFocusIdle is how long since the last key press before auto-focus
+// switches tabs, so keystrokes meant for another window never land in a
+// waiting session's menu, where a digit or Enter would answer it. The mouse
+// doesn't count: moving it can't answer anything, and it's rarely still.
+const autoFocusIdle = 2 * time.Second
 
-var hidIdle = regexp.MustCompile(`"HIDIdleTime" = (\d+)`)
-
-// userIdle is how long since the last keyboard or mouse input (macOS); not ok
-// when unknown, and then auto-focus never switches.
+// userIdle is how long since the last key press (macOS, through CoreGraphics:
+// kCGEventSourceStateHIDSystemState, kCGEventKeyDown); not ok when unknown,
+// and then auto-focus never switches.
 var userIdle = func() (time.Duration, bool) {
-	out, err := runBounded(2*time.Second, nil, "ioreg", "-c", "IOHIDSystem", "-d", "4")
-	m := hidIdle.FindSubmatch(out)
-	if err != nil || m == nil {
+	out, err := runBounded(2*time.Second, nil, "osascript", "-l", "JavaScript", "-e",
+		"ObjC.import('CoreGraphics'); $.CGEventSourceSecondsSinceLastEventType(1, 10)")
+	secs, perr := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil || perr != nil {
 		return 0, false
 	}
-	ns, err := strconv.ParseInt(string(m[1]), 10, 64)
-	return time.Duration(ns), err == nil
+	return time.Duration(secs * float64(time.Second)), true
 }
 
 // autoFocusTab selects a session's tab or pane without bringing iTerm in front.
@@ -713,9 +712,9 @@ func (m *model) applyAutoFocus(msg autoFocusMsg) {
 	name := m.focusName(msg.id)
 	switch {
 	case !msg.idleOK:
-		m.noteFocus(msg.id, "noidle", "auto-focus: can't read keyboard idle time, so not switching to %s", name)
+		m.noteFocus(msg.id, "noidle", "auto-focus: can't read when a key was last pressed, so not switching to %s", name)
 	case !msg.tried:
-		m.noteFocus(msg.id, "busy", "auto-focus: you're active (idle %.1fs); switching to %s once you're still for %v", msg.idle.Seconds(), name, autoFocusIdle)
+		m.noteFocus(msg.id, "busy", "auto-focus: you're typing (last key %.1fs ago); switching to %s once you've stopped for %v", msg.idle.Seconds(), name, autoFocusIdle)
 	case msg.focused:
 		logActivity("auto-focus: switched to %s", name)
 	default:

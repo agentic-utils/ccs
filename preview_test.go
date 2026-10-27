@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
@@ -690,5 +691,32 @@ func TestLinksNeverCarryStyleCodes(t *testing.T) {
 	}
 	if out := ansi.Strip(inlineMarkdown("**https://github.com/o/r/pull/144**")); out != "github.com/o/r/pull/144" {
 		t.Errorf("a bold bare address should show as the address alone, got %q", out)
+	}
+}
+
+func TestPreviewWaitsForTheSelectionToRest(t *testing.T) {
+	defer func(d time.Duration) { previewDebounce = d }(previewDebounce)
+	previewDebounce = 50 * time.Millisecond
+	var convs []Conversation
+	for i := range 3 {
+		convs = append(convs, Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("t", i),
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339),
+			Messages:      []Message{{Role: "user", Text: fmt.Sprint("body of s", i)}}})
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 30
+	res, _ := m.Update(struct{}{}) // the first selection shows at once
+	m = res.(model)
+	if len(m.previewLines()) == 0 {
+		t.Fatal("the first selection isn't scrolling past anything")
+	}
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = res.(model)
+	if len(m.previewLines()) != 0 || strings.Contains(strip2(m.View()), "body of s1") || cmd == nil {
+		t.Error("just after moving, only the header: the conversation waits for the selection to rest")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if !strings.Contains(strip2(m.View()), "body of s1") {
+		t.Error("once it has rested, the conversation shows")
 	}
 }

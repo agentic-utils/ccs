@@ -295,7 +295,7 @@ func (m *model) prCmd() tea.Cmd {
 			m.prQueue = append(m.prQueue, urls[i:min(i+prBatch, len(urls))])
 		}
 	}
-	if !m.prSelBusy && len(m.filtered) > 0 {
+	if !m.prSelBusy && len(m.filtered) > 0 && m.previewSettled() { // not for each session scrolled past
 		var urls []string
 		for _, u := range m.filtered[m.cursor].conv.PRs {
 			if _, have := m.prs[u]; !have && !m.prSelAsked[u] && len(urls) < prBatch {

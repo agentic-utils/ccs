@@ -50,6 +50,8 @@ type model struct {
 	parents         map[string]string    // spawned SessionID -> the session whose claude -p started it
 	noParent        map[string]int       // spawned SessionID -> len(items) when no parent was found
 	grouped         bool                 // ^E: sessions grouped by folder
+	selectedID      string               // the selected session, to see when it changes
+	selectedAt      time.Time            // when it was selected: its preview waits previewDebounce
 	autoFocus       bool                 // ^A: switch to a session that starts waiting on you (autoFocusCmd)
 	focusArmed      bool                 // waits seen before this were there when auto-focus started
 	focusBusy       bool                 // an auto-focus attempt is in flight
@@ -622,6 +624,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.update(msg)
 	n := res.(model)
 	n.sortList()
+	if settle := n.noteSelection(); settle != nil {
+		cmd = tea.Batch(cmd, settle)
+	}
 	n.syncChatDraft()
 	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
 		n.chatFocus = false

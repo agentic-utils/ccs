@@ -700,7 +700,8 @@ func TestCtrlXEntersAndCancelsPruneConfirm(t *testing.T) {
 		Messages: []Message{{Role: "user", Text: "hi"}}}}
 	m := initialModel([]listItem{item}, "", nil)
 
-	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	m = res.(model)
 	if !m.confirmPrune {
 		t.Fatalf("ctrl+x should enter prune confirm mode (err=%q)", m.errorMsg)
@@ -773,7 +774,8 @@ func TestRename(t *testing.T) {
 	item := buildItems([]Conversation{{SessionID: "s1", FilePath: path, Messages: []Message{{Role: "user", Text: "hi"}}}})[0]
 	m := initialModel([]listItem{item}, "", nil)
 
-	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
 	m = res.(model)
 	if !m.renaming {
 		t.Fatal("ctrl+r should start renaming")
@@ -798,7 +800,8 @@ func TestRename(t *testing.T) {
 	m.textInput.SetValue("")
 	m.updateFilter()
 	m.live = map[string]bool{"s1": true}
-	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
 	if m = res.(model); m.renaming || m.errorMsg == "" {
 		t.Error("rename should be refused on a live session")
 	}
@@ -861,7 +864,8 @@ func TestDeleteBumpsGenAndEvictsCache(t *testing.T) {
 func TestPruneRefusedOnLiveSession(t *testing.T) {
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.live = map[string]bool{"s": true}
-	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if m = res.(model); m.confirmPrune || m.errorMsg == "" {
 		t.Error("prune should be refused on a live session")
 	}
@@ -1258,14 +1262,14 @@ func TestSidebarAndTable(t *testing.T) {
 		t.Errorf("clicking a sidebar row should select it, cursor=%d", m.cursor)
 	}
 
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m, _ = chord(m, "t")
 	if !m.table || !strings.Contains(m.View(), "PROJECT") {
 		t.Fatal("^T should show the full table with its columns")
 	}
 	if m.uiState().Table != true {
 		t.Error("the table choice should survive a restart after an update")
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m, _ = chord(m, "t")
 	if m.table {
 		t.Error("^T again should go back to the sidebar")
 	}
@@ -1287,7 +1291,7 @@ func TestGroupByFolder(t *testing.T) {
 	m.sortList()
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "api-old" })
 
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = chord(m, "g")
 	var order []string
 	for _, it := range m.filtered {
 		order = append(order, it.conv.SessionID)
@@ -1321,7 +1325,7 @@ func TestGroupByFolder(t *testing.T) {
 		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
 	}
 
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = chord(m, "g")
 	if m.grouped || m.filtered[0].conv.SessionID != "ccs-main" || m.filtered[1].conv.SessionID != "api-new" {
 		t.Error("^G again should go back to the usual order")
 	}
@@ -1416,12 +1420,12 @@ func TestViewIsRememberedAcrossRestarts(t *testing.T) {
 		t.Fatal("no file: the defaults")
 	}
 	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	m, _ = chord(m, "g")
+	m, _ = chord(m, "t")
 	if got := loadSettings(); !got.Grouped || !got.Table {
 		t.Errorf("^G and ^T should be saved, got %+v", got)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlG})
+	m, _ = chord(m, "g")
 	if got := loadSettings(); got.Grouped || !got.Table {
 		t.Errorf("^G again should be saved too, got %+v", got)
 	}
@@ -1435,11 +1439,11 @@ func rowOf(m model, i int) int {
 func TestHeaderShowsAutoFocusKey(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 150, 20
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^A auto-focus off") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X A auto-focus off") {
 		t.Errorf("the header should say auto-focus is off, with its key: %q", head)
 	}
 	m.autoFocus = true
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^A auto-focus on") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X A auto-focus on") {
 		t.Errorf("the header should say auto-focus is on: %q", head)
 	}
 }
@@ -1458,7 +1462,7 @@ func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
 	if m, _ = key(m, q); m.helpOpen || m.textInput.Value() != "why?" {
 		t.Errorf("with a search typed, ? is text: help=%v search=%q", m.helpOpen, m.textInput.Value())
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^G group  ? help  ^C quit") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X G group  ? help  ^C quit") {
 		t.Errorf("header keys: %q", head)
 	}
 }
@@ -1489,5 +1493,42 @@ func TestCtrlRRefreshesNowAndChecksForUpdates(t *testing.T) {
 	}
 	if m.refreshStarted.IsZero() || !m.prNext.Before(time.Now().Add(time.Minute)) {
 		t.Error("^R should mark the scan started and bring the PR round forward")
+	}
+}
+
+func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	m.textInput.SetValue("fix the login flow")
+	m.textInput.CursorEnd()
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
+	if got := m.textInput.Value(); got != "fix the login " {
+		t.Errorf("^W deletes the word before the cursor: %q", got)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlA})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlK})
+	if got := m.textInput.Value(); got != "" {
+		t.Errorf("^A then ^K deletes the whole line: %q", got)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	if got := m.textInput.Value(); got != "fix the login " {
+		t.Errorf("^Y puts back what ^K deleted: %q", got)
+	}
+	if m.waitOpen || m.autoFocus {
+		t.Error("^W and ^A only edit text now")
+	}
+	// ccs's own actions are ^X chords, ^X ^W as well as ^X W.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "A auto-focus") || !strings.Contains(head, "esc cancel") {
+		t.Errorf("after ^X the header lists what comes next: %q", head)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlA})
+	if !m.autoFocus || m.textInput.Value() != "fix the login " {
+		t.Errorf("^X ^A toggles auto-focus, without editing: on=%v %q", m.autoFocus, m.textInput.Value())
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if got := m.textInput.Value(); got != "fix the login " || m.chordX {
+		t.Errorf("an unknown chord does nothing and types nothing: %q", got)
 	}
 }

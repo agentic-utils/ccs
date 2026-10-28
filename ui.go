@@ -27,7 +27,7 @@ type listItem struct {
 	searchLower string // searchText lowercased once, for case-insensitive filtering
 	rank        int    // matchRank for the current search, 0 without one
 	depth       int    // nested under the session that started it (sortList)
-	familyCwd   string // its top-level session's cwd, which ^G groups the family by
+	familyCwd   string // its top-level session's cwd, which ^X G groups the family by
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
 }
 
@@ -46,13 +46,14 @@ type model struct {
 	cursor          int
 	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width           int
-	table           bool                 // ^T: the full-width table instead of the sidebar
+	table           bool                 // ^X T: the full-width table instead of the sidebar
 	parents         map[string]string    // spawned SessionID -> the session whose claude -p started it
 	noParent        map[string]int       // spawned SessionID -> len(items) when no parent was found
-	grouped         bool                 // ^G: sessions grouped by folder
+	grouped         bool                 // ^X X G: sessions grouped by folder
+	chordX          bool                 // ^X pressed: the next key picks a ccs action
 	selectedID      string               // the selected session, to see when it changes
 	selectedAt      time.Time            // when it was selected: its preview waits previewDebounce
-	autoFocus       bool                 // ^A: switch to a session that starts waiting on you (autoFocusCmd)
+	autoFocus       bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)
 	focusBusy       bool                 // an auto-focus attempt is in flight
 	focusHeld       string               // the session auto-focus switched to; none other until it's answered
 	focusHandled    map[string]time.Time // SessionID -> the wait (statusUpdatedAt) auto-focus has dealt with
@@ -67,7 +68,7 @@ type model struct {
 	deleteIndex     int                  // Index of item to delete
 	confirmPrune    bool                 // Are we in prune confirmation mode?
 	pruneIndex      int                  // Index of item to prune
-	pruneSaved      int64                // Bytes the pending prune would reclaim (measured on Ctrl+X)
+	pruneSaved      int64                // Bytes the pending prune would reclaim (measured on Ctrl+X X)
 	renaming        bool                 // Are we typing a new name?
 	resuming        bool                 // an Enter/Ctrl+F open is in flight
 	opened          map[string]time.Time // sessions ccs opened in a tab, until their session file appears
@@ -94,7 +95,7 @@ type model struct {
 	sending    bool
 
 	// Input-prompt overlay (see wait*): live sessions waiting on the user.
-	waitOpen       bool              // the overlay is open (Ctrl+W); it owns the keyboard
+	waitOpen       bool              // the overlay is open (Ctrl+X W); it owns the keyboard
 	waitID         string            // the session it shows
 	waitInput      textinput.Model   // the shown session's draft
 	waitDrafts     map[string]string // the other sessions' drafts, so a draft never follows you to another session
@@ -152,7 +153,7 @@ type model struct {
 	account          string // Claude account email, from Claude Code's config
 	allowanceStale   bool   // the account changed while a fetch was in flight: fetch again
 
-	// Account switcher (Ctrl+U), backed by the cswap CLI.
+	// Account switcher (Ctrl+X U), backed by the cswap CLI.
 	acctOpen bool
 	helpOpen bool // ? shortcut list
 
@@ -440,7 +441,7 @@ func (m *model) sortList() {
 	sort.SliceStable(m.filtered, less)
 	m.nestFamilies()
 	// State sections (waiting, asked, idle, busy, not open), a family in its
-	// most urgent session's; with ^G, folders within each, a group where its
+	// most urgent session's; with ^X G, folders within each, a group where its
 	// first session lands, so the one holding a question comes first.
 	// Families stay together under their top session's folder.
 	first := map[string]int{}
@@ -524,7 +525,7 @@ func (m *model) nestFamilies() {
 	m.filtered = out
 }
 
-// groupOf is the ^G group a session is listed under: its family's folder,
+// groupOf is the ^X G group a session is listed under: its family's folder,
 // within its state section.
 func groupOf(it listItem) string {
 	return fmt.Sprint(it.familyState, " ", groupKey(it.familyCwd))
@@ -1003,9 +1004,27 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyRunes && (mouseLeak.MatchString(string(msg.Runes)) || m.mouseFragment(msg)) {
 			return m, nil // a fragmented mouse report, not typing
 		}
+		// ccs's own actions are ^X then a letter (^X ^W works as ^X W), Claude
+		// Code's pattern, so every other Ctrl letter edits text as in its
+		// prompt. k is the key, or "^x <letter>" for a chord.
+		k := msg.String()
+		chord := m.chordX
+		if chord {
+			m.chordX = false
+			k = "^x " + strings.TrimPrefix(k, "ctrl+")
+		} else if k == "ctrl+x" && !m.prompting() && !slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
+			m.chordX = true
+			return m, nil
+		}
 		// The overlay owns the keyboard until closed. (A pop-up is only the
 		// banner, which takes no keys.)
 		if m.waitOpen && !m.popupAboveWait() {
+			if chord {
+				if k == "^x w" {
+					m.closeWait()
+				}
+				return m, nil
+			}
 			return m.waitKey(msg)
 		}
 		if len(m.reopen) > 0 { // owns the keyboard until answered
@@ -1073,19 +1092,19 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if msg.String() == "ctrl+t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.table = false, !m.table
 			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
-		if msg.String() == "ctrl+a" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x a" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.autoFocus = false, !m.autoFocus
 			m.focusHeld = ""
 			saveSettings(m.settings())
 			return m, nil
 		}
-		if msg.String() == "ctrl+g" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x g" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.grouped = false, !m.grouped
 			saveSettings(m.settings())
 			m.sortList()
@@ -1127,7 +1146,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpOpen = true
 			return m, nil
 		}
-		if msg.String() == "ctrl+u" && !m.prompting() && !m.waitOpen {
+		if k == "^x u" && !m.prompting() && !m.waitOpen {
 			return m.openAccounts()
 		}
 		// The popup waits behind rename/delete/prune prompts, so it never takes
@@ -1181,7 +1200,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			var cmd tea.Cmd
-			m.renameInput, cmd = m.renameInput.Update(msg)
+			m.renameInput, cmd = editKey(m.renameInput, msg)
 			return m, cmd
 		}
 
@@ -1228,11 +1247,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.showUsage && msg.String() != "ctrl+c" && msg.String() != "ctrl+w" {
+		if m.showUsage && k != "ctrl+c" && k != "^x w" {
 			return m, nil // the usage screen has no other keys; typing mustn't edit a hidden search
 		}
 
-		if m.chatFocus {
+		if m.chatFocus && !chord {
 			switch msg.String() {
 			case "esc":
 				m.chatFocus = false // back to the search
@@ -1244,16 +1263,16 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.focusCmd(m.filtered[m.cursor].conv)
 				}
 				return m, m.sendCmd()
-			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+j", "ctrl+k", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+e", "ctrl+x", "ctrl+]", "ctrl+\\", "ctrl+w":
+			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+]", "ctrl+\\":
 				// fall through to the list's handling below
 			default:
 				var cmd tea.Cmd
-				m.chatInput, cmd = m.chatInput.Update(msg)
+				m.chatInput, cmd = editKey(m.chatInput, msg)
 				return m, cmd
 			}
 		}
 
-		switch msg.String() {
+		switch k {
 		case "ctrl+s":
 			// Keyboard way into the message box of the selected live session
 			// (clicking it is the mouse way).
@@ -1307,7 +1326,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+r":
 			return m, m.refreshNow()
 
-		case "ctrl+e":
+		case "^x e":
 			if len(m.filtered) > 0 {
 				conv := m.filtered[m.cursor].conv
 				// A running claude re-appends its own title and would undo ours.
@@ -1327,7 +1346,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "ctrl+x":
+		case "^x x":
 			if len(m.filtered) > 0 {
 				// Prune rewrites the file; a running claude's appends during
 				// the rewrite would be lost.
@@ -1369,16 +1388,19 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.jumpHit(msg.String() == "ctrl+]")
 			return m, nil
 
-		case "pgup", "ctrl+k":
+		case "pgup":
 			m.previewScroll = min(m.previewScroll+10, m.maxPreviewScroll()) // back
 			return m, nil
 
-		case "pgdown", "ctrl+j":
+		case "pgdown":
 			m.previewScroll = max(0, m.previewScroll-10) // forward
 			return m, nil
 
-		case "ctrl+w":
+		case "^x w":
 			m.openWait()
+			return m, nil
+		}
+		if chord { // a ^X chord no action took never edits a text box
 			return m, nil
 		}
 	}
@@ -1388,18 +1410,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, isKey := msg.(tea.KeyMsg); !isKey {
 		switch {
 		case m.waitOpen:
-			m.waitInput, cmd = m.waitInput.Update(msg)
+			m.waitInput, cmd = editKey(m.waitInput, msg)
 			return m, cmd
 		case m.renaming:
-			m.renameInput, cmd = m.renameInput.Update(msg)
+			m.renameInput, cmd = editKey(m.renameInput, msg)
 			return m, cmd
 		case m.chatFocus:
-			m.chatInput, cmd = m.chatInput.Update(msg)
+			m.chatInput, cmd = editKey(m.chatInput, msg)
 			return m, cmd
 		}
 	}
 	prevValue := m.textInput.Value()
-	m.textInput, cmd = m.textInput.Update(msg)
+	m.textInput, cmd = editKey(m.textInput, msg)
 	if m.textInput.Value() != prevValue {
 		m.updateFilter()
 	}
@@ -1488,24 +1510,24 @@ func (m model) shortcuts() [][2]string {
 		add(sel, keyEnter, "resume")
 	}
 	add(sel, "^F", "fork")
-	add(sel && !live, "^E", "edit its name")
+	add(sel && !live, "^X E", "edit its name")
 	add(true, "^R", "refresh now, and check for a ccs update")
 	add(sel, "^D", "delete")
-	add(sel, "^X", "prune")
-	add(sel, "^J/K", "scroll the conversation")
+	add(sel, "^X X", "prune")
+	add(sel, "pgup/dn", "scroll the conversation")
 	add(sel && m.textInput.Value() != "" && len(m.hitLines()) > 0, "^] ^\\", "next / previous search hit")
 	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
 	add(true, keyTab, "usage")
 	add(!m.chatFocus && m.textInput.Value() != "", keyEsc, "clear the search")
-	add(len(m.waitQueue(true)) > 0, "^W", "sessions waiting on you")
-	add(hasCswap, "^U", "switch account")
+	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you")
+	add(hasCswap, "^X U", "switch account")
 	add(sel && len(m.linksWithPRs()) > 0, "^O", "open a link in view or one of its PRs")
-	add(!m.table, "^T", "the full table, every column")
-	add(m.table, "^T", "back to the sidebar")
-	add(!m.autoFocus, "^A", "switch to a session when it starts waiting on you")
-	add(m.autoFocus, "^A", "stop switching to waiting sessions")
-	add(!m.grouped, "^G", "group by folder")
-	add(m.grouped, "^G", "ungroup")
+	add(!m.table, "^X T", "the full table, every column")
+	add(m.table, "^X T", "back to the sidebar")
+	add(!m.autoFocus, "^X A", "switch to a session when it starts waiting on you")
+	add(m.autoFocus, "^X A", "stop switching to waiting sessions")
+	add(!m.grouped, "^X G", "group by folder")
+	add(m.grouped, "^X G", "ungroup")
 	add(true, "^L", "changelog")
 	add(true, "^C", "quit")
 	return out
@@ -1621,8 +1643,8 @@ func (m model) viewScreen() string {
 	key := func(k string) string { return "\033[1m" + k + "\033[22m " }
 	if n := m.waitingCount(); n > 0 && !m.showUsage {
 		status += " · "
-		if !m.popupAboveWait() && !m.prompting() { // otherwise Ctrl+W does nothing
-			status += key("^W")
+		if !m.popupAboveWait() && !m.prompting() { // otherwise Ctrl+X W does nothing
+			status += key("^X W")
 		}
 		status += fmt.Sprintf("%d waiting", n)
 	}
@@ -1633,22 +1655,24 @@ func (m model) viewScreen() string {
 		if m.autoFocus {
 			state = "on"
 		}
-		status += " · " + key("^A") + "auto-focus " + state
+		status += " · " + key("^X A") + "auto-focus " + state
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
-	group := "group" // the modes toggled while working; ^T and the rest are in ? help
+	group := "group" // the modes toggled while working; ^X T and the rest are in ? help
 	if m.grouped {
 		group = "ungroup"
 	}
-	pairs, keep := []string{"^G", group, "?", "help", "^C", "quit"}, 2 // ^A is beside auto-focus in the title
-	if m.showUsage {                                                   // only Tab, account, help and quit do anything there
-		pairs, keep = []string{keyTab, "back", "^U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
+	pairs, keep := []string{"^X G", group, "?", "help", "^C", "quit"}, 2 // ^X A is beside auto-focus in the title
+	if m.showUsage {                                                     // only Tab, account, help and quit do anything there
+		pairs, keep = []string{keyTab, "back", "^X U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
 		if len(m.waitQueue(true)) > 0 {
-			pairs = append(pairs, "^W", "waiting")
+			pairs = append(pairs, "^X W", "waiting")
 		}
 		pairs = append(pairs, "^C", "quit")
+	} else if m.chordX { // ^X pressed: what the next key does
+		pairs, keep = []string{"A", "auto-focus", "E", "edit name", "G", "group", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
-		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "^J/K", "scroll"}, 1 // ? types into the box here
+		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}
 	b.WriteString(headerLine(tableWidth, title, pairs, keep) + "\n")
 
@@ -1802,7 +1826,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	project := truncate(projectName(item.conv.Cwd), colProject)
 
 	marks, colouredMarks := m.listMarks(item)
-	mw := colMarks // the marks' width, and with ^G an indent under the folder's header
+	mw := colMarks // the marks' width, and with ^X G an indent under the folder's header
 	if m.grouped {
 		marks, colouredMarks, mw = "  "+marks, "  "+colouredMarks, colMarks+2
 	}
@@ -1960,7 +1984,7 @@ type listRow struct {
 }
 
 // listRows lays the list out in screen rows: a header before each state
-// section, and with ^G before each folder within it (sortList keeps a
+// section, and with ^X G before each folder within it (sortList keeps a
 // section's and a group's sessions together).
 func (m model) listRows() []listRow {
 	counts := map[string]int{}
@@ -2027,7 +2051,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		hits, colouredHits = strings.TrimSpace(tasks+" "+hits), strings.TrimSpace(m.taskCell(conv, true)+" "+colouredHits)
 	}
 	// One space before the marks, so their glyphs sit under the search's >;
-	// with ^G two more, so sessions sit in from their folder's header.
+	// with ^X G two more, so sessions sit in from their folder's header.
 	lead := " "
 	if m.grouped {
 		lead = "   "
@@ -2197,7 +2221,7 @@ func (m *model) pruneConversation() {
 	m.errorMsg = ""
 }
 
-// settingsPath keeps the view ccs reopens in (^T layout, ^G grouping)
+// settingsPath keeps the view ccs reopens in (^X T layout, ^X G grouping)
 // across restarts.
 var settingsPath = func() string {
 	dir, err := os.UserConfigDir()
@@ -2255,4 +2279,40 @@ func (m *model) refreshNow() tea.Cmd {
 		cmds = append(cmds, m.checkUpdateCmd())
 	}
 	return tea.Batch(cmds...)
+}
+
+// killed is what ^K, ^U or ^W last deleted in any text box, for ^Y to put
+// back, as in Claude Code's prompt (the text box has the rest of its keys).
+var killed string
+
+// editKey passes a message to a text box, adding Claude Code's ^Y.
+func editKey(in textinput.Model, msg tea.Msg) (textinput.Model, tea.Cmd) {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return in.Update(msg)
+	}
+	before, pos := []rune(in.Value()), in.Position()
+	switch k.String() {
+	case "ctrl+y":
+		if killed != "" {
+			in.SetValue(string(before[:pos]) + killed + string(before[pos:]))
+			in.SetCursor(pos + len([]rune(killed)))
+		}
+		return in, nil
+	case "ctrl+k":
+		if pos < len(before) {
+			killed = string(before[pos:])
+		}
+	case "ctrl+u":
+		if pos > 0 {
+			killed = string(before[:pos])
+		}
+	}
+	in, cmd := in.Update(msg)
+	if s := k.String(); s == "ctrl+w" || s == "alt+backspace" {
+		if p := in.Position(); p < pos {
+			killed = string(before[p:pos])
+		}
+	}
+	return in, cmd
 }

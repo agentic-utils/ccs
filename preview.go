@@ -661,6 +661,7 @@ func (m model) previewHeader(conv Conversation, query string) []string {
 	}
 	header = append(header, m.prLines(conv, m.paneWidth())...)
 	header = append(header, m.taskLines(conv, m.paneWidth())...)
+	header = append(header, m.subagentLines(conv, m.paneWidth())...)
 	return append(header, "")
 }
 

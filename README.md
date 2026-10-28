@@ -113,7 +113,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Ctrl+X X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
 - `PgUp`/`PgDn` - Scroll preview (also the mouse wheel)
 - Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it, click a link in the conversation to open it. Hold `⌥ Option` while dragging to select text in iTerm
-- `Esc` - Clear the search
+- `Esc` - Clear the search and go back to the top of the list
 - Message box - select an open (`●`) session and press `Ctrl+S` (or click the box) to type in the box under its conversation; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search
 - `Tab` - Switch between the session list and the usage screen
 - `Ctrl+X U` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same

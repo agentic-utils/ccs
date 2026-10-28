@@ -68,7 +68,7 @@ Key bindings:
   Ctrl+D          Delete conversation (with confirmation)
   Ctrl+X X        Prune conversation - shrink it losslessly (with confirmation)
   PgUp/PgDn       Scroll the conversation preview (also the mouse wheel)
-  Esc             Clear the search
+  Esc             Clear the search and go back to the top of the list
   Tab             Usage screen (Tab again to go back)
   Ctrl+X U        Switch Claude account (needs cswap)
   Ctrl+L          Changelog

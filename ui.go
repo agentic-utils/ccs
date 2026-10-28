@@ -1286,10 +1286,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "esc":
-			// Esc only ever clears the search; Ctrl+C quits.
+			// Esc clears the search and goes back to the top of the list;
+			// Ctrl+C quits.
 			if m.textInput.Value() != "" {
 				m.textInput.SetValue("")
 				m.updateFilter()
+			}
+			if m.cursor != 0 {
+				m.cursor, m.previewScroll = 0, 0
+				m.selectionMoved()
 			}
 			return m, nil
 

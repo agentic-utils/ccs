@@ -290,7 +290,7 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 
 func TestTopicColWidthFlexes(t *testing.T) {
 	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colPRs + colSize + numGaps*colGap + 1 // +1: the scrollbar
-	for _, w := range []int{100, 120, 200} {
+	for _, w := range []int{110, 120, 200} {
 		m := model{width: w}
 		if got, want := m.topicColWidth(), w-fixed; got != want {
 			t.Errorf("topicColWidth(width=%d) = %d, want %d", w, got, want)
@@ -313,7 +313,7 @@ func TestFormatListItemFillsWidth(t *testing.T) {
 		Size:          1 << 20,
 		Messages:      []Message{{Role: "user", Text: "hi"}},
 	}}
-	for _, w := range []int{100, 120, 200} {
+	for _, w := range []int{110, 120, 200} {
 		m := initialModel([]listItem{item}, "", nil)
 		m.width = w
 		// Selected row has no ANSI codes; its width + the 2-char row prefix

@@ -1803,7 +1803,7 @@ const (
 	colModel   = 12
 	colCtx     = 5
 	colMsgs    = 5
-	colPRs     = 7 // "✓1 ✗1 2"
+	colPRs     = 13 // "✓1 ✗1 2 ●3 ⊘1"
 	colHits    = 4
 	colSize    = 6
 	colGap     = 2 // spaces between columns

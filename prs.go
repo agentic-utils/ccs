@@ -27,9 +27,23 @@ type prInfo struct {
 	Title      string
 	State      string // OPEN, MERGED, CLOSED
 	Draft      bool
-	MergeState string // mergeStateStatus: CLEAN, UNSTABLE, BLOCKED, BEHIND, DIRTY, DRAFT, HAS_HOOKS, UNKNOWN
-	Review     string // reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or ""
-	Checks     string // the head commit's check rollup: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED or ""
+	MergeState string   // mergeStateStatus: CLEAN, UNSTABLE, BLOCKED, BEHIND, DIRTY, DRAFT, HAS_HOOKS, UNKNOWN
+	Review     string   // reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or ""
+	Checks     string   // the head commit's check rollup: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED or ""
+	Failing    []string // the names of its failing checks, first seen first
+}
+
+// failingNames is the failing checks for a status line: at most three, then +N.
+func (p prInfo) failingNames() string {
+	if len(p.Failing) == 0 {
+		return ""
+	}
+	names := p.Failing[:min(len(p.Failing), 3)]
+	s := ": " + strings.Join(names, ", ")
+	if more := len(p.Failing) - len(names); more > 0 {
+		s += fmt.Sprintf(" +%d", more)
+	}
+	return s
 }
 
 func (p prInfo) final() bool { return p.State == "MERGED" || p.State == "CLOSED" }
@@ -62,11 +76,11 @@ func (p prInfo) status() (int, string) {
 	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
 		return prReady, "ready to merge"
 	case p.MergeState == "UNSTABLE":
-		return prReady, "ready to merge · optional checks failing"
+		return prReady, "ready to merge · optional checks failing" + p.failingNames()
 	case p.MergeState == "DIRTY":
 		return prFix, "conflicts"
 	case p.Checks == "FAILURE" || p.Checks == "ERROR":
-		return prFix, "checks failing"
+		return prFix, "checks failing" + p.failingNames()
 	case p.Review == "CHANGES_REQUESTED":
 		return prFix, "changes requested"
 	case p.MergeState == "BEHIND":
@@ -348,12 +362,15 @@ const prBatch = 40
 // ghPRBatch asks about urls in one GraphQL request (each PR an aliased
 // field). A PR that's gone or private comes back null with an error for that
 // field only, and gh exits non-zero, so the data is read whatever the exit.
+// failedCheck is the check-run conclusions GitHub's rollup counts as failing.
+var failedCheck = map[string]bool{"FAILURE": true, "TIMED_OUT": true, "CANCELLED": true, "ACTION_REQUIRED": true, "STARTUP_FAILURE": true}
+
 func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 	var q strings.Builder
 	q.WriteString("query{")
 	for i, u := range urls {
 		p := prURL.FindStringSubmatch(u) // validated when parsed; owner and repo are [A-Za-z0-9_.-]
-		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}`, i, p[1], p[2], p[3])
+		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
 	}
 	q.WriteString("}")
 	raw, runErr := runBounded(30*time.Second, []string{"GH_PROMPT_DISABLED=1"}, gh, "api", "graphql", "-f", "query="+q.String())
@@ -369,7 +386,15 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 				Commits          struct {
 					Nodes []struct {
 						Commit struct {
-							StatusCheckRollup *struct{ State string }
+							StatusCheckRollup *struct {
+								State    string
+								Contexts struct {
+									Nodes []struct {
+										Name, Conclusion string // a check run
+										Context, State   string // a commit status
+									}
+								}
+							}
 						}
 					}
 				}
@@ -395,7 +420,17 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 		pr := r.PullRequest
 		info := prInfo{Number: pr.Number, Title: pr.Title, State: pr.State, Draft: pr.IsDraft, MergeState: pr.MergeStateStatus, Review: pr.ReviewDecision}
 		if n := pr.Commits.Nodes; len(n) > 0 && n[0].Commit.StatusCheckRollup != nil {
-			info.Checks = n[0].Commit.StatusCheckRollup.State
+			roll := n[0].Commit.StatusCheckRollup
+			info.Checks = roll.State
+			for _, c := range roll.Contexts.Nodes {
+				name, failed := c.Name, failedCheck[c.Conclusion]
+				if c.Context != "" { // a commit status rather than a check run
+					name, failed = c.Context, c.State == "FAILURE" || c.State == "ERROR"
+				}
+				if failed && name != "" && !slices.Contains(info.Failing, name) {
+					info.Failing = append(info.Failing, name)
+				}
+			}
 		}
 		out[u] = info
 	}

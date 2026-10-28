@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -170,6 +171,7 @@ type model struct {
 	fetchPRs   func([]string) (map[string]prInfo, error) // nil: never look PRs up
 	// Ctrl+O: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
+	linksNum    string // digits typed in the ^O popup so far
 	links       []linkItem
 	linksCursor int
 	accts       []cswapAccount
@@ -1076,18 +1078,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.quitting = true
 				return m, tea.Quit
 			case "up", "ctrl+p", "ctrl+k":
-				m.linksCursor = max(m.linksCursor-1, 0)
+				m.linksCursor, m.linksNum = max(m.linksCursor-1, 0), ""
 			case "down", "ctrl+n", "ctrl+j":
-				m.linksCursor = min(m.linksCursor+1, len(m.links)-1)
+				m.linksCursor, m.linksNum = min(m.linksCursor+1, len(m.links)-1), ""
 			case "enter":
 				m.linksOpen = false
 				return m, openLinkCmd(m.links[m.linksCursor].url)
 			default:
-				if len(k) == 1 && k[0] >= '1' && k[0] <= '9' {
-					if i := int(k[0] - '1'); i < len(m.links) {
-						m.linksOpen = false
-						return m, openLinkCmd(m.links[i].url)
-					}
+				if len(k) == 1 && k[0] >= '0' && k[0] <= '9' {
+					return m.pickLink(k)
 				}
 			}
 			return m, nil
@@ -1116,7 +1115,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errorMsg = "No links in view"
 				return m, nil
 			}
-			m.linksOpen, m.linksCursor = true, 0
+			m.linksOpen, m.linksCursor, m.linksNum = true, 0, ""
 			return m, nil
 		}
 		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen && !m.waitOpen {
@@ -1803,7 +1802,7 @@ const (
 	colModel   = 12
 	colCtx     = 5
 	colMsgs    = 5
-	colPRs     = 13 // "✓1 ✗1 2 ●3 ⊘1"
+	colPRs     = 11 // "✓1 ✗1 2 ●3"
 	colHits    = 4
 	colSize    = 6
 	colGap     = 2 // spaces between columns
@@ -2320,4 +2319,26 @@ func editKey(in textinput.Model, msg tea.Msg) (textinput.Model, tea.Cmd) {
 		}
 	}
 	return in, cmd
+}
+
+// pickLink takes a digit typed in the ^O popup: the digits so far are a link's
+// number, which the cursor moves to; once no longer number exists, it opens.
+// A digit that makes no link's number starts a new one.
+func (m model) pickLink(d string) (tea.Model, tea.Cmd) {
+	num := m.linksNum + d
+	n, _ := strconv.Atoi(num)
+	if n < 1 || n > len(m.links) {
+		num = d
+		n, _ = strconv.Atoi(d)
+	}
+	if n < 1 || n > len(m.links) {
+		m.linksNum = ""
+		return m, nil
+	}
+	m.linksNum, m.linksCursor = num, n-1
+	if n*10 > len(m.links) {
+		m.linksOpen, m.linksNum = false, ""
+		return m, openLinkCmd(m.links[n-1].url)
+	}
+	return m, nil
 }

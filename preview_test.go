@@ -720,3 +720,56 @@ func TestPreviewWaitsForTheSelectionToRest(t *testing.T) {
 		t.Error("once it has rested, the conversation shows")
 	}
 }
+
+func TestLinksPopupNumbersAllAndShowsPRStatus(t *testing.T) {
+	var opened []string
+	defer func(f func(string) error) { openURL = f }(openURL)
+	openURL = func(u string) error { opened = append(opened, u); return nil }
+	var prs []string
+	m := initialModel(nil, "", nil)
+	m.prs = map[string]prInfo{}
+	for i := 1; i <= 25; i++ {
+		u := fmt.Sprintf("https://github.com/o/r/pull/%d", i)
+		prs = append(prs, u)
+		m.prs[u] = prInfo{State: "MERGED", Title: strings.Repeat("a very long title ", 10)}
+	}
+	conv := Conversation{SessionID: "s", Cwd: "/p", PRs: prs, Messages: []Message{{Role: "assistant", Text: "hi", Ts: "2026-09-30T10:00:00Z"}}}
+	m.items = []listItem{{conv: conv}}
+	m.filtered = m.items
+	m.width, m.height = 100, 20
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	v := strip2(m.View())
+	if !strings.Contains(v, " 1 ● r#1 merged · a very long") || !strings.Contains(v, "10 ● r#10 merged") {
+		t.Errorf("every link numbered, the status before the title:\n%s", v)
+	}
+	if strings.Contains(v, "r#25 ") || !strings.Contains(v, "1/25") {
+		t.Errorf("a list taller than the screen should scroll:\n%s", v)
+	}
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	if cmd != nil || !m.linksOpen || m.linksCursor != 1 {
+		t.Fatalf("2 could start 20-25: select it and wait (cursor %d)", m.linksCursor)
+	}
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	if cmd == nil || m.linksOpen {
+		t.Fatal("23 is the only number starting so: open it")
+	}
+	cmd()
+	if !reflect.DeepEqual(opened, []string{prs[22]}) {
+		t.Errorf("opened %q, want #23", opened)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("6")})
+	if cmd == nil || m.linksOpen {
+		t.Fatal("26 isn't a link: 6 starts over, and nothing longer starts with it, so it opens")
+	}
+	cmd()
+	if !reflect.DeepEqual(opened, []string{prs[22], prs[5]}) {
+		t.Errorf("opened %q, want #23 then #6", opened)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	if v := strip2(m.View()); !m.linksOpen || !strings.Contains(v, "1/25") {
+		t.Errorf("1 waits for a second digit:\n%s", v)
+	}
+}

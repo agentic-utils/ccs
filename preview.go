@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -517,19 +518,28 @@ func (m model) linksWithPRs() []linkItem {
 	return out
 }
 
-// linksPopup lists visibleLinks, numbered, with the cursor on one.
+// linksPopup lists linksWithPRs, numbered, with the cursor on one; a list
+// taller than the screen scrolls to keep the cursor in view.
 func (m model) linksPopup() string {
 	width := min(max(m.width-12, 30), 90)
+	rows := max(m.height-10, 3) // border, padding, title and hints
+	start := 0
+	if m.linksCursor >= rows {
+		start = m.linksCursor - rows + 1
+	}
+	end := min(start+rows, len(m.links))
 	var b strings.Builder
-	b.WriteString("\033[1mlinks in view\033[0m\n\n")
-	for i, l := range m.links {
-		num := "  "
-		if i < 9 {
-			num = fmt.Sprintf("%d ", i+1)
-		}
+	b.WriteString("\033[1mlinks in view\033[0m")
+	if len(m.links) > rows {
+		fmt.Fprintf(&b, " \033[90m%d/%d\033[0m", m.linksCursor+1, len(m.links))
+	}
+	b.WriteString("\n\n")
+	numW := len(strconv.Itoa(len(m.links)))
+	for i := start; i < end; i++ {
+		l := m.links[i]
 		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
-		row := num + l.text
-		if l.text != addr {
+		row := fmt.Sprintf("%*d ", numW, i+1) + l.text
+		if ansi.Strip(l.text) != addr && !prURL.MatchString(l.url) {
 			row += " \033[90m" + addr + "\033[39m"
 		}
 		row = ansi.Truncate(row, width-2, "…")
@@ -540,7 +550,7 @@ func (m model) linksPopup() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "open", "1-9", "open", "^O/"+keyEsc, "close") + "\033[0m")
+	b.WriteString("\n\033[90m" + hints("↑↓", "move", "0-9", "pick", keyEnter, "open", "^O/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).

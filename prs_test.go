@@ -58,8 +58,8 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 	}
 	m.prs["https://github.com/o/r/pull/5"] = prInfo{State: "CLOSED"}
 	m.prs["https://github.com/o/r/pull/6"] = prInfo{State: "GONE"}
-	if got := strings.TrimSpace(m.prCell(Conversation{PRs: []string{prA, "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/6"}}, false)); got != "●1 ⊘1" {
-		t.Errorf("merged and closed counted, not found left out: %q", got)
+	if got := strings.TrimSpace(m.prCell(Conversation{PRs: []string{prA, "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/6"}}, false)); got != "●1" {
+		t.Errorf("merged counted, closed and not found left out: %q", got)
 	}
 	if got := m.prCell(Conversation{PRs: []string{"https://github.com/o/r/pull/6"}}, false); strings.TrimSpace(got) != "" {
 		t.Errorf("nothing found, nothing shown: %q", got)

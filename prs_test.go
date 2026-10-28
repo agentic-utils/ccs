@@ -177,3 +177,18 @@ func TestPRColoursMatchGitHub(t *testing.T) {
 		t.Errorf("merged should be purple and closed red: %q", last)
 	}
 }
+
+func TestUnstableSaysWhyNotClean(t *testing.T) {
+	for _, c := range []struct {
+		p    prInfo
+		want string
+	}{
+		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "PENDING"}, "ready to merge · optional checks running"},
+		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "FAILURE", Failing: []string{"lint"}}, "ready to merge · optional checks failing: lint"},
+		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "SUCCESS"}, "ready to merge"},
+	} {
+		if g, why := c.p.status(); g != prReady || why != c.want {
+			t.Errorf("%+v: %d %q, want %q", c.p, g, why, c.want)
+		}
+	}
+}

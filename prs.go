@@ -75,8 +75,13 @@ func (p prInfo) status() (int, string) {
 		return prWaiting, "draft"
 	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
 		return prReady, "ready to merge"
-	case p.MergeState == "UNSTABLE":
+	case p.MergeState == "UNSTABLE" && len(p.Failing) > 0:
 		return prReady, "ready to merge · optional checks failing" + p.failingNames()
+	case p.MergeState == "UNSTABLE" && (p.Checks == "PENDING" || p.Checks == "EXPECTED"):
+		// UNSTABLE is any optional check not passed yet, running included.
+		return prReady, "ready to merge · optional checks running"
+	case p.MergeState == "UNSTABLE":
+		return prReady, "ready to merge"
 	case p.MergeState == "DIRTY":
 		return prFix, "conflicts"
 	case p.Checks == "FAILURE" || p.Checks == "ERROR":

@@ -247,19 +247,26 @@ func prName(u string) string {
 }
 
 // prLinks is conv's PRs for the ^O popup, in the order the header lists them.
+// Their text is filled in as the popup draws (prLinkText), so a lookup that
+// lands while it's open shows.
 func (m model) prLinks(conv Conversation) []linkItem {
 	var out []linkItem
 	for _, u := range m.sessionPRs(conv) {
-		p := m.prs[u]
-		g, why := p.status()
-		glyph, colour := prMark(g)
-		if p.Draft || p.State == "" {
-			colour = "90"
-		}
-		// The status before the title, so a long title is what gets cut.
-		out = append(out, linkItem{u, "\033[" + colour + "m" + glyph + "\033[39m " + prName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title})
+		out = append(out, linkItem{u, ""})
 	}
 	return out
+}
+
+// prLinkText is a PR's row in the ^O popup: its mark and status before the
+// title, so a long title is what gets cut.
+func (m model) prLinkText(u string) string {
+	p := m.prs[u]
+	g, why := p.status()
+	glyph, colour := prMark(g)
+	if p.Draft || p.State == "" {
+		colour = "90"
+	}
+	return "\033[" + colour + "m" + glyph + "\033[39m " + prName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title
 }
 
 // prScope is how far back a session's open PRs are kept up to date; older

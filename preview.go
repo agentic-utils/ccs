@@ -379,11 +379,25 @@ func carryStyles(lines []string) []string {
 func hitLinesIn(lines []string) []int {
 	var hits []int
 	for i, l := range lines {
-		if strings.HasPrefix(ansiSeq.ReplaceAllString(l, ""), "▶") {
+		if strings.HasPrefix(skipLeadingANSI(l), "▶") {
 			hits = append(hits, i)
 		}
 	}
 	return hits
+}
+
+// skipLeadingANSI is l after the escape codes it starts with. Every frame
+// checks every preview line, so it looks only at the start, never the whole
+// line.
+func skipLeadingANSI(l string) string {
+	for strings.HasPrefix(l, "\x1b") {
+		loc := ansiSeq.FindStringIndex(l)
+		if loc == nil || loc[0] != 0 {
+			break
+		}
+		l = l[loc[1]:]
+	}
+	return l
 }
 
 func (m model) hitLines() []int { return hitLinesIn(m.previewLines()) }
@@ -542,6 +556,9 @@ func (m model) linksPopup() string {
 	}
 	for i := start; i < end; i++ {
 		l := m.links[i]
+		if l.text == "" { // a PR: drawn from its latest status
+			l.text = m.prLinkText(l.url)
+		}
 		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
 		row := fmt.Sprintf("%*d ", numW, i+1) + l.text
 		if ansi.Strip(l.text) != addr && !prURL.MatchString(l.url) {
@@ -714,7 +731,11 @@ func (m model) renderPreview(item listItem, height int) string {
 	}
 
 	// While searching, where the view is among this conversation's hits.
-	if hits := hitLinesIn(msgLines); query != "" && len(hits) > 0 {
+	var hits []int
+	if query != "" { // every frame: skip the scan when there can be no hits
+		hits = hitLinesIn(msgLines)
+	}
+	if len(hits) > 0 {
 		i := sort.SearchInts(hits, start) + 1 // first hit at or below the top
 		header[len(header)-1] += fmt.Sprintf("  \033[90mhit %d/%d · ^] next ^\\ prev\033[0m", min(i, len(hits)), len(hits))
 	}

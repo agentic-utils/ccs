@@ -1532,3 +1532,21 @@ func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
 		t.Errorf("an unknown chord does nothing and types nothing: %q", got)
 	}
 }
+
+func TestEscGoesBackToTheTop(t *testing.T) {
+	var convs []Conversation
+	for i := range 5 {
+		convs = append(convs, Conversation{SessionID: fmt.Sprint("s", i), Messages: []Message{{Role: "user", Text: "hi"}},
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)})
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 30
+	for range 3 {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m.textInput.SetValue("hi")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.textInput.Value() != "" || m.cursor != 0 {
+		t.Errorf("Esc clears the search and goes back to the top: search %q, cursor %d", m.textInput.Value(), m.cursor)
+	}
+}

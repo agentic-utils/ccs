@@ -298,7 +298,7 @@ func (m *model) giveBack(id, text string, overlay bool) string {
 	m.syncChatDraft()
 	in, shown, drafts, where := &m.chatInput, m.chatFor == id, &m.chatDrafts, "its message box: select it to see it"
 	if overlay {
-		in, shown, drafts, where = &m.waitInput, m.waitID == id, &m.waitDrafts, "its draft in the waiting list (^W)"
+		in, shown, drafts, where = &m.waitInput, m.waitID == id, &m.waitDrafts, "its draft in the waiting list (^X W)"
 	}
 	if shown {
 		in.SetValue(joinDraft(in.Value(), text))
@@ -372,8 +372,6 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.waitErr = ""
 	conv, ok := m.waitConv()
 	switch msg.String() {
-	case "ctrl+w":
-		m.closeWait()
 	case "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
@@ -396,9 +394,9 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.waitStep(1)
 	case "ctrl+p", "up":
 		m.waitStep(-1)
-	case "pgup", "ctrl+k":
+	case "pgup":
 		m.waitScroll = min(m.waitScroll+10, m.maxWaitScroll())
-	case "pgdown", "ctrl+j":
+	case "pgdown":
 		m.waitScroll = max(0, m.waitScroll-10)
 	case "enter":
 		switch {
@@ -419,7 +417,7 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		var cmd tea.Cmd
-		m.waitInput, cmd = m.waitInput.Update(msg)
+		m.waitInput, cmd = editKey(m.waitInput, msg)
 		return m, cmd
 	}
 	return m, nil
@@ -612,7 +610,7 @@ func (m model) waitPopup() string {
 	if n := answerable(conv); ok && n > 0 && m.waitSignal(conv) == waitPrompt && m.waitInput.Value() == "" {
 		keys = hints(fmt.Sprintf("1-%d", n), "answer") + "  "
 	}
-	keys += hints(keyEnter, enter, keyEsc, "snooze "+shortDuration(m.snooze), "↑↓ ^N/P", "next/prev", "pgup/dn ^K/J", "scroll", "^W", "close", "^C", "quit")
+	keys += hints(keyEnter, enter, keyEsc, "snooze "+shortDuration(m.snooze), "↑↓ ^N/P", "next/prev", "pgup/dn", "scroll", "^X W", "close", "^C", "quit")
 	b.WriteString("\n\033[90m" + ansi.Truncate(keys, inner, "…") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -653,7 +651,7 @@ type autoFocusMsg struct {
 	focused bool
 }
 
-// autoFocusCmd (^A) switches to a session that starts waiting on a menu or
+// autoFocusCmd (^X A) switches to a session that starts waiting on a menu or
 // prompt: once per wait, after autoFocusIdle without input, and not again
 // until the question it switched to is answered (focusHeld). That includes
 // waits already there when it starts; the waits it has dealt with are kept

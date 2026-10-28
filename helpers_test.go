@@ -152,6 +152,12 @@ func key(m model, k tea.KeyMsg) (model, tea.Cmd) {
 	return res.(model), cmd
 }
 
+// chord presses ^X then letter: one of ccs's own actions.
+func chord(m model, letter string) (model, tea.Cmd) {
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	return key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(letter)})
+}
+
 // fakeSocket listens on a unix socket in a temp dir and returns what one
 // connection sent.
 func fakeSocket(t *testing.T) (path string, got chan string) {

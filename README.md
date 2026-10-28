@@ -17,7 +17,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Resume conversations directly from the search interface
 - Background tasks: a session open in `claude` shows `⧗N` for the background commands, subagents and monitors it has running, and the preview lists them with how long each has run
 - Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, and ones started by another session's `claude -p` sit `└` under it
-- Rename conversations (`Ctrl+E`)
+- Rename conversations (`Ctrl+X E`)
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Pass flags through to `claude` (e.g., `--plan`)
@@ -98,24 +98,25 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 
 ### Keybindings
 
+- Text boxes (the search, the message box) edit like Claude Code's prompt: `Ctrl+A`/`Ctrl+E` start/end, `Ctrl+K`/`Ctrl+U` delete to the end/start, `Ctrl+W` the word before, `Ctrl+Y` puts back what they deleted, `Alt+B`/`Alt+F` move by word. So ccs's own actions are `Ctrl+X` then a letter (`Ctrl+X Ctrl+W` works too)
 - `↑/↓` or `Ctrl+P/N` - Navigate list
 - The list is in sections by state, each with a header: waiting on you, asked you something, idle, busy, not open in `claude`
-- `Ctrl+W` - Sessions waiting on you: their question, a box to answer, Enter opens the session's tab, Esc snoozes
-- `Ctrl+A` - Auto-focus: when a session starts waiting on a question or permission prompt, switch to its iTerm tab or tmux pane (without pulling iTerm in front of another app), once you've stopped typing for 2 seconds (moving the mouse doesn't count), and not again until that question is answered. Questions already waiting when ccs starts count too; one it already switched to before a restart doesn't. Off by default, remembered across restarts
-- `Ctrl+G` - Group sessions by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^T layout, and reopens the way you left it
-- `Ctrl+T` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view
+- `Ctrl+X W` - Sessions waiting on you: their question, a box to answer, Enter opens the session's tab, Esc snoozes
+- `Ctrl+X A` - Auto-focus: when a session starts waiting on a question or permission prompt, switch to its iTerm tab or tmux pane (without pulling iTerm in front of another app), once you've stopped typing for 2 seconds (moving the mouse doesn't count), and not again until that question is answered. Questions already waiting when ccs starts count too; one it already switched to before a restart doesn't. Off by default, remembered across restarts
+- `Ctrl+X G` - Group sessions by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^X T layout, and reopens the way you left it
+- `Ctrl+X T` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view
 - `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter jumps to its iTerm tab / tmux pane instead
 - `Ctrl+F` - Fork selected conversation (`claude --resume <id> --fork-session`)
 - `Ctrl+D` - Delete selected conversation (with confirmation)
-- `Ctrl+E` - Edit the selected conversation's name (not while it's open in `claude`; use `/rename` there)
+- `Ctrl+X E` - Edit the selected conversation's name (not while it's open in `claude`; use `/rename` there)
 - `Ctrl+R` - Refresh now: rescan sessions, re-check PRs and the usage allowance, and check for a ccs update
-- `Ctrl+X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
-- `Ctrl+J/K` - Scroll preview
+- `Ctrl+X X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
+- `PgUp`/`PgDn` - Scroll preview (also the mouse wheel)
 - Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it, click a link in the conversation to open it. Hold `⌥ Option` while dragging to select text in iTerm
 - `Esc` - Clear the search
 - Message box - select an open (`●`) session and press `Ctrl+S` (or click the box) to type in the box under its conversation; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search
 - `Tab` - Switch between the session list and the usage screen
-- `Ctrl+U` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
+- `Ctrl+X U` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
 - `?` - Show the shortcuts that apply right now (the header lists only the common ones, in compact form: `^S` for Ctrl+S, and drops hints on narrow terminals rather than wrapping)
 - `Ctrl+L` - Changelog: what changed in every release, newest first, the installed and newer ones marked; scroll with ↑↓, PgUp/PgDn or the wheel
 - `Ctrl+O` - Links: the selected session's PRs, then the links in the visible part of the conversation, numbered; `1`-`9` or ↑↓ and Enter open one in the browser (clicking a link works too)
@@ -142,7 +143,7 @@ ccs prune --apply --no-tool-results  # keep tool results, only drop snapshot bac
 
 Run `ccs prune --help` for all flags.
 
-You can also prune a single conversation from the search interface: select it and press `Ctrl+X` (with confirmation).
+You can also prune a single conversation from the search interface: select it and press `Ctrl+X X` (with confirmation).
 
 ## How it works
 

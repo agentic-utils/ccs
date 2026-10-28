@@ -58,24 +58,29 @@ Key bindings:
   ↑/↓, Ctrl+P/N   Move through the list
   Enter           Resume the conversation, or go to its tab if it's open in claude
   Ctrl+S          Message the selected live session (Enter sends, Esc back)
-  Ctrl+W          Sessions waiting on you: answer, open or snooze them
-  Ctrl+A          Auto-focus: switch to a session's tab when it starts waiting on you
-  Ctrl+G          Group sessions by folder
-  Ctrl+T          Table: every column, instead of the sidebar
+  Ctrl+X W        Sessions waiting on you: answer, open or snooze them
+  Ctrl+X A        Auto-focus: switch to a session's tab when it starts waiting on you
+  Ctrl+X G        Group sessions by folder
+  Ctrl+X T        Table: every column, instead of the sidebar
   Ctrl+F          Fork conversation (resume into a new session id)
   Ctrl+R          Refresh now: rescan sessions, PRs and usage, check for a ccs update
-  Ctrl+E          Edit the conversation's name (not while it's open in claude)
+  Ctrl+X E        Edit the conversation's name (not while it's open in claude)
   Ctrl+D          Delete conversation (with confirmation)
-  Ctrl+X          Prune conversation - shrink it losslessly (with confirmation)
-  Ctrl+J/K        Scroll the conversation preview (also the mouse wheel)
+  Ctrl+X X        Prune conversation - shrink it losslessly (with confirmation)
+  PgUp/PgDn       Scroll the conversation preview (also the mouse wheel)
   Esc             Clear the search
   Tab             Usage screen (Tab again to go back)
-  Ctrl+U          Switch Claude account (needs cswap)
+  Ctrl+X U        Switch Claude account (needs cswap)
   Ctrl+L          Changelog
   Ctrl+O          Open one of the session's PRs or a link in view
   Ctrl+] / Ctrl+\  Next / previous search hit
   ?               Show the shortcuts that apply right now (on an empty search)
   Ctrl+C          Quit
+
+  ccs's own actions are Ctrl+X then a letter (Ctrl+X Ctrl+W works too), so
+  the search and message boxes edit like Claude Code's prompt: Ctrl+A/E start
+  and end, Ctrl+K/U delete to the end or start, Ctrl+W the word before,
+  Ctrl+Y puts back what they deleted, Alt+B/F move by word.
 
   Click a row to select it, click a link in the preview to open it.
 

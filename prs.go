@@ -127,28 +127,24 @@ func (m model) sessionPRs(conv Conversation) []string {
 	return urls
 }
 
-// prCounts is how many of conv's open PRs are ready, need fixing, or wait.
-func (m model) prCounts(conv Conversation) (ready, fix, waiting int) {
+// prCounts is how many of conv's PRs are in each group (prReady…prClosed);
+// one GitHub can't find isn't counted.
+func (m model) prCounts(conv Conversation) (n [prClosed + 1]int) {
 	for _, u := range conv.PRs {
-		if m.prs[u].State == "" { // not looked up yet: not known to be open
+		if s := m.prs[u].State; s == "" || s == "GONE" { // not looked up yet, or not found
 			continue
 		}
-		switch g, _ := m.prs[u].status(); g {
-		case prReady:
-			ready++
-		case prFix:
-			fix++
-		case prWaiting:
-			waiting++
-		}
+		g, _ := m.prs[u].status()
+		n[g]++
 	}
 	return
 }
 
-// prCell is the PRS column: "✓1 ✗1 2" (ready, needing you, waiting), blank
-// when nothing is open. Plain for the selected row, else coloured.
+// prCell is the PRS column: "✓1 ✗1 2 ●3 ⊘1" (ready, needing you, waiting,
+// merged, closed), blank when there are none. Plain for the selected row,
+// else coloured.
 func (m model) prCell(conv Conversation, coloured bool) string {
-	ready, fix, waiting := m.prCounts(conv)
+	n := m.prCounts(conv)
 	var parts []string
 	add := func(n int, glyph, colour string) {
 		if n == 0 {
@@ -160,9 +156,11 @@ func (m model) prCell(conv Conversation, coloured bool) string {
 		}
 		parts = append(parts, s)
 	}
-	add(ready, "✓", "32")
-	add(fix, "✗", "31")
-	add(waiting, "", amber)
+	add(n[prReady], "✓", "32")
+	add(n[prFix], "✗", "31")
+	add(n[prWaiting], "", amber)
+	add(n[prMerged], "●", prPurple)
+	add(n[prClosed], "⊘", "31")
 	s := strings.Join(parts, " ")
 	return strings.Repeat(" ", max(colPRs-ansi.StringWidth(s), 0)) + s
 }

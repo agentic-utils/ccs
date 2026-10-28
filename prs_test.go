@@ -53,11 +53,16 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 			t.Errorf("line %d = %q, want %q", i, strip2(lines[i]), want)
 		}
 	}
-	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 1" {
-		t.Errorf("PRS column counts open PRs only: %q", got)
+	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 1 ●1" {
+		t.Errorf("PRS column counts every group: %q", got)
 	}
-	if got := m.prCell(Conversation{PRs: []string{prA}}, false); strings.TrimSpace(got) != "" {
-		t.Errorf("nothing open, nothing shown: %q", got)
+	m.prs["https://github.com/o/r/pull/5"] = prInfo{State: "CLOSED"}
+	m.prs["https://github.com/o/r/pull/6"] = prInfo{State: "GONE"}
+	if got := strings.TrimSpace(m.prCell(Conversation{PRs: []string{prA, "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/6"}}, false)); got != "●1 ⊘1" {
+		t.Errorf("merged and closed counted, not found left out: %q", got)
+	}
+	if got := m.prCell(Conversation{PRs: []string{"https://github.com/o/r/pull/6"}}, false); strings.TrimSpace(got) != "" {
+		t.Errorf("nothing found, nothing shown: %q", got)
 	}
 	m.prs[prB] = prInfo{State: "OPEN", Draft: true, MergeState: "CLEAN"}
 	if _, why := m.prs[prB].status(); why != "draft" {

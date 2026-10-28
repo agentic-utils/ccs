@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -532,40 +531,66 @@ func (m model) linksWithPRs() []linkItem {
 	return out
 }
 
-// linksPopup lists linksWithPRs, numbered, with the cursor on one; a list
-// taller than the screen scrolls to keep the cursor in view, with a scrollbar.
+// linkText is how l reads in the ^O popup; a PR's is drawn from its status
+// now, so a lookup that lands while the popup is open shows.
+func (m model) linkText(l linkItem) string {
+	if l.text == "" {
+		return m.prLinkText(l.url)
+	}
+	return l.text
+}
+
+// linksShown is the ^O popup's links matching what's typed in it, by the
+// search's word rule over the text as shown and the address.
+func (m model) linksShown() []linkItem {
+	terms := strings.Fields(strings.ToLower(m.linksInput.Value()))
+	if len(terms) == 0 {
+		return m.links
+	}
+	var out []linkItem
+	for _, l := range m.links {
+		if queryMatches(strings.ToLower(ansi.Strip(m.linkText(l))+" "+l.url), "", terms) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// linksPopup is the ^O popup: a filter box over linksShown, the cursor on
+// one; a list taller than the screen scrolls with the cursor, with a scrollbar.
 func (m model) linksPopup() string {
 	width := min(max(m.width-12, 30), 90)
-	rows := max(m.height-10, 3) // border, padding, title and hints
+	rows := max(m.height-12, 3) // border, padding, title, filter and hints
+	shown := m.linksShown()
+	cur := min(m.linksCursor, max(len(shown)-1, 0))
 	start := 0
-	if m.linksCursor >= rows {
-		start = m.linksCursor - rows + 1
+	if cur >= rows {
+		start = cur - rows + 1
 	}
-	end := min(start+rows, len(m.links))
+	end := min(start+rows, len(shown))
 	var b strings.Builder
 	b.WriteString("\033[1mlinks in view\033[0m")
-	if len(m.links) > rows {
-		fmt.Fprintf(&b, " \033[90m%d/%d\033[0m", m.linksCursor+1, len(m.links))
+	if len(shown) > 0 {
+		fmt.Fprintf(&b, " \033[90m%d/%d\033[0m", cur+1, len(shown))
 	}
-	b.WriteString("\n\n")
-	numW := len(strconv.Itoa(len(m.links)))
-	top, size, bar := scrollThumb(len(m.links), start, end-start)
+	in := m.linksInput
+	in.Width = width - 4
+	b.WriteString("\n\n" + in.View() + "\n\n")
+	top, size, bar := scrollThumb(len(shown), start, end-start)
 	rowW := width
 	if bar {
 		rowW-- // the scrollbar's column
 	}
 	for i := start; i < end; i++ {
-		l := m.links[i]
-		if l.text == "" { // a PR: drawn from its latest status
-			l.text = m.prLinkText(l.url)
-		}
+		l := shown[i]
+		text := m.linkText(l)
 		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
-		row := fmt.Sprintf("%*d ", numW, i+1) + l.text
-		if ansi.Strip(l.text) != addr && !prURL.MatchString(l.url) {
+		row := text
+		if ansi.Strip(text) != addr && !prURL.MatchString(l.url) {
 			row += " \033[90m" + addr + "\033[39m"
 		}
 		row = ansi.Truncate(row, rowW-2, "…")
-		if i == m.linksCursor {
+		if i == cur {
 			row = "\033[1m› " + row + "\033[0m"
 		} else {
 			row = "  " + row
@@ -575,7 +600,10 @@ func (m model) linksPopup() string {
 		}
 		b.WriteString(row + "\n")
 	}
-	b.WriteString("\n\033[90m" + hints("↑↓", "move", "0-9", "pick", keyEnter, "open", "^O/"+keyEsc, "close") + "\033[0m")
+	if len(shown) == 0 {
+		b.WriteString("\033[90mno links match\033[0m\n")
+	}
+	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "open", "^O/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).

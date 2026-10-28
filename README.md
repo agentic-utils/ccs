@@ -119,7 +119,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Ctrl+X U` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
 - `?` - Show the shortcuts that apply right now (the header lists only the common ones, in compact form: `^S` for Ctrl+S, and drops hints on narrow terminals rather than wrapping)
 - `Ctrl+L` - Changelog: what changed in every release, newest first, the installed and newer ones marked; scroll with ↑↓, PgUp/PgDn or the wheel
-- `Ctrl+O` - Links: the selected session's PRs, then the links in the visible part of the conversation, all numbered, each PR with its status; type a link's number (it opens once no longer number fits) or use ↑↓ and Enter to open one in the browser (clicking a link works too)
+- `Ctrl+O` - Links: the selected session's PRs, then the links in the visible part of the conversation, each PR with its status; type to filter them (text, address or status, e.g. `merged`), ↑↓ and Enter to open one in the browser, staying open for the next (clicking a link works too)
 - `Ctrl+]` / `Ctrl+\` - With a search typed, jump to the next / previous matching message in the conversation (wraps round); the preview shows `hit 2/5`
 - `Ctrl+C` - Quit
 

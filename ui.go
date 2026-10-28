@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -171,9 +170,9 @@ type model struct {
 	fetchPRs   func([]string) (map[string]prInfo, error) // nil: never look PRs up
 	// Ctrl+O: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
-	linksNum    string // digits typed in the ^O popup so far
 	links       []linkItem
-	linksCursor int
+	linksInput  textinput.Model // filters the links (linksShown)
+	linksCursor int             // into linksShown
 	accts       []cswapAccount
 	acctCursor  int
 	acctBusy    bool      // a cswap command is running
@@ -345,10 +344,16 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 	chat.Focus() // only fed keys while chatFocus; drawn without a cursor otherwise
 
 	wait := chat
+	links := textinput.New()
+	links.Prompt = "> "
+	links.Placeholder = "type to filter..."
+	links.Cursor.SetMode(cursor.CursorStatic)
+	links.Focus()
 	snooze, ok := snoozeLength(os.Getenv("CCS_SNOOZE"))
 	m := model{
 		chatInput:   chat,
 		waitInput:   wait,
+		linksInput:  links,
 		waitPreview: &previewCache{},
 		snooze:      snooze,
 		items:       items,
@@ -1077,17 +1082,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c":
 				m.quitting = true
 				return m, tea.Quit
-			case "up", "ctrl+p", "ctrl+k":
-				m.linksCursor, m.linksNum = max(m.linksCursor-1, 0), ""
-			case "down", "ctrl+n", "ctrl+j":
-				m.linksCursor, m.linksNum = min(m.linksCursor+1, len(m.links)-1), ""
+			case "up", "ctrl+p":
+				m.linksCursor = max(m.linksCursor-1, 0)
+			case "down", "ctrl+n":
+				m.linksCursor = min(m.linksCursor+1, len(m.linksShown())-1)
 			case "enter":
-				m.linksOpen = false
-				return m, openLinkCmd(m.links[m.linksCursor].url)
-			default:
-				if len(k) == 1 && k[0] >= '0' && k[0] <= '9' {
-					return m.pickLink(k)
+				if shown := m.linksShown(); len(shown) > 0 { // stays open for the next
+					return m, openLinkCmd(shown[min(m.linksCursor, len(shown)-1)].url)
 				}
+			default:
+				before := m.linksInput.Value()
+				var cmd tea.Cmd
+				m.linksInput, cmd = editKey(m.linksInput, msg)
+				if m.linksInput.Value() != before {
+					m.linksCursor = 0
+				}
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -1115,7 +1125,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errorMsg = "No links in view"
 				return m, nil
 			}
-			m.linksOpen, m.linksCursor, m.linksNum = true, 0, ""
+			m.linksOpen, m.linksCursor = true, 0
+			m.linksInput.SetValue("")
 			return m, nil
 		}
 		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen && !m.waitOpen {
@@ -2319,26 +2330,4 @@ func editKey(in textinput.Model, msg tea.Msg) (textinput.Model, tea.Cmd) {
 		}
 	}
 	return in, cmd
-}
-
-// pickLink takes a digit typed in the ^O popup: the digits so far are a link's
-// number, which the cursor moves to; once no longer number exists, it opens.
-// A digit that makes no link's number starts a new one.
-func (m model) pickLink(d string) (tea.Model, tea.Cmd) {
-	num := m.linksNum + d
-	n, _ := strconv.Atoi(num)
-	if n < 1 || n > len(m.links) {
-		num = d
-		n, _ = strconv.Atoi(d)
-	}
-	if n < 1 || n > len(m.links) {
-		m.linksNum = ""
-		return m, nil
-	}
-	m.linksNum, m.linksCursor = num, n-1
-	if n*10 > len(m.links) {
-		m.linksOpen, m.linksNum = false, ""
-		return m, openLinkCmd(m.links[n-1].url)
-	}
-	return m, nil
 }

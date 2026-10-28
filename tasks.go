@@ -107,7 +107,7 @@ func (m model) runningTasks(conv Conversation) []bgTask {
 	if !m.live[conv.SessionID] {
 		return nil
 	}
-	since, _ := time.Parse(time.ANSIC, strings.Join(strings.Fields(m.lastScan[conv.SessionID].start), " "))
+	since := m.procStart(conv)
 	now := time.Now()
 	var out []bgTask
 	for _, t := range conv.tasks {
@@ -195,10 +195,16 @@ func (m model) taskLines(conv Conversation, width int) []string {
 // included), from the meta.json Claude Code writes beside its transcript in
 // <session>/subagents/.
 type subagent struct {
-	name     string
-	started  time.Time
-	finished bool
+	name      string
+	started   time.Time
+	lastWrite time.Time // its transcript's: a working subagent writes every few seconds
+	finished  bool
 }
+
+// subagentIdle is how long without a transcript write before an unfinished
+// subagent counts as idle (a teammate waiting to be given work or shut
+// down), not running.
+const subagentIdle = 10 * time.Minute
 
 // subagentsTTL is how long subagentsOf trusts what it last read.
 const subagentsTTL = 2 * time.Second
@@ -237,7 +243,11 @@ func subagentsOf(conv Conversation) []subagent {
 		if s.name == "" {
 			s.name = meta.Description
 		}
-		s.started = firstTimestamp(strings.TrimSuffix(path, ".meta.json") + ".jsonl")
+		transcript := strings.TrimSuffix(path, ".meta.json") + ".jsonl"
+		s.started = firstTimestamp(transcript)
+		if info, err := os.Stat(transcript); err == nil {
+			s.lastWrite = info.ModTime()
+		}
 		subs = append(subs, s)
 	}
 	slices.SortStableFunc(subs, func(a, b subagent) int {
@@ -253,17 +263,48 @@ func subagentsOf(conv Conversation) []subagent {
 	return subs
 }
 
-// firstTimestamp is when a transcript's first line was written.
+// firstTimestamp is when a transcript began: the first of its first lines
+// with a timestamp, else when the file was last written.
 func firstTimestamp(path string) time.Time {
 	f, err := os.Open(path)
 	if err != nil {
 		return time.Time{}
 	}
 	defer f.Close()
-	line, _ := bufio.NewReader(f).ReadBytes('\n')
-	var rec struct{ Timestamp time.Time }
-	json.Unmarshal(line, &rec)
-	return rec.Timestamp
+	r := bufio.NewReader(f)
+	for range 20 {
+		line, err := r.ReadBytes('\n')
+		var rec struct{ Timestamp time.Time }
+		if json.Unmarshal(line, &rec) == nil && !rec.Timestamp.IsZero() {
+			return rec.Timestamp
+		}
+		if err != nil {
+			break
+		}
+	}
+	if info, err := f.Stat(); err == nil {
+		return info.ModTime()
+	}
+	return time.Time{}
+}
+
+// procStart is when the claude process now running conv started (zero when
+// unknown): anything it started before then died with an earlier one.
+func (m model) procStart(conv Conversation) time.Time {
+	t, _ := time.Parse(time.ANSIC, strings.Join(strings.Fields(m.lastScan[conv.SessionID].start), " "))
+	return t
+}
+
+// subagentAlive: not finished, and started by the session's current claude
+// process. Older Claude Code wrote no finished flag at all, so an old
+// subagent without one ended with the process that ran it.
+func (m model) subagentAlive(conv Conversation, s subagent) bool {
+	return !s.finished && m.live[conv.SessionID] && !s.started.Before(m.procStart(conv))
+}
+
+// subagentRunning: alive and still writing, not an idle teammate.
+func (m model) subagentRunning(conv Conversation, s subagent) bool {
+	return m.subagentAlive(conv, s) && time.Since(s.lastWrite) < subagentIdle
 }
 
 // runningSubagents counts conv's subagents still going: only while it's
@@ -274,7 +315,7 @@ func (m model) runningSubagents(conv Conversation) int {
 	}
 	n := 0
 	for _, s := range subagentsOf(conv) {
-		if !s.finished {
+		if m.subagentRunning(conv, s) {
 			n++
 		}
 	}
@@ -288,15 +329,16 @@ func (m model) subagentLines(conv Conversation, width int) []string {
 	if len(subs) == 0 {
 		return nil
 	}
-	live := m.live[conv.SessionID]
 	var lines []string
-	running, finished, ended := 0, 0, 0
+	running, idle, finished, ended := 0, 0, 0, 0
 	for _, s := range subs {
 		switch {
 		case s.finished:
 			finished++
-		case !live:
-			ended++ // its session exited with it running
+		case !m.subagentAlive(conv, s):
+			ended++ // its claude exited (or was resumed) while it ran
+		case !m.subagentRunning(conv, s):
+			idle++
 		default:
 			running++
 			if running <= maxTaskLines {
@@ -308,6 +350,9 @@ func (m model) subagentLines(conv Conversation, width int) []string {
 	var rest []string
 	if more := running - maxTaskLines; more > 0 {
 		rest = append(rest, fmt.Sprintf("+%d more running", more))
+	}
+	if idle > 0 {
+		rest = append(rest, fmt.Sprintf("%d idle", idle))
 	}
 	if finished > 0 {
 		rest = append(rest, fmt.Sprintf("%d finished", finished))

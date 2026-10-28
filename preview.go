@@ -519,7 +519,7 @@ func (m model) linksWithPRs() []linkItem {
 }
 
 // linksPopup lists linksWithPRs, numbered, with the cursor on one; a list
-// taller than the screen scrolls to keep the cursor in view.
+// taller than the screen scrolls to keep the cursor in view, with a scrollbar.
 func (m model) linksPopup() string {
 	width := min(max(m.width-12, 30), 90)
 	rows := max(m.height-10, 3) // border, padding, title and hints
@@ -535,6 +535,11 @@ func (m model) linksPopup() string {
 	}
 	b.WriteString("\n\n")
 	numW := len(strconv.Itoa(len(m.links)))
+	top, size, bar := scrollThumb(len(m.links), start, end-start)
+	rowW := width
+	if bar {
+		rowW-- // the scrollbar's column
+	}
 	for i := start; i < end; i++ {
 		l := m.links[i]
 		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
@@ -542,11 +547,14 @@ func (m model) linksPopup() string {
 		if ansi.Strip(l.text) != addr && !prURL.MatchString(l.url) {
 			row += " \033[90m" + addr + "\033[39m"
 		}
-		row = ansi.Truncate(row, width-2, "…")
+		row = ansi.Truncate(row, rowW-2, "…")
 		if i == m.linksCursor {
 			row = "\033[1m› " + row + "\033[0m"
 		} else {
 			row = "  " + row
+		}
+		if bar {
+			row = withBar(row, width, barCell(i-start, top, size))
 		}
 		b.WriteString(row + "\n")
 	}

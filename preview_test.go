@@ -745,6 +745,9 @@ func TestLinksPopupNumbersAllAndShowsPRStatus(t *testing.T) {
 	if strings.Contains(v, "r#25 ") || !strings.Contains(v, "1/25") {
 		t.Errorf("a list taller than the screen should scroll:\n%s", v)
 	}
+	if !strings.Contains(v, "┃") {
+		t.Errorf("and show a scrollbar:\n%s", v)
+	}
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 	if cmd != nil || !m.linksOpen || m.linksCursor != 1 {
 		t.Fatalf("2 could start 20-25: select it and wait (cursor %d)", m.linksCursor)

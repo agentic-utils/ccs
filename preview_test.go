@@ -643,20 +643,37 @@ func TestLinksPopup(t *testing.T) {
 	if !m.linksOpen {
 		t.Fatal("^O should open the links popup")
 	}
-	if v := strip2(m.View()); !strings.Contains(v, "1 the release notes github.com/a/b/releases") || !strings.Contains(v, "3 link text") {
-		t.Errorf("popup should number the links:\n%s", v)
+	if v := strip2(m.View()); !strings.Contains(v, "› the release notes github.com/a/b/releases") || !strings.Contains(v, "link text") {
+		t.Errorf("popup should list the links:\n%s", v)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.linksOpen || cmd == nil {
-		t.Fatal("enter should open the selected link and close the popup")
+	if !m.linksOpen || cmd == nil {
+		t.Fatal("enter should open the selected link and leave the popup open")
 	}
 	cmd()
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
-	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	for _, r := range "wraps" {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if v := strip2(m.View()); strings.Contains(v, "release notes") || !strings.Contains(v, "› link text") {
+		t.Errorf("typing filters the links, cursor on the first match:\n%s", v)
+	}
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})
 	cmd()
 	if want := []string{"https://example.com/x", "https://e.io/z"}; !reflect.DeepEqual(opened, want) {
 		t.Errorf("opened %q, want %q", opened, want)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("zzz")})
+	if v := strip2(m.View()); !strings.Contains(v, "no links match") {
+		t.Errorf("nothing matching says so:\n%s", v)
+	}
+	if _, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		t.Error("enter with nothing matching opens nothing")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if v := strip2(m.View()); !m.linksOpen || !strings.Contains(v, "release notes") {
+		t.Errorf("reopening starts with an empty filter:\n%s", v)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
@@ -721,58 +738,36 @@ func TestPreviewWaitsForTheSelectionToRest(t *testing.T) {
 	}
 }
 
-func TestLinksPopupNumbersAllAndShowsPRStatus(t *testing.T) {
-	var opened []string
-	defer func(f func(string) error) { openURL = f }(openURL)
-	openURL = func(u string) error { opened = append(opened, u); return nil }
-	var prs []string
+func TestLinksPopupFiltersPRsByStatus(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.prs = map[string]prInfo{}
+	var prs []string
 	for i := 1; i <= 25; i++ {
 		u := fmt.Sprintf("https://github.com/o/r/pull/%d", i)
 		prs = append(prs, u)
 		m.prs[u] = prInfo{State: "MERGED", Title: strings.Repeat("a very long title ", 10)}
 	}
+	m.prs[prs[24]] = prInfo{State: "OPEN", MergeState: "CLEAN", Title: "go"}
 	conv := Conversation{SessionID: "s", Cwd: "/p", PRs: prs, Messages: []Message{{Role: "assistant", Text: "hi", Ts: "2026-09-30T10:00:00Z"}}}
 	m.items = []listItem{{conv: conv}}
 	m.filtered = m.items
 	m.width, m.height = 100, 20
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
 	v := strip2(m.View())
-	if !strings.Contains(v, " 1 ● r#1 merged · a very long") || !strings.Contains(v, "10 ● r#10 merged") {
-		t.Errorf("every link numbered, the status before the title:\n%s", v)
+	if !strings.Contains(v, "› ✓ r#25 ready to merge · go") || !strings.Contains(v, "● r#1 merged · a very long") {
+		t.Errorf("each PR's status before its title, ready first:\n%s", v)
 	}
-	if strings.Contains(v, "r#25 ") || !strings.Contains(v, "1/25") {
-		t.Errorf("a list taller than the screen should scroll:\n%s", v)
+	if strings.Contains(v, "r#24 ") || !strings.Contains(v, "1/25") || !strings.Contains(v, "┃") {
+		t.Errorf("a list taller than the screen scrolls, with a scrollbar:\n%s", v)
 	}
-	if !strings.Contains(v, "┃") {
-		t.Errorf("and show a scrollbar:\n%s", v)
+	for _, r := range "ready" {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
-	if cmd != nil || !m.linksOpen || m.linksCursor != 1 {
-		t.Fatalf("2 could start 20-25: select it and wait (cursor %d)", m.linksCursor)
+	if v := strip2(m.View()); !strings.Contains(v, "1/1") || strings.Contains(v, "r#1 merged") {
+		t.Errorf("the status is searchable too:\n%s", v)
 	}
-	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
-	if cmd == nil || m.linksOpen {
-		t.Fatal("23 is the only number starting so: open it")
-	}
-	cmd()
-	if !reflect.DeepEqual(opened, []string{prs[22]}) {
-		t.Errorf("opened %q, want #23", opened)
-	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
-	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("6")})
-	if cmd == nil || m.linksOpen {
-		t.Fatal("26 isn't a link: 6 starts over, and nothing longer starts with it, so it opens")
-	}
-	cmd()
-	if !reflect.DeepEqual(opened, []string{prs[22], prs[5]}) {
-		t.Errorf("opened %q, want #23 then #6", opened)
-	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
-	if v := strip2(m.View()); !m.linksOpen || !strings.Contains(v, "1/25") {
-		t.Errorf("1 waits for a second digit:\n%s", v)
+	m.prs[prs[24]] = prInfo{State: "MERGED", Title: "go"}
+	if v := strip2(m.View()); !strings.Contains(v, "no links match") {
+		t.Errorf("rows follow the latest status:\n%s", v)
 	}
 }

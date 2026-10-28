@@ -145,9 +145,9 @@ func (m model) prCounts(conv Conversation) (n [prClosed + 1]int) {
 	return
 }
 
-// prCell is the PRS column: "✓1 ✗1 2 ●3 ⊘1" (ready, needing you, waiting,
-// merged, closed), blank when there are none. Plain for the selected row,
-// else coloured.
+// prCell is the PRS column: "✓1 ✗1 2 ●3" (ready, needing you, waiting,
+// merged; closed ones left out), blank when there are none. Plain for the
+// selected row, else coloured.
 func (m model) prCell(conv Conversation, coloured bool) string {
 	n := m.prCounts(conv)
 	var parts []string
@@ -165,7 +165,6 @@ func (m model) prCell(conv Conversation, coloured bool) string {
 	add(n[prFix], "✗", "31")
 	add(n[prWaiting], "", amber)
 	add(n[prMerged], "●", prPurple)
-	add(n[prClosed], "⊘", "31")
 	s := strings.Join(parts, " ")
 	return strings.Repeat(" ", max(colPRs-ansi.StringWidth(s), 0)) + s
 }
@@ -251,8 +250,14 @@ func prName(u string) string {
 func (m model) prLinks(conv Conversation) []linkItem {
 	var out []linkItem
 	for _, u := range m.sessionPRs(conv) {
-		_, why := m.prs[u].status()
-		out = append(out, linkItem{u, strings.TrimSpace(prName(u) + " " + m.prs[u].Title + " · " + why)})
+		p := m.prs[u]
+		g, why := p.status()
+		glyph, colour := prMark(g)
+		if p.Draft || p.State == "" {
+			colour = "90"
+		}
+		// The status before the title, so a long title is what gets cut.
+		out = append(out, linkItem{u, "\033[" + colour + "m" + glyph + "\033[39m " + prName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title})
 	}
 	return out
 }

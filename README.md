@@ -15,7 +15,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Preview conversation context with search term highlighting
 - See context size (tokens as of the last reply), message counts, hit counts, and file size per conversation
 - Resume conversations directly from the search interface
-- Background tasks: a session open in `claude` shows `⧗N` for the background commands, subagents and monitors it has running, and the preview lists them with how long each has run
+- Background tasks and subagents: a session open in `claude` shows `⧗N` for its running background commands and monitors and a pink `◆N` for its running subagents, and the preview lists both with how long each has run
 - Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, and ones started by another session's `claude -p` sit `└` under it
 - Rename conversations (`Ctrl+X E`)
 - Delete conversations with confirmation prompt

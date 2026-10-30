@@ -750,7 +750,7 @@ func findHost(pid int) string {
 		}
 		comm = strings.TrimSpace(comm)
 		if i := strings.Index(comm, ".app/"); i >= 0 {
-			return filepath.Base(comm[:i])
+			return appName(filepath.Base(comm[:i]))
 		}
 		if first == "" {
 			first = filepath.Base(comm)
@@ -780,7 +780,7 @@ func (m *model) hostedElsewhere(id string) bool {
 	if h == "" || !m.live[id] {
 		return false
 	}
-	m.errorMsg = "Runs in " + h + ", not a terminal: open it there (^S messages it, ^F forks it)"
+	m.note("In " + h + ": open it there · ^S messages it")
 	return true
 }
 
@@ -860,4 +860,13 @@ func stopCmd(name string, b bgSession) tea.Cmd {
 		_, err := runBounded(10*time.Second, nil, "claude", "stop", b.ID)
 		return stopDoneMsg{name, err}
 	}
+}
+
+// appName is an app's name without a parenthesised edition: "T3 Code (Beta)"
+// reads "T3 Code", short enough for the list's grey row.
+func appName(s string) string {
+	if i := strings.Index(s, " ("); i > 0 {
+		return s[:i]
+	}
+	return s
 }

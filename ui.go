@@ -80,6 +80,7 @@ type model struct {
 	renameIndex     int                  // Index of item being renamed
 	renameInput     textinput.Model
 	errorMsg        string               // Show deletion/prune errors
+	noteMsg         string               // errorMsg set by note(): information, not an error, so not red
 	preview         *previewCache        // memoised preview lines for the selected conversation
 	hits            *hitCounter          // memoised per-query hit counts, keyed by SessionID
 	lastFilterQuery string               // lowercased query the current m.filtered was built from
@@ -746,7 +747,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.errorMsg = "Couldn't stop " + msg.name + ": " + msg.err.Error()
 		} else {
-			m.errorMsg = "Stopped " + msg.name + " (Enter resumes it)"
+			m.note("Stopped " + msg.name + " (Enter resumes it)")
 		}
 		return m, nil
 
@@ -1878,6 +1879,9 @@ func (m model) viewScreen() string {
 	// Show error message if set
 	if m.errorMsg != "" {
 		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+		if m.errorMsg == m.noteMsg {
+			errorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+		}
 		msg := strings.Join(strings.Fields(m.errorMsg), " ") // one row: listLayout counts it as one
 		sections = append(sections, "  "+errorStyle.Render(ansi.Truncate(msg, max(m.width-3, 1), "…")))
 	}
@@ -2504,4 +2508,9 @@ func editKey(in textinput.Model, msg tea.Msg) (textinput.Model, tea.Cmd) {
 		}
 	}
 	return in, cmd
+}
+
+// note shows msg in the error row, plainly: something to know, not a failure.
+func (m *model) note(msg string) {
+	m.errorMsg, m.noteMsg = msg, msg
 }

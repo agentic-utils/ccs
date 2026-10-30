@@ -1159,7 +1159,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.linksCursor = min(m.linksCursor+1, len(m.linksShown())-1)
 			case "enter":
 				if shown := m.linksShown(); len(shown) > 0 { // stays open for the next
-					return m, openLinkCmd(shown[min(m.linksCursor, len(shown)-1)].url)
+					u := shown[min(m.linksCursor, len(shown)-1)].url
+					if id, ok := strings.CutPrefix(u, sessionLink); ok { // a session: select it, done here
+						m.linksOpen = false
+						m.selectSession(id)
+						return m, nil
+					}
+					return m, openLinkCmd(u)
 				}
 			default:
 				before := m.linksInput.Value()

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -754,4 +755,224 @@ func newUUID() string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// peerRef is one of a session's messages to or from another session: which
+// message, the start of its text (to find the other end's copy), and the
+// address it went to or came from.
+type peerRef struct {
+	idx  int    // in conv.Messages
+	key  string // peerKey of its text
+	sent bool
+	addr string // sent: SendMessage's to; received: the sender's from="uds:…"
+	name string // received: the sender's from-name
+}
+
+// peerKey is the start of a message's text, whitespace evened out, so the
+// sender's copy and the recipient's match.
+func peerKey(text string) string {
+	k := strings.Join(strings.Fields(text), " ")
+	if r := []rune(k); len(r) > 120 {
+		k = string(r[:120])
+	}
+	return k
+}
+
+// peerAddr is a cross-session message's from="…" attribute.
+var peerAddr = regexp.MustCompile(`\bfrom="([^"]*)"`)
+
+// noteSent records a SendMessage call as a "sent" message.
+func noteSent(conv *Conversation, input json.RawMessage, ts string) {
+	var in struct {
+		To      string `json:"to"`
+		Summary string `json:"summary"`
+		Message any    `json:"message"`
+	}
+	if json.Unmarshal(input, &in) != nil || in.To == "" {
+		return
+	}
+	text, ok := in.Message.(string)
+	if !ok { // a structured message (shutdown, plan approval): its JSON
+		b, _ := json.Marshal(in.Message)
+		text = string(b)
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	conv.Messages = append(conv.Messages, Message{Role: "sent", Text: text, Ts: ts, To: in.To, Note: in.Summary})
+	conv.peers = append(conv.peers, peerRef{idx: len(conv.Messages) - 1, key: peerKey(text), sent: true, addr: in.To})
+}
+
+// noteReceived records the message just appended when another session sent it.
+func noteReceived(conv *Conversation, text string) {
+	if !strings.Contains(text[:min(len(text), 200)], "<cross-session-message") {
+		return
+	}
+	m := peerMessage.FindStringSubmatch(text)
+	if m == nil {
+		return
+	}
+	ref := peerRef{idx: len(conv.Messages) - 1, key: peerKey(strings.TrimPrefix(m[2], ccsNote))}
+	if f := peerAddr.FindStringSubmatch(m[1]); f != nil {
+		ref.addr = f[1]
+	}
+	if f := peerFrom.FindStringSubmatch(m[1]); f != nil {
+		ref.name = f[1]
+	}
+	conv.peers = append(conv.peers, ref)
+}
+
+// peerEnds maps message keys to the sessions that sent and received them,
+// across every session ccs has.
+type peerEnds struct{ senders, recipients map[string]string }
+
+func (m model) peerEnds() peerEnds {
+	e := peerEnds{map[string]string{}, map[string]string{}}
+	for _, it := range m.items {
+		for _, p := range it.conv.peers {
+			if p.sent {
+				e.senders[p.key] = it.conv.SessionID
+			} else {
+				e.recipients[p.key] = it.conv.SessionID
+			}
+		}
+	}
+	return e
+}
+
+// sessionAt is the live session listening on a uds:/…/<pid>.sock address.
+func (m model) sessionAt(addr string) string {
+	base := filepath.Base(strings.TrimPrefix(addr, "uds:"))
+	pid, err := strconv.Atoi(strings.TrimSuffix(base, ".sock"))
+	if err != nil || !strings.HasPrefix(addr, "uds:") {
+		return ""
+	}
+	for id, p := range m.livePIDs {
+		if p == pid {
+			return id
+		}
+	}
+	return ""
+}
+
+// peerOther is the session at the other end of conv's peer message p: the
+// one whose transcript holds the same message, else (live) the one on its
+// socket, else for a received one the session named as its sender. arrived:
+// a sent message found in the recipient's transcript.
+func (m model) peerOther(e peerEnds, conv Conversation, p peerRef) (id string, arrived bool) {
+	if p.sent {
+		if id := e.recipients[p.key]; id != "" && id != conv.SessionID {
+			return id, true
+		}
+		return m.sessionAt(p.addr), false
+	}
+	if id := e.senders[p.key]; id != "" && id != conv.SessionID {
+		return id, true
+	}
+	if id := m.sessionAt(p.addr); id != "" {
+		return id, true
+	}
+	for _, it := range m.items {
+		if p.name != "" && it.conv.Title == p.name && it.conv.SessionID != conv.SessionID {
+			return it.conv.SessionID, true
+		}
+	}
+	return "", false
+}
+
+// peerLabels is what the preview says about each of conv's peer messages'
+// other ends, by message index: "To name ✓ arrived" or "From name".
+func (m model) peerLabels(conv Conversation) map[int]string {
+	if len(conv.peers) == 0 {
+		return nil
+	}
+	e := m.peerEnds()
+	byID := m.convByID()
+	out := make(map[int]string, len(conv.peers))
+	for _, p := range conv.peers {
+		id, arrived := m.peerOther(e, conv, p)
+		name := ""
+		if c, ok := byID[id]; ok {
+			name = m.sessionName(c)
+		}
+		switch {
+		case p.sent && name != "" && arrived:
+			out[p.idx] = name + " \033[32m✓ arrived\033[0m"
+		case p.sent && name != "":
+			out[p.idx] = name
+		case p.sent:
+			out[p.idx] = shortAddr(p.addr)
+		case name != "":
+			out[p.idx] = name
+		}
+	}
+	return out
+}
+
+// convByID indexes the listed sessions.
+func (m model) convByID() map[string]Conversation {
+	out := make(map[string]Conversation, len(m.items))
+	for _, it := range m.items {
+		out[it.conv.SessionID] = it.conv
+	}
+	return out
+}
+
+// shortAddr is a SendMessage address for show: "session 123" for a socket,
+// an agent's id as it is.
+func shortAddr(a string) string {
+	if strings.HasPrefix(a, "uds:") {
+		return "session " + strings.TrimSuffix(filepath.Base(a), ".sock")
+	}
+	return a
+}
+
+// sessionLinks are the ^O popup's jumps to the sessions conv messaged or
+// heard from, each once, newest first.
+func (m model) sessionLinks(conv Conversation) []linkItem {
+	e := m.peerEnds()
+	byID := m.convByID()
+	seen := map[string]bool{}
+	var out []linkItem
+	for i := len(conv.peers) - 1; i >= 0; i-- {
+		p := conv.peers[i]
+		id, _ := m.peerOther(e, conv, p)
+		c, ok := byID[id]
+		if !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		dir := "← from "
+		if p.sent {
+			dir = "→ to "
+		}
+		out = append(out, linkItem{sessionLink + id, "\033[36m" + dir + m.sessionName(c) + "\033[39m"})
+	}
+	return out
+}
+
+// sessionLink starts a ^O link that selects a session in the list.
+const sessionLink = "ccs:session:"
+
+// selectSession puts the cursor on session id, clearing the search if it
+// hides it.
+func (m *model) selectSession(id string) {
+	find := func() int {
+		return slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+	}
+	if find() < 0 && m.textInput.Value() != "" {
+		m.textInput.SetValue("")
+		m.updateFilter()
+	}
+	if i := find(); i >= 0 {
+		m.cursor = i
+		for m.cursor > 0 && m.filtered[m.cursor].hidden { // its folder is collapsed
+			m.toggleCollapse()
+			m.cursor = find()
+		}
+		m.previewScroll = 0
+		m.selectionMoved()
+	} else {
+		m.errorMsg = "That session isn't in the list (older than --max-age, or filtered out)"
+	}
 }

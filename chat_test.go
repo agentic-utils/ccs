@@ -335,3 +335,65 @@ func TestPeerMessageWithClaudeCodeFooter(t *testing.T) {
 		t.Errorf("peerParts = %q, %q, %v", from, body, ok)
 	}
 }
+
+func TestPeerMessagesLinkBothEnds(t *testing.T) {
+	a := Conversation{SessionID: "a", Title: "sender", Cwd: "/p"}
+	for _, l := range []string{
+		`{"type":"user","timestamp":"2026-10-30T10:00:00Z","message":{"role":"user","content":"start"}}`,
+		`{"type":"assistant","timestamp":"2026-10-30T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Telling the other one."},{"type":"tool_use","id":"t1","name":"SendMessage","input":{"to":"uds:/tmp/cc-socks/4242.sock","summary":"rebase first","message":"PR 99 is changing; rebase before touching icons."}}]}}`,
+	} {
+		parseLine(&a, []byte(l))
+	}
+	finishParse(&a)
+	b := Conversation{SessionID: "b", Title: "recipient", Cwd: "/p"}
+	for _, l := range []string{
+		`{"type":"user","timestamp":"2026-10-30T09:00:00Z","message":{"role":"user","content":"hello"}}`,
+		`{"type":"user","isMeta":true,"timestamp":"2026-10-30T10:01:05Z","message":{"role":"user","content":"Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/cc-socks/1111.sock\" from-name=\"sender\">\nPR 99 is changing; rebase before touching icons.\n</cross-session-message>"}}`,
+	} {
+		parseLine(&b, []byte(l))
+	}
+	finishParse(&b)
+	if n := len(a.Messages); n != 3 || a.Messages[2].Role != "sent" || a.Messages[2].To != "uds:/tmp/cc-socks/4242.sock" {
+		t.Fatalf("SendMessage is a sent message after the text: %+v", a.Messages)
+	}
+	m := initialModel(buildItems([]Conversation{a, b}), "", nil)
+	m.width, m.height = 160, 40
+	m.selectSession("a")
+	v := strip2(m.View())
+	if !strings.Contains(v, "To recipient ✓ arrived · rebase first") || !strings.Contains(v, "PR 99 is changing") {
+		t.Errorf("the sender sees who it went to and that it arrived:\n%s", v)
+	}
+	m.selectSession("b")
+	if v := strip2(m.View()); !strings.Contains(v, "From sender") {
+		t.Errorf("the recipient sees the sending session:\n%s", v)
+	}
+	m.selectSession("a")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if v := strip2(m.View()); !strings.Contains(v, "→ to recipient") || strings.Contains(v, "ccs:session") {
+		t.Fatalf("^O lists the session it messaged:\n%s", v)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.linksOpen || m.filtered[m.cursor].conv.SessionID != "b" {
+		t.Errorf("enter on it selects that session")
+	}
+	// Not arrived yet: named by its socket while live, no tick.
+	b2 := b
+	b2.Messages, b2.peers = b.Messages[:1], nil
+	m = initialModel(buildItems([]Conversation{a, b2}), "", nil)
+	m.width, m.height = 160, 40
+	m.livePIDs = map[string]int{"b": 4242}
+	m.selectSession("a")
+	if v := strip2(m.View()); !strings.Contains(v, "To recipient · rebase first") || strings.Contains(v, "arrived") {
+		t.Errorf("not in its transcript yet: named by its socket, not arrived:\n%s", v)
+	}
+}
+
+func TestSentMessageDoesNotHideAQuestion(t *testing.T) {
+	c := Conversation{SessionID: "s", Messages: []Message{{Role: "assistant", Text: "Which one?"}, {Role: "sent", Text: "fyi", To: "x"}}}
+	m := initialModel(buildItems([]Conversation{c}), "", nil)
+	m.live = map[string]bool{"s": true}
+	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
+	if m.waitSignal(c) != waitAsked {
+		t.Error("a message it sent after asking doesn't hide the question")
+	}
+}

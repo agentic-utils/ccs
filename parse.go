@@ -25,9 +25,11 @@ import (
 
 // Message represents a conversation message
 type Message struct {
-	Role string `json:"role"`
+	Role string `json:"role"` // user, assistant, or sent: a SendMessage to another session
 	Text string `json:"text"`
 	Ts   string `json:"ts"`
+	To   string `json:"to,omitempty"`   // sent: the address (uds:…sock or an agent id)
+	Note string `json:"note,omitempty"` // sent: its summary
 }
 
 // Conversation represents a parsed conversation
@@ -59,14 +61,16 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	parsedBytes int64
 	sawUser     bool
-	peerQueued  []string   // recent messages from other sessions/ccs the session has queued, for delivery status
-	lastUsageID string     // one reply spans several lines with the same id and usage; count it once
-	tailApplied bool       // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
-	pending     *toolCall  // the last tool call still without a result: what a waiting session asks about
-	PRs         []string   // PRs Claude Code linked to the session (pr-link), first touched first
-	spawns      []spawnCmd // claude -p commands it ran, to find the sessions they started
-	calls       []bgTask   // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
-	tasks       []bgTask   // its background tasks (tasks.go)
+	peerQueued  []string       // recent messages from other sessions/ccs the session has queued, for delivery status
+	lastUsageID string         // one reply spans several lines with the same id and usage; count it once
+	tailApplied bool           // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
+	pending     *toolCall      // the last tool call still without a result: what a waiting session asks about
+	PRs         []string       // PRs Claude Code linked to the session (pr-link), first touched first
+	spawns      []spawnCmd     // claude -p commands it ran, to find the sessions they started
+	peers       []peerRef      // its messages to and from other sessions, to link the two ends
+	peerNotes   map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
+	calls       []bgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
+	tasks       []bgTask       // its background tasks (tasks.go)
 
 	// readAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -596,6 +600,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 				conv.FirstTimestamp = raw.Timestamp
 			}
 			conv.Messages = append(conv.Messages, Message{Role: "user", Text: text, Ts: raw.Timestamp})
+			noteReceived(conv, text)
 		}
 	case "attachment":
 		var a queuedCommand
@@ -605,6 +610,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 		text := extractText(a.Prompt)
 		if (!a.IsMeta || peerMessage.MatchString(text)) && strings.TrimSpace(text) != "" {
 			conv.Messages = append(conv.Messages, Message{Role: "user", Text: text, Ts: raw.Timestamp})
+			noteReceived(conv, text)
 		}
 	case "queue-operation":
 		if text := extractText(raw.Content); raw.Operation == "enqueue" && peerMessage.MatchString(text) {
@@ -644,10 +650,10 @@ func parseLine(conv *Conversation, line []byte) bool {
 				conv.Usage.Output += int64(u.OutputTokens)
 			}
 		}
-		trackTools(conv, raw.Message.Content, raw.Timestamp)
 		if text := extractText(raw.Message.Content); strings.TrimSpace(text) != "" {
 			conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: text, Ts: raw.Timestamp})
 		}
+		trackTools(conv, raw.Message.Content, raw.Timestamp) // after the text: a SendMessage follows what it says
 	}
 	return true
 }
@@ -694,6 +700,9 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 			call := b.toolCall
 			conv.pending = &call
 			noteCall(conv, call, ts)
+			if call.Name == "SendMessage" {
+				noteSent(conv, call.Input, ts)
+			}
 			if call.Name == "Bash" {
 				var in struct {
 					Command string `json:"command"`

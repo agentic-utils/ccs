@@ -124,7 +124,9 @@ func (m model) previewLines() []string {
 	if len(m.filtered) == 0 || !m.previewSettled() {
 		return nil // still scrolling through the list: the header alone
 	}
-	return cachedPreview(m.preview, m.filtered[m.cursor].conv, m.textInput.Value(), m.paneWidth()-1) // the last column is the scrollbar
+	conv := m.filtered[m.cursor].conv
+	conv.peerNotes = m.peerLabels(conv)                                         // the other ends, which other sessions' transcripts show
+	return cachedPreview(m.preview, conv, m.textInput.Value(), m.paneWidth()-1) // the last column is the scrollbar
 }
 
 // previewDebounce is how long the selection must rest before its
@@ -163,7 +165,7 @@ func cachedPreview(c *previewCache, conv Conversation, query string, width int) 
 	}
 	// Preview lines depend only on the messages (so tool-only appends reuse
 	// them) and on the width they're wrapped to.
-	key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", conv.SessionID, len(conv.Messages), width, query)
+	key := fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%v", conv.SessionID, len(conv.Messages), width, query, conv.peerNotes) // %v sorts map keys
 	if c.key != key {
 		c.key = key
 		c.lines = buildPreviewLines(conv, query, width)
@@ -281,11 +283,35 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 			lastShown, lastRole = i, ""
 			continue
 		}
+		if msg.Role == "sent" {
+			// A message this session sent another (SendMessage): to whom, and
+			// whether it shows in their transcript (peerLabels).
+			marker := " "
+			if matchSet[i] {
+				marker = "▶"
+			}
+			to := conv.peerNotes[i]
+			if to == "" {
+				to = shortAddr(msg.To)
+			}
+			head := fmt.Sprintf("\033[36m%s To %s\033[0m", marker, to)
+			if msg.Note != "" {
+				head += " \033[90m· " + highlight(cleanText(msg.Note), query) + "\033[0m"
+			}
+			msgLines = append(msgLines, head)
+			msgLines = append(msgLines, timeGutter(renderBody(msg.Text, query, max(width-gutterExtra, 0)), clock)...)
+			msgLines = append(msgLines, "")
+			lastShown, lastRole = i, ""
+			continue
+		}
 		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
 			// A message sent from another session or ccs, not typed here.
 			marker := " "
 			if matchSet[i] {
 				marker = "▶"
+			}
+			if n := conv.peerNotes[i]; n != "" {
+				from = n // the sending session as listed, found by its copy
 			}
 			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s From %s\033[0m", marker, from))
 			msgLines = append(msgLines, timeGutter(renderBody(body, query, max(width-gutterExtra, 0)), clock)...)
@@ -522,7 +548,8 @@ func (m model) linksWithPRs() []linkItem {
 	if len(m.filtered) == 0 {
 		return nil
 	}
-	out := m.prLinks(m.filtered[m.cursor].conv)
+	conv := m.filtered[m.cursor].conv
+	out := append(m.sessionLinks(conv), m.prLinks(conv)...)
 	for _, l := range m.visibleLinks() {
 		if !slices.ContainsFunc(out, func(p linkItem) bool { return p.url == l.url }) {
 			out = append(out, l)
@@ -586,7 +613,7 @@ func (m model) linksPopup() string {
 		text := m.linkText(l)
 		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
 		row := text
-		if ansi.Strip(text) != addr && !prURL.MatchString(l.url) {
+		if ansi.Strip(text) != addr && !prURL.MatchString(l.url) && !strings.HasPrefix(l.url, sessionLink) {
 			row += " \033[90m" + addr + "\033[39m"
 		}
 		row = ansi.Truncate(row, rowW-2, "…")

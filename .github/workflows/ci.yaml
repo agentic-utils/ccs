@@ -19,6 +19,8 @@ jobs:
       group: release
       cancel-in-progress: false
     runs-on: ubuntu-latest
+    # Holds RELEASE_SIGNING_KEY; only main may use it.
+    environment: release
     permissions:
       contents: write
     steps:
@@ -48,4 +50,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
           GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.new_tag }}

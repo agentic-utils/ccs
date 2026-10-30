@@ -60,6 +60,7 @@ Key bindings:
   Ctrl+S          Message the selected live session (Enter sends, Esc back)
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X A        Auto-focus: switch to a session's tab when it starts waiting on you
+  Ctrl+X C        Collapse the selected session's folder (grouped) to one session
   Ctrl+X G        Group sessions by folder
   Ctrl+X P        Pin the selected session to the top (again to unpin);
                   Alt+Up/Down move it among the pinned

@@ -704,3 +704,106 @@ func TestLogsRotateAtOneMB(t *testing.T) {
 		t.Errorf("a fresh log should start: %q", data)
 	}
 }
+
+func TestAutoUpdateInstallsWhileAway(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.24.1"
+	installs := 0
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 100, 30
+	m.autoUpdate = true
+	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { installs++; return "/bin/ccs", nil }}
+
+	res, cmd := m.Update(latestMsg{tag: "v0.25.0"})
+	m = res.(model)
+	if m.updateOpen || cmd == nil || m.updateTo != "v0.25.0" {
+		t.Fatal("with auto-update on, a new version is prepared without an offer")
+	}
+
+	m.lastKeyAt = time.Now() // typing just now
+	res, cmd = m.Update(autoUpdateTickMsg{})
+	if m = res.(model); m.updating || cmd == nil {
+		t.Fatal("not while you're at it: check again later")
+	}
+
+	m.blurred = true
+	m.chatDrafts = map[string]string{"s": "half a thought"}
+	res, _ = m.Update(autoUpdateTickMsg{})
+	if m = res.(model); m.updating {
+		t.Fatal("never while a message box holds unsent text")
+	}
+	m.chatDrafts = nil
+
+	res, cmd = m.Update(autoUpdateTickMsg{})
+	if m = res.(model); !m.updating || !m.autoInstalling {
+		t.Fatal("away and nothing to lose: install")
+	}
+	res, _ = m.Update(firstOfBatch(cmd))
+	if m = res.(model); installs != 1 || m.restart != "/bin/ccs" {
+		t.Error("installed and restarting")
+	}
+}
+
+func TestAutoUpdateFailureIsOffered(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.24.1"
+	m := initialModel(nil, "", nil)
+	m.autoUpdate, m.blurred = true, true
+	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", fmt.Errorf("network down") }}
+	res, _ := m.Update(latestMsg{tag: "v0.25.0"})
+	m = res.(model)
+	res, cmd := m.Update(autoUpdateTickMsg{})
+	m = res.(model)
+	res, _ = m.Update(firstOfBatch(cmd))
+	if m = res.(model); !m.updateOpen || m.autoFailed != "v0.25.0" {
+		t.Fatal("a failed automatic install shows the offer with the error")
+	}
+	res, _ = m.Update(latestMsg{tag: "v0.25.0"})
+	if m = res.(model); m.updating {
+		t.Error("and isn't retried on its own")
+	}
+}
+
+func TestUpdatedPopupAfterRestart(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "0.25.0"
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 100, 30
+	m.updatedFrom, m.updatedOpen = "0.24.1", true
+	res, _ := m.Update(updatedChangelogMsg{[]string{"v0.25.0", "  feat: something new"}})
+	m = res.(model)
+	if v := strip2(m.View()); !strings.Contains(v, "ccs updated itself from v0.24.1 to v0.25.0") || !strings.Contains(v, "something new") {
+		t.Errorf("says it updated, with what changed:\n%s", v)
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m = res.(model); m.updatedOpen {
+		t.Error("esc closes it")
+	}
+}
+
+func TestAutoUpdateToggle(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.autoUpdate = true
+	m, _ = chord(m, "i")
+	if m.autoUpdate || !loadSettings().ManualUpdate {
+		t.Error("^X I turns it off, and that's saved")
+	}
+	m, _ = chord(m, "i")
+	if !m.autoUpdate || loadSettings().ManualUpdate {
+		t.Error("again turns it back on")
+	}
+}
+
+func TestHeaderShowsAutoUpdate(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 200, 30
+	m.checkLatest = func() (string, error) { return "", nil }
+	m.autoUpdate = true
+	if v := strip2(m.View()); !strings.Contains(v, "^X I auto-update on") {
+		t.Errorf("the header says auto-update is on:\n%s", v)
+	}
+	m.autoUpdate = false
+	if v := strip2(m.View()); !strings.Contains(v, "^X I auto-update off") {
+		t.Errorf("or off:\n%s", v)
+	}
+}

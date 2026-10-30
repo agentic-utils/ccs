@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -894,4 +895,77 @@ func indent(out []byte) string {
 		return ""
 	}
 	return "  | " + strings.ReplaceAll(text, "\n", "\n  | ")
+}
+
+// autoUpdateTickMsg checks whether you're away, so a prepared update can
+// install without interrupting you.
+type autoUpdateTickMsg struct{}
+
+type updatedChangelogMsg struct{ lines []string }
+
+func autoUpdateTick() tea.Cmd {
+	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return autoUpdateTickMsg{} })
+}
+
+// autoUpdateIdle is how long without a key press counts as away, when the
+// terminal doesn't say ccs lost focus.
+const autoUpdateIdle = 3 * time.Minute
+
+// updatedEnv tells the ccs started after an automatic update which version
+// it updated from, so it can say so.
+const updatedEnv = "CCS_UPDATED_FROM"
+
+// awayForUpdate: an automatic update may restart ccs now. You're away (ccs
+// isn't focused, or no key for autoUpdateIdle) and nothing would be lost or
+// cut short: no prompt or popup open, no unsent text in any message box, no
+// session opening. The restart keeps the screen, search and selection.
+func (m model) awayForUpdate() bool {
+	if !m.blurred && time.Since(m.lastKeyAt) < autoUpdateIdle {
+		return false
+	}
+	if m.prompting() || m.resuming || m.waitOpen || m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 ||
+		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
+		return false
+	}
+	if strings.TrimSpace(m.chatInput.Value()) != "" || strings.TrimSpace(m.waitInput.Value()) != "" {
+		return false
+	}
+	for _, d := range m.chatDrafts {
+		if strings.TrimSpace(d) != "" {
+			return false
+		}
+	}
+	for _, d := range m.waitDrafts {
+		if strings.TrimSpace(d) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// startInstall installs m.updateTo (Enter on the offer, or automatically),
+// showing its progress in the header.
+func (m *model) startInstall() tea.Cmd {
+	m.updating = true
+	m.updateErr = ""
+	m.progress = &updateProgress{step: "starting", started: time.Now()}
+	upgrade, tag, progress := m.upgrade, m.updateTo, m.progress
+	return tea.Batch(func() tea.Msg {
+		path, err := upgrade.Install(tag, progress.set)
+		return upgradeDoneMsg{path, err}
+	}, updatingTick())
+}
+
+// updatedPopup says ccs updated itself while you were away, and what changed.
+func (m model) updatedPopup() string {
+	body := fmt.Sprintf("\033[1mccs updated itself\033[0m from v%s to v%s while you were away.\n\n", strings.TrimPrefix(m.updatedFrom, "v"), version)
+	if len(m.changelog) > 0 {
+		body += m.changelogBlock() + "\n\n"
+	}
+	body += "\033[90m" + hints(keyEnter+"/"+keyEsc, "close", "^X I", "stop updating on its own") + "\033[0m"
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 3).
+		Render(body)
 }

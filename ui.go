@@ -528,6 +528,9 @@ func (m *model) nestFamilies() {
 		for _, it := range out[start+1 : end] {
 			state = min(state, m.liveGroup(it.conv))
 		}
+		if pin := m.familyPin(out[start:end]); pin >= 0 { // above every state, in pin order
+			state = pin - len(m.marks.Pinned)
+		}
 		for i := start; i < end; i++ {
 			out[i].familyState = state
 		}
@@ -536,14 +539,35 @@ func (m *model) nestFamilies() {
 	m.filtered = out
 }
 
+// familyPin is the first pin place of a family's sessions, -1 if none is pinned.
+func (m model) familyPin(family []listItem) int {
+	pin := -1
+	for _, it := range family {
+		if i := m.pinIndex(it.conv.SessionID); i >= 0 && (pin < 0 || i < pin) {
+			pin = i
+		}
+	}
+	return pin
+}
+
 // groupOf is the ^X G group a session is listed under: its family's folder,
-// within its state section.
+// within its state section. Pinned families keep their own order, ungrouped.
 func groupOf(it listItem) string {
+	if it.familyState < 0 {
+		return fmt.Sprint(it.familyState)
+	}
 	return fmt.Sprint(it.familyState, " ", groupKey(it.familyCwd))
 }
 
+// sectionOf is the state section a familyState is listed in: pinned ones
+// (negative, in pin order) share one.
+func sectionOf(state int) int { return max(state, -1) }
+
 // doneColour marks a session that finished since you last looked.
 const doneColour = "1;36"
+
+// pinnedSection heads the pinned sessions, above every state.
+var pinnedSection = struct{ name, colour string }{"pinned", "1;37"}
 
 // stateSections name liveGroup's values, the list's sections, and colour them.
 var stateSections = [...]struct{ name, colour string }{
@@ -1131,6 +1155,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			saveSettings(m.settings())
 			return m, nil
 		}
+		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			m.togglePin()
+			return m, nil
+		}
+		if (k == "alt+up" || k == "alt+down") && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen && !m.chatFocus {
+			m.movePin(map[string]int{"alt+up": -1, "alt+down": 1}[k])
+			return m, nil
+		}
 		if k == "^x g" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.grouped = false, !m.grouped
 			saveSettings(m.settings())
@@ -1559,6 +1592,10 @@ func (m model) shortcuts() [][2]string {
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.autoFocus, "^X A", "switch to a session when it starts waiting on you")
 	add(m.autoFocus, "^X A", "stop switching to waiting sessions")
+	pinned := sel && m.pinIndex(m.filtered[m.cursor].conv.SessionID) >= 0
+	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top")
+	add(pinned, "^X P", "unpin it")
+	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned")
 	add(!m.grouped, "^X G", "group by folder")
 	add(m.grouped, "^X G", "ungroup")
 	add(true, "^L", "changelog")
@@ -2026,15 +2063,18 @@ func (m model) listRows() []listRow {
 	sections := map[int]int{}
 	for _, it := range m.filtered {
 		counts[groupOf(it)]++
-		sections[it.familyState]++
+		sections[sectionOf(it.familyState)]++
 	}
 	var rows []listRow
 	for i, it := range m.filtered {
-		if s := it.familyState; i == 0 || s != m.filtered[i-1].familyState {
-			sec := stateSections[min(s, len(stateSections)-1)]
+		if s := sectionOf(it.familyState); i == 0 || s != sectionOf(m.filtered[i-1].familyState) {
+			sec := pinnedSection
+			if s >= 0 {
+				sec = stateSections[min(s, len(stateSections)-1)]
+			}
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
 		}
-		if k := groupOf(it); m.grouped && (i == 0 || k != groupOf(m.filtered[i-1])) {
+		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(m.filtered[i-1])) {
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s\033[0m \033[90m%d\033[0m", projectName(groupKey(it.familyCwd)), counts[k])})
 		}
 		for p := range m.rowsPerItem() {

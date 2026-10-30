@@ -61,6 +61,8 @@ Key bindings:
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X A        Auto-focus: switch to a session's tab when it starts waiting on you
   Ctrl+X G        Group sessions by folder
+  Ctrl+X P        Pin the selected session to the top (again to unpin);
+                  Alt+Up/Down move it among the pinned
   Ctrl+X T        Table: every column, instead of the sidebar
   Ctrl+F          Fork conversation (resume into a new session id)
   Ctrl+R          Refresh now: rescan sessions, PRs and usage, check for a ccs update

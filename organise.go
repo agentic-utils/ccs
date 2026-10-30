@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
 // sessionMarks is what ccs remembers about sessions between runs: when each
-// was last looked at, so a session that finished since shows as done.
+// was last looked at, so a session that finished since shows as done, and
+// which are pinned, in order.
 type sessionMarks struct {
-	Since time.Time            `json:"since"` // first run: nothing that finished before it is done
-	Seen  map[string]time.Time `json:"seen,omitempty"`
+	Since  time.Time            `json:"since"` // first run: nothing that finished before it is done
+	Seen   map[string]time.Time `json:"seen,omitempty"`
+	Pinned []string             `json:"pinned,omitempty"`
 }
 
 // marksPath keeps sessionMarks beside the settings.
@@ -94,4 +97,44 @@ func (m *model) markSeen(id string) {
 		m.marks.Seen[id] = time.Now()
 		m.marks.save()
 	}
+}
+
+// pinIndex is id's place among the pinned sessions, -1 if not pinned.
+func (m model) pinIndex(id string) int {
+	if m.marks == nil {
+		return -1
+	}
+	return slices.Index(m.marks.Pinned, id)
+}
+
+// togglePin (^X P) pins the selected session at the bottom of the pinned
+// ones, or unpins it.
+func (m *model) togglePin() {
+	if m.marks == nil || len(m.filtered) == 0 {
+		return
+	}
+	id := m.filtered[m.cursor].conv.SessionID
+	if i := m.pinIndex(id); i >= 0 {
+		m.marks.Pinned = slices.Delete(m.marks.Pinned, i, i+1)
+	} else {
+		m.marks.Pinned = append(m.marks.Pinned, id)
+	}
+	m.marks.save()
+	m.sortList()
+}
+
+// movePin (Alt+↑/↓) moves the selected pinned session up or down among the
+// pinned ones.
+func (m *model) movePin(by int) {
+	if len(m.filtered) == 0 {
+		return
+	}
+	i := m.pinIndex(m.filtered[m.cursor].conv.SessionID)
+	if j := i + by; i < 0 || j < 0 || j >= len(m.marks.Pinned) {
+		return
+	}
+	p := m.marks.Pinned
+	p[i], p[i+by] = p[i+by], p[i]
+	m.marks.save()
+	m.sortList()
 }

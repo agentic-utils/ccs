@@ -487,7 +487,7 @@ func askLines(conv Conversation, width int) []string {
 			if q.MultiSelect {
 				question += "  (pick any)"
 			}
-			out = append(append(out, ""), wrapped("\033[1;"+amber+"m? ", "\033[1;"+amber+"m", question)...)
+			out = append(append(out, ""), wrapped("\033[1;"+waitColour+"m? ", "\033[1;"+waitColour+"m", question)...)
 			for i, o := range q.Options {
 				out = append(out, wrapped(fmt.Sprintf("  \033[1m%d\033[0m  ", i+1), "", cleanText(o.Label))...)
 				if o.Description != "" {

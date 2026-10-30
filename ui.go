@@ -592,15 +592,21 @@ func groupOf(it listItem) string {
 // (negative, in pin order) share one.
 func sectionOf(state int) int { return max(state, -1) }
 
-// doneColour marks a session that finished since you last looked.
-const doneColour = "1;36"
+// doneColour marks a session that finished since you last looked;
+// waitColour one waiting on a menu or prompt, askedColour one whose last
+// message asks something.
+const (
+	doneColour  = "1;36"
+	waitColour  = "38;5;201"
+	askedColour = "38;5;219"
+)
 
 // pinnedSection heads the pinned sessions, above every state.
 var pinnedSection = struct{ name, colour string }{"pinned", "1;37"}
 
 // stateSections name liveGroup's values, the list's sections, and colour them.
 var stateSections = [...]struct{ name, colour string }{
-	{"waiting on you", "1;" + amber}, {"asked you something", "32"}, {"done", doneColour}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"}, {"settled", "90"}, {"snoozed", "90"},
+	{"waiting on you", "1;" + waitColour}, {"asked you something", askedColour}, {"done", doneColour}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"}, {"settled", "90"}, {"snoozed", "90"},
 }
 
 // spawnParent is the session whose claude -p started c, "" if none is known.
@@ -2133,8 +2139,8 @@ func listTopic(conv Conversation, w int) string {
 func (m model) listMarks(item listItem) (string, string) {
 	conv := item.conv
 	// Status icons, packed right against the topic so titles stay aligned:
-	// ● open in a running claude (? instead when it waits on you: bright for
-	// a prompt, green when its last message asks something), ! its last
+	// ● open in a running claude (○ in an app ccs can't open; coloured by its
+	// state, magenta when it waits on you), ! its last
 	// action errored. A session another one started sits └ under it instead
 	// of a mark: entrypoint sdk-cli alone can't tell a script's claude -p from
 	// a session typed in through an app.
@@ -2142,17 +2148,18 @@ func (m model) listMarks(item listItem) (string, string) {
 	// cell off on CJK-width terminals - cosmetic only.
 	var icons, colouredIcons string
 	n := 0
-	// Green when idle, amber while busy, an amber ? when a menu or prompt
-	// waits on you; a green ? when idle and its last message asks something.
+	// Green when idle, amber while busy, cyan when done since you looked,
+	// magenta when a menu or prompt waits on you, light magenta when idle and
+	// its last message asks something.
 	liveGlyph, liveColour := "●", "32"
 	if m.hostedApp(conv.SessionID) != "" { // open in an app ccs can't switch to
 		liveGlyph = "○"
 	}
-	switch m.waitSignal(conv) {
+	switch m.waitSignal(conv) { // the circle stays (● or ○ says whether ccs can open it); its colour says why
 	case waitPrompt:
-		liveGlyph, liveColour = "?", "1;"+amber
+		liveColour = waitColour
 	case waitAsked:
-		liveGlyph = "?"
+		liveColour = askedColour
 	default:
 		if m.chatStatus[conv.SessionID].status == "busy" {
 			liveColour = amber

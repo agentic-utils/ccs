@@ -401,3 +401,75 @@ func TestFindHostOfThisProcess(t *testing.T) {
 		t.Errorf("no such process is treated as a terminal: %q", h)
 	}
 }
+
+func TestBackgroundSessionsOpenWithAttach(t *testing.T) {
+	log := fakeTerminal(t)
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "claude.log")
+	os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\necho \"$@\" >> "+calls+"\n"), 0o755)
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	conv := Conversation{SessionID: "bg1", Title: "night job", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "user", Text: "go"}}}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.width, m.height = 140, 30
+	m.live = map[string]bool{"bg1": true}
+	m.livePIDs = map[string]int{"bg1": 99999}
+	m.hosts = map[string]string{"bg1": "claude"} // no terminal, like any background session
+	m.bg = map[string]bgSession{"bg1": {ID: "k3x9", State: "working"}}
+	m.chatStatus = map[string]sessionStat{"bg1": {status: "busy"}}
+	v := strip2(m.View())
+	if !strings.Contains(v, "● night job") || !strings.Contains(v, "bg working") {
+		t.Errorf("a background session can be opened, so it keeps ●, and says it's in the background:\n%s", v)
+	}
+	cmd := m.resumeCmd(conv, false)
+	if cmd == nil {
+		t.Fatalf("enter opens it: %q", m.errorMsg)
+	}
+	if msg := cmd().(attachDoneMsg); !msg.opened || msg.err != nil {
+		t.Errorf("opened in a new window: %+v", msg)
+	}
+	got, _ := os.ReadFile(log)
+	if !strings.Contains(string(got), "new-window|-d|-c|/p|"+filepath.Join(dir, "claude")+"|attach|k3x9|") {
+		t.Errorf("claude attach <short id> in a new tmux window, got %s", got)
+	}
+
+	m.resuming = false
+	m, _ = chord(m, "k")
+	if !strings.Contains(m.errorMsg, "again to stop night job") {
+		t.Fatalf("^X K asks for a second press: %q", m.errorMsg)
+	}
+	m, cmd = chord(m, "k")
+	if cmd == nil {
+		t.Fatal("the second ^X K stops it")
+	}
+	res, _ := m.Update(cmd())
+	m = res.(model)
+	if got, _ := os.ReadFile(calls); strings.TrimSpace(string(got)) != "stop k3x9" || !strings.Contains(m.errorMsg, "Stopped night job") {
+		t.Errorf("claude stop <id>: %q, %q", got, m.errorMsg)
+	}
+	m.bg = nil
+	m, cmd = chord(m, "k")
+	if cmd != nil || !strings.Contains(m.errorMsg, "isn't") {
+		t.Error("^X K does nothing to a session that isn't in the background")
+	}
+}
+
+func TestListAgentsKeepsBackgroundOnes(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "claude"), []byte(`#!/bin/sh
+echo '[{"kind":"interactive","sessionId":"i1","pid":1},{"kind":"background","id":"k3x9","state":"blocked","sessionId":"b1"},{"kind":"background","id":"zz","state":"done"}]'
+`), 0o755)
+	t.Setenv("PATH", dir+":/bin:/usr/bin")
+	defer func(f func() (map[string]bgSession, error)) { listAgents = f }(listAgents)
+	listAgents = realListAgents
+	got, err := listAgents()
+	if err != nil || len(got) != 1 || got["b1"] != (bgSession{"k3x9", "blocked"}) {
+		t.Errorf("only background sessions with a session id: %v %v", got, err)
+	}
+}
+
+func TestBgCommandIsASpawn(t *testing.T) {
+	if !isSpawn(`claude --bg "fix the flaky test"`) || !isSpawn("claude --background 'x'") {
+		t.Error("claude --bg starts a session, so it nests under its parent")
+	}
+}

@@ -54,6 +54,7 @@ type liveMsg struct {
 	unverified map[string]bool        // live sessions whose pid couldn't be checked against the file's procStart
 	scan       map[string]liveSession // this tick's sessions, the next tick's prev
 	hosts      map[string]string      // live sessions run by an app, not in a terminal: the app's name
+	bg         map[string]bgSession   // background sessions (claude --bg); nil when not asked this tick
 	gen        int
 }
 
@@ -71,7 +72,7 @@ func liveTick() tea.Cmd {
 // liveCmd refreshes liveness and the content of live sessions off the UI
 // goroutine. Sessions that were live last tick are checked too, so a
 // session's final lines land promptly after claude exits.
-func (m model) liveCmd() tea.Cmd {
+func (m model) liveCmd(askAgents bool) tea.Cmd {
 	byID := make(map[string]Conversation, len(m.live))
 	for _, item := range m.items {
 		byID[item.conv.SessionID] = item.conv
@@ -81,6 +82,9 @@ func (m model) liveCmd() tea.Cmd {
 		sessions := scanSessions(prev)
 		live := make(map[string]bool, len(sessions))
 		msg := liveMsg{live: live, pids: make(map[string]int, len(sessions)), gen: gen, stats: make(map[string]sessionStat, len(sessions)), unverified: make(map[string]bool), scan: sessions}
+		if askAgents {
+			msg.bg, _ = listAgents() // nil on failure (no claude, or too old): the last answer stands
+		}
 		msg.hosts = map[string]string{}
 		for id, s := range sessions {
 			live[id], msg.pids[id] = true, s.pid
@@ -424,6 +428,9 @@ func (m *model) focusCmd(conv Conversation) tea.Cmd {
 	if m.hostedElsewhere(conv.SessionID) || m.opening(conv.SessionID, false) {
 		return nil
 	}
+	if b, ok := m.bg[conv.SessionID]; ok {
+		return m.attachCmd(conv, b)
+	}
 	m.resuming = true
 	m.markSeen(conv.SessionID) // you're going to look at it
 	name := m.sessionName(conv)
@@ -442,6 +449,9 @@ func (m *model) focusCmd(conv Conversation) tea.Cmd {
 func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
 	if !fork && m.hostedElsewhere(conv.SessionID) || m.opening(conv.SessionID, fork) {
 		return nil
+	}
+	if b, ok := m.bg[conv.SessionID]; ok && !fork && m.live[conv.SessionID] {
+		return m.attachCmd(conv, b)
 	}
 	m.resuming = true
 	if !fork {
@@ -755,12 +765,99 @@ func findHost(pid int) string {
 	return first
 }
 
+// hostedApp is the app session id runs in when ccs can't open it: no
+// terminal, and not a background session (those open with claude attach).
+func (m model) hostedApp(id string) string {
+	if _, bg := m.bg[id]; bg {
+		return ""
+	}
+	return m.hosts[id]
+}
+
 // hostedElsewhere: session id is live in an app ccs can't switch to; says so.
 func (m *model) hostedElsewhere(id string) bool {
-	h := m.hosts[id]
+	h := m.hostedApp(id)
 	if h == "" || !m.live[id] {
 		return false
 	}
 	m.errorMsg = "Runs in " + h + ", not a terminal: open it there (^S messages it, ^F forks it)"
 	return true
+}
+
+// bgSession is a background session (claude --bg) as claude agents lists it:
+// the short id attach, logs and stop take, and its state (working, blocked,
+// done, failed, stopped).
+type bgSession struct{ ID, State string }
+
+// agentsInterval is how often the live tick asks claude agents.
+const agentsInterval = 10 * time.Second
+
+// listAgents is the background sessions by SessionID, from claude agents
+// --json. A variable so tests never run the real one.
+var listAgents = realListAgents
+
+func realListAgents() (map[string]bgSession, error) {
+	out, err := runBounded(5*time.Second, nil, "claude", "agents", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var all []struct {
+		Kind      string `json:"kind"`
+		ID        string `json:"id"`
+		State     string `json:"state"`
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(out, &all); err != nil {
+		return nil, err
+	}
+	bg := map[string]bgSession{}
+	for _, a := range all {
+		if a.Kind == "background" && a.ID != "" && a.SessionID != "" {
+			bg[a.SessionID] = bgSession{a.ID, a.State}
+		}
+	}
+	return bg, nil
+}
+
+type attachDoneMsg struct {
+	id     string
+	opened bool
+	err    error
+}
+
+// attachCmd opens a background session with claude attach in a new tmux
+// window or iTerm tab. Never in place: ccs would be gone.
+func (m *model) attachCmd(conv Conversation, b bgSession) tea.Cmd {
+	m.resuming = true
+	m.markSeen(conv.SessionID)
+	cwd := conv.Cwd
+	if cwd == "" || cwd == "unknown" {
+		cwd = "."
+	}
+	return func() tea.Msg {
+		claudePath, err := exec.LookPath("claude")
+		if err != nil {
+			return attachDoneMsg{id: b.ID}
+		}
+		args := []string{claudePath, "attach", b.ID}
+		if handled, err := resumeInTmuxWindow(cwd, args); handled {
+			return attachDoneMsg{b.ID, true, err}
+		}
+		opened, err := resumeInITermTab(cwd, args)
+		return attachDoneMsg{b.ID, opened, err}
+	}
+}
+
+type stopDoneMsg struct {
+	name string
+	err  error
+}
+
+// stopCmd stops a background session (^X K, pressed twice): claude stop.
+// claude attach with its id restarts it.
+func stopCmd(name string, b bgSession) tea.Cmd {
+	return func() tea.Msg {
+		_, err := runBounded(10*time.Second, nil, "claude", "stop", b.ID)
+		return stopDoneMsg{name, err}
+	}
 }

@@ -100,6 +100,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 
 - Text boxes (the search, the message box) edit like Claude Code's prompt: `Ctrl+A`/`Ctrl+E` start/end, `Ctrl+K`/`Ctrl+U` delete to the end/start, `Ctrl+W` the word before, `Ctrl+Y` puts back what they deleted, `Alt+B`/`Alt+F` move by word. So ccs's own actions are `Ctrl+X` then a letter (`Ctrl+X Ctrl+W` works too)
 - `↑/↓` or `Ctrl+P/N` - Navigate list
+- Background sessions (`claude --bg`) show `bg <state>` on the grey row: Enter opens one with `claude attach` in a new tmux window or iTerm tab, and `Ctrl+X K` twice stops it. One started from another session's `claude --bg` sits under it
 - Messages between sessions show at both ends: the sender's preview shows each `SendMessage` as `To <session>` (`✓ arrived` once it's in that session's transcript), the recipient's `From <session>`
 - A live session run by an app without a terminal (T3 Code, for one) shows a hollow `○` and `in <app>`: ccs can't switch to it, so Enter says to open it there; messaging it (`Ctrl+S`) and forking it (`Ctrl+F`) still work
 - The list is in sections by state, each with a header: waiting on you, asked you something, done (finished since you last looked at it in ccs, a cyan `●`), idle, busy, not open in `claude`

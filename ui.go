@@ -79,12 +79,13 @@ type model struct {
 	opened          map[string]time.Time // sessions ccs opened in a tab, until their session file appears
 	renameIndex     int                  // Index of item being renamed
 	renameInput     textinput.Model
-	errorMsg        string          // Show deletion/prune errors
-	preview         *previewCache   // memoised preview lines for the selected conversation
-	hits            *hitCounter     // memoised per-query hit counts, keyed by SessionID
-	lastFilterQuery string          // lowercased query the current m.filtered was built from
-	live            map[string]bool // SessionIDs attached to a running claude process
-	livePIDs        map[string]int  // live SessionID -> claude pid (for its session file and socket)
+	errorMsg        string            // Show deletion/prune errors
+	preview         *previewCache     // memoised preview lines for the selected conversation
+	hits            *hitCounter       // memoised per-query hit counts, keyed by SessionID
+	lastFilterQuery string            // lowercased query the current m.filtered was built from
+	live            map[string]bool   // SessionIDs attached to a running claude process
+	livePIDs        map[string]int    // live SessionID -> claude pid (for its session file and socket)
+	hosts           map[string]string // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
 
 	// Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
@@ -808,7 +809,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveMsg:
 		m.live = msg.live
 		if msg.pids != nil {
-			m.livePIDs, m.unverified, m.lastScan = msg.pids, msg.unverified, msg.scan
+			m.livePIDs, m.unverified, m.lastScan, m.hosts = msg.pids, msg.unverified, msg.scan, msg.hosts
 		}
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
@@ -2014,6 +2015,9 @@ func (m model) listMarks(item listItem) (string, string) {
 	// Green when idle, amber while busy, an amber ? when a menu or prompt
 	// waits on you; a green ? when idle and its last message asks something.
 	liveGlyph, liveColour := "●", "32"
+	if m.hosts[conv.SessionID] != "" { // open in an app ccs can't switch to
+		liveGlyph = "○"
+	}
 	switch m.waitSignal(conv) {
 	case waitPrompt:
 		liveGlyph, liveColour = "?", "1;"+amber
@@ -2184,6 +2188,9 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	stats := strings.TrimSuffix(formatAgo(conv.LastTimestamp, time.Now()), " ago")
 	if conv.ContextTokens > 0 {
 		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
+	}
+	if h := m.hosts[conv.SessionID]; h != "" && m.live[conv.SessionID] {
+		stats += " · in " + h
 	}
 	stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
 	sw := w - len(lead) - colMarks - ansi.StringWidth(prs) - 1

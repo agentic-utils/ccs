@@ -369,3 +369,35 @@ func TestInITermThroughTmux(t *testing.T) {
 		t.Error("tmux inside iTerm should still find iTerm tabs")
 	}
 }
+
+func TestHostedSessionIsNotSwitchable(t *testing.T) {
+	conv := Conversation{SessionID: "t3", Title: "from t3", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.width, m.height = 140, 30
+	m.live = map[string]bool{"t3": true}
+	m.livePIDs = map[string]int{"t3": 99999}
+	m.hosts = map[string]string{"t3": "T3 Code (Beta)"}
+	m.chatStatus = map[string]sessionStat{"t3": {status: "idle"}}
+	v := strip2(m.View())
+	if !strings.Contains(v, "○ from t3") || !strings.Contains(v, "in T3 Code (Beta)") {
+		t.Errorf("a session in an app gets a hollow mark and says where it runs:\n%s", v)
+	}
+	if cmd := m.resumeCmd(conv, false); cmd != nil || !strings.Contains(m.errorMsg, "Runs in T3 Code (Beta)") {
+		t.Errorf("enter doesn't try to switch to or resume it: %q", m.errorMsg)
+	}
+	if m.resuming {
+		t.Error("nothing is opening")
+	}
+	if cmd := m.focusCmd(conv); cmd != nil {
+		t.Error("focus doesn't try either")
+	}
+}
+
+func TestFindHostOfThisProcess(t *testing.T) {
+	// The test binary has a terminal locally and none in CI: either way an
+	// answer, never a hang or a panic.
+	_ = findHost(os.Getpid())
+	if h := findHost(-1); h != "" {
+		t.Errorf("no such process is treated as a terminal: %q", h)
+	}
+}

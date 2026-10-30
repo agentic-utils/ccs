@@ -1073,3 +1073,28 @@ func TestAutoFocus(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoFocusSkipsHostedSessions(t *testing.T) {
+	var switched []int
+	defer func(u func() (time.Duration, bool), f func(int) bool) { userIdle, autoFocusTab = u, f }(userIdle, autoFocusTab)
+	userIdle = func() (time.Duration, bool) { return time.Minute, true }
+	autoFocusTab = func(pid int) bool { switched = append(switched, pid); return true }
+	os.Remove(focusRecordPath)
+	m := initialModel(nil, "", nil)
+	m.live = map[string]bool{"t3": true, "term": true}
+	m.livePIDs = map[string]int{"t3": 1, "term": 2}
+	m.hosts = map[string]string{"t3": "T3 Code (Beta)"}
+	m.autoFocus = true
+	now := time.Now()
+	m.applyStats(map[string]sessionStat{"t3": {status: "waiting", since: now}})
+	if cmd := m.autoFocusCmd(); cmd != nil {
+		t.Fatal("a session in an app has no tab to switch to")
+	}
+	m.applyStats(map[string]sessionStat{"t3": {status: "waiting", since: now}, "term": {status: "waiting", since: now}})
+	if cmd := m.autoFocusCmd(); cmd != nil {
+		m.applyAutoFocus(cmd().(autoFocusMsg))
+	}
+	if len(switched) != 1 || switched[0] != 2 {
+		t.Errorf("the one in a terminal is still switched to: %v", switched)
+	}
+}

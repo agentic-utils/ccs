@@ -103,6 +103,7 @@ func TestMain(m *testing.M) {
 	previewDebounce = 0 // tests check the preview right after moving
 	settingsPath = filepath.Join(dir, "settings.json")
 	marksPath = filepath.Join(dir, "sessions.json")
+	hostOf = func(int, string) string { return "" } // every session in a terminal, wherever the tests run
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

@@ -26,6 +26,13 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# checksums.txt.sig, which ccs checks before it installs an update.
+signs:
+  - artifacts: checksum
+    cmd: .github/sign-release.sh
+    args: ["{{ .Tag }}", "${artifact}", "${signature}"]
+    signature: "${artifact}.sig"
+
 brews:
   - repository:
       owner: agentic-utils

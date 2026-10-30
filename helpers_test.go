@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -21,8 +22,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// fakeRelease serves tag's checksums.txt and this platform's archive holding
-// binary as "ccs"; tamper corrupts the published checksum.
+// testReleaseKey stands in for CI's signing key: TestMain makes ccs trust it.
+var testReleaseKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+
+// fakeRelease serves tag's checksums.txt, signed with testReleaseKey, and this
+// platform's archive holding binary as "ccs"; tamper corrupts the published
+// checksum, re-signed, as a release built outside CI can't be.
 func fakeRelease(t *testing.T, tag string, binary []byte, tamper bool) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -42,10 +47,13 @@ func fakeRelease(t *testing.T, tag string, binary []byte, tamper bool) {
 	if tamper {
 		sums = strings.Repeat("0", 64) + "  " + asset + "\n"
 	}
+	sig := ed25519.Sign(testReleaseKey, signedMessage(tag, []byte(sums)))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/" + tag + "/checksums.txt":
 			io.WriteString(w, sums)
+		case "/" + tag + "/checksums.txt.sig":
+			w.Write(sig)
 		case "/" + tag + "/" + asset:
 			w.Write(buf.Bytes())
 		default:
@@ -105,6 +113,7 @@ func TestMain(m *testing.M) {
 	marksPath = filepath.Join(dir, "sessions.json")
 	hostOf = func(int, string) string { return "" }                       // every session in a terminal, wherever the tests run
 	listAgents = func() (map[string]bgSession, error) { return nil, nil } // never the real claude agents
+	releaseKey = testReleaseKey.Public().(ed25519.PublicKey)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

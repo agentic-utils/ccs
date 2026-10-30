@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +19,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -174,6 +178,119 @@ func TestReplaceBinaryRejectsBadChecksum(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(exe); string(got) != "old" {
 		t.Error("a failed checksum must leave the binary untouched")
+	}
+}
+
+func TestSignedSums(t *testing.T) {
+	fakeRelease(t, "v9.9.9", []byte("bin"), false)
+	if _, err := signedSums("v9.9.9"); err != nil {
+		t.Fatalf("a release CI signed should pass: %v", err)
+	}
+
+	// Signed for another tag, by another key, or no signature at all: refused.
+	sums := []byte("abc  ccs_x.tar.gz\n")
+	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
+	cases := map[string][]byte{
+		"other tag": ed25519.Sign(testReleaseKey, signedMessage("v1.0.0", sums)),
+		"other key": ed25519.Sign(other, signedMessage("v2.0.0", sums)),
+		"junk":      []byte("not a signature"),
+	}
+	for name, sig := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, ".sig") {
+				w.Write(sig)
+				return
+			}
+			w.Write(sums)
+		}))
+		releaseDownloadURL = srv.URL
+		if _, err := signedSums("v2.0.0"); err == nil || !strings.Contains(err.Error(), "isn't signed by ccs's CI") {
+			t.Errorf("%s: want a signature error, got %v", name, err)
+		}
+		srv.Close()
+	}
+	releaseDownloadURL = "http://127.0.0.1:1"
+	if _, err := signedSums("v2.0.0"); err == nil {
+		t.Error("no signature to download must fail")
+	}
+}
+
+func TestReplaceBinaryRejectsUnsignedRelease(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "ccs")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeRelease(t, "v9.9.9", []byte("evil"), false)
+	defer func(k ed25519.PublicKey) { releaseKey = k }(releaseKey)
+	releaseKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	if _, err := chooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "isn't signed") {
+		t.Fatalf("want a signature error, got %v", err)
+	}
+	if got, _ := os.ReadFile(exe); string(got) != "old" {
+		t.Error("an unsigned release must leave the binary untouched")
+	}
+}
+
+// TestSignReleaseScript checks CI's signing script and ccs agree on what's signed.
+func TestSignReleaseScript(t *testing.T) {
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skip("no openssl")
+	}
+	dir := t.TempDir()
+	der, err := x509.MarshalPKCS8PrivateKey(testReleaseKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums := filepath.Join(dir, "checksums.txt")
+	os.WriteFile(sums, []byte("abc  ccs_linux_amd64.tar.gz\n"), 0o644)
+	cmd := exec.Command(".github/sign-release.sh", "v3.2.1", sums, sums+".sig")
+	cmd.Env = append(os.Environ(), "RELEASE_SIGNING_KEY="+string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("openssl can't sign Ed25519 here: %v %s", err, out)
+	}
+	body, _ := os.ReadFile(sums)
+	sig, _ := os.ReadFile(sums + ".sig")
+	if !ed25519.Verify(testReleaseKey.Public().(ed25519.PublicKey), signedMessage("v3.2.1", body), sig) {
+		t.Error("ccs must accept what sign-release.sh signs")
+	}
+
+	cmd = exec.Command(".github/sign-release.sh", "v3.2.1", sums, sums+".sig")
+	cmd.Env = append(os.Environ(), "RELEASE_SIGNING_KEY=")
+	if err := cmd.Run(); err == nil {
+		t.Error("signing without a key must fail the release")
+	}
+}
+
+// TestCheckFormula: brew installs only a formula whose archive CI signed.
+func TestCheckFormula(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "1.0.0"
+	fakeRelease(t, "v9.9.9", []byte("bin"), false)
+	sums, err := signedSums("v9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := fmt.Sprintf("ccs_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	good := checksumFor(string(sums), asset)
+	brew := filepath.Join(t.TempDir(), "brew")
+	formula := func(url, sum string) {
+		info := fmt.Sprintf(`{"formulae":[{"urls":{"stable":{"url":%q,"checksum":%q}}}]}`, url, sum)
+		os.WriteFile(brew, []byte("#!/bin/sh\necho '"+info+"'\n"), 0o755)
+	}
+	cases := []struct {
+		name, url, sum, want string
+	}{
+		{"signed", releaseDownloadURL + "/v9.9.9/" + asset, good, ""},
+		{"other checksum", releaseDownloadURL + "/v9.9.9/" + asset, strings.Repeat("0", 64), "isn't the one"},
+		{"not newer", releaseDownloadURL + "/v0.9.0/" + asset, good, "not newer"},
+		{"elsewhere", "https://example.com/v9.9.9/" + asset, good, "not a ccs release"},
+	}
+	for _, c := range cases {
+		formula(c.url, c.sum)
+		err := checkFormula(brew)
+		if (c.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%s: want %q, got %v", c.name, c.want, err)
+		}
 	}
 }
 

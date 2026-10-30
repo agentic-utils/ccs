@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -333,6 +336,10 @@ func chooseUpgrader(exe string) *upgrader {
 				if err := refreshTap(brew, step); err != nil {
 					return "", err
 				}
+				step("verifying")
+				if err := checkFormula(brew); err != nil {
+					return "", err
+				}
 				preseedBrewCache(brew)
 				step("brew upgrade")
 				if err := runBrew(brew, "upgrade", "agentic-utils/tap/ccs"); err != nil {
@@ -419,7 +426,7 @@ var releaseDownloadURL = "https://github.com/agentic-utils/ccs/releases/download
 func fetchRelease(tag string, step func(string)) ([]byte, error) {
 	asset := fmt.Sprintf("ccs_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
 	step("downloading")
-	sums, err := download(releaseDownloadURL + "/" + tag + "/checksums.txt")
+	sums, err := signedSums(tag)
 	if err != nil {
 		return nil, err
 	}
@@ -433,6 +440,51 @@ func fetchRelease(tag string, step func(string)) ([]byte, error) {
 		return nil, fmt.Errorf("checksum mismatch for %s", asset)
 	}
 	return binaryFromTarGz(archive, "ccs")
+}
+
+// releaseKey is the public half of the Ed25519 key that ci.yaml signs each
+// release's checksums.txt with (sign-release.sh; the private half is a secret
+// of the "release" environment, which only main can use). A release uploaded
+// any other way, a leaked token included, has no valid signature and is
+// refused. A var so tests can sign with their own.
+var releaseKey = mustPublicKey(`-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAOEu0VgLUDjlp6LuJPmFxNZneB3ohrAddcRXqEzwWaZQ=
+-----END PUBLIC KEY-----`)
+
+func mustPublicKey(pemText string) ed25519.PublicKey {
+	block, _ := pem.Decode([]byte(pemText))
+	if block == nil {
+		panic("release key isn't PEM")
+	}
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		panic(err)
+	}
+	return key.(ed25519.PublicKey)
+}
+
+// signedMessage is what sign-release.sh signs: the tag first, so an old
+// release's signed checksums can't be passed off under a newer tag.
+func signedMessage(tag string, sums []byte) []byte {
+	return append([]byte("ccs "+tag+"\n"), sums...)
+}
+
+// signedSums downloads tag's checksums.txt and returns it only once
+// checksums.txt.sig proves CI signed it for that tag.
+func signedSums(tag string) ([]byte, error) {
+	sums, err := download(releaseDownloadURL + "/" + tag + "/checksums.txt")
+	if err != nil {
+		return nil, err
+	}
+	sig, err := download(releaseDownloadURL + "/" + tag + "/checksums.txt.sig")
+	if err != nil {
+		return nil, err
+	}
+	if !ed25519.Verify(releaseKey, signedMessage(tag, sums), sig) {
+		logUpdate("signature check for %s failed", tag)
+		return nil, fmt.Errorf("%s isn't signed by ccs's CI", tag)
+	}
+	return sums, nil
 }
 
 // installBinary atomically swaps bin in place of exe.
@@ -510,11 +562,11 @@ func preseedBrewCache(brew string) {
 	}
 }
 
-func preseed(brew string) error {
-	env := []string{"HOMEBREW_NO_AUTO_UPDATE=1"}
-	out, err := runCommand(30*time.Second, env, true, brew, "info", "--json=v2", "agentic-utils/tap/ccs")
+// formulaDownload is the archive URL and sha256 the tap's formula installs.
+func formulaDownload(brew string) (url, sum string, err error) {
+	out, err := runCommand(30*time.Second, []string{"HOMEBREW_NO_AUTO_UPDATE=1"}, true, brew, "info", "--json=v2", "agentic-utils/tap/ccs")
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	var info struct {
 		Formulae []struct {
@@ -524,12 +576,49 @@ func preseed(brew string) error {
 		} `json:"formulae"`
 	}
 	if json.Unmarshal(out, &info) != nil || len(info.Formulae) != 1 {
-		return errors.New("unexpected brew info output")
+		return "", "", errors.New("unexpected brew info output")
 	}
-	url, want := info.Formulae[0].URLs.Stable.URL, info.Formulae[0].URLs.Stable.Checksum
-	if !strings.HasPrefix(url, "https://") || len(want) != 64 {
-		return fmt.Errorf("unexpected formula url/checksum %q %q", url, want)
+	url, sum = info.Formulae[0].URLs.Stable.URL, info.Formulae[0].URLs.Stable.Checksum
+	if len(sum) != 64 {
+		return "", "", fmt.Errorf("unexpected formula checksum %q", sum)
 	}
+	return url, sum, nil
+}
+
+// checkFormula refuses a tap formula whose archive isn't in its release's
+// signed checksums.txt: the tap is pushed by CI too, so it's checked the same way.
+func checkFormula(brew string) error {
+	url, sum, err := formulaDownload(brew)
+	if err != nil {
+		return err
+	}
+	rest, ok := strings.CutPrefix(url, releaseDownloadURL+"/")
+	tag, asset, ok2 := strings.Cut(rest, "/")
+	if !ok || !ok2 || strings.Contains(asset, "/") {
+		return fmt.Errorf("formula downloads from %s, not a ccs release", url)
+	}
+	if !newerVersion(tag, version) {
+		return fmt.Errorf("tap's formula is %s, not newer than v%s", tag, version)
+	}
+	sums, err := signedSums(tag)
+	if err != nil {
+		return err
+	}
+	if checksumFor(string(sums), asset) != sum {
+		return fmt.Errorf("formula's checksum for %s isn't the one ccs's CI signed", asset)
+	}
+	return nil
+}
+
+func preseed(brew string) error {
+	url, want, err := formulaDownload(brew)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("unexpected formula url %q", url)
+	}
+	env := []string{"HOMEBREW_NO_AUTO_UPDATE=1"}
 	cacheOut, err := runCommand(30*time.Second, env, true, brew, "--cache", "agentic-utils/tap/ccs")
 	if err != nil {
 		return err

@@ -15,6 +15,9 @@ type sessionMarks struct {
 	Since  time.Time            `json:"since"` // first run: nothing that finished before it is done
 	Seen   map[string]time.Time `json:"seen,omitempty"`
 	Pinned []string             `json:"pinned,omitempty"`
+	// Collapsed are the ^X G folders (groupKey) showing only their most
+	// urgent session.
+	Collapsed []string `json:"collapsed,omitempty"`
 }
 
 // marksPath keeps sessionMarks beside the settings.
@@ -137,4 +140,35 @@ func (m *model) movePin(by int) {
 	p[i], p[i+by] = p[i+by], p[i]
 	m.marks.save()
 	m.sortList()
+}
+
+// collapsed: the folder cwd is listed under shows only its first session.
+func (m model) collapsed(cwd string) bool {
+	return m.marks != nil && slices.Contains(m.marks.Collapsed, groupKey(cwd))
+}
+
+// toggleCollapse (^X C, grouped) collapses the selected session's folder to
+// its most urgent session, or expands it again.
+func (m *model) toggleCollapse() {
+	if m.marks == nil || len(m.filtered) == 0 {
+		return
+	}
+	k := groupKey(m.filtered[m.cursor].familyCwd)
+	if i := slices.Index(m.marks.Collapsed, k); i >= 0 {
+		m.marks.Collapsed = slices.Delete(m.marks.Collapsed, i, i+1)
+	} else {
+		m.marks.Collapsed = append(m.marks.Collapsed, k)
+	}
+	m.marks.save()
+	m.sortList()
+}
+
+// hideCollapsed marks every session of a collapsed folder hidden but the
+// first in each section, the most urgent. Pinned ones are never hidden.
+func (m *model) hideCollapsed() {
+	for i := range m.filtered {
+		it := &m.filtered[i]
+		it.hidden = m.grouped && it.familyState >= 0 && m.collapsed(it.familyCwd) &&
+			i > 0 && groupOf(*it) == groupOf(m.filtered[i-1])
+	}
 }

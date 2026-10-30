@@ -29,6 +29,7 @@ type listItem struct {
 	depth       int    // nested under the session that started it (sortList)
 	familyCwd   string // its top-level session's cwd, which ^X G groups the family by
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
+	hidden      bool   // in a collapsed folder, under the one session it shows (^X C)
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -280,12 +281,7 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			m.previewScroll = min(m.previewScroll+3, m.maxPreviewScroll()) // back towards older messages
 		case onPreview:
 			m.previewScroll = max(0, m.previewScroll-3) // forward towards the newest
-		case up && m.cursor > 0:
-			m.cursor--
-			m.previewScroll = 0
-			m.selectionMoved()
-		case !up && m.cursor < len(m.filtered)-1:
-			m.cursor++
+		case m.step(map[bool]int{true: -1, false: 1}[up]):
 			m.previewScroll = 0
 			m.selectionMoved()
 		}
@@ -470,9 +466,25 @@ func (m *model) sortList() {
 		}
 		return first[groupOf(a)] < first[groupOf(b)]
 	})
+	m.hideCollapsed()
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
 		m.cursor = i
 	}
+	for m.cursor > 0 && m.filtered[m.cursor].hidden { // its folder was collapsed: to the one it shows
+		m.cursor--
+	}
+}
+
+// step moves the cursor by one shown session (dir -1 up, 1 down), past those
+// a collapsed folder hides; false at either end.
+func (m *model) step(dir int) bool {
+	for i := m.cursor + dir; i >= 0 && i < len(m.filtered); i += dir {
+		if !m.filtered[i].hidden {
+			m.cursor = i
+			return true
+		}
+	}
+	return false
 }
 
 // nestFamilies puts each shown spawned session right under the shown session
@@ -1155,6 +1167,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			saveSettings(m.settings())
 			return m, nil
 		}
+		if k == "^x c" && m.grouped && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			m.toggleCollapse()
+			return m, nil
+		}
 		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			m.togglePin()
@@ -1434,17 +1451,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "up", "ctrl+p":
-			if m.cursor > 0 {
-				m.cursor--
-				m.previewScroll = 0
-				m.selectionMoved()
-			}
-			return m, nil
-
-		case "down", "ctrl+n":
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
+		case "up", "ctrl+p", "down", "ctrl+n":
+			if m.step(map[bool]int{true: -1, false: 1}[k == "up" || k == "ctrl+p"]) {
 				m.previewScroll = 0
 				m.selectionMoved()
 			}
@@ -1596,6 +1604,13 @@ func (m model) shortcuts() [][2]string {
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top")
 	add(pinned, "^X P", "unpin it")
 	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned")
+	if sel && m.grouped && m.marks != nil {
+		if m.collapsed(m.filtered[m.cursor].familyCwd) {
+			add(true, "^X C", "expand its folder")
+		} else {
+			add(true, "^X C", "collapse its folder to one session")
+		}
+	}
 	add(!m.grouped, "^X G", "group by folder")
 	add(m.grouped, "^X G", "ungroup")
 	add(true, "^L", "changelog")
@@ -2075,7 +2090,14 @@ func (m model) listRows() []listRow {
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
 		}
 		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(m.filtered[i-1])) {
-			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s\033[0m \033[90m%d\033[0m", projectName(groupKey(it.familyCwd)), counts[k])})
+			fold, more := "", ""
+			if m.collapsed(it.familyCwd) {
+				fold, more = "▸ ", fmt.Sprintf(" · %d more", counts[k]-1)
+			}
+			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s%s\033[0m \033[90m%d%s\033[0m", fold, projectName(groupKey(it.familyCwd)), counts[k], more)})
+		}
+		if it.hidden {
+			continue
 		}
 		for p := range m.rowsPerItem() {
 			rows = append(rows, listRow{item: i, part: p})

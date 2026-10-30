@@ -109,3 +109,41 @@ func TestPinnedSectionKeepsOrder(t *testing.T) {
 		t.Errorf("again unpins:\n%s", v)
 	}
 }
+
+func TestCollapsedFolderShowsItsFirst(t *testing.T) {
+	now := time.Now().UTC()
+	convs := []Conversation{
+		{SessionID: "a1", Title: "api one", Cwd: "/r/api", LastTimestamp: now.Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
+		{SessionID: "a2", Title: "api two", Cwd: "/r/api/.claude/worktrees/w", LastTimestamp: now.Add(-time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
+		{SessionID: "a3", Title: "api three", Cwd: "/r/api", LastTimestamp: now.Add(-2 * time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
+		{SessionID: "w1", Title: "web one", Cwd: "/r/web", LastTimestamp: now.Add(-3 * time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 140, 30
+	m.marks = &sessionMarks{Since: now, Seen: map[string]time.Time{}}
+	m.grouped = true
+	m.sortList()
+	m.cursor = 1 // api two
+	m, _ = chord(m, "c")
+	v := strip2(m.View())
+	if !strings.Contains(v, "▸ api 3 · 2 more") || strings.Contains(v, "api two") || strings.Contains(v, "api three") || !strings.Contains(v, "api one") {
+		t.Errorf("a collapsed folder shows its first session and counts the rest:\n%s", v)
+	}
+	if m.filtered[m.cursor].conv.SessionID != "a1" {
+		t.Errorf("cursor on a hidden session moves to the one shown, got %s", m.filtered[m.cursor].conv.SessionID)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.filtered[m.cursor].conv.SessionID != "w1" {
+		t.Errorf("down skips the hidden ones, got %s", m.filtered[m.cursor].conv.SessionID)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = chord(m, "c")
+	if v := strip2(m.View()); !strings.Contains(v, "api three") || strings.Contains(v, "▸") {
+		t.Errorf("again expands:\n%s", v)
+	}
+	m.grouped = false
+	m, _ = chord(m, "c")
+	if len(m.marks.Collapsed) != 0 {
+		t.Error("^X C does nothing ungrouped")
+	}
+}

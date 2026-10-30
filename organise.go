@@ -1,7 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"strings"
+
 	"encoding/json"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +23,11 @@ type sessionMarks struct {
 	// Collapsed are the ^X G folders (groupKey) showing only their most
 	// urgent session.
 	Collapsed []string `json:"collapsed,omitempty"`
+	// Snoozed sessions sit in the snoozed section until a time; settled ones
+	// until their last message changes (kept here as it was). Either comes
+	// back early when it waits on a menu or prompt.
+	Snoozed map[string]time.Time `json:"snoozed,omitempty"`
+	Settled map[string]string    `json:"settled,omitempty"`
 }
 
 // marksPath keeps sessionMarks beside the settings.
@@ -41,6 +51,17 @@ func loadMarks() *sessionMarks {
 	}
 	if s.Seen == nil {
 		s.Seen = map[string]time.Time{}
+	}
+	if s.Snoozed == nil {
+		s.Snoozed = map[string]time.Time{}
+	}
+	if s.Settled == nil {
+		s.Settled = map[string]string{}
+	}
+	for id, t := range s.Snoozed { // woken while ccs wasn't running
+		if time.Now().After(t) {
+			delete(s.Snoozed, id)
+		}
 	}
 	for id, t := range s.Seen { // older than any session the list shows
 		if time.Since(t) > 365*24*time.Hour {
@@ -171,4 +192,114 @@ func (m *model) hideCollapsed() {
 		it.hidden = m.grouped && it.familyState >= 0 && m.collapsed(it.familyCwd) &&
 			i > 0 && groupOf(*it) == groupOf(m.filtered[i-1])
 	}
+}
+
+// Put-away states (putAway), each a section at the bottom of the list.
+const (
+	awake = iota
+	settled
+	snoozed
+)
+
+// putAway is whether c is settled or snoozed now. A session waiting on a
+// menu or prompt is always awake: a question is never put away.
+func (m model) putAway(c Conversation) int {
+	if m.marks == nil || m.live[c.SessionID] && m.waitSignal(c) == waitPrompt {
+		return awake
+	}
+	if t, ok := m.marks.Snoozed[c.SessionID]; ok && time.Now().Before(t) {
+		return snoozed
+	}
+	if last, ok := m.marks.Settled[c.SessionID]; ok && last == c.LastTimestamp {
+		return settled
+	}
+	return awake
+}
+
+// snoozeChoice is one line of the ^X S picker: a time to snooze until, or
+// settle (zero until).
+type snoozeChoice struct {
+	label string
+	until time.Time
+}
+
+// snoozeChoices are the ^X S picker's lines, from now.
+func snoozeChoices(now time.Time) []snoozeChoice {
+	morning := time.Date(now.Year(), now.Month(), now.Day()+1, 9, 0, 0, 0, now.Location())
+	return []snoozeChoice{
+		{"until it does something (settle)", time.Time{}},
+		{"for an hour", now.Add(time.Hour)},
+		{"for 4 hours", now.Add(4 * time.Hour)},
+		{"until tomorrow " + morning.Format("Mon 15:04"), morning},
+	}
+}
+
+// putAwayNow settles or snoozes the selected session as chosen in the picker.
+func (m *model) putAwayNow(choice snoozeChoice) {
+	if m.marks == nil || len(m.filtered) == 0 {
+		return
+	}
+	c := m.filtered[m.cursor].conv
+	if choice.until.IsZero() {
+		m.marks.Settled[c.SessionID] = c.LastTimestamp
+	} else {
+		m.marks.Snoozed[c.SessionID] = choice.until
+	}
+	m.marks.save()
+	m.sortList()
+}
+
+// wake brings a settled or snoozed session back.
+func (m *model) wake(id string) {
+	delete(m.marks.Snoozed, id)
+	delete(m.marks.Settled, id)
+	m.marks.save()
+	m.sortList()
+}
+
+// snoozePopup is the ^X S picker.
+func (m model) snoozePopup() string {
+	var b strings.Builder
+	b.WriteString("\033[1mPut it away\033[0m\n\n")
+	for i, c := range snoozeChoices(time.Now()) {
+		row := fmt.Sprintf("%d %s", i+1, c.label)
+		if i == m.snoozeCursor {
+			row = "\033[1m› " + row + "\033[0m"
+		} else {
+			row = "  " + row
+		}
+		b.WriteString(row + "\n")
+	}
+	b.WriteString("\n\033[90mback early if it waits on you\033[0m\n")
+	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "put away", "1-4", "pick", "^X S/"+keyEsc, "close") + "\033[0m")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 3).
+		Render(b.String())
+}
+
+// snoozeKey handles a key while the ^X S picker is open.
+func (m model) snoozeKey(k string) (tea.Model, tea.Cmd) {
+	choices := snoozeChoices(time.Now())
+	switch k {
+	case "esc", "^x s":
+		m.snoozeOpen = false
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "up", "ctrl+p":
+		m.snoozeCursor = max(m.snoozeCursor-1, 0)
+	case "down", "ctrl+n":
+		m.snoozeCursor = min(m.snoozeCursor+1, len(choices)-1)
+	case "enter":
+		m.snoozeOpen = false
+		m.putAwayNow(choices[m.snoozeCursor])
+	default:
+		if len(k) == 1 && k[0] >= '1' && int(k[0]-'1') < len(choices) {
+			m.snoozeOpen = false
+			m.putAwayNow(choices[k[0]-'1'])
+		}
+	}
+	return m, nil
 }

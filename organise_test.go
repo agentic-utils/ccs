@@ -147,3 +147,54 @@ func TestCollapsedFolderShowsItsFirst(t *testing.T) {
 		t.Error("^X C does nothing ungrouped")
 	}
 }
+
+func TestSnoozeAndSettle(t *testing.T) {
+	now := time.Now().UTC()
+	convs := []Conversation{
+		{SessionID: "s", Title: "sleepy", LastTimestamp: now.Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
+		{SessionID: "o", Title: "other", LastTimestamp: now.Add(-time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 140, 30
+	m.marks = loadMarks()
+	m.sortList()
+	m.cursor = 0
+	m, _ = chord(m, "s")
+	if !m.snoozeOpen || !strings.Contains(strip2(m.View()), "until it does something (settle)") {
+		t.Fatalf("^X S opens the picker:\n%s", strip2(m.View()))
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	v := strip2(m.View())
+	if m.snoozeOpen || !strings.Contains(v, "settled 1") || strings.Index(v, "sleepy") < strings.Index(v, "other") {
+		t.Errorf("settled goes to the bottom:\n%s", v)
+	}
+	if m.filtered[m.cursor].conv.SessionID != "s" {
+		t.Error("the cursor stays on it")
+	}
+	m.filtered[m.cursor].conv.LastTimestamp = now.Add(time.Minute).Format(time.RFC3339)
+	m.sortList()
+	if strings.Contains(strip2(m.View()), "settled 1") {
+		t.Error("a new message wakes a settled session")
+	}
+	m, _ = chord(m, "s")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(strip2(m.View()), "snoozed 1") {
+		t.Errorf("snoozed for an hour:\n%s", strip2(m.View()))
+	}
+	m.live = map[string]bool{"s": true}
+	m.chatStatus = map[string]sessionStat{"s": {status: "waiting"}}
+	m.sortList()
+	if v := strip2(m.View()); strings.Contains(v, "snoozed 1") || !strings.Contains(v, "waiting on you 1") {
+		t.Errorf("a question wakes it:\n%s", v)
+	}
+	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
+	m.sortList()
+	m, _ = chord(m, "s")
+	if m.snoozeOpen || strings.Contains(strip2(m.View()), "snoozed") {
+		t.Error("^X S on a put-away session brings it back")
+	}
+	if got := loadMarks(); len(got.Snoozed)+len(got.Settled) != 0 {
+		t.Errorf("woken state saved: %+v", got)
+	}
+}

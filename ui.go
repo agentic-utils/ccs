@@ -145,6 +145,12 @@ type model struct {
 	notesFetching     bool      // a fetch is in flight (started at launch or by Ctrl+L)
 	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
+	autoUpdate        bool      // ^X I: install a new version once you're away (the default)
+	autoFailed        string    // the version an automatic install failed for: offered, not retried
+	autoInstalling    bool      // this install started on its own: the new ccs says so
+	lastKeyAt         time.Time // the last key press, for "away"
+	updatedFrom       string    // started after updating itself from this version: the popup says so
+	updatedOpen       bool
 	updateErr         string // last install failure, shown in the popup with a retry
 	updateCheckFailed bool
 	updateHeld        bool // popup waited behind another prompt; restart its key grace when it shows
@@ -672,6 +678,16 @@ func (m model) Init() tea.Cmd {
 	if m.showUsage { // restored onto the usage screen after an update
 		cmds = append(cmds, m.usageCmd())
 	}
+	if m.updatedFrom != "" && m.fetchNotes != nil { // what changed since the version it updated from
+		from := m.updatedFrom
+		cmds = append(cmds, func() tea.Msg {
+			lines, err := releaseChangelog(from, "v"+version)
+			if err != nil {
+				logUpdate("changelog %s..%s: %v", from, version, err)
+			}
+			return updatedChangelogMsg{lines}
+		})
+	}
 	if m.fetchNotes != nil { // in the background, so Ctrl+L opens instantly
 		cmds = append(cmds, m.notesCmd())
 	}
@@ -978,6 +994,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case latestMsg:
 		m.updateCheckFailed = msg.err != nil
 		var fetch tea.Cmd
+		if newerVersion(msg.tag, version) && m.autoUpdate && m.upgrade != nil && msg.tag != m.autoFailed && !m.updating {
+			// No offer: prepared now, installed once you're away (autoUpdateTick).
+			first := msg.tag != m.updateTo
+			m.updateTo = msg.tag
+			m.upgrade.Prepare(msg.tag)
+			var away tea.Cmd
+			if first {
+				away = autoUpdateTick()
+			}
+			return m, tea.Batch(away, tea.Tick(updateCheckInterval, func(time.Time) tea.Msg { return updateCheckTickMsg{} }))
+		}
 		if newerVersion(msg.tag, version) && msg.tag != m.dismissed && !m.updating {
 			if msg.tag != m.updateTo {
 				m.updateOpen = true
@@ -1021,6 +1048,21 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case autoUpdateTickMsg:
+		switch {
+		case m.updating || m.updateTo == "" || !m.autoUpdate || m.upgrade == nil || m.updateTo == m.autoFailed:
+			return m, nil // nothing to install on its own now
+		case !m.awayForUpdate():
+			return m, autoUpdateTick()
+		}
+		logUpdate("auto-update: installing %s while you're away", m.updateTo)
+		m.autoInstalling = true
+		return m, m.startInstall()
+
+	case updatedChangelogMsg:
+		m.changelog = msg.lines
+		return m, nil
+
 	case updatingTickMsg:
 		if m.updating {
 			return m, updatingTick() // redraw so the step and seconds stay live
@@ -1036,6 +1078,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Keep the offer open with the reason, so the failure can't vanish
 			// on the next keypress and Enter retries.
 			m.updateErr = msg.err.Error()
+			if m.autoInstalling { // offered from now on, not tried again on its own
+				m.autoFailed, m.autoInstalling = m.updateTo, false
+			}
 			m.updateOpen = true
 			m.updateShownAt = time.Now()
 			return m, nil
@@ -1098,6 +1143,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		m.lastKeyAt = time.Now()
 		if msg.Type == tea.KeyRunes && (mouseLeak.MatchString(string(msg.Runes)) || m.mouseFragment(msg)) {
 			return m, nil // a fragmented mouse report, not typing
 		}
@@ -1242,6 +1288,20 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if k == "^x i" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+			m.helpOpen, m.autoUpdate = false, !m.autoUpdate
+			saveSettings(m.settings())
+			if !m.autoUpdate {
+				m.note("Automatic updates off: new versions are offered instead (^X I turns them back on)")
+				return m, nil
+			}
+			m.note("Automatic updates on: a new version installs once you're away")
+			if m.updateOpen && m.updateErr == "" { // the offer on screen becomes an automatic install
+				m.updateOpen = false
+				return m, autoUpdateTick()
+			}
+			return m, nil
+		}
 		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			m.togglePin()
@@ -1299,6 +1359,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The popup waits behind rename/delete/prune prompts, so it never takes
 		// their keys; once they close, it gets a fresh grace period.
+		if m.updatedOpen { // "ccs updated itself": any key closes it; Enter and Esc do only that
+			m.updatedOpen = false
+			if k := msg.String(); k == "enter" || k == "esc" {
+				return m, nil
+			}
+		}
 		if m.updateOpen && m.prompting() {
 			m.updateHeld = true
 		} else if m.updateOpen {
@@ -1315,14 +1381,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.upgrade == nil {
 					return m, nil
 				}
-				m.updating = true
-				m.updateErr = ""
-				m.progress = &updateProgress{step: "starting", started: time.Now()}
-				upgrade, tag, progress := m.upgrade, m.updateTo, m.progress
-				return m, tea.Batch(func() tea.Msg {
-					path, err := upgrade.Install(tag, progress.set)
-					return upgradeDoneMsg{path, err}
-				}, updatingTick())
+				return m, m.startInstall()
 			case "esc":
 				m.updateOpen = false
 				m.dismissed = m.updateTo
@@ -1614,6 +1673,7 @@ type popup struct {
 func (m model) overPopups() []popup {
 	return []popup{
 		{m.updateOpen && !m.prompting(), model.updatePopup},
+		{m.updatedOpen, model.updatedPopup},
 		{m.acctOpen, model.acctPopup},
 		{m.helpOpen, model.helpPopup},
 		{m.notesOpen, model.notesPopup},
@@ -1694,6 +1754,8 @@ func (m model) shortcuts() [][2]string {
 			add(true, "^X S", "snooze or settle it")
 		}
 	}
+	add(m.autoUpdate, "^X I", "stop installing updates on their own")
+	add(!m.autoUpdate, "^X I", "install updates on their own once you're away")
 	add(!m.grouped, "^X G", "group by folder")
 	add(m.grouped, "^X G", "ungroup")
 	add(true, "^L", "changelog")
@@ -1824,6 +1886,13 @@ func (m model) viewScreen() string {
 			state = "on"
 		}
 		status += " · " + key("^X A") + "auto-focus " + state
+		if m.checkLatest != nil { // a release build: one that updates
+			state = "off"
+			if m.autoUpdate {
+				state = "on"
+			}
+			status += " · " + key("^X I") + "auto-update " + state
+		}
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
 	group := "group" // the modes toggled while working; ^X T and the rest are in ? help
@@ -1838,7 +1907,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "E", "edit name", "G", "group", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}
@@ -2426,13 +2495,14 @@ var settingsPath = func() string {
 }()
 
 type settings struct {
-	Table     bool `json:"table,omitempty"`
-	Grouped   bool `json:"grouped,omitempty"`
-	AutoFocus bool `json:"auto_focus,omitempty"`
+	Table        bool `json:"table,omitempty"`
+	Grouped      bool `json:"grouped,omitempty"`
+	AutoFocus    bool `json:"auto_focus,omitempty"`
+	ManualUpdate bool `json:"manual_update,omitempty"` // ^X I off: offer updates instead of installing them
 }
 
 func (m model) settings() settings {
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, ManualUpdate: !m.autoUpdate}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.

@@ -53,6 +53,7 @@ type liveMsg struct {
 	stats      map[string]sessionStat // each live session's status, from its session file
 	unverified map[string]bool        // live sessions whose pid couldn't be checked against the file's procStart
 	scan       map[string]liveSession // this tick's sessions, the next tick's prev
+	hosts      map[string]string      // live sessions run by an app, not in a terminal: the app's name
 	gen        int
 }
 
@@ -80,9 +81,13 @@ func (m model) liveCmd() tea.Cmd {
 		sessions := scanSessions(prev)
 		live := make(map[string]bool, len(sessions))
 		msg := liveMsg{live: live, pids: make(map[string]int, len(sessions)), gen: gen, stats: make(map[string]sessionStat, len(sessions)), unverified: make(map[string]bool), scan: sessions}
+		msg.hosts = map[string]string{}
 		for id, s := range sessions {
 			live[id], msg.pids[id] = true, s.pid
 			msg.stats[id] = s.stat
+			if h := hostOf(s.pid, s.start); h != "" {
+				msg.hosts[id] = h
+			}
 			if s.unverified {
 				msg.unverified[id] = true
 			}
@@ -416,7 +421,7 @@ func (m *model) opening(id string, fork bool) bool {
 // exited, or whose file can't be read right now, is reported instead of
 // resumed a second time.
 func (m *model) focusCmd(conv Conversation) tea.Cmd {
-	if m.opening(conv.SessionID, false) {
+	if m.hostedElsewhere(conv.SessionID) || m.opening(conv.SessionID, false) {
 		return nil
 	}
 	m.resuming = true
@@ -435,7 +440,7 @@ func (m *model) focusCmd(conv Conversation) tea.Cmd {
 // a session resumed elsewhere since the last live tick is focused, not
 // resumed a second time. Forks always open a new session.
 func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
-	if m.opening(conv.SessionID, fork) {
+	if !fork && m.hostedElsewhere(conv.SessionID) || m.opening(conv.SessionID, fork) {
 		return nil
 	}
 	m.resuming = true
@@ -699,4 +704,63 @@ func (m model) reopenPopup() string {
 		BorderForeground(lipgloss.Color("39")).
 		Padding(1, 3).
 		Render(b.String())
+}
+
+// hostOf is the app a claude process runs in when it has no terminal (an app
+// such as T3 Code started it with pipes), "" when it has one. ccs can't switch
+// to such a session, only message it. Asked once per process (pid and its
+// start time, so a recycled pid is asked again).
+var hostOf = func(pid int, start string) string {
+	key := fmt.Sprint(pid, " ", start)
+	if h, ok := hosts.Load(key); ok {
+		return h.(string)
+	}
+	h := findHost(pid)
+	hosts.Store(key, h)
+	return h
+}
+
+// hosts caches hostOf.
+var hosts sync.Map
+
+// findHost asks ps for pid's terminal and, without one, walks up its parents
+// to the first macOS app bundle, else names its parent command.
+func findHost(pid int) string {
+	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=,ppid=", "-p", strconv.Itoa(pid))
+	f := strings.Fields(string(out))
+	if err != nil || len(f) != 2 || f[0] != "??" {
+		return "" // a terminal, or unknown: treated as one
+	}
+	parent, first := f[1], ""
+	for range 6 {
+		out, err := runBounded(2*time.Second, nil, "ps", "-o", "ppid=,comm=", "-p", parent)
+		pp, comm, ok := strings.Cut(strings.TrimSpace(string(out)), " ")
+		if err != nil || !ok {
+			break
+		}
+		comm = strings.TrimSpace(comm)
+		if i := strings.Index(comm, ".app/"); i >= 0 {
+			return filepath.Base(comm[:i])
+		}
+		if first == "" {
+			first = filepath.Base(comm)
+		}
+		if parent = strings.TrimSpace(pp); parent == "0" || parent == "1" {
+			break
+		}
+	}
+	if first == "" {
+		return "another app"
+	}
+	return first
+}
+
+// hostedElsewhere: session id is live in an app ccs can't switch to; says so.
+func (m *model) hostedElsewhere(id string) bool {
+	h := m.hosts[id]
+	if h == "" || !m.live[id] {
+		return false
+	}
+	m.errorMsg = "Runs in " + h + ", not a terminal: open it there (^S messages it, ^F forks it)"
+	return true
 }

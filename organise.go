@@ -103,9 +103,8 @@ func (m model) unseen(c Conversation) bool {
 
 // noteSeen notes the selected done session as being looked at while you can
 // see it (ccs has the terminal's focus and its preview is drawn), and marks
-// it seen once the selection moves off it: it stays put in done while
-// selected, so the row doesn't jump from under the cursor. True when the
-// list needs sorting again.
+// it seen once the selection moves off it, so its circle stays cyan while
+// you read. True when the list needs sorting again.
 func (m *model) noteSeen() bool {
 	sel := ""
 	if len(m.filtered) > 0 {
@@ -119,7 +118,7 @@ func (m *model) noteSeen() bool {
 	if m.marks == nil || m.blurred || sel == "" || !m.previewSettled() {
 		return left
 	}
-	if m.liveGroup(m.filtered[m.cursor].conv) == 2 { // only once done: a busy one would write on every reply
+	if c := m.filtered[m.cursor].conv; m.liveGroup(c) == 2 && m.unseen(c) { // only once done: a busy one would write on every reply
 		m.viewing = sel
 	}
 	return left

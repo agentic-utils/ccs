@@ -33,11 +33,19 @@ func TestDoneUntilSeen(t *testing.T) {
 	m.cursor = 0 // the done one
 	nm, _ := m.Update(tea.FocusMsg{})
 	m = nm.(model)
+	if v := strip2(m.View()); !strings.Contains(v, "done 1") {
+		t.Errorf("while selected it stays in done, so the row doesn't jump:\n%s", v)
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(model)
 	if v := strip2(m.View()); strings.Contains(v, "done 1") || !strings.Contains(v, "idle 2") {
-		t.Errorf("looking at it (focused, selected) makes it plain idle:\n%s", v)
+		t.Errorf("moving off it, having seen it, makes it plain idle:\n%s", v)
 	}
 	if _, ok := m.marks.Seen["new"]; !ok {
 		t.Error("seen time not recorded")
+	}
+	if m.filtered[m.cursor].conv.SessionID != "old" {
+		t.Error("the cursor stays on the session it moved to")
 	}
 	// A new reply after that is done again.
 	m.filtered[0].conv.LastTimestamp = time.Now().Add(time.Minute).UTC().Format(time.RFC3339)

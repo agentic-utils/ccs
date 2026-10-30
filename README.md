@@ -100,7 +100,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 
 - Text boxes (the search, the message box) edit like Claude Code's prompt: `Ctrl+A`/`Ctrl+E` start/end, `Ctrl+K`/`Ctrl+U` delete to the end/start, `Ctrl+W` the word before, `Ctrl+Y` puts back what they deleted, `Alt+B`/`Alt+F` move by word. So ccs's own actions are `Ctrl+X` then a letter (`Ctrl+X Ctrl+W` works too)
 - `↑/↓` or `Ctrl+P/N` - Navigate list
-- The list is in sections by state, each with a header: waiting on you, asked you something, idle, busy, not open in `claude`
+- The list is in sections by state, each with a header: waiting on you, asked you something, done (finished since you last looked at it in ccs, a cyan `●`), idle, busy, not open in `claude`
 - `Ctrl+X W` - Sessions waiting on you: their question, a box to answer, Enter opens the session's tab, Esc snoozes
 - `Ctrl+X A` - Auto-focus: when a session starts waiting on a question or permission prompt, switch to its iTerm tab or tmux pane (without pulling iTerm in front of another app), once you've stopped typing for 2 seconds (moving the mouse doesn't count), and not again until that question is answered. Questions already waiting when ccs starts count too; one it already switched to before a restart doesn't. Off by default, remembered across restarts
 - `Ctrl+X G` - Group sessions by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^X T layout, and reopens the way you left it

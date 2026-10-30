@@ -102,6 +102,7 @@ func TestMain(m *testing.M) {
 	openRecordPath = filepath.Join(dir, "open-sessions.json")
 	previewDebounce = 0 // tests check the preview right after moving
 	settingsPath = filepath.Join(dir, "settings.json")
+	marksPath = filepath.Join(dir, "sessions.json")
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

@@ -53,6 +53,8 @@ type model struct {
 	chordX          bool                 // ^X pressed: the next key picks a ccs action
 	selectedID      string               // the selected session, to see when it changes
 	selectedAt      time.Time            // when it was selected: its preview waits previewDebounce
+	marks           *sessionMarks        // when each session was last looked at (done)
+	blurred         bool                 // the terminal says ccs isn't focused: nothing is being seen
 	autoFocus       bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)
 	focusBusy       bool                 // an auto-focus attempt is in flight
 	focusHeld       string               // the session auto-focus switched to; none other until it's answered
@@ -414,15 +416,17 @@ func (m *model) updateFilter() {
 func (m model) liveGroup(c Conversation) int {
 	switch {
 	case !m.live[c.SessionID]:
-		return 4
+		return 5
 	case m.waitSignal(c) == waitPrompt:
 		return 0
 	case m.waitSignal(c) == waitAsked: // idle, its last message asks something
 		return 1
 	case m.chatStatus[c.SessionID].status == "busy":
-		return 3
+		return 4
+	case m.unseen(c): // finished since you last looked
+		return 2
 	}
-	return 2
+	return 3
 }
 
 // sortList orders the list by liveGroup, then best search match (named after
@@ -538,9 +542,12 @@ func groupOf(it listItem) string {
 	return fmt.Sprint(it.familyState, " ", groupKey(it.familyCwd))
 }
 
+// doneColour marks a session that finished since you last looked.
+const doneColour = "1;36"
+
 // stateSections name liveGroup's values, the list's sections, and colour them.
 var stateSections = [...]struct{ name, colour string }{
-	{"waiting on you", "1;" + amber}, {"asked you something", "32"}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"},
+	{"waiting on you", "1;" + amber}, {"asked you something", "32"}, {"done", doneColour}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"},
 }
 
 // spawnParent is the session whose claude -p started c, "" if none is known.
@@ -634,6 +641,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	n.sortList()
 	if settle := n.noteSelection(); settle != nil {
 		cmd = tea.Batch(cmd, settle)
+	}
+	if n.noteSeen() {
+		n.sortList() // out of done
 	}
 	n.syncChatDraft()
 	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
@@ -800,6 +810,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case prDoneMsg:
 		m.applyPRs(msg)
+		return m, nil
+
+	case tea.FocusMsg: // terminals that report focus; without it ccs counts as focused
+		m.blurred = false
+		return m, nil
+
+	case tea.BlurMsg:
+		m.blurred = true
 		return m, nil
 
 	case autoFocusMsg:
@@ -1928,6 +1946,8 @@ func (m model) listMarks(item listItem) (string, string) {
 	default:
 		if m.chatStatus[conv.SessionID].status == "busy" {
 			liveColour = amber
+		} else if m.unseen(conv) {
+			liveColour = doneColour
 		}
 	}
 	for _, s := range []struct {

@@ -210,6 +210,7 @@ func main() {
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus = s.Table, s.Grouped, s.AutoFocus
+	m.marks = loadMarks()                     // when each session was last looked at
 	if handled, ok := loadFocusRecord(); ok { // waits it switched to before a restart aren't switched to again
 		m.focusHandled, m.focusNoted = handled, map[string]bool{}
 	}
@@ -246,7 +247,7 @@ func main() {
 		}
 		return buildItems(convs), nil
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(eraseSavedLines{os.Stdout}))
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithOutput(eraseSavedLines{os.Stdout}))
 
 	finalModel, err := p.Run()
 	closeInboxes()

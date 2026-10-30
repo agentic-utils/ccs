@@ -420,6 +420,7 @@ func (m *model) focusCmd(conv Conversation) tea.Cmd {
 		return nil
 	}
 	m.resuming = true
+	m.markSeen(conv.SessionID) // you're going to look at it
 	name := m.sessionName(conv)
 	return func() tea.Msg {
 		pid, ok := liveSessionPIDs()[conv.SessionID]
@@ -438,6 +439,9 @@ func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
 		return nil
 	}
 	m.resuming = true
+	if !fork {
+		m.markSeen(conv.SessionID) // you're going to look at it
+	}
 	flags := slices.Clone(m.claudeFlags)
 	if fork {
 		flags = append(flags, "--fork-session")

@@ -24,8 +24,8 @@ func TestDoneUntilSeen(t *testing.T) {
 	m.blurred = true // not looking yet
 	m.sortList()
 	v := strip2(m.View())
-	if !strings.Contains(v, "done 1") || !strings.Contains(v, "idle 1") || strings.Index(v, "finished while away") > strings.Index(v, "finished before") {
-		t.Errorf("a session that finished since ccs last saw it is done, above idle:\n%s", v)
+	if strings.Contains(v, "done") || !strings.Contains(v, "idle 2") || strings.Index(v, "finished while away") > strings.Index(v, "finished before") {
+		t.Errorf("done sessions share idle's section, newest first:\n%s", v)
 	}
 	if r := m.formatListItem(m.filtered[0], false); !strings.Contains(r, "\033["+doneColour+"m●") {
 		t.Errorf("done gets its own colour: %q", r)
@@ -33,25 +33,20 @@ func TestDoneUntilSeen(t *testing.T) {
 	m.cursor = 0 // the done one
 	nm, _ := m.Update(tea.FocusMsg{})
 	m = nm.(model)
-	if v := strip2(m.View()); !strings.Contains(v, "done 1") {
-		t.Errorf("while selected it stays in done, so the row doesn't jump:\n%s", v)
-	}
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = nm.(model)
-	if v := strip2(m.View()); strings.Contains(v, "done 1") || !strings.Contains(v, "idle 2") {
-		t.Errorf("moving off it, having seen it, makes it plain idle:\n%s", v)
-	}
 	if _, ok := m.marks.Seen["new"]; !ok {
 		t.Error("seen time not recorded")
+	}
+	if r := m.formatListItem(m.filtered[0], false); strings.Contains(r, "\033["+doneColour+"m●") || m.filtered[0].conv.SessionID != "new" {
+		t.Errorf("seen, it turns plain idle where it was: %q", r)
 	}
 	if m.filtered[m.cursor].conv.SessionID != "old" {
 		t.Error("the cursor stays on the session it moved to")
 	}
 	// A new reply after that is done again.
 	m.filtered[0].conv.LastTimestamp = time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
-	m.blurred = true
-	m.sortList()
-	if m.liveGroup(m.filtered[0].conv) != 2 {
+	if !m.unseen(m.filtered[0].conv) {
 		t.Error("a reply after you looked is done again")
 	}
 }

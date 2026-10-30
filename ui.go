@@ -422,24 +422,23 @@ func (m *model) updateFilter() {
 }
 
 // liveGroup is where a session sits in the list: waiting on a menu or
-// prompt (amber ?), then idle with a question in its last message (green ?),
-// then idle, then busy, then not open in claude.
+// prompt, then idle with a question in its last message, then idle (done
+// ones too, marked only by colour, so opening one never moves it), then
+// busy, then not open in claude.
 func (m model) liveGroup(c Conversation) int {
 	switch {
 	case m.putAway(c) != awake: // the bottom sections: settled, snoozed
-		return 5 + m.putAway(c)
+		return 4 + m.putAway(c)
 	case !m.live[c.SessionID]:
-		return 5
+		return 4
 	case m.waitSignal(c) == waitPrompt:
 		return 0
 	case m.waitSignal(c) == waitAsked: // idle, its last message asks something
 		return 1
 	case m.chatStatus[c.SessionID].status == "busy":
-		return 4
-	case m.unseen(c): // finished since you last looked
-		return 2
+		return 3
 	}
-	return 3
+	return 2
 }
 
 // sortList orders the list by liveGroup, then best search match (named after
@@ -606,7 +605,7 @@ var pinnedSection = struct{ name, colour string }{"pinned", "1;37"}
 
 // stateSections name liveGroup's values, the list's sections, and colour them.
 var stateSections = [...]struct{ name, colour string }{
-	{"waiting on you", "1;" + waitColour}, {"asked you something", askedColour}, {"done", doneColour}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"}, {"settled", "90"}, {"snoozed", "90"},
+	{"waiting on you", "1;" + waitColour}, {"asked you something", askedColour}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"}, {"settled", "90"}, {"snoozed", "90"},
 }
 
 // spawnParent is the session whose claude -p started c, "" if none is known.

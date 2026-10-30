@@ -1201,8 +1201,8 @@ func TestLiveMarkerColours(t *testing.T) {
 	if r := row("busy"); !strings.Contains(r, "\033["+amber+"m●") {
 		t.Errorf("busy should be an amber ●: %q", r)
 	}
-	if r := row("waiting"); !strings.Contains(r, "\033[1;"+amber+"m?") {
-		t.Errorf("waiting on you should be an amber ?: %q", r)
+	if r := row("waiting"); !strings.Contains(r, "\033["+waitColour+"m●") {
+		t.Errorf("waiting on you should be a magenta ●: %q", r)
 	}
 }
 

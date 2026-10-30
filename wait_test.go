@@ -390,8 +390,8 @@ func TestWaitMarkersAndHeaderCount(t *testing.T) {
 	}
 	for _, id := range []string{"live", "asks"} {
 		for _, item := range m.filtered {
-			if item.conv.SessionID == id && !strings.Contains(strip2(m.formatListItem(item, false)), "? ") {
-				t.Errorf("%s should show ? in place of ●", id)
+			if item.conv.SessionID == id && !strings.Contains(strip2(m.formatListItem(item, false)), "● ") {
+				t.Errorf("%s keeps its ●, coloured for the question", id)
 			}
 		}
 	}
@@ -971,12 +971,16 @@ func TestQuestionMarkColours(t *testing.T) {
 	m := initialModel(buildItems([]Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s": true}
 	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
-	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033[32m?") {
-		t.Errorf("idle with a question in its last message: a green ?, got %q", marks)
+	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+askedColour+"m●") {
+		t.Errorf("idle with a question in its last message: a light magenta ●, got %q", marks)
 	}
 	m.chatStatus["s"] = sessionStat{status: "waiting"}
-	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033[1;"+amber+"m?") {
-		t.Errorf("a menu or prompt waiting: an amber ?, got %q", marks)
+	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+waitColour+"m●") {
+		t.Errorf("a menu or prompt waiting: a magenta ●, got %q", marks)
+	}
+	m.hosts = map[string]string{"s": "T3 Code"}
+	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+waitColour+"m○") {
+		t.Errorf("one in an app keeps its hollow ○ while waiting: %q", marks)
 	}
 }
 

@@ -687,7 +687,7 @@ func (m *model) autoFocusCmd() tea.Cmd {
 	if id == "" || !ok {
 		return nil
 	}
-	if h := m.hosts[id]; h != "" { // no terminal to switch to
+	if h := m.hosts[id]; h != "" { // no terminal to switch to (a background one too: attach is your call)
 		m.focusHandled[id] = m.chatStatus[id].since
 		m.noteFocus(id, "hosted", "auto-focus: %s is waiting in %s, which ccs can't switch to", m.focusName(id), h)
 		return nil

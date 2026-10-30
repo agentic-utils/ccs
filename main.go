@@ -63,6 +63,7 @@ Key bindings:
   Ctrl+X C        Collapse the selected session's folder (grouped) to one session
   Ctrl+X S        Settle or snooze the selected session (again to bring it back)
   Ctrl+X G        Group sessions by folder
+  Ctrl+X K        Stop the selected background session (press twice)
   Ctrl+X P        Pin the selected session to the top (again to unpin);
                   Alt+Up/Down move it among the pinned
   Ctrl+X T        Table: every column, instead of the sidebar

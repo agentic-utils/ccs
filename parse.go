@@ -721,9 +721,10 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 // spawnText leaves it, to match against a spawned session's first prompt.
 type spawnCmd struct{ ts, text string }
 
-// isSpawn: a command that starts a headless claude (claude -p, cswap run … -p).
+// isSpawn: a command that starts a headless or background claude (claude -p,
+// claude --bg, cswap run … -p).
 func isSpawn(cmd string) bool {
-	return strings.Contains(cmd, "claude") && (strings.Contains(cmd, " -p") || strings.Contains(cmd, "--print")) ||
+	return strings.Contains(cmd, "claude") && (strings.Contains(cmd, " -p") || strings.Contains(cmd, "--print") || strings.Contains(cmd, "--bg") || strings.Contains(cmd, "--background")) ||
 		strings.Contains(cmd, "cswap run")
 }
 

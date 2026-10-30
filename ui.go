@@ -79,13 +79,17 @@ type model struct {
 	opened          map[string]time.Time // sessions ccs opened in a tab, until their session file appears
 	renameIndex     int                  // Index of item being renamed
 	renameInput     textinput.Model
-	errorMsg        string            // Show deletion/prune errors
-	preview         *previewCache     // memoised preview lines for the selected conversation
-	hits            *hitCounter       // memoised per-query hit counts, keyed by SessionID
-	lastFilterQuery string            // lowercased query the current m.filtered was built from
-	live            map[string]bool   // SessionIDs attached to a running claude process
-	livePIDs        map[string]int    // live SessionID -> claude pid (for its session file and socket)
-	hosts           map[string]string // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
+	errorMsg        string               // Show deletion/prune errors
+	preview         *previewCache        // memoised preview lines for the selected conversation
+	hits            *hitCounter          // memoised per-query hit counts, keyed by SessionID
+	lastFilterQuery string               // lowercased query the current m.filtered was built from
+	live            map[string]bool      // SessionIDs attached to a running claude process
+	livePIDs        map[string]int       // live SessionID -> claude pid (for its session file and socket)
+	hosts           map[string]string    // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
+	bg              map[string]bgSession // background sessions (claude --bg), opened with claude attach
+	agentsAt        time.Time            // when claude agents was last asked
+	stopArmed       string               // ^X K pressed once on this session: again stops it
+	stopArmedAt     time.Time
 
 	// Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
@@ -506,7 +510,7 @@ func (m *model) nestFamilies() {
 	kids := map[int][]int{}
 	for i, it := range m.filtered {
 		parent[i] = -1
-		if it.conv.Spawned {
+		if _, bg := m.bg[it.conv.SessionID]; it.conv.Spawned || bg {
 			if p, ok := at[m.spawnParent(it.conv)]; ok && p != i {
 				parent[i] = p
 				kids[p] = append(kids[p], i)
@@ -728,6 +732,24 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.startRefresh(false)
 
+	case attachDoneMsg:
+		m.resuming = false
+		switch {
+		case msg.err != nil:
+			m.errorMsg = fmt.Sprintf("Opening a new tab timed out, it may still have opened - check before retrying (%v)", msg.err)
+		case !msg.opened:
+			m.errorMsg = "A background session opens in a new tmux window or iTerm tab: run claude attach " + msg.id
+		}
+		return m, nil
+
+	case stopDoneMsg:
+		if msg.err != nil {
+			m.errorMsg = "Couldn't stop " + msg.name + ": " + msg.err.Error()
+		} else {
+			m.errorMsg = "Stopped " + msg.name + " (Enter resumes it)"
+		}
+		return m, nil
+
 	case resumeDoneMsg:
 		m.resuming = false
 		switch {
@@ -804,12 +826,19 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case liveTickMsg:
-		return m, m.liveCmd()
+		ask := time.Since(m.agentsAt) >= agentsInterval
+		if ask {
+			m.agentsAt = time.Now()
+		}
+		return m, m.liveCmd(ask)
 
 	case liveMsg:
 		m.live = msg.live
 		if msg.pids != nil {
 			m.livePIDs, m.unverified, m.lastScan, m.hosts = msg.pids, msg.unverified, msg.scan, msg.hosts
+			if msg.bg != nil {
+				m.bg = msg.bg
+			}
 		}
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
@@ -1193,6 +1222,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^x c" && m.grouped && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			m.toggleCollapse()
+			return m, nil
+		}
+		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			conv := m.filtered[m.cursor].conv
+			b, ok := m.bg[conv.SessionID]
+			switch {
+			case !ok || !m.live[conv.SessionID]:
+				m.errorMsg = "^X K stops a background session (claude --bg); this one isn't"
+			case m.stopArmed != conv.SessionID || time.Since(m.stopArmedAt) > 5*time.Second:
+				m.stopArmed, m.stopArmedAt = conv.SessionID, time.Now()
+				m.errorMsg = "^X K again to stop " + m.sessionName(conv)
+			default:
+				m.stopArmed = ""
+				return m, stopCmd(m.sessionName(conv), b)
+			}
 			return m, nil
 		}
 		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
@@ -1624,6 +1669,11 @@ func (m model) shortcuts() [][2]string {
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.autoFocus, "^X A", "switch to a session when it starts waiting on you")
 	add(m.autoFocus, "^X A", "stop switching to waiting sessions")
+	if sel {
+		if _, bg := m.bg[m.filtered[m.cursor].conv.SessionID]; bg && live {
+			add(true, "^X K", "stop this background session")
+		}
+	}
 	pinned := sel && m.pinIndex(m.filtered[m.cursor].conv.SessionID) >= 0
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top")
 	add(pinned, "^X P", "unpin it")
@@ -2021,7 +2071,7 @@ func (m model) listMarks(item listItem) (string, string) {
 	// Green when idle, amber while busy, an amber ? when a menu or prompt
 	// waits on you; a green ? when idle and its last message asks something.
 	liveGlyph, liveColour := "●", "32"
-	if m.hosts[conv.SessionID] != "" { // open in an app ccs can't switch to
+	if m.hostedApp(conv.SessionID) != "" { // open in an app ccs can't switch to
 		liveGlyph = "○"
 	}
 	switch m.waitSignal(conv) {
@@ -2195,7 +2245,12 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if conv.ContextTokens > 0 {
 		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
 	}
-	if h := m.hosts[conv.SessionID]; h != "" && m.live[conv.SessionID] {
+	if b, ok := m.bg[conv.SessionID]; ok && m.live[conv.SessionID] {
+		stats += " · bg"
+		if b.State != "" {
+			stats += " " + b.State
+		}
+	} else if h := m.hostedApp(conv.SessionID); h != "" && m.live[conv.SessionID] {
 		stats += " · in " + h
 	}
 	stats += " · " + projectName(conv.Cwd) // last: it's the one cut short

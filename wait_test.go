@@ -86,7 +86,7 @@ func fakeStart(t *testing.T) (move func(time.Duration)) {
 }
 
 func liveTickOnce(m model) model {
-	res, _ := m.Update(m.liveCmd()())
+	res, _ := m.Update(m.liveCmd(false)())
 	return res.(model)
 }
 

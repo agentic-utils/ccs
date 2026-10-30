@@ -103,7 +103,8 @@ func TestMain(m *testing.M) {
 	previewDebounce = 0 // tests check the preview right after moving
 	settingsPath = filepath.Join(dir, "settings.json")
 	marksPath = filepath.Join(dir, "sessions.json")
-	hostOf = func(int, string) string { return "" } // every session in a terminal, wherever the tests run
+	hostOf = func(int, string) string { return "" }                       // every session in a terminal, wherever the tests run
+	listAgents = func() (map[string]bgSession, error) { return nil, nil } // never the real claude agents
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

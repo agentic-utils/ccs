@@ -47,15 +47,17 @@ type model struct {
 	cursor          int
 	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width           int
-	table           bool                 // ^X T: the full-width table instead of the sidebar
-	parents         map[string]string    // spawned SessionID -> the session whose claude -p started it
-	noParent        map[string]int       // spawned SessionID -> len(items) when no parent was found
-	grouped         bool                 // ^X X G: sessions grouped by folder
-	chordX          bool                 // ^X pressed: the next key picks a ccs action
-	selectedID      string               // the selected session, to see when it changes
-	selectedAt      time.Time            // when it was selected: its preview waits previewDebounce
-	marks           *sessionMarks        // when each session was last looked at (done)
-	blurred         bool                 // the terminal says ccs isn't focused: nothing is being seen
+	table           bool              // ^X T: the full-width table instead of the sidebar
+	parents         map[string]string // spawned SessionID -> the session whose claude -p started it
+	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
+	grouped         bool              // ^X X G: sessions grouped by folder
+	chordX          bool              // ^X pressed: the next key picks a ccs action
+	selectedID      string            // the selected session, to see when it changes
+	selectedAt      time.Time         // when it was selected: its preview waits previewDebounce
+	marks           *sessionMarks     // when each session was last looked at (done)
+	blurred         bool              // the terminal says ccs isn't focused: nothing is being seen
+	snoozeOpen      bool              // the ^X S picker
+	snoozeCursor    int
 	autoFocus       bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)
 	focusBusy       bool                 // an auto-focus attempt is in flight
 	focusHeld       string               // the session auto-focus switched to; none other until it's answered
@@ -237,7 +239,7 @@ func (m model) paneWidth() int {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.linksOpen || len(m.reopen) > 0 {
+	if m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 {
 		return m // keyboard only while it's open
 	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
@@ -411,6 +413,8 @@ func (m *model) updateFilter() {
 // then idle, then busy, then not open in claude.
 func (m model) liveGroup(c Conversation) int {
 	switch {
+	case m.putAway(c) != awake: // the bottom sections: settled, snoozed
+		return 5 + m.putAway(c)
 	case !m.live[c.SessionID]:
 		return 5
 	case m.waitSignal(c) == waitPrompt:
@@ -583,7 +587,7 @@ var pinnedSection = struct{ name, colour string }{"pinned", "1;37"}
 
 // stateSections name liveGroup's values, the list's sections, and colour them.
 var stateSections = [...]struct{ name, colour string }{
-	{"waiting on you", "1;" + amber}, {"asked you something", "32"}, {"done", doneColour}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"},
+	{"waiting on you", "1;" + amber}, {"asked you something", "32"}, {"done", doneColour}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"}, {"settled", "90"}, {"snoozed", "90"},
 }
 
 // spawnParent is the session whose claude -p started c, "" if none is known.
@@ -1088,6 +1092,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.waitKey(msg)
 		}
+		if m.snoozeOpen { // owns the keyboard until closed
+			return m.snoozeKey(k)
+		}
+		if k == "^x s" && len(m.filtered) > 0 && m.marks != nil && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			if c := m.filtered[m.cursor].conv; m.putAway(c) != awake {
+				m.wake(c.SessionID)
+			} else {
+				m.snoozeOpen, m.snoozeCursor = true, 0
+			}
+			return m, nil
+		}
 		if len(m.reopen) > 0 { // owns the keyboard until answered
 			switch msg.String() {
 			case "enter":
@@ -1548,6 +1564,7 @@ func (m model) overPopups() []popup {
 		{m.helpOpen, model.helpPopup},
 		{m.notesOpen, model.notesPopup},
 		{m.linksOpen, model.linksPopup},
+		{m.snoozeOpen, model.snoozePopup},
 		{len(m.reopen) > 0, model.reopenPopup},
 	}
 }
@@ -1609,6 +1626,13 @@ func (m model) shortcuts() [][2]string {
 			add(true, "^X C", "expand its folder")
 		} else {
 			add(true, "^X C", "collapse its folder to one session")
+		}
+	}
+	if sel && m.marks != nil {
+		if m.putAway(m.filtered[m.cursor].conv) != awake {
+			add(true, "^X S", "bring it back")
+		} else {
+			add(true, "^X S", "snooze or settle it")
 		}
 	}
 	add(!m.grouped, "^X G", "group by folder")

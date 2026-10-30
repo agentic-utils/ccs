@@ -56,6 +56,7 @@ type model struct {
 	selectedAt      time.Time         // when it was selected: its preview waits previewDebounce
 	marks           *sessionMarks     // when each session was last looked at (done)
 	blurred         bool              // the terminal says ccs isn't focused: nothing is being seen
+	viewing         string            // the done session selected and seen: marked seen when the selection leaves it
 	snoozeOpen      bool              // the ^X S picker
 	snoozeCursor    int
 	autoFocus       bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)

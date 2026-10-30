@@ -65,3 +65,47 @@ func TestMarksFirstRunAndPrune(t *testing.T) {
 		t.Error("recent seen time lost")
 	}
 }
+
+func TestPinnedSectionKeepsOrder(t *testing.T) {
+	now := time.Now().UTC()
+	var convs []Conversation
+	for i, id := range []string{"a", "b", "c"} {
+		convs = append(convs, Conversation{SessionID: id, Title: "session " + id, LastTimestamp: now.Add(time.Duration(-i) * time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: id}}})
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 140, 30
+	m.marks = &sessionMarks{Since: now, Seen: map[string]time.Time{}}
+	m.live = map[string]bool{"a": true}
+	m.chatStatus = map[string]sessionStat{"a": {status: "waiting"}}
+	m.sortList()
+	sel := func(id string) {
+		for i, it := range m.filtered {
+			if it.conv.SessionID == id {
+				m.cursor = i
+			}
+		}
+	}
+	sel("c")
+	m, _ = chord(m, "p")
+	sel("b")
+	m, _ = chord(m, "p")
+	v := strip2(m.View())
+	ic, ib, ia := strings.Index(v, "session c"), strings.Index(v, "session b"), strings.Index(v, "session a")
+	if !strings.Contains(v, "pinned 2") || !(ic < ib && ib < ia) {
+		t.Errorf("pinned first in pin order, even above a session waiting on you:\n%s", v)
+	}
+	if m.filtered[m.cursor].conv.SessionID != "b" {
+		t.Error("pinning keeps the cursor on the session")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	if v := strip2(m.View()); strings.Index(v, "session b") > strings.Index(v, "session c") {
+		t.Errorf("alt+up moves it above:\n%s", v)
+	}
+	if got := loadMarks().Pinned; len(got) != 2 || got[0] != "b" {
+		t.Errorf("order saved: %v", got)
+	}
+	m, _ = chord(m, "p")
+	if v := strip2(m.View()); !strings.Contains(v, "pinned 1") {
+		t.Errorf("again unpins:\n%s", v)
+	}
+}

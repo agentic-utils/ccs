@@ -191,6 +191,10 @@ Project: /path/to/project
 
 `demo.gif` in the README is recorded by `demo/record.py`: it writes made-up conversations into a throwaway HOME (never real transcripts), builds ccs at the latest tag, drives it with scripted keys in a 140x40 pty and saves `demo/demo.cast`. Render with `agg --theme monokai --font-size 14 --idle-time-limit 3 demo/demo.cast demo.gif`. Re-record after visible UI changes; edit `KEYS` to change what it shows.
 
+## Design docs
+
+- [Relay and handoff between sessions](docs/design/relay.md): read before adding anything that starts, messages or hands context to sessions on their behalf, or a background process
+
 ## Conventions
 
 - Keys follow Claude Code's prompt: in a text box (the search, the message box, the overlay's box) every Ctrl letter edits text as it does there (^A/^E start/end, ^K/^U kill to end/start, ^W kill word, ^Y paste back, Alt+B/F words; `editKey` adds the ^Y the text box lacks). ccs's own actions are ^X chords, Claude Code's own pattern for app actions (`chordX`, `k = "^x <letter>"`; ^X ^W works as ^X W; an unknown chord does nothing, never edits text), with mnemonic letters: ^X A auto-focus, ^X E edit its name, ^X C collapse, ^X G group, ^X P pin, ^X S snooze, ^X T table, ^X U user account, ^X W waiting, ^X X prune. Single keys that edit nothing stay single: ^S send, ^R refresh, ^L changelog log, ^O open a link, ^D delete, ^F fork, ? help on an empty search, Tab usage, PgUp/PgDn scroll, Alt+↑/↓ move a pinned session. A new action is a chord whose letter starts its word; when the letter is taken, pick the action's next clear word. Update the header hints, `shortcuts()`, `--help`, the README and the tests together

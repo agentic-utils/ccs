@@ -376,14 +376,20 @@ func TestHostedSessionIsNotSwitchable(t *testing.T) {
 	m.width, m.height = 140, 30
 	m.live = map[string]bool{"t3": true}
 	m.livePIDs = map[string]int{"t3": 99999}
-	m.hosts = map[string]string{"t3": "T3 Code (Beta)"}
+	m.hosts = map[string]string{"t3": "T3 Code"}
 	m.chatStatus = map[string]sessionStat{"t3": {status: "idle"}}
 	v := strip2(m.View())
-	if !strings.Contains(v, "○ from t3") || !strings.Contains(v, "in T3 Code (Beta)") {
+	if !strings.Contains(v, "○ from t3") || !strings.Contains(v, "in T3 Code ·") {
 		t.Errorf("a session in an app gets a hollow mark and says where it runs:\n%s", v)
 	}
-	if cmd := m.resumeCmd(conv, false); cmd != nil || !strings.Contains(m.errorMsg, "Runs in T3 Code (Beta)") {
+	if cmd := m.resumeCmd(conv, false); cmd != nil || !strings.Contains(m.errorMsg, "In T3 Code: open it there") {
 		t.Errorf("enter doesn't try to switch to or resume it: %q", m.errorMsg)
+	}
+	if m.noteMsg != m.errorMsg {
+		t.Error("saying where it runs is a note, not a red error")
+	}
+	if got := appName("T3 Code (Beta)"); got != "T3 Code" {
+		t.Errorf("the edition is dropped: %q", got)
 	}
 	if m.resuming {
 		t.Error("nothing is opening")

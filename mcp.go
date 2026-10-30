@@ -321,6 +321,9 @@ func mcpRead(convs []Conversation, id, query string, offset, limit int) (string,
 	for _, i := range page {
 		m := c.Messages[i]
 		who, text := "Claude", cleanText(m.Text)
+		if m.Role == "sent" {
+			who = "Claude, to " + shortAddr(m.To)
+		}
 		if m.Role == "user" {
 			who = "User"
 			if from, body, ok := peerParts(text); ok {

@@ -69,7 +69,7 @@ func (m model) waitSignal(conv Conversation) int {
 	case "waiting":
 		return waitPrompt
 	case "idle":
-		if n := len(conv.Messages); n > 0 && conv.Messages[n-1].Role == "assistant" && asks(conv.Messages[n-1].Text) {
+		if n := lastSaid(conv.Messages); n >= 0 && conv.Messages[n].Role == "assistant" && asks(conv.Messages[n].Text) {
 			return waitAsked
 		}
 	}
@@ -787,4 +787,15 @@ func (m *model) saveFocusRecord() {
 	if os.WriteFile(tmp, data, 0o600) == nil {
 		os.Rename(tmp, focusRecordPath)
 	}
+}
+
+// lastSaid is the index of the last message said in the session itself, past
+// any it sent to other sessions; -1 if none.
+func lastSaid(msgs []Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != "sent" {
+			return i
+		}
+	}
+	return -1
 }

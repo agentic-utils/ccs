@@ -376,13 +376,13 @@ func TestHostedSessionIsNotSwitchable(t *testing.T) {
 	m.width, m.height = 140, 30
 	m.live = map[string]bool{"t3": true}
 	m.livePIDs = map[string]int{"t3": 99999}
-	m.hosts = map[string]string{"t3": "T3 Code"}
+	m.hosts = map[string]string{"t3": "Zed"} // an app ccs has no link for
 	m.chatStatus = map[string]sessionStat{"t3": {status: "idle"}}
 	v := strip2(m.View())
-	if !strings.Contains(v, "○ from t3") || !strings.Contains(v, "in T3 Code ·") {
+	if !strings.Contains(v, "○ from t3") || !strings.Contains(v, "in Zed ·") {
 		t.Errorf("a session in an app gets a hollow mark and says where it runs:\n%s", v)
 	}
-	if cmd := m.resumeCmd(conv, false); cmd != nil || !strings.Contains(m.errorMsg, "In T3 Code: open it there") {
+	if cmd := m.resumeCmd(conv, false); cmd != nil || !strings.Contains(m.errorMsg, "In Zed: open it there") {
 		t.Errorf("enter doesn't try to switch to or resume it: %q", m.errorMsg)
 	}
 	if m.noteMsg != m.errorMsg {
@@ -396,6 +396,55 @@ func TestHostedSessionIsNotSwitchable(t *testing.T) {
 	}
 	if cmd := m.focusCmd(conv); cmd != nil {
 		t.Error("focus doesn't try either")
+	}
+}
+
+func TestT3SessionOpensInT3(t *testing.T) {
+	defer func(l func(int) (string, error), o func(string) error) { t3Link, openApp = l, o }(t3Link, openApp)
+	var asked int
+	var opened string
+	t3Link = func(pid int) (string, error) { asked = pid; return "t3code://threads/env/thread", nil }
+	openApp = func(link string) error { opened = link; return nil }
+	conv := Conversation{SessionID: "t3", Title: "from t3", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.width, m.height = 140, 30
+	m.live = map[string]bool{"t3": true}
+	m.hosts = map[string]string{"t3": "T3 Code"}
+	m.chatStatus = map[string]sessionStat{"t3": {status: "idle"}}
+	if v := strip2(m.View()); !strings.Contains(v, "● from t3") || !strings.Contains(v, "in T3 Code ·") {
+		t.Errorf("one ccs can open keeps a solid mark and says where it runs:\n%s", v)
+	}
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	defer func() { getSessionsDir = old }()
+	oldPS := processStartTimes
+	defer func() { processStartTimes = oldPS }()
+	processStartTimes = func(map[string]int) map[int]time.Time {
+		return map[int]time.Time{os.Getpid(): time.Date(2026, 9, 23, 16, 52, 33, 0, time.UTC)}
+	}
+	body := fmt.Sprintf(`{"pid":%d,"sessionId":"t3","procStart":"Wed Sep 23 16:52:33 2026"}`, os.Getpid())
+	if err := os.WriteFile(filepath.Join(dir, "t3.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, open := range []func() tea.Cmd{func() tea.Cmd { return m.resumeCmd(conv, false) }, func() tea.Cmd { return m.focusCmd(conv) }} {
+		asked, opened = 0, ""
+		cmd := open()
+		if cmd == nil {
+			t.Fatal("enter opens it in T3 Code")
+		}
+		res, _ := m.Update(cmd())
+		if asked != os.Getpid() || opened != "t3code://threads/env/thread" || res.(model).errorMsg != "" {
+			t.Errorf("its thread's link, for its claude: pid %d, %q, %q", asked, opened, res.(model).errorMsg)
+		}
+	}
+	t3Link = func(int) (string, error) { return "", errors.New("no thread") }
+	res, _ := m.Update(m.resumeCmd(conv, false)())
+	if m = res.(model); !strings.Contains(m.errorMsg, "In T3 Code: open it there") || m.noteMsg != m.errorMsg {
+		t.Errorf("without a link, says to open it there: %q", m.errorMsg)
+	}
+	if !t3ID("mcp:launch:7ea8-1f") || t3ID("a/b") || t3ID("a b") || t3ID("") {
+		t.Error("thread ids are letters, digits, : and - only")
 	}
 }
 

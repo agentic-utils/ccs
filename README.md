@@ -102,8 +102,8 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `↑/↓` or `Ctrl+P/N` - Navigate list
 - Background sessions (`claude --bg`) show `bg <state>` on the grey row: Enter opens one with `claude attach` in a new tmux window or iTerm tab, and `Ctrl+X K` twice stops it. One started from another session's `claude --bg` sits under it
 - Messages between sessions show at both ends: the sender's preview shows each `SendMessage` as `To <session>` (`✓ arrived` once it's in that session's transcript), the recipient's `From <session>`
-- A live session run by an app without a terminal (T3 Code, for one) shows a hollow `○` and `in <app>`: ccs can't switch to it, so Enter says to open it there; messaging it (`Ctrl+S`) and forking it (`Ctrl+F`) still work
-- Each open session has a circle, `●` (or `○` in an app ccs can't open, like T3 Code), coloured by its state: magenta waiting on you, light magenta asked you something, cyan done, green idle, amber busy
+- A live session run by an app without a terminal shows `in <app>`. One in T3 Code opens in T3 Code with Enter, at its thread; any other app gets a hollow `○`, since ccs can't switch to it, and Enter says to open it there. Messaging it (`Ctrl+S`) and forking it (`Ctrl+F`) work either way
+- Each open session has a circle, `●` (or `○` in an app ccs can't open), coloured by its state: magenta waiting on you, light magenta asked you something, cyan done, green idle, amber busy
 - The list is in sections by state, each with a header: waiting on you, asked you something, idle (a cyan `●` marks one finished since you last looked at it in ccs; it turns green once you select it and move on, without moving), busy, not open in `claude`
 - `Ctrl+X W` - Sessions waiting on you: their question, a box to answer, Enter opens the session's tab, Esc snoozes
 - `Ctrl+X R` - Record a CPU profile while you do whatever feels slow, then `Ctrl+X R` again to save it beside the update log (`~/Library/Logs/ccs/cpu-<time>.pprof` on macOS; read it with `go tool pprof -top`). The header says `recording profile` until you stop it. `CCS_CPUPROFILE=path ccs` records the whole run instead

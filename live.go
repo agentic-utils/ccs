@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -425,6 +427,9 @@ func (m *model) opening(id string, fork bool) bool {
 // exited, or whose file can't be read right now, is reported instead of
 // resumed a second time.
 func (m *model) focusCmd(conv Conversation) tea.Cmd {
+	if m.inT3(conv.SessionID) {
+		return m.openT3Cmd(conv)
+	}
 	if m.hostedElsewhere(conv.SessionID) || m.opening(conv.SessionID, false) {
 		return nil
 	}
@@ -447,6 +452,9 @@ func (m *model) focusCmd(conv Conversation) tea.Cmd {
 // a session resumed elsewhere since the last live tick is focused, not
 // resumed a second time. Forks always open a new session.
 func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
+	if !fork && m.inT3(conv.SessionID) {
+		return m.openT3Cmd(conv)
+	}
 	if !fork && m.hostedElsewhere(conv.SessionID) || m.opening(conv.SessionID, fork) {
 		return nil
 	}
@@ -772,6 +780,91 @@ func (m model) hostedApp(id string) string {
 		return ""
 	}
 	return m.hosts[id]
+}
+
+// t3App is the name hostOf gives T3 Code, whose threads ccs opens by link.
+const t3App = "T3 Code"
+
+// inT3 reports session id live in T3 Code, which Enter opens there.
+func (m model) inT3(id string) bool { return m.live[id] && m.hostedApp(id) == t3App }
+
+// openT3Cmd opens a session's thread in T3 Code, off the UI goroutine;
+// without a link it says to open it there, as for other apps.
+func (m *model) openT3Cmd(conv Conversation) tea.Cmd {
+	m.resuming = true
+	m.markSeen(conv.SessionID) // you're going to look at it
+	name := m.sessionName(conv)
+	return func() tea.Msg {
+		pid, ok := liveSessionPIDs()[conv.SessionID]
+		if !ok {
+			return focusDoneMsg{gone: true, name: name}
+		}
+		link, err := t3Link(pid)
+		if err == nil {
+			err = openApp(link)
+		}
+		return t3DoneMsg{err}
+	}
+}
+
+// t3DoneMsg reports openT3Cmd: nil once T3 Code was asked to show the thread.
+type t3DoneMsg struct{ err error }
+
+// t3Link is the T3 Code link to the thread claude process pid runs in. T3
+// Code puts the thread's id and its CLI in the process's environment; the
+// CLI's link for the thread names its environment.
+var t3Link = func(pid int) (string, error) {
+	out, err := runBounded(2*time.Second, nil, "ps", "-E", "-ww", "-o", "command=", "-p", strconv.Itoa(pid))
+	if err != nil {
+		return "", err
+	}
+	var thread, cli string
+	for _, f := range strings.Fields(string(out)) { // the environment follows the command, so the last wins
+		if v, ok := strings.CutPrefix(f, "T3CODE_THREAD_ID="); ok {
+			thread = v
+		} else if v, ok := strings.CutPrefix(f, "T3CODE_CLI_PATH="); ok {
+			cli = v
+		}
+	}
+	if !t3ID(thread) || !filepath.IsAbs(cli) {
+		return "", errors.New("no T3 Code thread in its environment")
+	}
+	out, err = runBounded(5*time.Second, nil, cli, "thread", "show", "--json", thread)
+	if err != nil {
+		return "", err
+	}
+	var shown struct {
+		Thread struct{ Link string } `json:"thread"`
+	}
+	if err := json.Unmarshal(out, &shown); err != nil {
+		return "", err
+	}
+	u, err := url.Parse(shown.Thread.Link) // http://host:port/<environment>/<thread>
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if env := parts[0]; len(parts) == 2 && t3ID(env) {
+		return "t3code://threads/" + env + "/" + thread, nil
+	}
+	return "", fmt.Errorf("unexpected T3 Code link %q", shown.Thread.Link)
+}
+
+// t3ID: a T3 Code id (a uuid, or mcp:… for threads an agent started), safe
+// to put in a link.
+func t3ID(s string) bool {
+	return s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-") == ""
+}
+
+// openApp hands an app's own link to the system. A variable so tests never
+// open anything.
+var openApp = func(link string) error {
+	opener := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		opener = "open"
+	}
+	_, err := runBounded(5*time.Second, nil, opener, link)
+	return err
 }
 
 // hostedElsewhere: session id is live in an app ccs can't switch to; says so.

@@ -59,12 +59,25 @@ func TestEraseSavedLinesAfterClear(t *testing.T) {
 	}
 }
 
-func TestStartProfile(t *testing.T) {
-	startProfile("")() // off: nothing to stop
-	path := filepath.Join(t.TempDir(), "cpu.out")
-	stop := startProfile(path)
-	stop()
+func TestProfileChord(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 200, 30
+	m, _ = chord(m, "r")
+	if m.profileStop == nil || !strings.Contains(m.View(), "recording profile") {
+		t.Fatal("^X R starts recording and says so in the header")
+	}
+	path := m.profilePath
+	if filepath.Dir(path) != filepath.Dir(updateLogPath) {
+		t.Errorf("the profile goes beside the logs: %s", path)
+	}
+	m, _ = chord(m, "r")
+	if m.profileStop != nil || strings.Contains(m.View(), "recording profile") || !strings.Contains(m.errorMsg, path) {
+		t.Errorf("^X R again stops it and says where it is: %q", m.errorMsg)
+	}
 	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
-		t.Errorf("CCS_CPUPROFILE should write a profile: %v", err)
+		t.Errorf("profile not written: %v", err)
+	}
+	if _, err := startProfile(filepath.Join(t.TempDir(), "missing", "cpu.out")); err == nil {
+		t.Error("an unwritable path is an error")
 	}
 }

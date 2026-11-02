@@ -19,23 +19,18 @@ import (
 
 var version = "dev"
 
-// startProfile records a CPU profile of the TUI to path (CCS_CPUPROFILE, for
-// chasing slowness: go tool pprof it); "" does nothing. Returns the stop.
-func startProfile(path string) func() {
-	if path == "" {
-		return func() {}
-	}
+// startProfile records a CPU profile to path (CCS_CPUPROFILE, or ^X R),
+// for chasing slowness: go tool pprof -top it. Returns the stop.
+func startProfile(path string) (func(), error) {
 	f, err := os.Create(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "CCS_CPUPROFILE: %v\n", err)
-		return func() {}
+		return nil, err
 	}
 	if err := pprof.StartCPUProfile(f); err != nil {
 		f.Close()
-		fmt.Fprintf(os.Stderr, "CCS_CPUPROFILE: %v\n", err)
-		return func() {}
+		return nil, err
 	}
-	return func() { pprof.StopCPUProfile(); f.Close() }
+	return func() { pprof.StopCPUProfile(); f.Close() }, nil
 }
 
 func printHelp() {
@@ -85,6 +80,7 @@ Key bindings:
   Ctrl+X S        Settle or snooze the selected session (again to bring it back)
   Ctrl+X G        Group sessions by folder
   Ctrl+X K        Stop the selected background session (press twice)
+  Ctrl+X R        Record a CPU profile, again to stop (or set CCS_CPUPROFILE=path)
   Ctrl+X P        Pin the selected session to the top (again to unpin);
                   Alt+Up/Down move it among the pinned
   Ctrl+X T        Table: every column, instead of the sidebar
@@ -280,9 +276,18 @@ func main() {
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithOutput(eraseSavedLines{os.Stdout}))
 
-	stopProfile := startProfile(os.Getenv("CCS_CPUPROFILE"))
+	if path := os.Getenv("CCS_CPUPROFILE"); path != "" {
+		stop, err := startProfile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "CCS_CPUPROFILE: %v\n", err)
+			os.Exit(1)
+		}
+		m.profileStop, m.profilePath = stop, path
+	}
 	finalModel, err := p.Run()
-	stopProfile()
+	if stop := finalModel.(model).profileStop; stop != nil {
+		stop()
+	}
 	closeInboxes()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

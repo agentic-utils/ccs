@@ -978,7 +978,7 @@ func TestQuestionMarkColours(t *testing.T) {
 	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+waitColour+"m●") {
 		t.Errorf("a menu or prompt waiting: a magenta ●, got %q", marks)
 	}
-	m.hosts = map[string]string{"s": "T3 Code"}
+	m.hosts = map[string]string{"s": "Zed"}
 	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+waitColour+"m○") {
 		t.Errorf("one in an app keeps its hollow ○ while waiting: %q", marks)
 	}

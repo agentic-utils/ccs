@@ -897,6 +897,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case t3DoneMsg:
+		m.resuming = false
+		if msg.err != nil {
+			logActivity("couldn't open in T3 Code: %v", msg.err)
+			m.note("In T3 Code: open it there · ^S messages it")
+		}
+		return m, nil
+
 	case focusDoneMsg:
 		m.resuming = false
 		if msg.gone {
@@ -2232,7 +2240,7 @@ func (m model) listMarks(item listItem) (string, string) {
 	// magenta when a menu or prompt waits on you, light magenta when idle and
 	// its last message asks something.
 	liveGlyph, liveColour := "●", "32"
-	if m.hostedApp(conv.SessionID) != "" { // open in an app ccs can't switch to
+	if h := m.hostedApp(conv.SessionID); h != "" && h != t3App { // open in an app ccs can't switch to
 		liveGlyph = "○"
 	}
 	switch m.waitSignal(conv) { // the circle stays (● or ○ says whether ccs can open it); its colour says why

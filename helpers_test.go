@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -113,6 +114,8 @@ func TestMain(m *testing.M) {
 	marksPath = filepath.Join(dir, "sessions.json")
 	hostOf = func(int, string) string { return "" }                       // every session in a terminal, wherever the tests run
 	listAgents = func() (map[string]bgSession, error) { return nil, nil } // never the real claude agents
+	t3Link = func(int) (string, error) { return "", errors.New("no T3 Code in tests") }
+	openApp = func(string) error { return errors.New("tests open nothing") }
 	releaseKey = testReleaseKey.Public().(ed25519.PublicKey)
 	code := m.Run()
 	os.RemoveAll(dir)

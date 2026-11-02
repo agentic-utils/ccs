@@ -147,6 +147,8 @@ type model struct {
 	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
 	autoUpdate        bool      // ^X I: install a new version once you're away (the default)
+	profileStop       func()    // ^X R: a CPU profile is being recorded to profilePath; this stops it
+	profilePath       string
 	autoFailed        string    // the version an automatic install failed for: offered, not retried
 	autoInstalling    bool      // this install started on its own: the new ccs says so
 	lastKeyAt         time.Time // the last key press, for "away"
@@ -1307,6 +1309,24 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if k == "^x r" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+			m.helpOpen = false
+			if m.profileStop != nil {
+				m.profileStop()
+				m.profileStop = nil
+				m.note("CPU profile saved: " + m.profilePath + " (go tool pprof -top it)")
+				return m, nil
+			}
+			path := filepath.Join(filepath.Dir(updateLogPath), "cpu-"+time.Now().Format("20060102-150405")+".pprof")
+			stop, err := startProfile(path)
+			if err != nil {
+				m.errorMsg = "Couldn't record a profile: " + err.Error()
+				return m, nil
+			}
+			m.profileStop, m.profilePath = stop, path
+			m.note("Recording a CPU profile: do what's slow, then ^X R again")
+			return m, nil
+		}
 		if k == "^x i" && !m.prompting() && !m.acctOpen && !m.waitOpen {
 			m.helpOpen, m.autoUpdate = false, !m.autoUpdate
 			saveSettings(m.settings())
@@ -1775,6 +1795,8 @@ func (m model) shortcuts() [][2]string {
 	}
 	add(m.autoUpdate, "^X I", "stop installing updates on their own")
 	add(!m.autoUpdate, "^X I", "install updates on their own once you're away")
+	add(m.profileStop == nil, "^X R", "record a CPU profile, for slowness")
+	add(m.profileStop != nil, "^X R", "stop recording the CPU profile")
 	add(!m.grouped, "^X G", "group by folder")
 	add(m.grouped, "^X G", "ungroup")
 	add(true, "^L", "changelog")
@@ -1899,6 +1921,9 @@ func (m model) viewScreen() string {
 	}
 	// Auto-focus on or off, so you know which you're in; after the waiting
 	// count, which matters more when a narrow screen cuts the title.
+	if m.profileStop != nil { // a reminder: it records until stopped
+		status += " · " + key("^X R") + "\033[31mrecording profile\033[33m"
+	}
 	if !m.showUsage {
 		state := "off"
 		if m.autoFocus {
@@ -1926,7 +1951,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}

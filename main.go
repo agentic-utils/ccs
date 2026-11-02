@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"os"
 	"os/exec"
+	"runtime/pprof"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,25 @@ import (
 )
 
 var version = "dev"
+
+// startProfile records a CPU profile of the TUI to path (CCS_CPUPROFILE, for
+// chasing slowness: go tool pprof it); "" does nothing. Returns the stop.
+func startProfile(path string) func() {
+	if path == "" {
+		return func() {}
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "CCS_CPUPROFILE: %v\n", err)
+		return func() {}
+	}
+	if err := pprof.StartCPUProfile(f); err != nil {
+		f.Close()
+		fmt.Fprintf(os.Stderr, "CCS_CPUPROFILE: %v\n", err)
+		return func() {}
+	}
+	return func() { pprof.StopCPUProfile(); f.Close() }
+}
 
 func printHelp() {
 	fmt.Printf(`ccs v%s - Claude Code Search
@@ -260,7 +280,9 @@ func main() {
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithOutput(eraseSavedLines{os.Stdout}))
 
+	stopProfile := startProfile(os.Getenv("CCS_CPUPROFILE"))
 	finalModel, err := p.Run()
+	stopProfile()
 	closeInboxes()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

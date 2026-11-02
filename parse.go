@@ -65,7 +65,8 @@ type Conversation struct {
 	lastUsageID string         // one reply spans several lines with the same id and usage; count it once
 	tailApplied bool           // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
 	pending     *toolCall      // the last tool call still without a result: what a waiting session asks about
-	PRs         []string       // PRs Claude Code linked to the session (pr-link), first touched first
+	PRs         []string       // its PRs, first touched first: Claude Code's pr-link records, and those gh pr create/merge printed (ghPRCall)
+	ghCalls     []string       // gh pr create/merge calls awaiting their output
 	spawns      []spawnCmd     // claude -p commands it ran, to find the sessions they started
 	peers       []peerRef      // its messages to and from other sessions, to link the two ends
 	peerNotes   map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
@@ -568,9 +569,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 		conv.Title = raw.CustomTitle // user-set name wins over ai-title
 		conv.IsCustomTitle = raw.CustomTitle != ""
 	case "pr-link":
-		if prURL.MatchString(raw.PrURL) && !slices.Contains(conv.PRs, raw.PrURL) {
-			conv.PRs = append(conv.PRs, raw.PrURL)
-		}
+		addPR(conv, raw.PrURL)
 	case "ai-title":
 		if conv.Title == "" {
 			conv.Title = raw.AiTitle
@@ -694,6 +693,12 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
 			noteResult(conv, b.ToolUseID, b.Content)
+			if i := slices.Index(conv.ghCalls, b.ToolUseID); i >= 0 {
+				conv.ghCalls = slices.Delete(slices.Clone(conv.ghCalls), i, i+1)
+				for _, u := range ghOutputPRs(resultText(b.Content)) {
+					addPR(conv, u)
+				}
+			}
 		}
 		switch {
 		case b.Type == "tool_use":
@@ -709,6 +714,9 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 				}
 				if json.Unmarshal(call.Input, &in) == nil && isSpawn(in.Command) {
 					conv.spawns = append(conv.spawns, spawnCmd{ts, spawnText(in.Command)})
+				}
+				if ghPRCall(in.Command) {
+					conv.ghCalls = append(slices.Clone(conv.ghCalls), call.ID)
 				}
 			}
 		case b.Type == "tool_result" && conv.pending != nil && b.ToolUseID == conv.pending.ID:

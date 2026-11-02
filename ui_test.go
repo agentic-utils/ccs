@@ -1550,3 +1550,50 @@ func TestEscGoesBackToTheTop(t *testing.T) {
 		t.Errorf("Esc clears the search and goes back to the top: search %q, cursor %d", m.textInput.Value(), m.cursor)
 	}
 }
+
+func TestSortItems(t *testing.T) {
+	// Every order of five, including whole cycles and fixed points, comes out
+	// sorted and stable (equal keys keep their order), none lost or doubled.
+	keys := []int{3, 1, 3, 0, 2}
+	var perm func(k int)
+	perm = func(k int) {
+		if k == len(keys) {
+			items := make([]listItem, len(keys))
+			for i, v := range keys {
+				items[i].rank, items[i].depth = v, i
+			}
+			sortItems(items, func(a, b *listItem) bool { return a.rank < b.rank })
+			for i := 1; i < len(items); i++ {
+				a, b := items[i-1], items[i]
+				if a.rank > b.rank || a.rank == b.rank && a.depth >= b.depth {
+					t.Fatalf("%v: got %v", keys, items)
+				}
+			}
+			return
+		}
+		for i := k; i < len(keys); i++ {
+			keys[k], keys[i] = keys[i], keys[k]
+			perm(k + 1)
+			keys[k], keys[i] = keys[i], keys[k]
+		}
+	}
+	perm(0)
+}
+
+func TestScrollingDoesntSort(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{
+		{SessionID: "a", LastTimestamp: "2026-01-02"}, {SessionID: "b", LastTimestamp: "2026-01-01"},
+	}), "", nil)
+	m.width, m.height = 120, 30
+	m.live = map[string]bool{"b": true} // as a tick sets it; the tick's own sort would bring b up
+	for _, msg := range []tea.Msg{tea.KeyMsg{Type: tea.KeyDown}, tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress}} {
+		res, _ := m.Update(msg)
+		if m = res.(model); m.filtered[0].conv.SessionID != "a" {
+			t.Fatalf("%T sorted the list", msg)
+		}
+	}
+	res, _ := m.Update(chatTickResult{id: "b"})
+	if m = res.(model); m.filtered[0].conv.SessionID != "b" {
+		t.Error("any other message should sort it")
+	}
+}

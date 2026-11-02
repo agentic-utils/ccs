@@ -194,6 +194,7 @@ func TestIdleLiveSelectionStaysStatic(t *testing.T) {
 	m := chatModel(t)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown}) // onto the live session
 	m.chatStatus = map[string]sessionStat{"live": {status: "idle", since: time.Now()}}
+	m.sortList() // as the tick that set the status would
 	first := m.View()
 	time.Sleep(1100 * time.Millisecond)
 	nm, _ := m.Update(chatTickResult{id: "live", stat: sessionStat{status: "idle", since: m.chatStatus["live"].since}})

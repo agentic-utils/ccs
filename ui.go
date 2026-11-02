@@ -146,8 +146,8 @@ type model struct {
 	notesFetching     bool      // a fetch is in flight (started at launch or by Ctrl+L)
 	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
-	autoUpdate        bool      // ^X I: install a new version once you're away (the default)
-	profileStop       func()    // ^X R: a CPU profile is being recorded to profilePath; this stops it
+	autoUpdate        bool   // ^X I: install a new version once you're away (the default)
+	profileStop       func() // ^X R: a CPU profile is being recorded to profilePath; this stops it
 	profilePath       string
 	autoFailed        string    // the version an automatic install failed for: offered, not retried
 	autoInstalling    bool      // this install started on its own: the new ccs says so
@@ -446,7 +446,8 @@ func (m model) liveGroup(c Conversation) int {
 
 // sortList orders the list by liveGroup, then best search match (named after
 // the query, then the words as a phrase), then newest, keeping the cursor on
-// the same session. Statuses change on ticks, so Update runs it every time.
+// the same session. Statuses change on ticks, so Update runs it after every
+// message but those that only move the selection (movesOnly).
 func (m *model) sortList() {
 	if len(m.filtered) == 0 {
 		return
@@ -469,10 +470,10 @@ func (m *model) sortList() {
 	// most urgent session's; with ^X G, folders within each, a group where its
 	// first session lands, so the one holding a question comes first.
 	// Families stay together under their top session's folder.
-	first := map[string]int{}
+	first := map[group]int{}
 	if m.grouped {
-		for i, it := range m.filtered {
-			if k := groupOf(it); first[k] == 0 {
+		for i := range m.filtered {
+			if k := groupOf(&m.filtered[i]); first[k] == 0 {
 				first[k] = i + 1
 			}
 		}
@@ -481,7 +482,7 @@ func (m *model) sortList() {
 		if a.familyState != b.familyState {
 			return a.familyState < b.familyState
 		}
-		return first[groupOf(*a)] < first[groupOf(*b)]
+		return first[groupOf(a)] < first[groupOf(b)]
 	})
 	m.hideCollapsed()
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
@@ -500,11 +501,27 @@ func sortItems(items []listItem, less func(a, b *listItem) bool) {
 		idx[i] = i
 	}
 	sort.SliceStable(idx, func(i, j int) bool { return less(&items[idx[i]], &items[idx[j]]) })
-	out := make([]listItem, len(items))
-	for i, k := range idx {
-		out[i] = items[k]
+	permute(items, idx)
+}
+
+// permute reorders items so items[i] becomes the old items[idx[i]], in place,
+// cycle by cycle, rather than through a second whole list; idx is used up.
+func permute(items []listItem, idx []int) {
+	for i := range idx {
+		if idx[i] < 0 || idx[i] == i {
+			continue
+		}
+		tmp := items[i]
+		j := i
+		for idx[j] != i {
+			k := idx[j]
+			items[j] = items[k]
+			idx[j] = -1
+			j = k
+		}
+		items[j] = tmp
+		idx[j] = -1
 	}
-	copy(items, out)
 }
 
 // step moves the cursor by one shown session (dir -1 up, 1 down), past those
@@ -540,7 +557,7 @@ func (m *model) nestFamilies() {
 			}
 		}
 	}
-	out := make([]listItem, 0, n)
+	order := make([]int, 0, n) // the new list, as indexes into m.filtered
 	seen := make([]bool, n)
 	var walk func(i, depth int, cwd string)
 	walk = func(i, depth int, cwd string) {
@@ -548,9 +565,9 @@ func (m *model) nestFamilies() {
 			return
 		}
 		seen[i] = true
-		it := m.filtered[i]
+		it := &m.filtered[i]
 		it.depth, it.familyCwd = depth, cwd
-		out = append(out, it)
+		order = append(order, i)
 		for _, k := range kids[i] {
 			walk(k, depth+1, cwd)
 		}
@@ -563,14 +580,16 @@ func (m *model) nestFamilies() {
 		walk(r, 0, m.filtered[r].conv.Cwd)
 		walk(i, 0, m.filtered[i].conv.Cwd) // only reached by a cycle
 	}
+	permute(m.filtered, order)
+	out := m.filtered
 	for start := 0; start < len(out); { // families are contiguous, each from its depth-0 session
 		end := start + 1
 		for end < len(out) && out[end].depth > 0 {
 			end++
 		}
 		state := out[start].state
-		for _, it := range out[start+1 : end] {
-			state = min(state, it.state)
+		for i := start + 1; i < end; i++ {
+			state = min(state, out[i].state)
 		}
 		if pin := m.familyPin(out[start:end]); pin >= 0 { // above every state, in pin order
 			state = pin - len(m.marks.Pinned)
@@ -580,7 +599,6 @@ func (m *model) nestFamilies() {
 		}
 		start = end
 	}
-	m.filtered = out
 }
 
 // familyPin is the first pin place of a family's sessions, -1 if none is pinned.
@@ -596,11 +614,18 @@ func (m model) familyPin(family []listItem) int {
 
 // groupOf is the ^X G group a session is listed under: its family's folder,
 // within its state section. Pinned families keep their own order, ungrouped.
-func groupOf(it listItem) string {
+func groupOf(it *listItem) group {
 	if it.familyState < 0 {
-		return fmt.Sprint(it.familyState)
+		return group{state: it.familyState}
 	}
-	return fmt.Sprint(it.familyState, " ", groupKey(it.familyCwd))
+	return group{it.familyState, groupKey(it.familyCwd)}
+}
+
+// group identifies a folder within a state section; comparable, so building
+// one allocates nothing (sortList compares them n log n times).
+type group struct {
+	state  int
+	folder string
 }
 
 // sectionOf is the state section a familyState is listed in: pinned ones
@@ -722,13 +747,13 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.update(msg)
 	n := res.(model)
-	n.sortList()
+	if !movesOnly(msg) {
+		n.sortList()
+	}
 	if settle := n.noteSelection(); settle != nil {
 		cmd = tea.Batch(cmd, settle)
 	}
-	if n.noteSeen() {
-		n.sortList() // out of done
-	}
+	n.noteSeen() // done sorts with idle, so this never moves a session
 	n.syncChatDraft()
 	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
 		n.chatFocus = false
@@ -740,6 +765,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return n, tea.Batch(cmd, tick)
 	}
 	return n, cmd
+}
+
+// movesOnly reports a message that can only move the selection or scroll:
+// the mouse and the arrow and page keys. Nothing it does changes the list's
+// order (pinning and the like sort themselves), so Update skips the sort, which
+// a wheel's burst of events would otherwise run dozens of times a second.
+func movesOnly(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case tea.MouseMsg, previewSettledMsg:
+		return true
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "up", "down", "pgup", "pgdown", "ctrl+p", "ctrl+n":
+			return true
+		}
+	}
+	return false
 }
 
 func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2277,14 +2319,15 @@ type listRow struct {
 // section, and with ^X G before each folder within it (sortList keeps a
 // section's and a group's sessions together).
 func (m model) listRows() []listRow {
-	counts := map[string]int{}
+	counts := map[group]int{}
 	sections := map[int]int{}
-	for _, it := range m.filtered {
-		counts[groupOf(it)]++
-		sections[sectionOf(it.familyState)]++
+	for i := range m.filtered {
+		counts[groupOf(&m.filtered[i])]++
+		sections[sectionOf(m.filtered[i].familyState)]++
 	}
-	var rows []listRow
-	for i, it := range m.filtered {
+	rows := make([]listRow, 0, len(m.filtered)*m.rowsPerItem()+len(sections)+len(counts))
+	for i := range m.filtered {
+		it := &m.filtered[i]
 		if s := sectionOf(it.familyState); i == 0 || s != sectionOf(m.filtered[i-1].familyState) {
 			sec := pinnedSection
 			if s >= 0 {
@@ -2292,7 +2335,7 @@ func (m model) listRows() []listRow {
 			}
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
 		}
-		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(m.filtered[i-1])) {
+		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(&m.filtered[i-1])) {
 			fold, more := "", ""
 			if m.collapsed(it.familyCwd) {
 				fold, more = "▸ ", fmt.Sprintf(" · %d more", counts[k]-1)

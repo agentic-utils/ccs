@@ -104,24 +104,22 @@ func (m model) unseen(c Conversation) bool {
 // noteSeen notes the selected done session as being looked at while you can
 // see it (ccs has the terminal's focus and its preview is drawn), and marks
 // it seen once the selection moves off it, so its circle stays cyan while
-// you read. True when the list needs sorting again.
-func (m *model) noteSeen() bool {
+// you read.
+func (m *model) noteSeen() {
 	sel := ""
 	if len(m.filtered) > 0 {
 		sel = m.filtered[m.cursor].conv.SessionID
 	}
-	left := false
 	if m.viewing != "" && m.viewing != sel {
 		m.markSeen(m.viewing)
-		m.viewing, left = "", true
+		m.viewing = ""
 	}
 	if m.marks == nil || m.blurred || sel == "" || !m.previewSettled() {
-		return left
+		return
 	}
 	if c := m.filtered[m.cursor].conv; m.liveGroup(c) == 2 && m.unseen(c) { // only once done: a busy one would write on every reply
 		m.viewing = sel
 	}
-	return left
 }
 
 // markSeen records that you've looked at session id now.
@@ -199,7 +197,7 @@ func (m *model) hideCollapsed() {
 	for i := range m.filtered {
 		it := &m.filtered[i]
 		it.hidden = m.grouped && it.familyState >= 0 && m.collapsed(it.familyCwd) &&
-			i > 0 && groupOf(*it) == groupOf(m.filtered[i-1])
+			i > 0 && groupOf(it) == groupOf(&m.filtered[i-1])
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -55,5 +56,15 @@ func TestEraseSavedLinesAfterClear(t *testing.T) {
 	got, _ := io.ReadAll(r)
 	if string(got) != "a\x1b[2J\x1b[3Jb" {
 		t.Errorf("a clear should be followed by an erase of the saved lines, got %q", got)
+	}
+}
+
+func TestStartProfile(t *testing.T) {
+	startProfile("")() // off: nothing to stop
+	path := filepath.Join(t.TempDir(), "cpu.out")
+	stop := startProfile(path)
+	stop()
+	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
+		t.Errorf("CCS_CPUPROFILE should write a profile: %v", err)
 	}
 }

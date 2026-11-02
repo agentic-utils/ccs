@@ -28,6 +28,7 @@ type listItem struct {
 	rank        int    // matchRank for the current search, 0 without one
 	depth       int    // nested under the session that started it (sortList)
 	familyCwd   string // its top-level session's cwd, which ^X G groups the family by
+	state       int    // its liveGroup as of the last sortList
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
 	hidden      bool   // in a collapsed folder, under the one session it shows (^X C)
 }
@@ -448,20 +449,19 @@ func (m *model) sortList() {
 	if len(m.filtered) == 0 {
 		return
 	}
-	less := func(i, j int) bool {
-		a, b := m.filtered[i], m.filtered[j]
-		if ga, gb := m.liveGroup(a.conv), m.liveGroup(b.conv); ga != gb {
-			return ga < gb
+	id := m.filtered[min(m.cursor, len(m.filtered)-1)].conv.SessionID
+	for i := range m.filtered { // once each: the comparisons below run n log n times
+		m.filtered[i].state = m.liveGroup(m.filtered[i].conv)
+	}
+	sortItems(m.filtered, func(a, b *listItem) bool {
+		if a.state != b.state {
+			return a.state < b.state
 		}
 		if a.rank != b.rank {
 			return a.rank < b.rank
 		}
 		return a.conv.LastTimestamp > b.conv.LastTimestamp
-	}
-	id := m.filtered[min(m.cursor, len(m.filtered)-1)].conv.SessionID
-	// ponytail: sorts on every Update (the families and groups move with
-	// statuses); a few hundred rows, cache it if it shows in profiles.
-	sort.SliceStable(m.filtered, less)
+	})
 	m.nestFamilies()
 	// State sections (waiting, asked, idle, busy, not open), a family in its
 	// most urgent session's; with ^X G, folders within each, a group where its
@@ -475,12 +475,11 @@ func (m *model) sortList() {
 			}
 		}
 	}
-	sort.SliceStable(m.filtered, func(i, j int) bool {
-		a, b := m.filtered[i], m.filtered[j]
+	sortItems(m.filtered, func(a, b *listItem) bool {
 		if a.familyState != b.familyState {
 			return a.familyState < b.familyState
 		}
-		return first[groupOf(a)] < first[groupOf(b)]
+		return first[groupOf(*a)] < first[groupOf(*b)]
 	})
 	m.hideCollapsed()
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
@@ -489,6 +488,21 @@ func (m *model) sortList() {
 	for m.cursor > 0 && m.filtered[m.cursor].hidden { // its folder was collapsed: to the one it shows
 		m.cursor--
 	}
+}
+
+// sortItems stable-sorts items by less through an index, so a comparison
+// never copies a listItem (each holds a whole Conversation).
+func sortItems(items []listItem, less func(a, b *listItem) bool) {
+	idx := make([]int, len(items))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(i, j int) bool { return less(&items[idx[i]], &items[idx[j]]) })
+	out := make([]listItem, len(items))
+	for i, k := range idx {
+		out[i] = items[k]
+	}
+	copy(items, out)
 }
 
 // step moves the cursor by one shown session (dir -1 up, 1 down), past those
@@ -552,9 +566,9 @@ func (m *model) nestFamilies() {
 		for end < len(out) && out[end].depth > 0 {
 			end++
 		}
-		state := m.liveGroup(out[start].conv)
+		state := out[start].state
 		for _, it := range out[start+1 : end] {
-			state = min(state, m.liveGroup(it.conv))
+			state = min(state, it.state)
 		}
 		if pin := m.familyPin(out[start:end]); pin >= 0 { // above every state, in pin order
 			state = pin - len(m.marks.Pinned)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,57 @@ func TestPRLinksParsed(t *testing.T) {
 	}
 	if !slices.Equal(c.PRs, []string{prA, prB}) {
 		t.Errorf("each github.com PR once, first touched first: %v", c.PRs)
+	}
+}
+
+// ghLines is a Bash call running cmd and its result printing out.
+func ghLines(id, cmd, out string) []string {
+	q := func(s string) string { b, _ := json.Marshal(s); return string(b) }
+	return []string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":` + q(cmd) + `}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + q(out) + `}]}}`,
+	}
+}
+
+func TestPRsFromGhOutput(t *testing.T) {
+	var lines []string
+	lines = append(lines, ghLines("t1", `for r in a b; do gh pr create --repo o/$r --fill; done`, "a | "+prA+" | ok\nb | "+prB)...)
+	lines = append(lines, ghLines("t2", `gh pr merge $n -R o/$r --merge`, "✓ Merged pull request o/r#3 (title)")...)
+	lines = append(lines, ghLines("t3", `gh search prs --owner o`, prD)...) // only mentions a PR
+	var c Conversation
+	for _, l := range lines {
+		parseLine(&c, []byte(l))
+	}
+	if !slices.Equal(c.PRs, []string{prA, prB, prC}) {
+		t.Errorf("PRs gh pr create and merge printed, not ones other output mentions: %v", c.PRs)
+	}
+	if len(c.ghCalls) != 0 {
+		t.Errorf("answered calls are dropped: %v", c.ghCalls)
+	}
+}
+
+func TestSubagentPRs(t *testing.T) {
+	dir := t.TempDir()
+	conv := Conversation{FilePath: filepath.Join(dir, "s.jsonl"), PRs: []string{prA}}
+	sub := filepath.Join(dir, "s", "subagents")
+	os.MkdirAll(filepath.Join(sub, "workflows", "wf_1"), 0o755)
+	write := func(path string, lines []string) {
+		f, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		f.WriteString(strings.Join(lines, "\n") + "\n")
+		f.Close()
+	}
+	a := filepath.Join(sub, "agent-a.jsonl")
+	write(a, ghLines("t1", "gh pr create --fill", prA+"\n"+prB))
+	write(filepath.Join(sub, "workflows", "wf_1", "agent-w.jsonl"), ghLines("t2", "gh pr create --fill", prC))
+	if got := prsOf(conv); !slices.Equal(got, []string{prA, prB, prC}) {
+		t.Errorf("the session's own PRs, then its subagents' not among them: %v", got)
+	}
+	write(a, ghLines("t3", "gh pr merge 4 --merge", "✓ Merged pull request o/r#4"))
+	subPRCache.Lock()
+	delete(subPRCache.dirs, sub) // past subagentPRsTTL
+	subPRCache.Unlock()
+	if got := prsOf(conv); !slices.Contains(got, prD) {
+		t.Errorf("a subagent's later output is read too: %v", got)
 	}
 }
 

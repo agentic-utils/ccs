@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,10 +22,172 @@ import (
 // A session's PRs are the ones Claude Code itself links to it: a "pr-link"
 // record each time a gh command in the session touches a PR (create, view,
 // checks, merge...), the same record behind Claude Code's own PR badge.
+// Claude Code writes none for a PR named only through shell variables (a
+// loop over repos) or for its subagents, so the PRs gh pr create and merge
+// print count too, in the session and its subagents (prsOf).
 
 // prURL is a github.com PR address; anything else in a pr-link is ignored,
 // since its parts go into a GraphQL query.
 var prURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$`)
+
+var (
+	prInOutput  = regexp.MustCompile(`https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+\b`)
+	prMergedOut = regexp.MustCompile(`(?:Merged pull request|Pull request) ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([0-9]+)`)
+)
+
+// addPR adds u to conv's PRs once, if it's a PR address.
+func addPR(conv *Conversation, u string) {
+	if prURL.MatchString(u) && !slices.Contains(conv.PRs, u) {
+		conv.PRs = append(slices.Clone(conv.PRs), u)
+	}
+}
+
+// ghPRCall: a Bash command whose output names the PRs it opened or merged.
+func ghPRCall(cmd string) bool {
+	return strings.Contains(cmd, "gh pr create") || strings.Contains(cmd, "gh pr merge")
+}
+
+// ghOutputPRs is the PRs a ghPRCall printed: create prints the new PR's
+// address, merge "Merged pull request owner/repo#N".
+func ghOutputPRs(out string) []string {
+	urls := prInOutput.FindAllString(out, -1)
+	for _, m := range prMergedOut.FindAllStringSubmatch(out, -1) {
+		urls = append(urls, "https://github.com/"+m[1]+"/pull/"+m[2])
+	}
+	return urls
+}
+
+// prsOf is conv's PRs and then its subagents' not among them.
+func prsOf(conv Conversation) []string {
+	sub := subagentPRs(conv)
+	if len(sub) == 0 {
+		return conv.PRs
+	}
+	urls := slices.Clone(conv.PRs)
+	for _, u := range sub {
+		if !slices.Contains(urls, u) {
+			urls = append(urls, u)
+		}
+	}
+	return urls
+}
+
+// subagentPRsTTL is how long subagentPRs trusts what it last read.
+const subagentPRsTTL = 10 * time.Second
+
+var subPRCache = struct {
+	sync.Mutex
+	dirs  map[string]subPRsRead
+	files map[string]*subPRFile
+}{dirs: map[string]subPRsRead{}, files: map[string]*subPRFile{}}
+
+type subPRsRead struct {
+	at  time.Time
+	prs []string
+}
+
+// subPRFile is how far one subagent transcript has been read: its complete
+// lines up to off, the gh calls still awaiting output, and the PRs found.
+type subPRFile struct {
+	off     int64
+	pending []string
+	prs     []string
+}
+
+// subagentPRs is the PRs conv's subagents opened or merged (ghPRCall),
+// reread at most every subagentPRsTTL and then only what each transcript
+// appended (the list asks on every frame).
+func subagentPRs(conv Conversation) []string {
+	dir := filepath.Join(strings.TrimSuffix(conv.FilePath, ".jsonl"), "subagents")
+	subPRCache.Lock()
+	defer subPRCache.Unlock()
+	if r, ok := subPRCache.dirs[dir]; ok && time.Since(r.at) < subagentPRsTTL {
+		return r.prs
+	}
+	paths, _ := filepath.Glob(filepath.Join(dir, "agent-*.jsonl"))
+	more, _ := filepath.Glob(filepath.Join(dir, "workflows", "*", "agent-*.jsonl"))
+	var prs []string
+	for _, path := range append(paths, more...) {
+		f := subPRCache.files[path]
+		if f == nil {
+			f = &subPRFile{}
+			subPRCache.files[path] = f
+		}
+		f.read(path)
+		for _, u := range f.prs {
+			if !slices.Contains(prs, u) {
+				prs = append(prs, u)
+			}
+		}
+	}
+	subPRCache.dirs[dir] = subPRsRead{time.Now(), prs}
+	return prs
+}
+
+// read takes in what path appended since the last read; a file that shrank
+// is read again from the start.
+func (f *subPRFile) read(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	if info, err := file.Stat(); err != nil || info.Size() == f.off {
+		return
+	} else if info.Size() < f.off {
+		*f = subPRFile{}
+	}
+	if _, err := file.Seek(f.off, io.SeekStart); err != nil {
+		return
+	}
+	r := bufio.NewReaderSize(file, 1<<16)
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil { // an unfinished line waits for the next read
+			return
+		}
+		f.off += int64(len(line))
+		if bytes.Contains(line, []byte("gh pr ")) || len(f.pending) > 0 && bytes.Contains(line, []byte(`"tool_result"`)) {
+			f.line(line)
+		}
+	}
+}
+
+// line notes a line's gh calls and takes the PRs from their output.
+func (f *subPRFile) line(line []byte) {
+	var rec struct {
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &rec) != nil || len(rec.Message.Content) == 0 || rec.Message.Content[0] != '[' {
+		return
+	}
+	var blocks []struct {
+		Type      string                   `json:"type"`
+		ID        string                   `json:"id"`
+		Name      string                   `json:"name"`
+		Input     struct{ Command string } `json:"input"`
+		ToolUseID string                   `json:"tool_use_id"`
+		Content   json.RawMessage          `json:"content"`
+	}
+	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		switch {
+		case b.Type == "tool_use" && b.Name == "Bash" && ghPRCall(b.Input.Command):
+			f.pending = append(f.pending, b.ID)
+		case b.Type == "tool_result" && slices.Contains(f.pending, b.ToolUseID):
+			f.pending = slices.DeleteFunc(f.pending, func(id string) bool { return id == b.ToolUseID })
+			for _, u := range ghOutputPRs(resultText(b.Content)) {
+				if prURL.MatchString(u) && !slices.Contains(f.prs, u) {
+					f.prs = append(f.prs, u)
+				}
+			}
+		}
+	}
+}
 
 // prInfo is what GitHub says about a PR.
 type prInfo struct {
@@ -123,7 +291,7 @@ func prMark(group int) (string, string) {
 // sessionPRs is conv's PRs, ready first, merged and closed last, otherwise
 // in the order the session first touched them.
 func (m model) sessionPRs(conv Conversation) []string {
-	urls := slices.Clone(conv.PRs)
+	urls := slices.Clone(prsOf(conv))
 	slices.SortStableFunc(urls, func(a, b string) int {
 		ga, _ := m.prs[a].status()
 		gb, _ := m.prs[b].status()
@@ -135,7 +303,7 @@ func (m model) sessionPRs(conv Conversation) []string {
 // prCounts is how many of conv's PRs are in each group (prReady…prClosed);
 // one GitHub can't find isn't counted.
 func (m model) prCounts(conv Conversation) (n [prClosed + 1]int) {
-	for _, u := range conv.PRs {
+	for _, u := range prsOf(conv) {
 		if s := m.prs[u].State; s == "" || s == "GONE" { // not looked up yet, or not found
 			continue
 		}
@@ -313,7 +481,7 @@ func (m *model) prCmd() tea.Cmd {
 			if !m.live[it.conv.SessionID] && it.conv.LastTimestamp < cutoff && it.conv.SessionID != selected {
 				continue
 			}
-			for _, u := range it.conv.PRs {
+			for _, u := range prsOf(it.conv) {
 				if !seen[u] && !m.prs[u].final() {
 					seen[u] = true
 					urls = append(urls, u)
@@ -326,7 +494,7 @@ func (m *model) prCmd() tea.Cmd {
 	}
 	if !m.prSelBusy && len(m.filtered) > 0 && m.previewSettled() { // not for each session scrolled past
 		var urls []string
-		for _, u := range m.filtered[m.cursor].conv.PRs {
+		for _, u := range prsOf(m.filtered[m.cursor].conv) {
 			if _, have := m.prs[u]; !have && !m.prSelAsked[u] && len(urls) < prBatch {
 				urls = append(urls, u)
 				m.prSelAsked[u] = true

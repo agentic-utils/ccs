@@ -34,7 +34,7 @@ func startProfile(path string) (func(), error) {
 }
 
 func printHelp() {
-	fmt.Printf(`ccs v%s - Claude Code Search
+	fmt.Printf(`ccs v%s - Coding CLI Sessions
 
 Search and resume Claude Code conversations, and Codex sessions beside them.
 

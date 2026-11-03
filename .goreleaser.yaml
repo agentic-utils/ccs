@@ -40,7 +40,7 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     homepage: "https://github.com/agentic-utils/ccs"
-    description: "Search and resume Claude Code conversations"
+    description: "Coding CLI Sessions: launch, watch, search and resume Claude Code and Codex sessions"
     license: "MIT"
     test: |
       system "#{bin}/ccs", "--version"

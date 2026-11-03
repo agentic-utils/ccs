@@ -1,8 +1,8 @@
-# CCS - Claude Code Search
+# CCS - Coding CLI Sessions
 
 ## Overview
 
-CLI tool to search and resume Claude Code conversations using a bubbletea TUI.
+CLI tool to launch, watch, search and resume coding CLI sessions (Claude Code and Codex) using a bubbletea TUI.
 
 ## Development
 

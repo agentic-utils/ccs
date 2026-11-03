@@ -830,6 +830,7 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: ccs review list | send <id> | drop <id>\n\nDrafted review requests from ccs watch --review that wait for you to\nconfirm them: list shows them, send posts one as you, drop discards one.")
 	}
+	fmt.Fprintln(stderr, reviewDeprecated)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0

@@ -209,10 +209,14 @@ type prRow struct {
 	// OwnersDetail is the same owners with their kind ("claude" or "codex")
 	// and id (the Claude Code session id, or the Codex thread id).
 	OwnersDetail []prOwner `json:"owners_detail,omitempty"`
-	Group        string    `json:"group"`  // ready, needs_you, waiting
-	Status       string    `json:"status"` // why, as the list says it
-	Unowned      bool      `json:"unowned,omitempty"`
-	Contested    bool      `json:"contested,omitempty"` // claimed by two or more live sessions
+	Head         string    `json:"head,omitempty"` // head commit SHA
+	// NeedsReview: awaiting review now (watchedPR.needsReview, as the
+	// needs_review event); from a fresh fetch, the same pass data.
+	NeedsReview bool   `json:"needs_review"`
+	Group       string `json:"group"`  // ready, needs_you, waiting
+	Status      string `json:"status"` // why, as the list says it
+	Unowned     bool   `json:"unowned,omitempty"`
+	Contested   bool   `json:"contested,omitempty"` // claimed by two or more live sessions
 }
 
 // prOwner is one live session claiming a PR.
@@ -398,7 +402,7 @@ func prsList(author, owner string, offline bool, now time.Time) (prsReport, erro
 
 	for u, p := range open {
 		g, why := p.status()
-		row := prRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Group: groupNames[g], Status: why}
+		row := prRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.needsReview(), Group: groupNames[g], Status: why}
 		for _, c := range claims.Claims[u] {
 			o := ownerOf(c, live)
 			row.Owners = append(row.Owners, o.Name)

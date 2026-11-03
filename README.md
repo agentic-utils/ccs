@@ -184,13 +184,24 @@ ccs watch --author me --owner my-org --interval 5m
 ccs watch --once                           # one pass, then exit
 ```
 
-Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (checks green, not a draft, no approval: once per head commit), `ready` (approved, checks green, not a draft), `conflicts`, `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `merged`, `closed`. Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
+Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (awaiting review now: see below), `review_not_needed`, `ready` (approved, checks green, not a draft), `conflicts`, `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `merged`, `closed`. Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
 
 ```json
 {"at":"2026-11-03T09:12:51Z","event":"checks_failing","pr":"https://github.com/o/r/pull/220","repo":"o/r","number":220,"title":"...","head":"0fc4f95...","checks":["setup"]}
 ```
 
-The first run only records what it finds and writes one `watch_started` line, so it doesn't report every PR as news. Its state is kept beside ccs's settings (`pr-watch.json`), so a restart reports what changed while it was stopped, without repeating anything. Only one `ccs watch` runs at a time.
+The first run records what it finds and writes one `watch_started` line, plus `needs_review` for PRs already awaiting review; it doesn't report every PR as news. Its state is kept beside ccs's settings (`pr-watch.json`), so a restart reports what changed while it was stopped, without repeating anything. Only one `ccs watch` runs at a time.
+
+### Review events: a stable interface
+
+A consumer that asks people for reviews (the two-slack plugin's does) needs only these two events, plus `merged` and `closed`. Their fields won't change without a major release.
+
+- `needs_review`: `{at, event, pr, repo, number, title, head, review: "required"}`. The PR is awaiting review right now: checks green (optional ones included), not a draft, no unresolved review thread, review required, not approved. ccs watch asks GitHub again just before emitting it, so stale data never says a PR is waiting. Once per head commit. The first run emits it for PRs already waiting.
+- `review_not_needed`: `{at, event, pr, repo, number, title, head, reason}`. A PR that last got `needs_review` no longer awaits review. `head` is the commit `needs_review` was for. `reason` is one of `approved`, `changes_requested`, `new_head`, `draft`, `checks`, `threads`, `merged` or `closed`. It's emitted once, as soon as the change is seen. For a new head that still needs review, it comes before that head's `needs_review`. For a merge or close, it comes just before `merged` or `closed`.
+
+Drop a queued PR when `review_not_needed`, `merged` or `closed` for it arrives before you post. Whether a PR awaits review is kept in `pr-watch.json`, so a restart neither misses nor repeats either event. `ccs prs --json` rows carry `head` and `needs_review` for a consumer's start-up sweep.
+
+`ccs watch --review` and `ccs review` below are deprecated and will be removed in the next release: review requests move to that consumer.
 
 ## Asking for reviews
 

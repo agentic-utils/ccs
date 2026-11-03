@@ -74,7 +74,7 @@ func TestHeadlessHiddenFromList(t *testing.T) {
 	if got := ids(m); !slices.Equal(got, []string{"kept"}) {
 		t.Errorf("a headless run is hidden: %v", got)
 	}
-	if m.headlessHidden != 1 || !strings.Contains(strip2(m.View()), "1 headless hidden (--all)") {
+	if m.headlessHidden != 1 || !strings.Contains(strip2(m.View()), "1 headless hidden") {
 		t.Errorf("the header says how many are hidden: %d", m.headlessHidden)
 	}
 	m.textInput.SetValue("word")
@@ -142,5 +142,46 @@ func TestMCPSkipsHeadless(t *testing.T) {
 	read := call(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_session","arguments":{"session_id":"aaaa"}}}`)
 	if !strings.Contains(read, "backtest grant") {
 		t.Errorf("read_session reads any session: %s", read)
+	}
+}
+
+func TestHeadlessToggleKey(t *testing.T) {
+	defer func() { showHeadless = false }()
+	run := parsedSession("run", userLine("sdk-cli", "p1", "grant word"))
+	kept := parsedSession("kept", userLine("cli", "p1", "hello word"))
+	m := headlessModel(run, kept)
+	m.width, m.height = 170, 30
+	m.textInput.SetValue("word") // narrowing from the shown list would miss the hidden run
+	m.updateFilter()
+	m, _ = chord(m, "h")
+	if got := ids(m); !showHeadless || !slices.Equal(got, []string{"kept", "run"}) || m.headlessHidden != 0 {
+		t.Errorf("^X H shows headless runs, search kept: %v", got)
+	}
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X H headless on") || strings.Contains(head, "hidden") {
+		t.Errorf("the header says they're shown: %q", head)
+	}
+	m, _ = chord(m, "h")
+	if got := ids(m); showHeadless || !slices.Equal(got, []string{"kept"}) || m.headlessHidden != 1 {
+		t.Errorf("^X H again hides them: %v", got)
+	}
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X H headless off") || !strings.Contains(head, "1 headless hidden") {
+		t.Errorf("the header says they're hidden: %q", head)
+	}
+}
+
+func TestHeadlessToggleSurvivesRestart(t *testing.T) {
+	defer func() { showHeadless = false }()
+	m := headlessModel(parsedSession("kept", userLine("cli", "p1", "hello")))
+	showHeadless = true
+	s := m.uiState()
+	showHeadless = false
+	m.restore(s)
+	if !showHeadless {
+		t.Error("an update restart keeps headless runs shown")
+	}
+	showHeadless = true
+	m.restore(uiState{}) // from a ccs before ^X H: --all's choice stands
+	if !showHeadless {
+		t.Error("state without the field leaves the flag's choice")
 	}
 }

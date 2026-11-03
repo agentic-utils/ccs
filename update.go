@@ -775,9 +775,10 @@ type uiState struct {
 	QueryCursor   int                  `json:"query_cursor"`
 	Selected      string               `json:"selected"` // SessionID, so it survives a reordered list
 	PreviewScroll int                  `json:"preview_scroll"`
-	Snoozes       map[string]snoozeRec `json:"snoozes,omitempty"` // input-prompt overlay snoozes, by SessionID
-	Table         bool                 `json:"table,omitempty"`   // ^X T: the full table, not the sidebar
-	Grouped       bool                 `json:"grouped,omitempty"` // ^X G: grouped by folder
+	Snoozes       map[string]snoozeRec `json:"snoozes,omitempty"`  // input-prompt overlay snoozes, by SessionID
+	Table         bool                 `json:"table,omitempty"`    // ^X T: the full table, not the sidebar
+	Grouped       bool                 `json:"grouped,omitempty"`  // ^X G: grouped by folder
+	Headless      *bool                `json:"headless,omitempty"` // ^X H: headless runs shown; nil (an older ccs) keeps --all's
 }
 
 func (m model) screenName() string {
@@ -796,7 +797,9 @@ func (m model) uiState() uiState {
 		Snoozes:       m.snoozed,
 		Table:         m.table,
 		Grouped:       m.grouped,
+		Headless:      new(bool),
 	}
+	*s.Headless = showHeadless
 	if len(m.filtered) > 0 {
 		s.Selected = m.filtered[m.cursor].conv.SessionID
 	}
@@ -809,6 +812,9 @@ func (m *model) restore(s uiState) {
 	m.textInput.SetValue(s.Query)
 	m.textInput.SetCursor(s.QueryCursor)
 	m.grouped = s.Grouped // before updateFilter, which sorts
+	if s.Headless != nil {
+		showHeadless = *s.Headless
+	}
 	m.updateFilter()
 	for i, item := range m.filtered {
 		if item.conv.SessionID == s.Selected {

@@ -1398,6 +1398,19 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			saveSettings(m.settings())
 			return m, nil
 		}
+		if k == "^x h" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen, showHeadless = false, !showHeadless
+			sel := ""
+			if len(m.filtered) > 0 {
+				sel = m.filtered[m.cursor].conv.SessionID
+			}
+			m.lastFilterQuery = "" // narrowing from the shown list would miss the runs it hid
+			m.updateFilter()
+			if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == sel }); i >= 0 {
+				m.cursor = i
+			}
+			return m, nil
+		}
 		if k == "^x c" && m.grouped && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			m.toggleCollapse()
@@ -1949,6 +1962,8 @@ func (m model) shortcuts() [][2]string {
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.autoFocus, "^X A", "switch to a session when it starts waiting on you")
 	add(m.autoFocus, "^X A", "stop switching to waiting sessions")
+	add(!showHeadless, "^X H", "show headless runs (claude -p, codex exec)")
+	add(showHeadless, "^X H", "hide headless runs")
 	if sel {
 		id := m.filtered[m.cursor].conv.SessionID
 		if _, bg := m.bg[id]; bg && live {
@@ -1989,15 +2004,24 @@ func (m model) shortcuts() [][2]string {
 // headerLine fits the title row into width so it never wraps (listLayout
 // counts it as one row): hint pairs go from the end, keeping the last keep
 // (help, quit), then the title is cut, then the kept hints go too.
-func headerLine(width int, title string, pairs []string, keep int) string {
+func headerLine(width int, title, toggles string, pairs []string, keep int) string {
+	right := func(h string) string {
+		if toggles == "" {
+			return h
+		}
+		return toggles + "   " + h
+	}
 	fits := func(t, h string) bool { return 2+ansi.StringWidth(t)+1+ansi.StringWidth(h) <= width }
 	drop := len(pairs)/2 - keep // pairs that may go
-	for !fits(title, hints(pairs...)) && drop > 0 {
+	for !fits(title, right(hints(pairs...))) && drop > 0 {
 		i := 2 * (drop - 1)
 		pairs = append(pairs[:i:i], pairs[i+2:]...)
 		drop--
 	}
 	help := hints(pairs...)
+	if fits(title, right(help)) { // the toggles go before the title is cut
+		help = right(help)
+	}
 	if !fits(title, help) {
 		title = ansi.Truncate(title, max(width-2-1-ansi.StringWidth(help), 3), "…") + "\033[0m"
 	}
@@ -2010,6 +2034,16 @@ func headerLine(width int, title string, pairs []string, keep int) string {
 		pad = 0
 	}
 	return "  " + title + strings.Repeat(" ", pad) + "\033[90m" + help + "\033[0m"
+}
+
+// toggleHint is a mode's key, name and state for the header: grey, with
+// only "on" in green, so the modes that are on stand out.
+func toggleHint(key, label string, on bool) string {
+	state := "off"
+	if on {
+		state = "\033[32mon\033[90m"
+	}
+	return "\033[1m" + key + "\033[22m " + label + " " + state
 }
 
 // hints renders key/label pairs as "enter resume  ^S msg", keys in bold so
@@ -2080,7 +2114,7 @@ func (m model) viewScreen() string {
 	// Title line with help right-aligned
 	note := m.refreshNote()
 	if m.headlessHidden > 0 && !m.showUsage {
-		note += fmt.Sprintf(" · %d headless hidden (--all)", m.headlessHidden)
+		note += fmt.Sprintf(" · %d headless hidden", m.headlessHidden)
 	}
 	if workerPanicked.Load() {
 		note += " · internal error, logged to " + workerPanicLog
@@ -2104,24 +2138,17 @@ func (m model) viewScreen() string {
 		}
 		status += fmt.Sprintf("%d waiting", n)
 	}
-	// Auto-focus on or off, so you know which you're in; after the waiting
-	// count, which matters more when a narrow screen cuts the title.
 	if m.profileStop != nil { // a reminder: it records until stopped
 		status += " · " + key("^X R") + "\033[31mrecording profile\033[33m"
 	}
+	// The modes ^X toggles, on the right beside the key hints.
+	var toggles []string
 	if !m.showUsage {
-		state := "off"
-		if m.autoFocus {
-			state = "on"
-		}
-		status += " · " + key("^X A") + "auto-focus " + state
+		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
 		if m.checkLatest != nil { // a release build: one that updates
-			state = "off"
-			if m.autoUpdate {
-				state = "on"
-			}
-			status += " · " + key("^X I") + "auto-update " + state
+			toggles = append(toggles, toggleHint("^X I", "auto-update", m.autoUpdate))
 		}
+		toggles = append(toggles, toggleHint("^X H", "headless", showHeadless))
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
 	group := "group" // the modes toggled while working; ^X T and the rest are in ? help
@@ -2136,11 +2163,11 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "H", "headless", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}
-	b.WriteString(headerLine(tableWidth, title, pairs, keep) + "\n")
+	b.WriteString(headerLine(tableWidth, title, strings.Join(toggles, "  "), pairs, keep) + "\n")
 
 	// Search line or delete confirmation
 	var sections []string

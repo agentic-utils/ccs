@@ -86,6 +86,7 @@ Key bindings:
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X A        Auto-focus: switch to a session's tab when it starts waiting on you
   Ctrl+X I        Automatic updates (off by default): install new versions once you're away
+  Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all starts shown
   Ctrl+X C        Collapse the selected session's folder (grouped) to one session
   Ctrl+X S        Settle or snooze the selected session (again to bring it back)
   Ctrl+X G        Group sessions by folder

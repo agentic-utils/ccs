@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	tea "github.com/charmbracelet/bubbletea"
 	"slices"
 	"strings"
 	"testing"
@@ -74,8 +75,8 @@ func TestHeadlessHiddenFromList(t *testing.T) {
 	if got := ids(m); !slices.Equal(got, []string{"kept"}) {
 		t.Errorf("a headless run is hidden: %v", got)
 	}
-	if m.headlessHidden != 1 || !strings.Contains(strip2(m.View()), "1 headless hidden") {
-		t.Errorf("the header says how many are hidden: %d", m.headlessHidden)
+	if v := strip2(m.View()); strings.Contains(v, "headless") {
+		t.Errorf("nothing on screen mentions headless runs: %q", v)
 	}
 	m.textInput.SetValue("word")
 	m.updateFilter()
@@ -99,7 +100,7 @@ func TestHeadlessHiddenFromList(t *testing.T) {
 	showHeadless = true
 	defer func() { showHeadless = false }()
 	m = headlessModel(run, kept)
-	if got := ids(m); !slices.Equal(got, []string{"kept", "run"}) || m.headlessHidden != 0 {
+	if got := ids(m); !slices.Equal(got, []string{"kept", "run"}) {
 		t.Errorf("--all shows everything: %v", got)
 	}
 }
@@ -112,8 +113,8 @@ func TestHeadlessChildHiddenUnderItsParent(t *testing.T) {
 	m.parents = map[string]string{"child": "parent"}
 	m.noParent = map[string]int{"orphan": len(m.items)}
 	m.updateFilter()
-	if got := ids(m); !slices.Equal(got, []string{"parent"}) || m.headlessHidden != 2 {
-		t.Errorf("a headless run goes, nested under a shown session or not: %v, %d hidden", got, m.headlessHidden)
+	if got := ids(m); !slices.Equal(got, []string{"parent"}) {
+		t.Errorf("a headless run goes, nested under a shown session or not: %v", got)
 	}
 }
 
@@ -154,18 +155,22 @@ func TestHeadlessToggleKey(t *testing.T) {
 	m.textInput.SetValue("word") // narrowing from the shown list would miss the hidden run
 	m.updateFilter()
 	m, _ = chord(m, "h")
-	if got := ids(m); !showHeadless || !slices.Equal(got, []string{"kept", "run"}) || m.headlessHidden != 0 {
+	if got := ids(m); !showHeadless || !slices.Equal(got, []string{"kept", "run"}) {
 		t.Errorf("^X H shows headless runs, search kept: %v", got)
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X H headless on") || strings.Contains(head, "hidden") {
-		t.Errorf("the header says they're shown: %q", head)
+	if head := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(head, "headless") {
+		t.Errorf("the header doesn't mention headless runs: %q", head)
 	}
 	m, _ = chord(m, "h")
-	if got := ids(m); showHeadless || !slices.Equal(got, []string{"kept"}) || m.headlessHidden != 1 {
+	if got := ids(m); showHeadless || !slices.Equal(got, []string{"kept"}) {
 		t.Errorf("^X H again hides them: %v", got)
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X H headless off") || !strings.Contains(head, "1 headless hidden") {
-		t.Errorf("the header says they're hidden: %q", head)
+	if head := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(head, "headless") {
+		t.Errorf("the header doesn't mention headless runs: %q", head)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX}) // ^X pressed: its hints leave H out too
+	if head := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(head, "headless") {
+		t.Errorf("the ^X hints don't list it: %q", head)
 	}
 }
 

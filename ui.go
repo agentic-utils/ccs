@@ -193,10 +193,9 @@ type model struct {
 	prSelBusy  bool            // the selected session's own request is in flight
 	prSelAsked map[string]bool // asked for the selected session since the last round
 
-	revealed       map[string]bool // headless sessions shown anyway: opened by selectSession
-	headlessHidden int             // headless sessions the filter left out, for the header
-	prErr          string
-	fetchPRs       func([]string) (map[string]prInfo, error) // nil: never look PRs up
+	revealed map[string]bool // headless sessions shown anyway: opened by selectSession
+	prErr    string
+	fetchPRs func([]string) (map[string]prInfo, error) // nil: never look PRs up
 	// Ctrl+O: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
 	links       []linkItem
@@ -442,7 +441,6 @@ var showHeadless bool
 // Running doesn't count either: a backtest runs dozens at once, and a run
 // anyone talks to gets a second prompt and stops being headless.
 func (m *model) hideHeadless() {
-	m.headlessHidden = 0
 	if showHeadless {
 		return
 	}
@@ -451,11 +449,9 @@ func (m *model) hideHeadless() {
 	}
 	kept := m.filtered[:0]
 	for _, it := range m.filtered {
-		if !shown(it.conv) {
-			m.headlessHidden++
-			continue
+		if shown(it.conv) {
+			kept = append(kept, it)
 		}
-		kept = append(kept, it)
 	}
 	m.filtered = kept
 }
@@ -2113,9 +2109,6 @@ func (m model) viewScreen() string {
 
 	// Title line with help right-aligned
 	note := m.refreshNote()
-	if m.headlessHidden > 0 && !m.showUsage {
-		note += fmt.Sprintf(" · %d headless hidden", m.headlessHidden)
-	}
 	if workerPanicked.Load() {
 		note += " · internal error, logged to " + workerPanicLog
 	}
@@ -2148,7 +2141,6 @@ func (m model) viewScreen() string {
 		if m.checkLatest != nil { // a release build: one that updates
 			toggles = append(toggles, toggleHint("^X I", "auto-update", m.autoUpdate))
 		}
-		toggles = append(toggles, toggleHint("^X H", "headless", showHeadless))
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
 	group := "group" // the modes toggled while working; ^X T and the rest are in ? help
@@ -2163,7 +2155,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "H", "headless", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}

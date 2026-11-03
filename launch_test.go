@@ -246,3 +246,41 @@ func TestLaunchAndCloseFromTheList(t *testing.T) {
 		t.Errorf("closeSession ran on its pid (no tty in tests): %+v", msg)
 	}
 }
+
+func TestLaunchResumeNeedsATranscript(t *testing.T) {
+	sessionsFixture(t)
+	stubLaunch(t)
+	opened := false
+	openLaunchTab = func(string) (string, error) { opened = true; return "", errors.New("stop here") }
+	projects := t.TempDir()
+	old := getProjectsDir
+	getProjectsDir = func() string { return projects }
+	t.Cleanup(func() { getProjectsDir = old })
+	os.MkdirAll(filepath.Join(projects, "-w"), 0o755)
+	os.WriteFile(filepath.Join(projects, "-w", "known-id.jsonl"), []byte("{}\n"), 0o644)
+	day := filepath.Join(codexHome(), "sessions", "2026", "11", "03")
+	os.MkdirAll(day, 0o755)
+	thread := "01a1a197-6287-7f32-8eb6-6cea70678f3f"
+	os.WriteFile(filepath.Join(day, "rollout-2026-11-03T10-00-00-"+thread+".jsonl"), []byte("{}\n"), 0o644)
+
+	for _, c := range []struct {
+		id    string
+		codex bool
+	}{{"missing-id", false}, {"01a1a197-0000-0000-0000-000000000000", true}, {thread, false}, {"known-id", true}} {
+		opened = false
+		_, err := launchSession(launchOpts{name: "r", resume: c.id, codex: c.codex, cwd: t.TempDir()})
+		if err == nil || !strings.Contains(err.Error(), "to resume") || opened {
+			t.Errorf("%+v: refused before any tab opens: %v (opened %v)", c, err, opened)
+		}
+	}
+	for _, c := range []struct {
+		id    string
+		codex bool
+	}{{"known-id", false}, {thread, true}} {
+		opened = false
+		launchSession(launchOpts{name: "r", resume: c.id, codex: c.codex, cwd: t.TempDir()})
+		if !opened {
+			t.Errorf("%+v: a session that exists gets its tab", c)
+		}
+	}
+}

@@ -106,6 +106,19 @@ type launched struct {
 	thread string
 }
 
+// resumable: id has a transcript to resume, a Claude Code session under
+// the projects folder or, with codex, a Codex thread's rollout.
+func resumable(id string, codex bool) bool {
+	if codex {
+		return codexRollout(id) != ""
+	}
+	if strings.ContainsAny(id, `/\*?[`) {
+		return false
+	}
+	paths, _ := filepath.Glob(filepath.Join(getProjectsDir(), "*", id+".jsonl"))
+	return len(paths) > 0
+}
+
 // launchSession starts o in a new iTerm tab and waits until it's running.
 func launchSession(o launchOpts) (launched, error) {
 	if !sessionName.MatchString(o.name) {
@@ -116,6 +129,13 @@ func launchSession(o launchOpts) (launched, error) {
 	}
 	if o.resume != "" && !shellSafe(o.resume) {
 		return launched{}, fmt.Errorf("bad session id %q", o.resume)
+	}
+	if o.resume != "" && !resumable(o.resume, o.codex) {
+		kind := "Claude Code session"
+		if o.codex {
+			kind = "Codex thread"
+		}
+		return launched{}, fmt.Errorf("no %s %q to resume", kind, o.resume)
 	}
 	if o.cwd == "" {
 		o.cwd, _ = os.Getwd()

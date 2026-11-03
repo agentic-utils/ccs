@@ -215,7 +215,7 @@ The hook's stdin (data only: nothing from the batch is ever on its command line)
 {"channel":"C0123ABCD","mention":"<!subteam^S0123ABCD>","prs":[{"url":"https://github.com/o/r/pull/7","title":"...","repo":"o/r","head":"0fc4f95...","status":"checks green, waiting for review","requested_reviewers":["alice","@o/platform"],"owner_sessions":["fix-the-thing"]}]}
 ```
 
-Its stdout (anything around the one JSON object is ignored): `channel_post` (posted to the channel, or null), `drafts` (each to a Slack user or channel id, kept for `ccs review send`), `holds` (PRs to try again in an hour). A non-zero exit, or no plan, is `review_plan_failed`; it has 5 minutes.
+Its stdout (anything around the one JSON object is ignored): `channel_post` (posted to the channel, or null), `drafts` (each to a Slack user or channel id, kept for `ccs review send`), `holds` (PRs to try again in an hour). A PR may be in both the post and a draft. ccs checks the plan and drops only what's wrong with it (a post or draft that links PRs it isn't about, a post without the mention or too long, a hold for a PR that's asked for anyway), saying why in a `review_plan_warning`; a PR placed nowhere stays queued. A non-zero exit, no plan, or nothing usable in it is `review_plan_failed`; it has 5 minutes.
 
 ```json
 {"channel_post":{"text":"<!subteam^S0123ABCD> could you review these?\n- https://github.com/o/r/pull/7 fix the thing","prs":["https://github.com/o/r/pull/7"]},
@@ -230,7 +230,7 @@ The smallest hook sends everything to the channel:
 jq '{channel_post: {text: (.mention + " could you review these?\n" + ([.prs[] | "- " + .url + " " + .title] | join("\n"))), prs: [.prs[].url]}, drafts: [], holds: []}'
 ```
 
-Events: `review_requested` (channel, PRs, permalink), `review_dm_pending` (id, recipient, text, PRs), `review_held` (PR, reason), `review_plan_failed` (PRs, reason; the batch is tried again after the wait). What was asked for, per PR and head commit, is kept in `review.json` beside ccs's settings.
+Events: `review_requested` (channel, PRs, permalink), `review_dm_pending` (id, recipient, text, PRs), `review_held` (PR, reason), `review_plan_warning` (PRs, reason), `review_plan_failed` (PRs, reason; the batch is tried again after the wait). What was asked for, per PR and head commit, is kept in `review.json` beside ccs's settings.
 
 ## Telling sessions about their PRs
 

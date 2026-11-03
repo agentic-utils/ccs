@@ -691,6 +691,11 @@ func (m *model) spawnParent(c Conversation) string {
 	if c.ParentID != "" { // a Codex subagent names its parent thread
 		return c.ParentID
 	}
+	if c.Kind == kindCodex {
+		if p := execParentOf(c.SessionID); p != "" { // a codex exec seen running under that session
+			return p
+		}
+	}
 	if p := m.parents[c.SessionID]; p != "" {
 		return p
 	}

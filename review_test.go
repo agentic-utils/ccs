@@ -318,38 +318,53 @@ func TestCheckPlanRefusesBadPlans(t *testing.T) {
 		return p
 	}
 	good := post(revMention+" review please\n"+revA+"\n"+revB, revA, revB)
-	if err := checkPlan(good, items); err != nil {
-		t.Fatalf("a good plan: %v", err)
+	if got, warn, err := checkPlan(good, items); err != nil || got.ChannelPost == nil || len(warn) != 0 {
+		t.Fatalf("a good plan: %+v %v %v", got, warn, err)
 	}
 	for name, p := range map[string]reviewPlan{
 		"no mention":       post("review please\n"+revA+"\n"+revB, revA, revB),
-		"left out":         post(revMention+" "+revA, revA),
 		"not in the batch": post(revMention+" "+revA+" "+revB+" "+revC, revA, revB, revC),
 		"links another PR": post(revMention+" "+revA+" "+revB+" see https://github.com/o/x/pull/9", revA, revB),
 		"too many lines":   post(revMention+"\nplease\nthanks\n"+revA+"\n"+revB, revA, revB),
 		"too long":         post(revMention+" "+revA+" "+revB+strings.Repeat("x", reviewMaxText), revA, revB),
 	} {
-		if checkPlan(p, items) == nil {
-			t.Errorf("%s: accepted", name)
+		if _, _, err := checkPlan(p, items); err == nil {
+			t.Errorf("%s: a bad post is the only thing in the plan, so nothing is left: accepted", name)
 		}
 	}
-	twice := post(revMention+"\n"+revA+"\n"+revB, revA, revB)
-	twice.Holds = append(twice.Holds, struct {
-		PR     string `json:"pr"`
-		Reason string `json:"reason"`
-	}{revA, "x"})
-	if checkPlan(twice, items) == nil {
-		t.Error("a PR placed twice: accepted")
+	// One PR left out: the post goes, the other stays queued with a warning.
+	if got, warn, err := checkPlan(post(revMention+" "+revA, revA), items); err != nil || got.ChannelPost == nil || len(warn) != 1 || !strings.Contains(warn[0], revB) {
+		t.Errorf("left out: %+v %v %v", got, warn, err)
 	}
-	draft := reviewPlan{}
-	draft.Drafts = append(draft.Drafts, struct {
+	draft := func(to string, prs ...string) struct {
 		To     string   `json:"to"`
 		ToName string   `json:"to_name"`
 		Text   string   `json:"text"`
 		PRs    []string `json:"prs"`
-	}{"#control-plane", "x", revA + " " + revB, []string{revA, revB}})
-	if checkPlan(draft, items) == nil {
-		t.Error("a draft to a channel name, not an id: accepted")
+	} {
+		return struct {
+			To     string   `json:"to"`
+			ToName string   `json:"to_name"`
+			Text   string   `json:"text"`
+			PRs    []string `json:"prs"`
+		}{to, "x", "please " + strings.Join(prs, " "), prs}
+	}
+	// Posted and drafted: both kept (a DM to a reviewer the channel doesn't reach).
+	both := post(revMention+"\n"+revA+"\n"+revB, revA, revB)
+	both.Drafts = append(both.Drafts, draft("U0123456", revA))
+	if got, warn, err := checkPlan(both, items); err != nil || got.ChannelPost == nil || len(got.Drafts) != 1 || len(warn) != 0 {
+		t.Errorf("posted and drafted: %+v %v %v", got, warn, err)
+	}
+	// A hold for a PR that's asked for is dropped; a bad draft is dropped alone.
+	mixed := post(revMention+"\n"+revA+"\n"+revB, revA, revB)
+	mixed.Holds = append(mixed.Holds, struct {
+		PR     string `json:"pr"`
+		Reason string `json:"reason"`
+	}{revA, "x"})
+	mixed.Drafts = append(mixed.Drafts, draft("#control-plane", revA))
+	got, warn, err := checkPlan(mixed, items)
+	if err != nil || got.ChannelPost == nil || len(got.Holds) != 0 || len(got.Drafts) != 0 || len(warn) != 2 {
+		t.Errorf("mixed: %+v %v %v", got, warn, err)
 	}
 }
 

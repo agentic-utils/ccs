@@ -381,93 +381,107 @@ var (
 	githubPRURL = regexp.MustCompile(`https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+`)
 )
 
-// checkPlan: every PR of the batch exactly once, nothing else; the channel
-// post is to the one channel, mentions the team, links only its own PRs and
-// is short; drafts go to a Slack id.
-func checkPlan(p reviewPlan, items []reviewItem) error {
+// checkPlan keeps what's sound in the planner's plan and drops the rest,
+// saying why for each, so one bad entry never costs the whole batch. The
+// channel post goes to the one channel, mentions the team, links only its
+// own PRs and is short; a draft goes to a Slack id and links only its own
+// PRs. A PR may be both posted and drafted (a DM to a reviewer the channel
+// doesn't reach; drafts wait for the user anyway), but a hold for a PR
+// that's posted or drafted is dropped. PRs placed nowhere stay queued.
+// The error is only for a plan with nothing left to do.
+func checkPlan(p reviewPlan, items []reviewItem) (reviewPlan, []string, error) {
 	inBatch := map[string]bool{}
 	for _, it := range items {
 		inBatch[it.URL] = true
 	}
-	seen := map[string]bool{}
-	place := func(pr string) error {
-		if !inBatch[pr] {
-			return fmt.Errorf("%s isn't in the batch", pr)
-		}
-		if seen[pr] {
-			return fmt.Errorf("%s is placed twice", pr)
-		}
-		seen[pr] = true
-		return nil
-	}
+	var warn []string
 	linksOnly := func(text string, prs []string) error {
 		if len(text) == 0 || len(text) > reviewMaxText {
 			return fmt.Errorf("message length %d", len(text))
+		}
+		for _, u := range prs {
+			if !inBatch[u] {
+				return fmt.Errorf("%s isn't in the batch", u)
+			}
+			if !strings.Contains(text, u) {
+				return fmt.Errorf("message doesn't link %s", u)
+			}
 		}
 		for _, u := range githubPRURL.FindAllString(text, -1) {
 			if !slices.Contains(prs, u) {
 				return fmt.Errorf("message links %s, which it isn't about", u)
 			}
 		}
-		for _, u := range prs {
-			if !strings.Contains(text, u) {
-				return fmt.Errorf("message doesn't link %s", u)
-			}
-		}
 		return nil
 	}
+	var out reviewPlan
+	placed := map[string]bool{}
 	if c := p.ChannelPost; c != nil {
-		if len(c.PRs) == 0 {
-			return errors.New("channel post with no PRs")
-		}
-		for _, u := range c.PRs {
-			if err := place(u); err != nil {
-				return err
+		err := linksOnly(c.Text, c.PRs)
+		switch {
+		case len(c.PRs) == 0:
+			err = errors.New("no PRs")
+		case err != nil:
+		case reviewCfg.Mention == "" || !strings.Contains(c.Text, reviewCfg.Mention):
+			err = errors.New("it doesn't carry the review mention")
+		default:
+			n := 0
+			for _, l := range strings.Split(c.Text, "\n") {
+				if strings.TrimSpace(l) != "" {
+					n++
+				}
+			}
+			if n > len(c.PRs)+1 {
+				err = fmt.Errorf("%d lines for %d PRs", n, len(c.PRs))
 			}
 		}
-		if reviewCfg.Mention == "" || !strings.Contains(c.Text, reviewCfg.Mention) {
-			return errors.New("channel post doesn't carry the review mention")
-		}
-		n := 0
-		for _, l := range strings.Split(c.Text, "\n") {
-			if strings.TrimSpace(l) != "" {
-				n++
+		if err != nil {
+			warn = append(warn, "channel post dropped: "+err.Error())
+		} else {
+			out.ChannelPost = c
+			for _, u := range c.PRs {
+				placed[u] = true
 			}
-		}
-		if n > len(c.PRs)+1 {
-			return fmt.Errorf("channel post is %d lines for %d PRs", n, len(c.PRs))
-		}
-		if err := linksOnly(c.Text, c.PRs); err != nil {
-			return err
 		}
 	}
 	for _, d := range p.Drafts {
-		if !slackID.MatchString(d.To) {
-			return fmt.Errorf("draft to %q, not a Slack id", d.To)
+		err := linksOnly(d.Text, d.PRs)
+		switch {
+		case !slackID.MatchString(d.To):
+			err = fmt.Errorf("to %q, not a Slack id", d.To)
+		case len(d.PRs) == 0:
+			err = errors.New("no PRs")
 		}
-		if len(d.PRs) == 0 {
-			return errors.New("draft with no PRs")
+		if err != nil {
+			warn = append(warn, fmt.Sprintf("draft to %s dropped: %v", d.ToName, err))
+			continue
 		}
+		out.Drafts = append(out.Drafts, d)
 		for _, u := range d.PRs {
-			if err := place(u); err != nil {
-				return err
-			}
-		}
-		if err := linksOnly(d.Text, d.PRs); err != nil {
-			return err
+			placed[u] = true
 		}
 	}
+	held := map[string]bool{}
 	for _, h := range p.Holds {
-		if err := place(h.PR); err != nil {
-			return err
+		switch {
+		case !inBatch[h.PR]:
+			warn = append(warn, fmt.Sprintf("hold dropped: %s isn't in the batch", h.PR))
+		case placed[h.PR]:
+			warn = append(warn, fmt.Sprintf("hold dropped: %s is also asked for", h.PR))
+		case !held[h.PR]:
+			held[h.PR] = true
+			out.Holds = append(out.Holds, h)
 		}
 	}
-	for u := range inBatch {
-		if !seen[u] {
-			return fmt.Errorf("%s is left out", u)
+	for _, it := range items {
+		if !placed[it.URL] && !held[it.URL] {
+			warn = append(warn, it.URL+" left out: stays queued")
 		}
 	}
-	return nil
+	if out.ChannelPost == nil && len(out.Drafts) == 0 && len(out.Holds) == 0 {
+		return out, warn, errors.New("nothing usable in the plan: " + strings.Join(warn, "; "))
+	}
+	return out, warn, nil
 }
 
 // slackBase and slackHTTP are Slack's Web API; tests point them at a stub.
@@ -631,10 +645,12 @@ func reviewTick(now time.Time, dryRun bool, stdout io.Writer) error {
 	}
 	items := reviewBatch(s)
 	plan, err := planReview(items)
+	var warnings []string
 	if err == nil {
-		err = checkPlan(plan, items)
+		raw := plan
+		plan, warnings, err = checkPlan(raw, items)
 		if err != nil && dryRun {
-			out, _ := json.MarshalIndent(plan, "", "  ")
+			out, _ := json.MarshalIndent(raw, "", "  ")
 			fmt.Fprintln(stdout, string(out))
 		}
 	}
@@ -648,9 +664,10 @@ func reviewTick(now time.Time, dryRun bool, stdout io.Writer) error {
 	}
 	if dryRun {
 		out, _ := json.MarshalIndent(struct {
-			Batch []reviewItem `json:"batch"`
-			Plan  reviewPlan   `json:"plan"`
-		}{items, plan}, "", "  ")
+			Batch    []reviewItem `json:"batch"`
+			Plan     reviewPlan   `json:"plan"`
+			Warnings []string     `json:"warnings,omitempty"`
+		}{items, plan, warnings}, "", "  ")
 		fmt.Fprintln(stdout, string(out))
 		return nil
 	}
@@ -660,6 +677,9 @@ func reviewTick(now time.Time, dryRun bool, stdout io.Writer) error {
 		heads[it.URL] = it.Head
 	}
 	var events []reviewEvent
+	for _, w := range warnings {
+		events = append(events, reviewEvent{At: at, Event: "review_plan_warning", PRs: urlsOf(items), Reason: w})
+	}
 	var permalink string
 	var postErr error
 	if c := plan.ChannelPost; c != nil {
@@ -682,6 +702,9 @@ func reviewTick(now time.Time, dryRun bool, stdout io.Writer) error {
 			var hs []string
 			for _, u := range d.PRs {
 				hs = append(hs, heads[u])
+				if c := plan.ChannelPost; c != nil && slices.Contains(c.PRs, u) {
+					continue // the channel post decides whether it's asked for, or stays queued
+				}
 				st.Requested[reviewKey(u, heads[u])] = reviewAsked{At: now, How: "draft " + id}
 				delete(st.Queue, u)
 			}

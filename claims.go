@@ -432,8 +432,8 @@ func runPRs(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print JSON")
 	line := fs.Bool("statusline", false, "print one short line of counts from saved state, without asking GitHub")
-	author := fs.String("author", "brtkwr", "PR author")
-	owner := fs.String("owner", "two-inc", "GitHub owner (org or user) whose repos to list")
+	author := fs.String("author", "", "PR author (default: the user gh is logged in as, or the running ccs watch's)")
+	owner := fs.String("owner", "", "GitHub owner (org or user) whose repos to list (default: every owner, or the running ccs watch's)")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: ccs prs [flags]\n\nList the author's open PRs with the session that owns each (ccs claim),\nflagging unowned PRs and PRs claimed by two live sessions. Uses ccs watch's\nstate when it is under %s old, else asks GitHub.\n\n", prsFresh)
 		fs.PrintDefaults()
@@ -443,6 +443,20 @@ func runPRs(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		return 2
+	}
+	// Defaults: the running ccs watch's author and owner (no network, for
+	// --statusline), else the gh user's PRs in every owner's repos.
+	if *author == "" {
+		ownerSet := false
+		fs.Visit(func(f *flag.Flag) { ownerSet = ownerSet || f.Name == "owner" })
+		if st, ok := loadPRWatchState(); ok && (!ownerSet || st.Owner == *owner) {
+			*author, *owner = st.Author, st.Owner
+		} else if *line {
+			return 0 // nothing saved to count, and no network
+		} else if err := defaultAuthor(author); err != nil {
+			fmt.Fprintln(stderr, "ccs prs:", err)
+			return 1
+		}
 	}
 	rep, err := prsList(*author, *owner, *line, time.Now())
 	if err != nil {

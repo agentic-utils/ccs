@@ -257,10 +257,10 @@ func TestAccountEmailFromClaudeConfig(t *testing.T) {
 		t.Errorf("CLAUDE_CONFIG_DIR profile: got %q", got)
 	}
 	// The same email can be in several organisations: name it, as cswap does.
-	if err := os.WriteFile(filepath.Join(alt, ".claude.json"), []byte(`{"oauthAccount":{"emailAddress":"me@two.inc","organizationName":"Two AS"}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(alt, ".claude.json"), []byte(`{"oauthAccount":{"emailAddress":"me@example.com","organizationName":"Acme AS"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := accountEmail(); got != "me@two.inc [Two AS]" {
+	if got := accountEmail(); got != "me@example.com [Acme AS]" {
 		t.Errorf("with its organisation: got %q", got)
 	}
 }

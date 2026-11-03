@@ -125,6 +125,7 @@ func TestMain(m *testing.M) {
 	psAll = func() (string, error) { return "", nil }
 	ttyOf = func(int) string { return "" }
 	signalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
+	ghUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }
 	// review batching never runs a real claude, asks GitHub or reaches Slack.
 	planReview = func([]reviewItem) (reviewPlan, error) { return reviewPlan{}, errors.New("tests plan nothing") }
 	requestedReviewers = func(string, int) ([]string, error) { return nil, nil }

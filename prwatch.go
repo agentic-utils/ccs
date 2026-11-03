@@ -6,6 +6,7 @@ package main
 // search hits RESOURCE_LIMITS_EXCEEDED across many PRs.
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -159,15 +160,15 @@ func lockPRWatch() (*os.File, error) {
 func runWatch(args []string) int {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	interval := fs.Duration("interval", 3*time.Minute, "time between passes")
-	author := fs.String("author", "brtkwr", "PR author")
-	owner := fs.String("owner", "two-inc", "GitHub owner (org or user) whose repos to watch")
+	author := fs.String("author", "", "PR author (default: the user gh is logged in as)")
+	owner := fs.String("owner", "", "GitHub owner (org or user) whose repos to watch (default: every owner)")
 	once := fs.Bool("once", false, "make one pass and exit")
 	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unresolved threads")
-	review := fs.Bool("review", false, "also request reviews: batch PRs that are green and need review, post to --review-channel what the planner routes there, draft the rest (ccs review)")
+	review := fs.Bool("review", false, "also request reviews: batch PRs that are green and need review, post to --review-channel what the hook routes there, draft the rest (ccs review)")
 	dryRun := fs.Bool("dry-run", false, "with --review: print the plan for the PRs waiting now, from the last pass's state, and post nothing")
 	fs.StringVar(&reviewCfg.Channel, "review-channel", "", "with --review: the Slack channel id review requests are posted to")
 	fs.StringVar(&reviewCfg.Mention, "review-mention", "", "with --review: the mention that post must carry, e.g. <!subteam^S…>")
-	fs.StringVar(&reviewCfg.Guide, "review-guide", "", "with --review: a file of routing instructions for the planner")
+	fs.StringVar(&reviewCfg.Hook, "review-hook", "", "with --review: the command that routes a batch (run with sh -c): the batch as JSON on its stdin, the plan as JSON on its stdout")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed; unless --no-nudge,\nnudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unresolved threads). Only one ccs watch runs at a time.\n\n", prEventsPath())
 		fs.PrintDefaults()
@@ -177,6 +178,10 @@ func runWatch(args []string) int {
 			return 0
 		}
 		return 2
+	}
+	if err := defaultAuthor(author); err != nil {
+		fmt.Fprintln(os.Stderr, "ccs watch:", err)
+		return 1
 	}
 	if *review {
 		if err := reviewCfg.check(); err != nil {
@@ -379,7 +384,7 @@ func watchPass(author, owner string, now time.Time) error {
 	}
 
 	if seeding {
-		events = []prEvent{{At: now.UTC().Format(time.RFC3339), Event: "watch_started", Review: fmt.Sprintf("%d open PRs by %s in %s", len(open), author, owner)}}
+		events = []prEvent{{At: now.UTC().Format(time.RFC3339), Event: "watch_started", Review: fmt.Sprintf("%d open PRs by %s in %s", len(open), author, cmp.Or(owner, "any owner"))}}
 	}
 	if err := writePREvents(events); err != nil {
 		return fmt.Errorf("writing events: %w", err)
@@ -423,10 +428,37 @@ func writeEventLines(events []any) error {
 	return nil
 }
 
+// ghUser is the login gh is signed in as. Stubbed in tests.
+var ghUser = func() (string, error) {
+	out, err := ghRun("api", "user", "--jq", ".login")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// defaultAuthor fills an empty --author with ghUser, failing loudly when gh
+// can't say who it is.
+func defaultAuthor(author *string) error {
+	if *author != "" {
+		return nil
+	}
+	login, err := ghUser()
+	if err != nil || login == "" {
+		return fmt.Errorf("--author not given and gh can't say who you are (gh auth login?): %v", err)
+	}
+	*author = login
+	return nil
+}
+
 // searchPRs is gh search prs for author's PRs in owner's repos, with extra
 // filters; blank or malformed entries are dropped.
 func searchPRs(author, owner string, filters ...string) ([]watchedPR, error) {
-	args := append([]string{"search", "prs", "--author", author, "--owner", owner, "--sort", "updated", "--limit", "200", "--json", "url,title,number,repository,isDraft"}, filters...)
+	args := []string{"search", "prs", "--author", author}
+	if owner != "" { // else every owner's repos
+		args = append(args, "--owner", owner)
+	}
+	args = append(append(args, "--sort", "updated", "--limit", "200", "--json", "url,title,number,repository,isDraft"), filters...)
 	out, err := ghRun(args...)
 	if err != nil {
 		return nil, err

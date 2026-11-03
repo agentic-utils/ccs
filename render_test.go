@@ -13,16 +13,16 @@ import (
 // richText is a reply with everything that makes a rendered line hard to fit:
 // a wide table, bold, nested bullets, links and very long lines.
 const richText = "Yes, and there's more context than I'd found before. The most useful piece is the roster, which changes the picture.\n\n" +
-	"**Delphi and Norse are two separate teams with different people.** From the [Notion page](https://www.notion.so/3d129959c003818c97cbdf8c101b84a2) roster:\n\n" +
+	"**Orchid and Falcon are two separate teams with different people.** From the [wiki page](https://wiki.example.com/3d129959c003818c97cbdf8c101b84a2) roster:\n\n" +
 	"| Team | Members |\n|---|---|\n" +
-	"| Delphi (data scientists and ML) | Alvin, Chloe, Ilya, Saad, Vassilis, Wojciech, Xiomara, Yusuf, Zainab, and a few more names to make it wide |\n" +
-	"| Norse Code (software engineers) | Dawid, Georg, Harry, Haseeb, James (team lead), Kacper, Lukas, Maciej, Nikolai, Oskar |\n\n" +
-	"- **Saad is listed under Delphi.** That backs up what you said about Data moving across.\n" +
-	"- **Delphi support is mostly done by Norse engineers.** Apart from Vassilis, nobody in Delphi does engineering work, so the Norse engineers cover it.\n" +
-	"  - **No merger was decided.** Espen's last suggestion (2 Oct) was for Norse to keep both; the norse-delphi-coop channel is unrelated: it's from 2024.\n\n" +
+	"| Orchid (data scientists and ML) | Ana, Ben, Cam, Dee, Eli, Fay, Gus, Hal, Ivy, and a few more names to make it wide |\n" +
+	"| Falcon (software engineers) | Jo, Kit, Lee, Max, Ned, Ola, Pat (team lead), Quin, Rae, Sol |\n\n" +
+	"- **Dee is listed under Orchid.** That backs up what you said about Data moving across.\n" +
+	"- **Orchid support is mostly done by Falcon engineers.** Apart from Eli, nobody in Orchid does engineering work, so the Falcon engineers cover it.\n" +
+	"  - **No merger was decided.** Tam's last suggestion (2 Oct) was for Falcon to keep both; the falcon-orchid-coop channel is unrelated: it's from 2024.\n\n" +
 	"**Why the rota has shifted lately:**\n" +
-	"- **Squads started on 28 Sep.** Espen's [18 Sep post in #product](https://two-inc.slack.com/archives/C0123456/p1726650000000000) set up that squad. https://two-inc.slack.com/archives/C0123456/p1726650000000000?thread_ts=1726650000.000000&cid=C0123456\n\n" +
-	"I can add the Notion roster to the ticket and change the plan to \"pools as they really are\" with a link to Notion for team membership, and `inline code that is quite long too` here?"
+	"- **Squads started on 28 Sep.** Tam's [18 Sep post in #product](https://example.slack.com/archives/C0123456/p1726650000000000) set up that squad. https://example.slack.com/archives/C0123456/p1726650000000000?thread_ts=1726650000.000000&cid=C0123456\n\n" +
+	"I can add the wiki roster to the ticket and change the plan to \"pools as they really are\" with a link to the wiki for team membership, and `inline code that is quite long too` here?"
 
 // richModel is waitModel with two waiting sessions whose transcripts are rich.
 func richModel(t *testing.T, w, h int) model {

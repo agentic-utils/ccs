@@ -175,10 +175,10 @@ You can also prune a single conversation from the search interface: select it an
 
 ## Watching your PRs
 
-`ccs watch` checks one author's open PRs in one GitHub owner every 3 minutes and appends a JSON line for each change to `~/Library/Logs/ccs/pr-events.jsonl` (and prints it), for a script or a coordinating Claude session to follow with `tail -F`. It uses gh and GitHub's REST API.
+`ccs watch` checks one author's open PRs (by default the user gh is logged in as, in every owner's repos; `--owner` narrows it to one org or user) every 3 minutes and appends a JSON line for each change to `~/Library/Logs/ccs/pr-events.jsonl` (and prints it), for a script or a coordinating Claude session to follow with `tail -F`. It uses gh and GitHub's REST API.
 
 ```bash
-ccs watch                                  # brtkwr's PRs in two-inc, every 3 minutes
+ccs watch                                  # your PRs (the gh user's), every 3 minutes
 ccs watch --author me --owner my-org --interval 5m
 ccs watch --once                           # one pass, then exit
 ```
@@ -196,16 +196,37 @@ The first run only records what it finds and writes one `watch_started` line, so
 `ccs watch --review` also asks for reviews, as you, on PRs that are green, not drafts and waiting for an approval, once per head commit (PRs already waiting when it starts included):
 
 - PRs are batched: the batch goes once no PR has joined it for 10 minutes (at most 30), and never between 22:00 and 07:00 London time, when it waits for one morning batch.
-- A headless `claude -p --model sonnet` routes the batch by your routing guide (`--review-guide`, a file saying who reviews what, which channels, who gets a DM), with the PRs' requested reviewers and owning sessions. It can only read: it posts nothing itself.
-- ccs checks its plan (every PR placed once, links only to the batch's own PRs, `--review-mention` present, one line per PR plus one) and posts the one message it sends on its own: the review request in `--review-channel`, through `SLACK_USER_TOKEN` (from the environment or `~/.claude.secret`), ending with `_✨ via ccs watch · claude sonnet_`.
+- Your routing hook (`--review-hook`, any command) decides who reviews what: ccs runs it with `sh -c`, the batch as JSON on its stdin, and reads a plan as JSON from its stdout. ccs has no routing rules or prompt of its own; the hook can be a script, or run `claude -p` with your own routing instructions.
+- ccs checks the plan (every PR placed once, links only to the batch's own PRs, `--review-mention` present, one line per PR plus one) and posts the one message it sends on its own: the review request in `--review-channel`, through `SLACK_USER_TOKEN` (from the environment or `~/.claude.secret`), ending with `_✨ via ccs watch_`.
 - Everything else, such as a DM to a reviewer the channel doesn't reach, is a draft that waits for you. A PR whose prerequisite hasn't merged is held and planned again after an hour.
 
 ```bash
-ccs watch --review --review-channel C0123ABCD --review-mention '<!subteam^S0123ABCD>' --review-guide ~/review-guide.md
+ccs watch --review --review-channel C0123ABCD --review-mention '<!subteam^S0123ABCD>' --review-hook ~/bin/route-reviews
 ccs watch --review ... --dry-run  # print the plan for the PRs waiting now; posts and records nothing
 ccs review list                   # drafts waiting for you
 ccs review send r3                # post draft r3 as you
 ccs review drop r3                # discard it
+```
+
+The hook's stdin (data only: nothing from the batch is ever on its command line):
+
+```json
+{"channel":"C0123ABCD","mention":"<!subteam^S0123ABCD>","prs":[{"url":"https://github.com/o/r/pull/7","title":"...","repo":"o/r","head":"0fc4f95...","status":"checks green, waiting for review","requested_reviewers":["alice","@o/platform"],"owner_sessions":["fix-the-thing"]}]}
+```
+
+Its stdout (anything around the one JSON object is ignored): `channel_post` (posted to the channel, or null), `drafts` (each to a Slack user or channel id, kept for `ccs review send`), `holds` (PRs to try again in an hour). A non-zero exit, or no plan, is `review_plan_failed`; it has 5 minutes.
+
+```json
+{"channel_post":{"text":"<!subteam^S0123ABCD> could you review these?\n- https://github.com/o/r/pull/7 fix the thing","prs":["https://github.com/o/r/pull/7"]},
+ "drafts":[{"to":"U0123ABCD","to_name":"Alice","text":"could you review https://github.com/o/r/pull/8?","prs":["https://github.com/o/r/pull/8"]}],
+ "holds":[{"pr":"https://github.com/o/r/pull/9","reason":"waits for r#8"}]}
+```
+
+The smallest hook sends everything to the channel:
+
+```sh
+#!/bin/sh
+jq '{channel_post: {text: (.mention + " could you review these?\n" + ([.prs[] | "- " + .url + " " + .title] | join("\n"))), prs: [.prs[].url]}, drafts: [], holds: []}'
 ```
 
 Events: `review_requested` (channel, PRs, permalink), `review_dm_pending` (id, recipient, text, PRs), `review_held` (PR, reason), `review_plan_failed` (PRs, reason; the batch is tried again after the wait). What was asked for, per PR and head commit, is kept in `review.json` beside ccs's settings.
@@ -227,7 +248,7 @@ Events: `nudged` (pr, head, session, reasons) and `nudge_failed` (the same plus 
 
 A session that owns a PR says so by running `ccs claim <PR URL>` (`--release` to give it up). ccs works out which session ran it from the claude process it runs under, and records the session's id and name in `claims.json` beside its settings. A claim ends by itself when the PR merges or closes, or the session stops.
 
-`ccs prs` lists your open PRs with their owners, needing you first, and flags any PR nobody has claimed (`UNOWNED`) and any PR two running sessions both claim (`CONTESTED`). It uses `ccs watch`'s state when that is under 10 minutes old, and otherwise asks GitHub (REST) itself. A PR with a failed check, optional or not, needs you.
+`ccs prs` lists your open PRs with their owners, needing you first, and flags any PR nobody has claimed (`UNOWNED`) and any PR two running sessions both claim (`CONTESTED`). It uses `ccs watch`'s state when that is under 10 minutes old, and otherwise asks GitHub (REST) itself. Without `--author`, it lists the running `ccs watch`'s author and owner, else the gh user's PRs in every owner's repos; `--statusline` never asks gh. A PR with a failed check, optional or not, needs you.
 
 ```bash
 ccs claim https://github.com/o/r/pull/12

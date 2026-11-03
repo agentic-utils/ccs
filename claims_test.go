@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -121,10 +122,10 @@ func TestSecondClaimIsKeptAndConcurrentClaimsAllLand(t *testing.T) {
 	}
 }
 
-// writeWatchState saves a watcher state for o's PRs by the author brtkwr.
+// writeWatchState saves a watcher state for o's PRs by the author me.
 func writeWatchState(t *testing.T, updated time.Time, prs ...*watchedPR) {
 	t.Helper()
-	st := prWatchState{Author: "brtkwr", Owner: "o", Started: updated, Updated: updated, PRs: map[string]*watchedPR{}}
+	st := prWatchState{Author: "me", Owner: "o", Started: updated, Updated: updated, PRs: map[string]*watchedPR{}}
 	for _, p := range prs {
 		st.PRs[p.URL] = p
 	}
@@ -151,7 +152,7 @@ func TestPRsListsOwnersAndFlags(t *testing.T) {
 	claim(claimB, false, now) // contested
 	live[os.Getppid()] = prClaim{Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"}
 
-	rep, err := prsList("brtkwr", "o", false, now)
+	rep, err := prsList("me", "o", false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +187,7 @@ func TestPRsListsOwnersAndFlags(t *testing.T) {
 
 	// The beta session stops: its claim goes, so claimB is no longer contested.
 	delete(live, 4242)
-	rep, _ = prsList("brtkwr", "o", true, now)
+	rep, _ = prsList("me", "o", true, now)
 	for _, r := range rep.PRs {
 		if r.PR == claimB && (r.Contested || len(r.Owners) != 1) {
 			t.Errorf("a stopped session's claim is dropped: %+v", r)
@@ -202,7 +203,7 @@ func TestClaimOfARecycledPIDIsDropped(t *testing.T) {
 	claim(claimA, false, time.Now())
 	live[os.Getppid()] = prClaim{Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "another start"}
 	writeWatchState(t, time.Now(), &watchedPR{URL: claimA, Repo: "o/r", Number: 1, State: "open"})
-	rep, _ := prsList("brtkwr", "o", true, time.Now())
+	rep, _ := prsList("me", "o", true, time.Now())
 	if len(rep.PRs) != 1 || !rep.PRs[0].Unowned {
 		t.Errorf("same pid, different process: not the owner: %+v", rep.PRs)
 	}
@@ -217,22 +218,22 @@ func TestPRsFreshnessAndStatusline(t *testing.T) {
 		return map[string]*watchedPR{claimA: {URL: claimA, Repo: "o/r", Number: 1, State: "open", Checks: "success", Review: "approved"}}, nil
 	}
 	// No watcher state: statusline prints nothing and asks nobody.
-	if rep, _ := prsList("brtkwr", "o", true, now); rep.statusLine() != "" || asked != 0 {
+	if rep, _ := prsList("me", "o", true, now); rep.statusLine() != "" || asked != 0 {
 		t.Errorf("offline with no state: %q, asked %d", rep.statusLine(), asked)
 	}
 	// Stale state: ccs prs asks GitHub; the statusline uses it and says so.
 	writeWatchState(t, now.Add(-time.Hour), &watchedPR{URL: claimB, Repo: "o/r", Number: 2, State: "open", Checks: "success", Review: "approved"})
-	rep, _ := prsList("brtkwr", "o", false, now)
+	rep, _ := prsList("me", "o", false, now)
 	if asked != 1 || len(rep.PRs) != 1 || rep.PRs[0].PR != claimA {
 		t.Errorf("stale state: asked %d, %+v", asked, rep.PRs)
 	}
-	rep, _ = prsList("brtkwr", "o", true, now)
+	rep, _ = prsList("me", "o", true, now)
 	if s := rep.statusLine(); s != "PRs 1 ready · 1 unowned (stale)" || asked != 1 {
 		t.Errorf("statusline from stale state: %q (asked %d)", s, asked)
 	}
 	// Fresh state: no GitHub call.
 	writeWatchState(t, now.Add(-time.Minute))
-	if _, err := prsList("brtkwr", "o", false, now); err != nil || asked != 1 {
+	if _, err := prsList("me", "o", false, now); err != nil || asked != 1 {
 		t.Errorf("fresh state is used: asked %d, %v", asked, err)
 	}
 }
@@ -259,7 +260,15 @@ func TestPRsCLIAndMCP(t *testing.T) {
 	if code := runClaim(nil, &out, &errs); code != 2 {
 		t.Errorf("no URL: exit %d", code)
 	}
+	if res, err := mcpCall("list_prs", nil, nil); err != nil || !strings.Contains(fmt.Sprint(res), claimA) {
+		t.Errorf("list_prs defaults to the running watcher's author and owner: %v %v", res, err)
+	}
+	os.Remove(prWatchStatePath())
 	if _, err := mcpCall("list_prs", nil, nil); err == nil {
-		t.Error("list_prs with the default owner and no state asks GitHub, which fails in tests")
+		t.Error("no watcher state and no gh user: list_prs should fail")
+	}
+	out.Reset()
+	if code := runPRs([]string{"--statusline"}, &out, &errs); code != 0 || out.Len() != 0 {
+		t.Errorf("--statusline with nothing saved prints nothing and asks nothing: %d %q", code, out.String())
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,8 +24,8 @@ import (
 // Review-request batching (`ccs watch --review`): PRs the watcher sees green
 // and waiting for an approval (watchedPR.needsReview) are queued, and once
 // none has joined the queue for reviewDebounce (outside quiet hours) the
-// batch goes to a headless claude, which routes it by the user's routing
-// guide (reviewConfig). ccs checks its plan, posts the one automatic kind of
+// batch goes to the user's routing hook (reviewConfig.Hook: the batch as
+// JSON on its stdin, a plan as JSON on its stdout). ccs checks the plan, posts the one automatic kind of
 // message (a review request in the configured channel) as the user, and
 // keeps every other message as a draft for `ccs review send`. Nothing is
 // asked twice for the same head commit.
@@ -34,22 +35,24 @@ const (
 	reviewMaxWait   = 30 * time.Minute // a PR never waits longer than this for the queue to settle
 	reviewHeldRetry = time.Hour        // a held PR is planned again after this, in case its prerequisite merged
 	reviewMaxText   = 3000
-	reviewFooter    = "_✨ via ccs watch · claude sonnet_"
+	reviewFooter    = "_✨ via ccs watch_"
+	reviewHookTime  = 5 * time.Minute
 )
 
 // reviewConfig is where review requests go, from ccs watch's flags: the one
-// channel ccs posts to on its own, the mention that post must carry, and a
-// file of routing instructions for the planner (who reviews what, which
-// channels, who to DM). None is built in: they are the user's own.
+// channel ccs posts to on its own, the mention that post must carry, and the
+// command that routes a batch (who reviews what, who to DM). None is built
+// in: they are the user's own.
 type reviewConfig struct {
 	Channel string // Slack channel id
 	Mention string // Slack mrkdwn, e.g. <!subteam^S…> or <@U…>
-	Guide   string // path of the routing guide
+	Hook    string // a command, run with sh -c: the batch on stdin, the plan on stdout
 }
 
 var reviewCfg reviewConfig
 
-// check: a channel id, a mention in Slack's own syntax and a readable guide.
+// check: a channel id, a mention in Slack's own syntax and a hook whose
+// program can be found.
 func (c reviewConfig) check() error {
 	if !regexp.MustCompile(`^[CG][A-Z0-9]{6,}$`).MatchString(c.Channel) {
 		return fmt.Errorf("--review-channel %q isn't a Slack channel id", c.Channel)
@@ -57,8 +60,12 @@ func (c reviewConfig) check() error {
 	if !regexp.MustCompile(`^<(!subteam\^[A-Z0-9]+|@[UW][A-Z0-9]+)>$`).MatchString(c.Mention) {
 		return fmt.Errorf("--review-mention %q isn't <!subteam^…> or <@U…>", c.Mention)
 	}
-	if _, err := os.Stat(c.Guide); err != nil {
-		return fmt.Errorf("--review-guide: %w", err)
+	prog := strings.Fields(c.Hook)
+	if len(prog) == 0 {
+		return errors.New("--review-hook is required with --review")
+	}
+	if _, err := exec.LookPath(prog[0]); err != nil {
+		return fmt.Errorf("--review-hook: %w", err)
 	}
 	return nil
 }
@@ -289,7 +296,7 @@ var requestedReviewers = func(repo string, number int) ([]string, error) {
 	return out, nil
 }
 
-// reviewBatch is the queue as planner input, oldest first.
+// reviewBatch is the queue as the hook's input, oldest first.
 func reviewBatch(s reviewState) []reviewItem {
 	claims := loadClaims()
 	var items []reviewItem
@@ -311,83 +318,49 @@ func reviewBatch(s reviewState) []reviewItem {
 	return items
 }
 
-// reviewPrompt is the headless run's instructions: the channel, the
-// mention, the user's routing guide, then the batch as JSON.
-const reviewPrompt = `You route GitHub review requests for the user who wrote these PRs. You decide; ccs posts. Do not post, send or edit anything yourself.
-
-Follow the routing guide at the end. ccs enforces these rules:
-- PRs the guide routes to the review channel (%[1]s) go in ONE message: it must mention %[2]s verbatim (plus any person mention the guide gives), be in the first person as the user, and list each PR as its full URL with a short status. At most one short ask line plus one line per PR. No footer: ccs adds it.
-- Anyone the review channel doesn't reach gets a draft instead: a DM to their Slack user id (U...), or a draft to another channel's id. Find ids with Slack user search if you need to. Drafts are only sent once the user confirms them.
-- Never guess a channel. If you can't route a PR with certainty, hold it with the reason.
-- Hold a PR whose prerequisite hasn't merged (a dependency the batch or its title states).
-- Every PR in the batch must appear exactly once: in channel_post.prs, in one draft's prs, or in holds.
-
-Reply with ONLY this JSON, no prose, no code fences:
-{"channel_post": {"text": "...", "prs": ["<url>"]} or null,
- "drafts": [{"to": "<U... or C... id>", "to_name": "<who>", "text": "...", "prs": ["<url>"]}],
- "holds": [{"pr": "<url>", "reason": "..."}]}
-
-The routing guide:
-%[3]s
-
-The batch:
-`
-
-// planReview runs the headless planner. Stubbed in tests.
-var planReview = func(items []reviewItem) (reviewPlan, error) {
-	guide, err := os.ReadFile(reviewCfg.Guide)
-	if err != nil {
-		return reviewPlan{}, fmt.Errorf("routing guide: %w", err)
-	}
-	batch, _ := json.MarshalIndent(items, "", " ")
-	prompt := fmt.Sprintf(reviewPrompt, reviewCfg.Channel, reviewCfg.Mention, guide) + string(batch)
-	// The prompt goes first: the tool lists are variadic and would swallow it.
-	out, err := runBounded(5*time.Minute, nil, "claude", "-p", prompt, "--model", "sonnet", "--output-format", "json",
-		"--allowedTools", "Skill Read Grep Glob mcp__claude_ai_Slack__slack_search_users mcp__claude_ai_Slack__slack_read_user_profile",
-		"--disallowedTools", "Bash Write Edit mcp__claude_ai_Slack__slack_send_message mcp__claude_ai_Slack__slack_send_message_draft mcp__claude_ai_Slack__slack_schedule_message")
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
-			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
-		} else if len(out) > 0 {
-			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
-		}
-		return reviewPlan{}, fmt.Errorf("claude -p: %w", err)
-	}
-	res, err := claudeResult(out)
-	if err != nil {
-		return reviewPlan{}, err
-	}
-	if res.IsError {
-		return reviewPlan{}, fmt.Errorf("claude -p: %s", res.Result)
-	}
-	return parsePlan(res.Result)
+// hookInput is what the routing hook reads on its stdin.
+type hookInput struct {
+	Channel string       `json:"channel"` // the one channel a post may go to
+	Mention string       `json:"mention"` // the post must carry it verbatim
+	PRs     []reviewItem `json:"prs"`
 }
 
-// claudeOutput is a claude -p --output-format json result.
-type claudeOutput struct {
-	Type    string `json:"type"`
-	Result  string `json:"result"`
-	IsError bool   `json:"is_error"`
+// planReview runs the routing hook: the batch as JSON on its stdin, sh -c so
+// the flag can carry arguments; nothing from the batch is ever on its command
+// line. Its stdout is the plan.
+func hookPlan(items []reviewItem) (reviewPlan, error) {
+	batch, _ := json.Marshal(hookInput{reviewCfg.Channel, reviewCfg.Mention, items})
+	out, err := runHook(reviewHookTime, reviewCfg.Hook, batch)
+	if err != nil {
+		return reviewPlan{}, fmt.Errorf("review hook: %w", err)
+	}
+	return parsePlan(string(out))
 }
 
-// claudeResult is that result: one object, or (newer Claude Code) an array
-// of messages ending with it.
-func claudeResult(out []byte) (claudeOutput, error) {
-	var one claudeOutput
-	if json.Unmarshal(out, &one) == nil {
-		return one, nil
+// planReview is hookPlan; stubbed in tests.
+var planReview = hookPlan
+
+// runHook runs hook with sh -c, input on its stdin, and returns its stdout;
+// a failure carries its stderr. Bounded like runBounded.
+func runHook(timeout time.Duration, hook string, input []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", hook)
+	cmd.WaitDelay = time.Second
+	cmd.Stdin = bytes.NewReader(input)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return out, fmt.Errorf("%w after %s", errTimedOut, timeout)
 	}
-	var all []claudeOutput
-	if err := json.Unmarshal(out, &all); err != nil {
-		return claudeOutput{}, fmt.Errorf("claude -p output: %w", err)
-	}
-	for i := len(all) - 1; i >= 0; i-- {
-		if all[i].Type == "result" {
-			return all[i], nil
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return out, fmt.Errorf("%w: %s", err, msg)
 		}
+		return out, err
 	}
-	return claudeOutput{}, errors.New("claude -p output has no result")
+	return out, nil
 }
 
 // parsePlan takes the JSON object out of the planner's reply.

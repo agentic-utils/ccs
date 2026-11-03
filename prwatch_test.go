@@ -410,3 +410,32 @@ func TestNeedsReviewNeedsAThreadCount(t *testing.T) {
 		t.Errorf("ccs prs shows the threads: %d %q", g, why)
 	}
 }
+
+func TestWatchDefaultsToTheGhUserInEveryOwner(t *testing.T) {
+	old, oldRun := ghUser, ghRun
+	t.Cleanup(func() { ghUser, ghRun = old, oldRun })
+	ghUser = func() (string, error) { return "someone", nil }
+	a := ""
+	if err := defaultAuthor(&a); err != nil || a != "someone" {
+		t.Errorf("author defaults to the gh user: %q %v", a, err)
+	}
+	a = "given"
+	if defaultAuthor(&a); a != "given" {
+		t.Errorf("--author wins: %q", a)
+	}
+	ghUser = func() (string, error) { return "", errors.New("not logged in") }
+	a = ""
+	if err := defaultAuthor(&a); err == nil {
+		t.Error("no gh user: accepted")
+	}
+	var args []string
+	ghRun = func(a ...string) ([]byte, error) { args = a; return []byte("[]"), nil }
+	searchPRs("someone", "", "--state", "open")
+	if slices.Contains(args, "--owner") {
+		t.Errorf("no owner searches every owner: %v", args)
+	}
+	searchPRs("someone", "o", "--state", "open")
+	if i := slices.Index(args, "--owner"); i < 0 || args[i+1] != "o" {
+		t.Errorf("--owner o: %v", args)
+	}
+}

@@ -362,13 +362,13 @@ func TestLongCodeBlocksCollapse(t *testing.T) {
 func TestLinksAndCollapsedIndent(t *testing.T) {
 	conv := Conversation{Messages: []Message{
 		{Role: "user", Text: "<task-notification><summary>CI done</summary></task-notification>", Ts: "2026-09-29T10:00:00Z"},
-		{Role: "assistant", Text: "See [slack-bot#336](https://github.com/two-inc/slack-bot/pull/336) and [https://x.io/a](https://x.io/a)."},
+		{Role: "assistant", Text: "See [slack-bot#336](https://github.com/acme/slack-bot/pull/336) and [https://x.io/a](https://x.io/a)."},
 	}}
 	plain := strip2(strings.Join(buildPreviewLines(conv, "", 120), "\n"))
 	if !regexp.MustCompile(`(?m)^  \S.* ▸ task-notification · CI done$`).MatchString(plain) {
 		t.Errorf("collapsed line should keep its indent:\n%s", plain)
 	}
-	if !strings.Contains(plain, "slack-bot#336 (github.com/two-inc/slack-bot/pull/336)") || strings.Contains(plain, "](") {
+	if !strings.Contains(plain, "slack-bot#336 (github.com/acme/slack-bot/pull/336)") || strings.Contains(plain, "](") {
 		t.Errorf("links should render as text plus a short address:\n%s", plain)
 	}
 	if !strings.Contains(plain, "and x.io/a.") {
@@ -510,7 +510,7 @@ func TestTeammateMessagesReadable(t *testing.T) {
 }
 
 func TestWrappedLinkStaysContainedAndClickable(t *testing.T) {
-	text := "The PR is still waiting for review: https://github.com/two-inc/infra/pull/4369"
+	text := "The PR is still waiting for review: https://github.com/acme/infra/pull/4369"
 	lines := renderBody(text, "", 50)
 	if len(lines) < 2 {
 		t.Fatalf("expected a wrap: %q", lines)
@@ -525,7 +525,7 @@ func TestWrappedLinkStaysContainedAndClickable(t *testing.T) {
 	}
 	last := lines[len(lines)-1]
 	x := ansi.StringWidth(strings.TrimRight(ansiSeq.ReplaceAllString(last, ""), " ")) - 1
-	if got := linkAt(last, x); got != "https://github.com/two-inc/infra/pull/4369" {
+	if got := linkAt(last, x); got != "https://github.com/acme/infra/pull/4369" {
 		t.Errorf("clicking the wrapped part should find the link, got %q in %q", got, last)
 	}
 	if got := linkAt(lines[0], 0); got != "" {

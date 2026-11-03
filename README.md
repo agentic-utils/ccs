@@ -23,6 +23,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Start and close named sessions in iTerm tabs (`ccs launch`, `ccs close`, or `Ctrl+X N` / `Ctrl+X K` in the list)
 - Watch your open PRs and get one JSON line per change (`ccs watch`)
 - Record which session owns each PR, and list your open PRs with their owners (`ccs claim`, `ccs prs`)
+- Ask for reviews on green PRs in batches, routed by a headless Claude (`ccs watch --review`, `ccs review`)
 - Pass flags through to `claude` (e.g., `--plan`)
 - Usage screen (`Tab`): the last 12 hours of token usage across all sessions (including subagents) as three charts (cache-write disposition, context assembly, output), a summary with effective tokens, and your live 5-hour and weekly allowance. The allowance reads Claude Code's stored login read-only (macOS Keychain, else `~/.claude/.credentials.json`); ccs never refreshes or writes it, so if it has expired, open `claude` to refresh it
 - Checks for new releases at startup and every 2 minutes (update steps are logged to `~/Library/Logs/ccs/update.log`) and offers to update and restart from a popup (via `brew upgrade` for Homebrew installs, otherwise by replacing the binary with the checksum-verified release). Every update, Homebrew included, is checked against a signature that only ccs's release pipeline on `main` can make, so a release uploaded any other way is refused
@@ -188,6 +189,25 @@ Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `nee
 ```
 
 The first run only records what it finds and writes one `watch_started` line, so it doesn't report every PR as news. Its state is kept beside ccs's settings (`pr-watch.json`), so a restart reports what changed while it was stopped, without repeating anything. Only one `ccs watch` runs at a time.
+
+## Asking for reviews
+
+`ccs watch --review` also asks for reviews, as you, on PRs that are green, not drafts and waiting for an approval, once per head commit (PRs already waiting when it starts included):
+
+- PRs are batched: the batch goes once no PR has joined it for 10 minutes (at most 30), and never between 22:00 and 07:00 London time, when it waits for one morning batch.
+- A headless `claude -p --model sonnet` routes the batch by your routing guide (`--review-guide`, a file saying who reviews what, which channels, who gets a DM), with the PRs' requested reviewers and owning sessions. It can only read: it posts nothing itself.
+- ccs checks its plan (every PR placed once, links only to the batch's own PRs, `--review-mention` present, one line per PR plus one) and posts the one message it sends on its own: the review request in `--review-channel`, through `SLACK_USER_TOKEN` (from the environment or `~/.claude.secret`), ending with `_✨ via ccs watch · claude sonnet_`.
+- Everything else, such as a DM to a reviewer the channel doesn't reach, is a draft that waits for you. A PR whose prerequisite hasn't merged is held and planned again after an hour.
+
+```bash
+ccs watch --review --review-channel C0123ABCD --review-mention '<!subteam^S0123ABCD>' --review-guide ~/review-guide.md
+ccs watch --review ... --dry-run  # print the plan for the PRs waiting now; posts and records nothing
+ccs review list                   # drafts waiting for you
+ccs review send r3                # post draft r3 as you
+ccs review drop r3                # discard it
+```
+
+Events: `review_requested` (channel, PRs, permalink), `review_dm_pending` (id, recipient, text, PRs), `review_held` (PR, reason), `review_plan_failed` (PRs, reason; the batch is tried again after the wait). What was asked for, per PR and head commit, is kept in `review.json` beside ccs's settings.
 
 ## Who owns each PR
 

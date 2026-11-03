@@ -162,8 +162,13 @@ func runWatch(args []string) int {
 	author := fs.String("author", "brtkwr", "PR author")
 	owner := fs.String("owner", "two-inc", "GitHub owner (org or user) whose repos to watch")
 	once := fs.Bool("once", false, "make one pass and exit")
+	review := fs.Bool("review", false, "also request reviews: batch PRs that are green and need review, post to --review-channel what the planner routes there, draft the rest (ccs review)")
+	dryRun := fs.Bool("dry-run", false, "with --review: print the plan for the PRs waiting now, from the last pass's state, and post nothing")
+	fs.StringVar(&reviewCfg.Channel, "review-channel", "", "with --review: the Slack channel id review requests are posted to")
+	fs.StringVar(&reviewCfg.Mention, "review-mention", "", "with --review: the mention that post must carry, e.g. <!subteam^S…>")
+	fs.StringVar(&reviewCfg.Guide, "review-guide", "", "with --review: a file of routing instructions for the planner")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed. Only one ccs watch\nruns at a time.\n\n", prEventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed. Only one\nccs watch runs at a time.\n\n", prEventsPath())
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -171,6 +176,27 @@ func runWatch(args []string) int {
 			return 0
 		}
 		return 2
+	}
+	if *review {
+		if err := reviewCfg.check(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+	}
+	if *dryRun {
+		if !*review {
+			fmt.Fprintln(os.Stderr, "--dry-run needs --review")
+			return 2
+		}
+		if _, ok := loadPRWatchState(); !ok {
+			fmt.Fprintln(os.Stderr, "no watcher state yet: run ccs watch (or ccs watch --once) first")
+			return 1
+		}
+		if err := reviewTick(time.Now(), true, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "ccs watch:", err)
+			return 1
+		}
+		return 0
 	}
 	lock, err := lockPRWatch()
 	if err != nil {
@@ -182,6 +208,11 @@ func runWatch(args []string) int {
 		if err := watchPass(*author, *owner, time.Now()); err != nil {
 			fmt.Fprintln(os.Stderr, "ccs watch:", err)
 			logActivity("pr watch: %v", err)
+		} else if *review {
+			if err := reviewTick(time.Now(), false, os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, "ccs watch:", err)
+				logActivity("review: %v", err)
+			}
 		}
 		if *once {
 			return 0
@@ -344,6 +375,15 @@ func watchPass(author, owner string, now time.Time) error {
 
 // writePREvents appends events to prEventsPath and prints them.
 func writePREvents(events []prEvent) error {
+	all := make([]any, len(events))
+	for i, e := range events {
+		all[i] = e
+	}
+	return writeEventLines(all)
+}
+
+// writeEventLines appends one JSON line per event to prEventsPath and prints them.
+func writeEventLines(events []any) error {
 	if len(events) == 0 {
 		return nil
 	}

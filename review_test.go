@@ -1,0 +1,417 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+const (
+	revA       = "https://github.com/o/infra/pull/1"
+	revB       = "https://github.com/o/infra/pull/2"
+	revC       = "https://github.com/o/bot/pull/3"
+	revChannel = "C0REVIEW1"
+	revMention = "<!subteam^S0TEAM1>"
+)
+
+// fakeSlack records what ccs posts.
+type fakeSlack struct {
+	sync.Mutex
+	posts []map[string]any
+	auth  []string
+}
+
+func reviewSetup(t *testing.T) *fakeSlack {
+	t.Helper()
+	dir := t.TempDir()
+	fs := &fakeSlack{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fs.Lock()
+		defer fs.Unlock()
+		fs.auth = append(fs.auth, r.Header.Get("Authorization"))
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/conversations.open"):
+			io.WriteString(w, `{"ok":true,"channel":{"id":"D0DM"}}`)
+		case strings.HasPrefix(r.URL.Path, "/chat.postMessage"):
+			fs.posts = append(fs.posts, body)
+			json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": body["channel"], "ts": "1.2"})
+		case strings.HasPrefix(r.URL.Path, "/chat.getPermalink"):
+			io.WriteString(w, `{"ok":true,"permalink":"https://example.slack.com/archives/C0REVIEW1/p12"}`)
+		default:
+			io.WriteString(w, `{"ok":false,"error":"unknown_method"}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	oldS, oldL, oldBase, oldTok, oldPlan, oldCfg := settingsPath, updateLogPath, slackBase, slackToken, planReview, reviewCfg
+	reviewCfg = reviewConfig{Channel: revChannel, Mention: revMention, Guide: dir + "/guide.md"}
+	settingsPath, updateLogPath, slackBase = dir+"/settings.json", dir+"/update.log", srv.URL+"/"
+	slackToken = func() (string, error) { return "xoxp-secret", nil }
+	t.Cleanup(func() {
+		settingsPath, updateLogPath, slackBase, slackToken, planReview, reviewCfg = oldS, oldL, oldBase, oldTok, oldPlan, oldCfg
+	})
+	return fs
+}
+
+// saveWatch writes the watcher's state with these PRs.
+func saveWatch(t *testing.T, prs ...*watchedPR) {
+	t.Helper()
+	s := prWatchState{Author: "me", Owner: "o", PRs: map[string]*watchedPR{}}
+	for _, p := range prs {
+		s.PRs[p.URL] = p
+	}
+	if err := savePRWatchState(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func greenPR(url, head string) *watchedPR {
+	zero := 0
+	return &watchedPR{URL: url, Repo: "o/infra", Number: 1, Title: "PLAT-1/feat: thing", State: "open", Head: head, Checks: "success", Review: "required", Threads: &zero}
+}
+
+// platformPlan puts every PR of the batch in one #control-plane post.
+func platformPlan(items []reviewItem) (reviewPlan, error) {
+	var p reviewPlan
+	text := revMention + " could i get a review please"
+	var prs []string
+	for _, it := range items {
+		text += "\n" + it.URL + " · green"
+		prs = append(prs, it.URL)
+	}
+	p.ChannelPost = &struct {
+		Text string   `json:"text"`
+		PRs  []string `json:"prs"`
+	}{text, prs}
+	return p, nil
+}
+
+func events(t *testing.T) []reviewEvent {
+	t.Helper()
+	b, _ := os.ReadFile(prEventsPath())
+	var out []reviewEvent
+	for _, l := range bytes.Split(b, []byte("\n")) {
+		var e reviewEvent
+		if json.Unmarshal(l, &e) == nil && strings.HasPrefix(e.Event, "review_") {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// London, a weekday morning.
+var reviewT0 = time.Date(2026, 11, 3, 11, 0, 0, 0, time.UTC)
+
+func TestReviewWaitsForTheQueueToSettle(t *testing.T) {
+	slack := reviewSetup(t)
+	planned := 0
+	planReview = func(items []reviewItem) (reviewPlan, error) { planned++; return platformPlan(items) }
+	saveWatch(t, greenPR(revA, "h1"))
+	for _, d := range []time.Duration{0, 5 * time.Minute} {
+		if err := reviewTick(reviewT0.Add(d), false, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saveWatch(t, greenPR(revA, "h1"), greenPR(revB, "h2")) // joins at +6m: the wait restarts
+	reviewTick(reviewT0.Add(6*time.Minute), false, io.Discard)
+	reviewTick(reviewT0.Add(12*time.Minute), false, io.Discard)
+	if planned != 0 || len(slack.posts) != 0 {
+		t.Fatalf("nothing goes until no PR has joined for %v: planned %d, posts %d", reviewDebounce, planned, len(slack.posts))
+	}
+	if err := reviewTick(reviewT0.Add(16*time.Minute), false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if planned != 1 || len(slack.posts) != 1 {
+		t.Fatalf("one batch, one post: planned %d, posts %d", planned, len(slack.posts))
+	}
+	post := slack.posts[0]
+	text, _ := post["text"].(string)
+	if post["channel"] != revChannel || !strings.Contains(text, revA) || !strings.Contains(text, revB) || !strings.HasSuffix(text, reviewFooter) {
+		t.Errorf("both PRs in #control-plane, footer last: %v", post)
+	}
+	if post["unfurl_links"] != false {
+		t.Errorf("no link previews: %v", post)
+	}
+	ev := events(t)
+	if len(ev) != 1 || ev[0].Event != "review_requested" || ev[0].Permalink == "" || len(ev[0].PRs) != 2 {
+		t.Errorf("one review_requested with the permalink: %+v", ev)
+	}
+
+	// The same heads are never asked about again; a new head is.
+	reviewTick(reviewT0.Add(40*time.Minute), false, io.Discard)
+	if planned != 1 {
+		t.Errorf("asked again for the same head")
+	}
+	saveWatch(t, greenPR(revA, "h1b"), greenPR(revB, "h2"))
+	reviewTick(reviewT0.Add(41*time.Minute), false, io.Discard)
+	reviewTick(reviewT0.Add(52*time.Minute), false, io.Discard)
+	if planned != 2 {
+		t.Errorf("a new head is asked about: planned %d", planned)
+	}
+	for _, a := range slack.auth {
+		if a != "Bearer xoxp-secret" {
+			t.Errorf("token in the header: %q", a)
+		}
+	}
+	if b, _ := os.ReadFile(prEventsPath()); bytes.Contains(b, []byte("xoxp-secret")) {
+		t.Error("the token reached the events file")
+	}
+}
+
+func TestReviewSkipsUnresolvedThreads(t *testing.T) {
+	reviewSetup(t)
+	planned := 0
+	planReview = func(items []reviewItem) (reviewPlan, error) { planned++; return platformPlan(items) }
+	p := greenPR(revA, "h1")
+	one := 1
+	p.Threads = &one // the watcher's own predicate says it still needs the author
+	saveWatch(t, p)
+	reviewTick(reviewT0, false, io.Discard)
+	reviewTick(reviewT0.Add(20*time.Minute), false, io.Discard)
+	if planned != 0 {
+		t.Error("a PR with an unresolved thread is never sent for review")
+	}
+}
+
+func TestReviewQueueDropsWhatNoLongerNeedsReview(t *testing.T) {
+	reviewSetup(t)
+	planned := 0
+	planReview = func(items []reviewItem) (reviewPlan, error) { planned++; return platformPlan(items) }
+	saveWatch(t, greenPR(revA, "h1"))
+	reviewTick(reviewT0, false, io.Discard)
+	p := greenPR(revA, "h1")
+	p.Review = "approved" // approved meanwhile: the predicate says no
+	saveWatch(t, p)
+	reviewTick(reviewT0.Add(20*time.Minute), false, io.Discard)
+	if planned != 0 || len(loadReviewState().Queue) != 0 {
+		t.Errorf("an approved PR leaves the queue unasked: planned %d", planned)
+	}
+}
+
+func TestReviewQuietHours(t *testing.T) {
+	slack := reviewSetup(t)
+	planReview = platformPlan
+	night := time.Date(2026, 11, 3, 22, 30, 0, 0, reviewTZ)
+	saveWatch(t, greenPR(revA, "h1"))
+	reviewTick(night, false, io.Discard)
+	reviewTick(night.Add(3*time.Hour), false, io.Discard)
+	if len(slack.posts) != 0 {
+		t.Fatal("nothing is posted between 22:00 and 07:00")
+	}
+	saveWatch(t, greenPR(revA, "h1"), greenPR(revB, "h2"))
+	reviewTick(night.Add(5*time.Hour), false, io.Discard)                       // 03:30, B joins
+	reviewTick(time.Date(2026, 11, 4, 7, 0, 0, 0, reviewTZ), false, io.Discard) // morning
+	if len(slack.posts) != 1 || !strings.Contains(slack.posts[0]["text"].(string), revB) {
+		t.Errorf("one morning batch with both: %v", slack.posts)
+	}
+}
+
+func TestReviewDraftsWaitForConfirmation(t *testing.T) {
+	slack := reviewSetup(t)
+	planReview = func(items []reviewItem) (reviewPlan, error) {
+		var p reviewPlan
+		p.Drafts = append(p.Drafts, struct {
+			To     string   `json:"to"`
+			ToName string   `json:"to_name"`
+			Text   string   `json:"text"`
+			PRs    []string `json:"prs"`
+		}{"U0REVIEWER", "Sam", "hey, could you review " + revC + "?", []string{revC}})
+		p.Holds = append(p.Holds, struct {
+			PR     string `json:"pr"`
+			Reason string `json:"reason"`
+		}{revA, "waits for infra#9"})
+		return p, nil
+	}
+	c := greenPR(revC, "h3")
+	c.Repo = "o/bot"
+	saveWatch(t, greenPR(revA, "h1"), c)
+	reviewTick(reviewT0, false, io.Discard)
+	if err := reviewTick(reviewT0.Add(reviewDebounce), false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(slack.posts) != 0 {
+		t.Fatalf("a draft is never sent on its own: %v", slack.posts)
+	}
+	ev := events(t)
+	if len(ev) != 2 || ev[0].Event != "review_dm_pending" || ev[0].ID != "r1" || !strings.HasSuffix(ev[0].Text, reviewFooter) || ev[1].Event != "review_held" || ev[1].PR != revA {
+		t.Errorf("a pending draft and a hold: %+v", ev)
+	}
+
+	// The held PR isn't planned again within the hour; after it, it is.
+	planned := 0
+	planReview = func(items []reviewItem) (reviewPlan, error) { planned++; return platformPlan(items) }
+	reviewTick(reviewT0.Add(30*time.Minute), false, io.Discard)
+	reviewTick(reviewT0.Add(45*time.Minute), false, io.Discard)
+	if planned != 0 {
+		t.Errorf("held PR planned again too soon")
+	}
+	reviewTick(reviewT0.Add(71*time.Minute), false, io.Discard)
+	reviewTick(reviewT0.Add(82*time.Minute), false, io.Discard)
+	if planned != 1 {
+		t.Errorf("held PR planned again after %v: %d", reviewHeldRetry, planned)
+	}
+
+	var out, errOut bytes.Buffer
+	if code := runReview([]string{"list"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "r1  to Sam (U0REVIEWER)") {
+		t.Errorf("list: %d %q %q", code, out.String(), errOut.String())
+	}
+	n := len(slack.posts)
+	out.Reset()
+	if code := runReview([]string{"send", "r1"}, &out, &errOut); code != 0 {
+		t.Fatalf("send: %q", errOut.String())
+	}
+	if len(slack.posts) != n+1 || slack.posts[n]["channel"] != "D0DM" || !strings.Contains(slack.posts[n]["text"].(string), revC) {
+		t.Errorf("sent to the reviewer's DM: %v", slack.posts)
+	}
+	if code := runReview([]string{"send", "r1"}, &out, &errOut); code != 1 {
+		t.Errorf("a sent draft is gone")
+	}
+}
+
+func TestReviewDropDiscardsADraft(t *testing.T) {
+	slack := reviewSetup(t)
+	withReviewState(func(s *reviewState) bool {
+		s.Drafts["r7"] = reviewDraft{ID: "r7", To: "C0OTHER1", Text: "x", PRs: []string{revA}}
+		return true
+	})
+	var out, errOut bytes.Buffer
+	if code := runReview([]string{"drop", "r7"}, &out, &errOut); code != 0 || len(loadReviewState().Drafts) != 0 || len(slack.posts) != 0 {
+		t.Errorf("drop: %d drafts %v posts %v", code, loadReviewState().Drafts, slack.posts)
+	}
+}
+
+func TestReviewPlanFailureKeepsTheQueue(t *testing.T) {
+	slack := reviewSetup(t)
+	planReview = func([]reviewItem) (reviewPlan, error) { return reviewPlan{}, errors.New("claude -p: timed out") }
+	saveWatch(t, greenPR(revA, "h1"))
+	reviewTick(reviewT0, false, io.Discard)
+	if err := reviewTick(reviewT0.Add(reviewDebounce), false, io.Discard); err == nil {
+		t.Fatal("a failed plan is an error")
+	}
+	if len(slack.posts) != 0 || len(loadReviewState().Queue) != 1 {
+		t.Errorf("nothing posted, still queued")
+	}
+	if ev := events(t); len(ev) != 1 || ev[0].Event != "review_plan_failed" {
+		t.Errorf("review_plan_failed: %+v", ev)
+	}
+}
+
+func TestCheckPlanRefusesBadPlans(t *testing.T) {
+	defer func(c reviewConfig) { reviewCfg = c }(reviewCfg)
+	reviewCfg = reviewConfig{Channel: revChannel, Mention: revMention}
+	items := []reviewItem{{URL: revA}, {URL: revB}}
+	post := func(text string, prs ...string) reviewPlan {
+		var p reviewPlan
+		p.ChannelPost = &struct {
+			Text string   `json:"text"`
+			PRs  []string `json:"prs"`
+		}{text, prs}
+		return p
+	}
+	good := post(revMention+" review please\n"+revA+"\n"+revB, revA, revB)
+	if err := checkPlan(good, items); err != nil {
+		t.Fatalf("a good plan: %v", err)
+	}
+	for name, p := range map[string]reviewPlan{
+		"no mention":       post("review please\n"+revA+"\n"+revB, revA, revB),
+		"left out":         post(revMention+" "+revA, revA),
+		"not in the batch": post(revMention+" "+revA+" "+revB+" "+revC, revA, revB, revC),
+		"links another PR": post(revMention+" "+revA+" "+revB+" see https://github.com/o/x/pull/9", revA, revB),
+		"too many lines":   post(revMention+"\nplease\nthanks\n"+revA+"\n"+revB, revA, revB),
+		"too long":         post(revMention+" "+revA+" "+revB+strings.Repeat("x", reviewMaxText), revA, revB),
+	} {
+		if checkPlan(p, items) == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	twice := post(revMention+"\n"+revA+"\n"+revB, revA, revB)
+	twice.Holds = append(twice.Holds, struct {
+		PR     string `json:"pr"`
+		Reason string `json:"reason"`
+	}{revA, "x"})
+	if checkPlan(twice, items) == nil {
+		t.Error("a PR placed twice: accepted")
+	}
+	draft := reviewPlan{}
+	draft.Drafts = append(draft.Drafts, struct {
+		To     string   `json:"to"`
+		ToName string   `json:"to_name"`
+		Text   string   `json:"text"`
+		PRs    []string `json:"prs"`
+	}{"#control-plane", "x", revA + " " + revB, []string{revA, revB}})
+	if checkPlan(draft, items) == nil {
+		t.Error("a draft to a channel name, not an id: accepted")
+	}
+}
+
+func TestParsePlanTakesTheJSONOut(t *testing.T) {
+	p, err := parsePlan("here you go:\n```json\n{\"channel_post\": null, \"drafts\": [], \"holds\": [{\"pr\": \"" + revA + "\", \"reason\": \"r\"}]}\n```")
+	if err != nil || len(p.Holds) != 1 || p.Holds[0].PR != revA {
+		t.Errorf("%+v %v", p, err)
+	}
+	if _, err := parsePlan("no idea"); err == nil {
+		t.Error("no JSON: accepted")
+	}
+}
+
+func TestReviewDryRunPostsAndRecordsNothing(t *testing.T) {
+	slack := reviewSetup(t)
+	planReview = platformPlan
+	saveWatch(t, greenPR(revA, "h1"))
+	var out bytes.Buffer
+	if err := reviewTick(reviewT0, true, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), revA) || len(slack.posts) != 0 || len(loadReviewState().Queue) != 0 || len(events(t)) != 0 {
+		t.Errorf("dry run: printed %q, posts %d", out.String(), len(slack.posts))
+	}
+}
+
+func TestReviewConfigChecked(t *testing.T) {
+	guide := t.TempDir() + "/guide.md"
+	os.WriteFile(guide, []byte("route everything to the channel"), 0o600)
+	good := reviewConfig{Channel: "C0REVIEW1", Mention: "<!subteam^S0TEAM1>", Guide: guide}
+	if err := good.check(); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []reviewConfig{
+		{Channel: "#control", Mention: good.Mention, Guide: guide},
+		{Channel: good.Channel, Mention: "@team", Guide: guide},
+		{Channel: good.Channel, Mention: good.Mention, Guide: guide + ".missing"},
+	} {
+		if c.check() == nil {
+			t.Errorf("%+v accepted", c)
+		}
+	}
+}
+
+func TestQuietHours(t *testing.T) {
+	for h, want := range map[int]bool{21: false, 22: true, 3: true, 6: true, 7: false, 12: false} {
+		if got := quietHours(time.Date(2026, 7, 1, h, 30, 0, 0, reviewTZ)); got != want {
+			t.Errorf("%02d:30 London: quiet %v, want %v", h, got, want)
+		}
+	}
+}
+
+func TestClaudeResultEitherShape(t *testing.T) {
+	for _, out := range []string{
+		`{"type":"result","result":"{}","is_error":false}`,
+		`[{"type":"system"},{"type":"assistant"},{"type":"result","result":"{}","is_error":false}]`,
+	} {
+		if r, err := claudeResult([]byte(out)); err != nil || r.Result != "{}" {
+			t.Errorf("%s: %+v %v", out, r, err)
+		}
+	}
+	if _, err := claudeResult([]byte(`[{"type":"system"}]`)); err == nil {
+		t.Error("no result: accepted")
+	}
+}

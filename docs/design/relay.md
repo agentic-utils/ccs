@@ -79,5 +79,6 @@ The running TUI queues and delivers while it's open; `ccs mcp` uses it when it's
 ## Decided from the open questions
 
 - A session with no terminal asking for delegation uses `claude --bg` (native), not a headless `claude -p`; ccs doesn't start sessions on another session's behalf in the background. Starting a named session in a visible iTerm tab is a different thing and is built: `ccs launch` / `ccs close`, ^X N / ^X K, and the `launch_session` / `close_session` MCP tools (the tab is always visible, and closing refuses ambiguous names).
+- ccs posts on the user's behalf in one place, and only when they turn it on: `ccs watch --review` sends batched review requests to the one channel they name, as them, routed by a read-only headless `claude -p` and checked by ccs before sending. Every other message it drafts waits for `ccs review send`. No session gains the power to post through it.
 - Handoff carries a caller-written summary and explicit references, not automatic history.
 - Worktree isolation for delegated work is Claude Code's choice (`--worktree` exists natively), not ccs's.

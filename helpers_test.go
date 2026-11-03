@@ -125,6 +125,11 @@ func TestMain(m *testing.M) {
 	psAll = func() (string, error) { return "", nil }
 	ttyOf = func(int) string { return "" }
 	signalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
+	// review batching never runs a real claude, asks GitHub or reaches Slack.
+	planReview = func([]reviewItem) (reviewPlan, error) { return reviewPlan{}, errors.New("tests plan nothing") }
+	requestedReviewers = func(string, int) ([]string, error) { return nil, nil }
+	slackToken = func() (string, error) { return "", errors.New("tests have no Slack token") }
+	slackBase = "http://127.0.0.1:0/"
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

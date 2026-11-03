@@ -51,7 +51,11 @@ type Conversation struct {
 	Model1M        bool       `json:"model_1m"`       // the last /model switch chose a 1M-context model
 	LastError      string     `json:"last_error"`     // latest surfaced API error, cleared by a later successful reply
 	LastErrorTs    string     `json:"last_error_ts"`
-	Usage          tokenUsage `json:"usage"` // summed over replies (main transcript, not subagents)
+	Usage          tokenUsage `json:"usage"`               // summed over replies (main transcript, not subagents)
+	Kind           string     `json:"kind,omitempty"`      // "codex" for a Codex session; empty for Claude's
+	ParentID       string     `json:"parent_id,omitempty"` // a Codex subagent's parent thread
+	Window         int        `json:"-"`                   // the context window the transcript states (Codex does); 0: inferred from the model
+	codexBusy      bool       // a Codex session's last turn hasn't finished
 
 	// Built once at parse and shared through parseCache, so a refresh
 	// doesn't rebuild the search text of unchanged conversations.
@@ -155,6 +159,15 @@ func contextWindow(model string, peak int) int {
 		return 1_000_000
 	}
 	return 200_000
+}
+
+// window is conv's context window: the one its transcript states, else
+// contextWindow's estimate from the model.
+func (conv Conversation) window() int {
+	if conv.Window > 0 {
+		return conv.Window
+	}
+	return contextWindow(conv.ActiveModel, conv.PeakContext)
 }
 
 // ctxColour grades a context size against its window like claude-dashboard's
@@ -441,6 +454,9 @@ func parseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 // a prune) or an unterminated last line was applied as a record. Returns prev
 // itself when the file hasn't grown.
 func parseAppended(prev *Conversation) (*Conversation, error) {
+	if prev.Kind == kindCodex { // small, and a resume rewrites it: parsed again whole
+		return parseCodexFile(prev.FilePath, time.Time{}, 0)
+	}
 	readAt := time.Now()
 	info, err := os.Stat(prev.FilePath)
 	if err != nil {
@@ -733,7 +749,7 @@ type spawnCmd struct{ ts, text string }
 // claude --bg, cswap run … -p).
 func isSpawn(cmd string) bool {
 	return strings.Contains(cmd, "claude") && (strings.Contains(cmd, " -p") || strings.Contains(cmd, "--print") || strings.Contains(cmd, "--bg") || strings.Contains(cmd, "--background")) ||
-		strings.Contains(cmd, "cswap run")
+		strings.Contains(cmd, "cswap run") || strings.Contains(cmd, "codex exec ") || strings.Contains(cmd, "codex e ")
 }
 
 // spawnText is s lowercased, without quotes or backslashes and with runs of
@@ -773,7 +789,11 @@ func finishParse(conv *Conversation) {
 // rather than killing ccs from a worker goroutine.
 func parseForScan(path string, cutoff time.Time, maxSize int64) (conv *Conversation) {
 	defer recoverWorker()
-	conv, err := parseConversationFile(path, cutoff, maxSize)
+	parse := parseConversationFile
+	if isCodexRollout(path) {
+		parse = parseCodexFile
+	}
+	conv, err := parse(path, cutoff, maxSize)
 	if err != nil {
 		return nil
 	}
@@ -840,6 +860,7 @@ func getConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 
 	// Worker pool to limit concurrent file operations
 	const numWorkers = 8
+	files = append(files, codexRollouts()...) // Codex's sessions sit in the same list
 	jobs := make(chan string, len(files))
 	results := make(chan *Conversation, len(files))
 
@@ -1019,6 +1040,9 @@ func buildItems(conversations []Conversation) []listItem {
 // searchTextOf joins everything a conversation can be found by.
 func searchTextOf(conv Conversation) string {
 	parts := []string{conv.SessionID, conv.Title, conv.Cwd, formatTimestamp(conv.FirstTimestamp)}
+	if conv.Kind != "" {
+		parts[0] += " " + conv.Kind // "codex" finds them all
+	}
 	// Include assistant messages too so a conversation is findable by what
 	// Claude said, matching the HITS column and preview.
 	for _, msg := range conv.Messages {

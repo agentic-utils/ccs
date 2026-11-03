@@ -201,7 +201,9 @@ func (m model) chatTickCmd() tea.Cmd {
 				msg = res
 			}
 		}()
-		if f, err := readSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
+		if conv.Kind == kindCodex {
+			res.stat = codexStat(conv.FilePath)
+		} else if f, err := readSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
 			res.stat = f.stat()
 		}
 		if _, busy := liveReads.LoadOrStore(conv.FilePath, true); !busy {
@@ -330,7 +332,7 @@ func (m *model) sendTo(conv Conversation, overlay bool) tea.Cmd {
 		}
 		return nil
 	}
-	id, name, pid, verified := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID], !m.unverified[conv.SessionID]
+	id, name, pid, verified, kind := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID], !m.unverified[conv.SessionID], conv.Kind
 	if m.pending == nil {
 		m.pending = make(map[string]string)
 	}
@@ -345,7 +347,11 @@ func (m *model) sendTo(conv Conversation, overlay bool) tea.Cmd {
 				msg = sendDoneMsg{id: id, note: "✗ Internal error, logged to " + workerPanicLog, err: errors.New("panic")}
 			}
 		}()
-		note, err := deliverMessage(pid, id, name, text, verified)
+		deliver := deliverMessage
+		if kind == kindCodex {
+			deliver = func(_ int, id, name, text string, _ bool) (string, error) { return deliverCodex(id, name, text) }
+		}
+		note, err := deliver(pid, id, name, text, verified)
 		return sendDoneMsg{id: id, note: note, err: err, text: text, overlay: overlay}
 	}
 }

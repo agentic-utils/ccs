@@ -250,9 +250,13 @@ func clampInt(v, def, hi int) int {
 
 // mcpHeader is one session's summary line for search and list results.
 func mcpHeader(c Conversation) string {
-	return fmt.Sprintf("%s · %s\n  session %s · project %s · last active %s (%s) · %d messages\n  resume: cd %s && claude --resume %s",
-		getTopic(c), shortModel(c), c.SessionID, c.Cwd, formatTimestamp(c.LastTimestamp), formatAgo(c.LastTimestamp, time.Now()),
-		len(c.Messages), c.Cwd, c.SessionID)
+	kind, resume := "claude", "claude --resume "
+	if c.Kind == kindCodex {
+		kind, resume = kindCodex, "codex resume "
+	}
+	return fmt.Sprintf("%s · %s\n  kind %s · session %s · project %s · last active %s (%s) · %d messages\n  resume: cd %s && %s%s",
+		getTopic(c), shortModel(c), kind, c.SessionID, c.Cwd, formatTimestamp(c.LastTimestamp), formatAgo(c.LastTimestamp, time.Now()),
+		len(c.Messages), c.Cwd, resume, c.SessionID)
 }
 
 func mcpSearch(convs []Conversation, query string, n int) (string, error) {

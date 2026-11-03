@@ -70,11 +70,15 @@ func launchScript(o launchOpts, bin, dir string) string {
 		if o.resume != "" {
 			args = append(args, "resume", shellQuote(o.resume))
 		}
-		// The user's own approval mode; network on (Codex's sandbox has none by
-		// default, so git and gh fail); its launch folder first (sessionsNamed
-		// finds it by that), then ccs's state, which ccs claim writes.
-		args = append(args, "-s", "workspace-write", "-a", "on-request", "-c", "sandbox_workspace_write.network_access=true",
-			"--add-dir", shellQuote(dir), "--add-dir", shellQuote(filepath.Dir(settingsPath)))
+		// Its launch folder first among the writable ones: sessionsNamed finds
+		// it by that.
+		flags := codexSandboxArgs(dir)
+		for i, a := range flags {
+			if i > 0 && flags[i-1] == "--add-dir" { // the folders; the flags themselves are plain words
+				a = shellQuote(a)
+			}
+			args = append(args, a)
+		}
 		if o.brief != "" {
 			args = append(args, brief)
 		}

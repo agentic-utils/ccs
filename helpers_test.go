@@ -126,6 +126,8 @@ func TestMain(m *testing.M) {
 	// never the real Codex: its data folder is a temp one, and nothing is queued.
 	codexHome = func() string { return filepath.Join(dir, "codex") }
 	codexQueue = func(string, string) error { return errors.New("tests queue nothing") }
+	liveCodexSessions = func() map[string]liveSession { return nil } // never the machine's own Codex tabs
+	codexProcCwd = func(int) string { return "" }
 	ttyOf = func(int) string { return "" }
 	signalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	ghUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }

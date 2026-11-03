@@ -92,7 +92,7 @@ func TestOverlayFrameFitsTheTerminal(t *testing.T) {
 // Others there, like ✍, are emoji that some terminals draw two cells wide
 // while ansi.StringWidth counts one, so a full-width row soft-wraps and the
 // renderer repaints rows in the wrong place.
-var narrowSymbols = map[rune]bool{'⚙': true, '⚠': true, '✓': true, '✗': true, '✎': true}
+var narrowSymbols = map[rune]bool{'⚙': true, '⚠': true, '✓': true, '✗': true, '✎': true, '✻': true, '⬡': true}
 
 func TestScreenUsesOnlySymbolsEveryTerminalDrawsNarrow(t *testing.T) {
 	m := richModel(t, 150, 50)
@@ -109,7 +109,7 @@ func TestScreenUsesOnlySymbolsEveryTerminalDrawsNarrow(t *testing.T) {
 	views = append(views, openByHand(m, stats).View())
 	for _, v := range views {
 		for _, r := range ansi.Strip(v) {
-			if r >= 0x2600 && r <= 0x27BF && !narrowSymbols[r] {
+			if (r >= 0x2600 && r <= 0x27BF || r >= 0x2B00 && r <= 0x2BFF) && !narrowSymbols[r] {
 				t.Errorf("screen draws %q (U+%04X), which some terminals draw two cells wide", r, r)
 			}
 		}

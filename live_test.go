@@ -379,7 +379,7 @@ func TestHostedSessionIsNotSwitchable(t *testing.T) {
 	m.hosts = map[string]string{"t3": "Zed"} // an app ccs has no link for
 	m.chatStatus = map[string]sessionStat{"t3": {status: "idle"}}
 	v := strip2(m.View())
-	if !strings.Contains(v, "○ from t3") || !strings.Contains(v, "in Zed ·") {
+	if !strings.Contains(v, "○✻ from t3") || !strings.Contains(v, "in Zed ·") {
 		t.Errorf("a session in an app gets a hollow mark and says where it runs:\n%s", v)
 	}
 	if cmd := m.resumeCmd(conv, false); cmd != nil || !strings.Contains(m.errorMsg, "In Zed: open it there") {
@@ -411,7 +411,7 @@ func TestT3SessionOpensInT3(t *testing.T) {
 	m.live = map[string]bool{"t3": true}
 	m.hosts = map[string]string{"t3": "T3 Code"}
 	m.chatStatus = map[string]sessionStat{"t3": {status: "idle"}}
-	if v := strip2(m.View()); !strings.Contains(v, "● from t3") || !strings.Contains(v, "in T3 Code ·") {
+	if v := strip2(m.View()); !strings.Contains(v, "●✻ from t3") || !strings.Contains(v, "in T3 Code ·") {
 		t.Errorf("one ccs can open keeps a solid mark and says where it runs:\n%s", v)
 	}
 	dir := t.TempDir()
@@ -473,7 +473,7 @@ func TestBackgroundSessionsOpenWithAttach(t *testing.T) {
 	m.bg = map[string]bgSession{"bg1": {ID: "k3x9", State: "working"}}
 	m.chatStatus = map[string]sessionStat{"bg1": {status: "busy"}}
 	v := strip2(m.View())
-	if !strings.Contains(v, "● night job") || !strings.Contains(v, "bg working") {
+	if !strings.Contains(v, "●✻ night job") || !strings.Contains(v, "bg working") {
 		t.Errorf("a background session can be opened, so it keeps ●, and says it's in the background:\n%s", v)
 	}
 	cmd := m.resumeCmd(conv, false)

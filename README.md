@@ -20,6 +20,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Rename conversations (`Ctrl+X E`)
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
+- Start and close named sessions in iTerm tabs (`ccs launch`, `ccs close`, or `Ctrl+X N` / `Ctrl+X K` in the list)
 - Pass flags through to `claude` (e.g., `--plan`)
 - Usage screen (`Tab`): the last 12 hours of token usage across all sessions (including subagents) as three charts (cache-write disposition, context assembly, output), a summary with effective tokens, and your live 5-hour and weekly allowance. The allowance reads Claude Code's stored login read-only (macOS Keychain, else `~/.claude/.credentials.json`); ccs never refreshes or writes it, so if it has expired, open `claude` to refresh it
 - Checks for new releases at startup and every 2 minutes (update steps are logged to `~/Library/Logs/ccs/update.log`) and offers to update and restart from a popup (via `brew upgrade` for Homebrew installs, otherwise by replacing the binary with the checksum-verified release). Every update, Homebrew included, is checked against a signature that only ccs's release pipeline on `main` can make, so a release uploaded any other way is refused
@@ -33,7 +34,20 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 claude mcp add --scope user ccs -- ccs mcp
 ```
 
-Claude starts it when needed (no ccs window has to be open, no network port). It has three tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first) and `read_session` (a session's messages, paged, optionally only those around a search term). It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
+Claude starts it when needed (no ccs window has to be open, no network port). It has five tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first) `read_session` (a session's messages, paged, optionally only those around a search term), and `launch_session` / `close_session`, which do what `ccs launch` and `ccs close` do (below). It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
+
+## Start and close sessions
+
+```bash
+ccs launch --name fix-login --brief brief.md --cwd ~/code/app   # claude, the brief as its first prompt
+ccs launch --name fix-login --resume <session-id>               # resume one under a name
+ccs launch --name tests --brief brief.md --codex                # codex instead
+ccs close fix-login
+```
+
+`ccs launch` opens an iTerm tab (at the end of the tab strip if iTerm's "new tabs at the end" setting is on, focus staying where it was), clears the prompt and runs a launcher kept in `~/Library/Caches/ccs/launch/<name>/`: a login zsh that sources `~/.claude.secret` when there is one and runs `claude "<brief>" --name <name> $CCS_CLAUDE_ARGS`, the brief first since `--channels` takes every word after it. It then waits up to 20 seconds for a session with that name to start, printing its pid and tty, and fails if none does. A name already running is refused. With `--codex` it runs `codex -s workspace-write -a never --add-dir <that folder>`, the folder being how ccs finds it again.
+
+`ccs close <name>` finds the one running session with that name (two with the same name are left alone), stops it, confirms its process has exited, then closes its iTerm tab (or tmux pane). A session with no terminal (an app's, or `claude --bg`) is refused.
 
 ## Installation
 
@@ -100,7 +114,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 
 - Text boxes (the search, the message box) edit like Claude Code's prompt: `Ctrl+A`/`Ctrl+E` start/end, `Ctrl+K`/`Ctrl+U` delete to the end/start, `Ctrl+W` the word before, `Ctrl+Y` puts back what they deleted, `Alt+B`/`Alt+F` move by word. So ccs's own actions are `Ctrl+X` then a letter (`Ctrl+X Ctrl+W` works too)
 - `↑/↓` or `Ctrl+P/N` - Navigate list
-- Background sessions (`claude --bg`) show `bg <state>` on the grey row: Enter opens one with `claude attach` in a new tmux window or iTerm tab, and `Ctrl+X K` twice stops it. One started from another session's `claude --bg` sits under it
+- Background sessions (`claude --bg`) show `bg <state>` on the grey row: Enter opens one with `claude attach` in a new tmux window or iTerm tab, and `Ctrl+X K` twice stops it (on a session in a terminal tab, `Ctrl+X K` twice stops it and closes the tab). One started from another session's `claude --bg` sits under it
 - Messages between sessions show at both ends: the sender's preview shows each `SendMessage` as `To <session>` (`✓ arrived` once it's in that session's transcript), the recipient's `From <session>`
 - A live session run by an app without a terminal shows `in <app>`. One in T3 Code opens in T3 Code with Enter, at its thread; any other app gets a hollow `○`, since ccs can't switch to it, and Enter says to open it there. Messaging it (`Ctrl+S`) and forking it (`Ctrl+F`) work either way
 - Each open session has a circle, `●` (or `○` in an app ccs can't open), coloured by its state: magenta waiting on you, light magenta asked you something, cyan done, green idle, amber busy
@@ -117,6 +131,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter jumps to its iTerm tab / tmux pane instead
 - `Ctrl+F` - Fork selected conversation (`claude --resume <id> --fork-session`)
 - `Ctrl+D` - Delete selected conversation (with confirmation)
+- `Ctrl+X N` - Start a new session in an iTerm tab, in the selected session's folder: type its name, Enter, then its brief, Enter (`ccs launch`)
 - `Ctrl+X E` - Edit the selected conversation's name (not while it's open in `claude`; use `/rename` there)
 - `Ctrl+R` - Refresh now: rescan sessions, re-check PRs and the usage allowance, and check for a ccs update
 - `Ctrl+X X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)

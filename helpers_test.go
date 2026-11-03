@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -117,6 +118,13 @@ func TestMain(m *testing.M) {
 	t3Link = func(int) (string, error) { return "", errors.New("no T3 Code in tests") }
 	openApp = func(string) error { return errors.New("tests open nothing") }
 	releaseKey = testReleaseKey.Public().(ed25519.PublicKey)
+	// launch and close never touch real tabs or processes unless a test stubs them.
+	launchDir = func() string { return filepath.Join(dir, "launch") }
+	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
+	closeTab = func(string) bool { return false }
+	psAll = func() (string, error) { return "", nil }
+	ttyOf = func(int) string { return "" }
+	signalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

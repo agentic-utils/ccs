@@ -40,6 +40,9 @@ Search and resume Claude Code conversations.
 
 Usage: ccs [filter] [-- claude-flags...]
        ccs prune [flags]    Shrink large conversations (see ccs prune --help)
+       ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>]
+                            Start a named claude (or codex) session in a new iTerm tab
+       ccs close <name>     Stop the named session and close its tab
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
 
@@ -115,6 +118,12 @@ func main() {
 	if len(args) > 0 && args[0] == "prune" {
 		runPrune(args[1:])
 		return
+	}
+	if len(args) > 0 && args[0] == "launch" {
+		os.Exit(runLaunch(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "close" {
+		os.Exit(runClose(args[1:], os.Stdout, os.Stderr))
 	}
 
 	for _, arg := range args {

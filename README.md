@@ -22,6 +22,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Prune bloated conversations losslessly (`ccs prune`)
 - Start and close named sessions in iTerm tabs (`ccs launch`, `ccs close`, or `Ctrl+X N` / `Ctrl+X K` in the list)
 - Watch your open PRs and get one JSON line per change (`ccs watch`)
+- Record which session owns each PR, and list your open PRs with their owners (`ccs claim`, `ccs prs`)
 - Pass flags through to `claude` (e.g., `--plan`)
 - Usage screen (`Tab`): the last 12 hours of token usage across all sessions (including subagents) as three charts (cache-write disposition, context assembly, output), a summary with effective tokens, and your live 5-hour and weekly allowance. The allowance reads Claude Code's stored login read-only (macOS Keychain, else `~/.claude/.credentials.json`); ccs never refreshes or writes it, so if it has expired, open `claude` to refresh it
 - Checks for new releases at startup and every 2 minutes (update steps are logged to `~/Library/Logs/ccs/update.log`) and offers to update and restart from a popup (via `brew upgrade` for Homebrew installs, otherwise by replacing the binary with the checksum-verified release). Every update, Homebrew included, is checked against a signature that only ccs's release pipeline on `main` can make, so a release uploaded any other way is refused
@@ -35,7 +36,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 claude mcp add --scope user ccs -- ccs mcp
 ```
 
-Claude starts it when needed (no ccs window has to be open, no network port). It has five tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first) `read_session` (a session's messages, paged, optionally only those around a search term), and `launch_session` / `close_session`, which do what `ccs launch` and `ccs close` do (below). It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
+Claude starts it when needed (no ccs window has to be open, no network port). It has six tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first) `read_session` (a session's messages, paged, optionally only those around a search term), `launch_session` / `close_session`, which do what `ccs launch` and `ccs close` do (below), and `list_prs`, which is `ccs prs --json`. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
 
 ## Start and close sessions
 
@@ -187,6 +188,21 @@ Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `nee
 ```
 
 The first run only records what it finds and writes one `watch_started` line, so it doesn't report every PR as news. Its state is kept beside ccs's settings (`pr-watch.json`), so a restart reports what changed while it was stopped, without repeating anything. Only one `ccs watch` runs at a time.
+
+## Who owns each PR
+
+A session that owns a PR says so by running `ccs claim <PR URL>` (`--release` to give it up). ccs works out which session ran it from the claude process it runs under, and records the session's id and name in `claims.json` beside its settings. A claim ends by itself when the PR merges or closes, or the session stops.
+
+`ccs prs` lists your open PRs with their owners, needing you first, and flags any PR nobody has claimed (`UNOWNED`) and any PR two running sessions both claim (`CONTESTED`). It uses `ccs watch`'s state when that is under 10 minutes old, and otherwise asks GitHub (REST) itself. A PR with a failed check, optional or not, needs you.
+
+```bash
+ccs claim https://github.com/o/r/pull/12
+ccs prs                  # one line per PR
+ccs prs --json           # the same, for scripts
+ccs prs --statusline     # e.g. "PRs 3 ready · 1 need you · 2 unowned", from saved state only
+```
+
+`--statusline` never asks GitHub, so it is quick enough for Claude Code's status line; it prints nothing when there is nothing to count, and adds `(stale)` when `ccs watch` hasn't refreshed the state for 10 minutes.
 
 ## How it works
 

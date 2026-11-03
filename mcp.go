@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -73,7 +74,8 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 			"instructions": "Search and read the user's earlier Claude Code sessions (from ~/.claude/projects). " +
 				"Use search_sessions to find a past conversation by what was said in it, list_sessions for recent ones, " +
 				"and read_session to read one. Sessions are the user's private history; quote only what's relevant. " +
-				"launch_session starts a named session in a new iTerm tab and close_session stops one and closes its tab.",
+				"launch_session starts a named session in a new iTerm tab and close_session stops one and closes its tab. " +
+				"list_prs lists the user's open PRs with the session that owns each.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -159,6 +161,11 @@ var mcpTools = []map[string]any{
 			"required":   []string{"name"},
 		},
 	},
+	{
+		"name":        "list_prs",
+		"description": "The user's open PRs (as ccs prs --json): each with the live sessions that claimed it (ccs claim), its group (ready, needs_you, waiting) and status, and flags for PRs nobody owns and PRs two sessions claim.",
+		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+	},
 }
 
 // mcpSessionCall runs launch_session and close_session, which need no transcripts.
@@ -188,6 +195,13 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 func mcpCall(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	if name == "launch_session" || name == "close_session" {
 		return mcpSessionCall(name, raw)
+	}
+	if name == "list_prs" {
+		var out, errs strings.Builder
+		if runPRs([]string{"--json"}, &out, &errs) != 0 {
+			return "", errors.New(strings.TrimSpace(errs.String()))
+		}
+		return out.String(), nil
 	}
 	var a struct {
 		Query      string `json:"query"`

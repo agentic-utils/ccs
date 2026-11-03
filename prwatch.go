@@ -215,24 +215,7 @@ func watchPass(author, owner string, now time.Time) error {
 	}
 
 	// Open PRs: details for each, in parallel, then diff.
-	details := make([]*watchedPR, len(open))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, prWatchParallel)
-	for i, p := range open {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			d, err := prDetails(p)
-			if err != nil {
-				logActivity("pr watch: %s skipped this pass: %v", p.URL, err)
-				return
-			}
-			details[i] = d
-		}()
-	}
-	wg.Wait()
+	details := prDetailsAll(open)
 	openSet := map[string]bool{}
 	for i, p := range open {
 		openSet[p.URL] = true
@@ -489,6 +472,30 @@ func prDetails(p watchedPR) (*watchedPR, error) {
 		}
 	}
 	return &n, nil
+}
+
+// prDetailsAll is prDetails for each PR, prWatchParallel at a time; a PR
+// that couldn't be read is nil (and logged).
+func prDetailsAll(open []watchedPR) []*watchedPR {
+	details := make([]*watchedPR, len(open))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, prWatchParallel)
+	for i, p := range open {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			d, err := prDetails(p)
+			if err != nil {
+				logActivity("pr watch: %s skipped this pass: %v", p.URL, err)
+				return
+			}
+			details[i] = d
+		}()
+	}
+	wg.Wait()
+	return details
 }
 
 // prEndState is "merged", "closed" or "open" for a PR the open search no

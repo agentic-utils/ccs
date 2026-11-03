@@ -24,6 +24,8 @@ type fakePR struct {
 	reviews     [][2]string // login, state
 	mergedAt    time.Time
 	failDetails bool
+	unresolved  int  // review threads not resolved
+	threadsFail bool // the GraphQL thread count fails
 }
 
 func (p *fakePR) url() string { return fmt.Sprintf("https://github.com/%s/pull/%d", p.repo, p.number) }
@@ -65,6 +67,35 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 		}
 		rows = append(rows, map[string]any{"url": "  "}) // a blank row is dropped
 		return json.Marshal(rows)
+	}
+	if args[1] == "graphql" {
+		var owner, name, number string
+		for i, a := range args {
+			if a == "-F" {
+				k, v, _ := strings.Cut(args[i+1], "=")
+				switch k {
+				case "owner":
+					owner = v
+				case "name":
+					name = v
+				case "number":
+					number = v
+				}
+			}
+		}
+		for _, p := range g.prs {
+			if p.repo == owner+"/"+name && fmt.Sprint(p.number) == number {
+				if p.threadsFail {
+					return nil, errors.New("RESOURCE_LIMITS_EXCEEDED")
+				}
+				var nodes []map[string]bool
+				for i := range p.unresolved + 1 { // one resolved thread besides
+					nodes = append(nodes, map[string]bool{"isResolved": i == p.unresolved})
+				}
+				return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewThreads": map[string]any{"nodes": nodes}}}}})
+			}
+		}
+		return nil, fmt.Errorf("unexpected graphql %v", args)
 	}
 	path := args[1]
 	for _, p := range g.prs {
@@ -308,5 +339,74 @@ func TestWatchAnyFailedCheckIsNotReady(t *testing.T) {
 	got := passEvents(t, now.Add(3*time.Minute))
 	if !slices.Equal(got, []string{"checks_failing " + a.url(), "checks_failing " + b.url()}) {
 		t.Errorf("any failed check is checks_failing, never ready or needs_review: %v", got)
+	}
+}
+
+func TestWatchUnresolvedThreads(t *testing.T) {
+	g := watchWorld(t)
+	pr := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean", runs: [][3]string{{"test", "completed", "success"}}}
+	g.prs = []*fakePR{pr}
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	pass := func() []string {
+		t.Helper()
+		now = now.Add(3 * time.Minute)
+		got := passEvents(t, now)
+		for i := range got {
+			got[i] = strings.Fields(got[i])[0]
+		}
+		return got
+	}
+	pass() // seeds: green, no review, no thread, so no event even then
+
+	pr.unresolved = 2
+	pr.head = "h2" // a new head: needs_review would fire again, but threads are open
+	if got := pass(); !slices.Equal(got, []string{"threads_unresolved"}) {
+		t.Errorf("open threads: %v, want threads_unresolved and no needs_review", got)
+	}
+	if data, _ := os.ReadFile(prEventsPath()); !strings.Contains(string(data), `"event":"threads_unresolved","pr":"https://github.com/o/a/pull/1"`) || !strings.Contains(string(data), `"unresolved":2`) {
+		t.Errorf("the event carries the count: %s", data)
+	}
+	if st, _ := loadPRWatchState(); st.PRs[pr.url()].needsReview() {
+		t.Error("a PR with unresolved threads never needs review")
+	}
+
+	pr.threadsFail = true // unknown: no change, no events, count kept
+	if got := pass(); len(got) != 0 {
+		t.Errorf("a failed count changes nothing: %v", got)
+	}
+	if st, _ := loadPRWatchState(); st.PRs[pr.url()].Threads == nil || *st.PRs[pr.url()].Threads != 2 {
+		t.Errorf("the last count is kept: %+v", st.PRs[pr.url()])
+	}
+
+	pr.threadsFail, pr.unresolved = false, 0
+	if got := pass(); !slices.Equal(got, []string{"threads_resolved", "needs_review"}) {
+		t.Errorf("resolved: %v, want threads_resolved then needs_review", got)
+	}
+
+	pr.runs = [][3]string{{"test", "completed", "failure"}}
+	pr.head, pr.unresolved = "h3", 1 // not counted while checks fail
+	if got := pass(); !slices.Equal(got, []string{"checks_failing"}) {
+		t.Errorf("failing checks: %v", got)
+	}
+}
+
+func TestNeedsReviewNeedsAThreadCount(t *testing.T) {
+	zero, one := 0, 1
+	p := watchedPR{State: "open", Checks: "success", Review: "required"}
+	if p.needsReview() {
+		t.Error("threads never counted: not yet")
+	}
+	if p.Threads = &one; p.needsReview() {
+		t.Error("an unresolved thread: no")
+	}
+	if p.Threads = &zero; !p.needsReview() {
+		t.Error("green, counted, none open: yes")
+	}
+	if g, why := p.status(); g != prWaiting || why != "review required" {
+		t.Errorf("ccs prs: %d %q", g, why)
+	}
+	p.Threads = &one
+	if g, why := p.status(); g != prFix || why != "1 unresolved thread" {
+		t.Errorf("ccs prs shows the threads: %d %q", g, why)
 	}
 }

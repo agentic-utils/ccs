@@ -246,3 +246,23 @@ func TestUnstableSaysWhyNotClean(t *testing.T) {
 		}
 	}
 }
+
+func TestUnresolvedThreadsNeedYou(t *testing.T) {
+	for _, c := range []struct {
+		p     prInfo
+		group int
+		want  string
+	}{
+		{prInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS", Unresolved: 2}, prFix, "2 unresolved threads"},
+		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "PENDING", Unresolved: 1}, prFix, "1 unresolved thread"},
+		// conflicts and failing checks still say so first
+		{prInfo{State: "OPEN", MergeState: "DIRTY", Unresolved: 1}, prFix, "conflicts"},
+		{prInfo{State: "OPEN", MergeState: "BLOCKED", Checks: "FAILURE", Failing: []string{"test"}, Unresolved: 1}, prFix, "checks failing: test"},
+		{prInfo{State: "OPEN", Draft: true, Unresolved: 1}, prWaiting, "draft"},
+		{prInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS"}, prReady, "ready to merge"},
+	} {
+		if g, why := c.p.status(); g != c.group || why != c.want {
+			t.Errorf("%+v: %d %q, want %d %q", c.p, g, why, c.group, c.want)
+		}
+	}
+}

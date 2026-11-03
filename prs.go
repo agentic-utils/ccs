@@ -199,6 +199,15 @@ type prInfo struct {
 	Review     string   // reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or ""
 	Checks     string   // the head commit's check rollup: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED or ""
 	Failing    []string // the names of its failing checks, first seen first
+	Unresolved int      // its unresolved review threads (of the first 100)
+}
+
+// threadsText is "1 unresolved thread" or "N unresolved threads".
+func threadsText(n int) string {
+	if n == 1 {
+		return "1 unresolved thread"
+	}
+	return fmt.Sprintf("%d unresolved threads", n)
 }
 
 // failingNames is the failing checks for a status line: at most three, then +N.
@@ -241,20 +250,22 @@ func (p prInfo) status() (int, string) {
 		return prWaiting, "checking…"
 	case p.Draft:
 		return prWaiting, "draft"
-	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
-		return prReady, "ready to merge"
+	case p.MergeState == "DIRTY":
+		return prFix, "conflicts"
 	case p.MergeState == "UNSTABLE" && len(p.Failing) > 0:
 		// Mergeable, but a failed check often skips what follows it (build, deploy).
 		return prFix, "optional checks failing" + p.failingNames()
+	case p.Checks == "FAILURE" || p.Checks == "ERROR":
+		return prFix, "checks failing" + p.failingNames()
+	case p.Unresolved > 0: // never ready while a review thread is open, even if GitHub would merge it
+		return prFix, threadsText(p.Unresolved)
+	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
+		return prReady, "ready to merge"
 	case p.MergeState == "UNSTABLE" && (p.Checks == "PENDING" || p.Checks == "EXPECTED"):
 		// UNSTABLE is any optional check not passed yet, running included.
 		return prReady, "ready to merge · optional checks running"
 	case p.MergeState == "UNSTABLE":
 		return prReady, "ready to merge"
-	case p.MergeState == "DIRTY":
-		return prFix, "conflicts"
-	case p.Checks == "FAILURE" || p.Checks == "ERROR":
-		return prFix, "checks failing" + p.failingNames()
 	case p.Review == "CHANGES_REQUESTED":
 		return prFix, "changes requested"
 	case p.MergeState == "BEHIND":
@@ -554,7 +565,7 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 	q.WriteString("query{")
 	for i, u := range urls {
 		p := prURL.FindStringSubmatch(u) // validated when parsed; owner and repo are [A-Za-z0-9_.-]
-		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
+		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision reviewThreads(first:100){nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
 	}
 	q.WriteString("}")
 	raw, runErr := runBounded(30*time.Second, []string{"GH_PROMPT_DISABLED=1"}, gh, "api", "graphql", "-f", "query="+q.String())
@@ -567,7 +578,10 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 				IsDraft          bool
 				MergeStateStatus string
 				ReviewDecision   string
-				Commits          struct {
+				ReviewThreads    struct {
+					Nodes []struct{ IsResolved bool }
+				}
+				Commits struct {
 					Nodes []struct {
 						Commit struct {
 							StatusCheckRollup *struct {
@@ -603,6 +617,11 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 		}
 		pr := r.PullRequest
 		info := prInfo{Number: pr.Number, Title: pr.Title, State: pr.State, Draft: pr.IsDraft, MergeState: pr.MergeStateStatus, Review: pr.ReviewDecision}
+		for _, t := range pr.ReviewThreads.Nodes {
+			if !t.IsResolved {
+				info.Unresolved++
+			}
+		}
 		if n := pr.Commits.Nodes; len(n) > 0 && n[0].Commit.StatusCheckRollup != nil {
 			roll := n[0].Commit.StatusCheckRollup
 			info.Checks = roll.State

@@ -181,7 +181,7 @@ ccs watch --author me --owner my-org --interval 5m
 ccs watch --once                           # one pass, then exit
 ```
 
-Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (checks green, not a draft, no approval: once per head commit), `ready` (approved, checks green, not a draft), `conflicts`, `merged`, `closed`. Any failed check, optional or not, counts as failing, so such a PR is never `ready` or `needs_review`. Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
+Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (checks green, not a draft, no approval: once per head commit), `ready` (approved, checks green, not a draft), `conflicts`, `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `merged`, `closed`. Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
 
 ```json
 {"at":"2026-11-03T09:12:51Z","event":"checks_failing","pr":"https://github.com/o/r/pull/220","repo":"o/r","number":220,"title":"...","head":"0fc4f95...","checks":["setup"]}

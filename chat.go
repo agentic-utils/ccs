@@ -975,7 +975,11 @@ func (m *model) selectSession(id string) {
 	find := func() int {
 		return slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
 	}
-	if find() < 0 && m.textInput.Value() != "" {
+	if find() < 0 {
+		if m.revealed == nil {
+			m.revealed = map[string]bool{}
+		}
+		m.revealed[id] = true // a headless run is shown once asked for
 		m.textInput.SetValue("")
 		m.updateFilter()
 	}

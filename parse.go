@@ -65,6 +65,10 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	parsedBytes int64
 	sawUser     bool
+	sdkCLI      bool           // its first user line's entrypoint is sdk-cli (claude -p)
+	firstPrompt string         // the first promptId seen
+	morePrompts bool           // a second promptId: something talked to it after its first prompt
+	codexExec   bool           // a Codex session started by codex exec
 	peerQueued  []string       // recent messages from other sessions/ccs the session has queued, for delivery status
 	lastUsageID string         // one reply spans several lines with the same id and usage; count it once
 	tailApplied bool           // an unterminated last line parsed as a record, so resuming at parsedBytes would repeat it
@@ -107,7 +111,8 @@ type RawMessage struct {
 	Error          string `json:"error"`
 	Timestamp      string `json:"timestamp"`
 	IsMeta         bool   `json:"isMeta"`     // harness-injected (e.g. the local-command caveat), not typed
-	Entrypoint     string `json:"entrypoint"` // cli / claude-desktop = interactive, sdk-cli = claude -p or SDK
+	Entrypoint     string `json:"entrypoint"` // cli, claude-desktop, sdk-ts (T3 Code) = interactive; sdk-cli = claude -p
+	PromptID       string `json:"promptId"`   // one per prompt the session was given
 	TeamName       string `json:"teamName"`   // set on teammate transcripts spawned by a team lead
 	CustomTitle    string `json:"customTitle"`
 	PrURL          string `json:"prUrl"` // pr-link: a PR a gh command in the session touched
@@ -595,6 +600,14 @@ func parseLine(conv *Conversation, line []byte) bool {
 			// The first user line says how the session was started.
 			conv.sawUser = true
 			conv.Spawned = raw.Entrypoint == "sdk-cli" || raw.TeamName != ""
+			conv.sdkCLI = raw.Entrypoint == "sdk-cli"
+		}
+		if raw.PromptID != "" {
+			if conv.firstPrompt == "" {
+				conv.firstPrompt = raw.PromptID
+			} else if raw.PromptID != conv.firstPrompt {
+				conv.morePrompts = true
+			}
 		}
 		if conv.Cwd == "" {
 			conv.Cwd = raw.Cwd
@@ -774,6 +787,17 @@ func (c Conversation) questions() []askQuestion {
 	}
 	json.Unmarshal(c.pending.Input, &in)
 	return in.Questions
+}
+
+// headless: a one-shot run nobody talks to (claude -p given a single prompt,
+// or codex exec) and nobody named; hidden from the list and ccs mcp unless
+// --all (showHeadless). Apps you type in start sessions as cli,
+// claude-desktop or sdk-ts, never sdk-cli.
+func (c Conversation) headless() bool {
+	if c.Kind == kindCodex {
+		return c.codexExec && !c.IsCustomTitle
+	}
+	return c.sdkCLI && !c.morePrompts && !c.IsCustomTitle
 }
 
 func finishParse(conv *Conversation) {

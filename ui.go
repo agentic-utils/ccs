@@ -191,8 +191,11 @@ type model struct {
 	prRound    int             // the round's requests in flight
 	prSelBusy  bool            // the selected session's own request is in flight
 	prSelAsked map[string]bool // asked for the selected session since the last round
-	prErr      string
-	fetchPRs   func([]string) (map[string]prInfo, error) // nil: never look PRs up
+
+	revealed       map[string]bool // headless sessions shown anyway: opened by selectSession
+	headlessHidden int             // headless sessions the filter left out, for the header
+	prErr          string
+	fetchPRs       func([]string) (map[string]prInfo, error) // nil: never look PRs up
 	// Ctrl+O: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
 	links       []linkItem
@@ -419,6 +422,7 @@ func (m *model) updateFilter() {
 		}
 		m.filtered = next
 	}
+	m.hideHeadless()
 	m.sortList()
 	m.lastFilterQuery = queryLower
 	// Keep cursor in bounds
@@ -426,6 +430,39 @@ func (m *model) updateFilter() {
 		m.cursor = max(0, len(m.filtered)-1)
 	}
 	m.previewScroll = 0
+}
+
+// showHeadless (--all) lists headless runs (Conversation.headless) too.
+var showHeadless bool
+
+// hideHeadless drops headless runs from m.filtered unless --all, or the run
+// is pinned, opened through selectSession, or nested under a session that is
+// itself shown: a run a session started is what nesting is for. Running
+// doesn't count: a backtest runs dozens at once, and a run anyone talks to
+// gets a second prompt and stops being headless.
+func (m *model) hideHeadless() {
+	m.headlessHidden = 0
+	if showHeadless {
+		return
+	}
+	shown := func(c Conversation) bool {
+		return !c.headless() || m.pinIndex(c.SessionID) >= 0 || m.revealed[c.SessionID]
+	}
+	byID := make(map[string]*Conversation, len(m.items))
+	for i := range m.items {
+		byID[m.items[i].conv.SessionID] = &m.items[i].conv
+	}
+	kept := m.filtered[:0]
+	for _, it := range m.filtered {
+		if !shown(it.conv) {
+			if p := byID[m.spawnParent(it.conv)]; p == nil || !shown(*p) {
+				m.headlessHidden++
+				continue
+			}
+		}
+		kept = append(kept, it)
+	}
+	m.filtered = kept
 }
 
 // liveGroup is where a session sits in the list: waiting on a menu or
@@ -2042,6 +2079,9 @@ func (m model) viewScreen() string {
 
 	// Title line with help right-aligned
 	note := m.refreshNote()
+	if m.headlessHidden > 0 && !m.showUsage {
+		note += fmt.Sprintf(" · %d headless hidden (--all)", m.headlessHidden)
+	}
 	if workerPanicked.Load() {
 		note += " · internal error, logged to " + workerPanicLog
 	}

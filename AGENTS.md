@@ -27,7 +27,7 @@ go test -v -cover
 ./ccs                    # search recent (60 days, <1GB files)
 ./ccs <query>            # search with initial query
 ./ccs --max-age=7        # last 7 days only
-./ccs --all              # include everything
+./ccs --all              # include everything, headless runs too
 ./ccs -- --plan          # pass flags to claude
 ./ccs prune --dry-run    # preview lossless size reduction of large files
 CCS_CPUPROFILE=cpu.out ./ccs   # record a CPU profile of the whole run (or ^X R to start/stop one, saved beside the update log); go tool pprof -top cpu.out
@@ -162,7 +162,8 @@ One package, split by area (all `package main`, same directory):
 - `getTopic()` - Title, else first real user message (skips tag-wrapped harness text, shows `/cmd` or `! cmd` for command-only sessions), else session id
 - `refreshNow()` - Ctrl+R: the minute's work now: a session rescan (`startRefresh(true)`, not if one is running), a PR round (`prNext` reset), the allowance and a ccs update check
 - `renameConversation()` / `appendLine()` - Ctrl+X E (edit its name) rename: appends a `custom-title` line like `/rename`; refused on live sessions since a running claude re-appends its own title
-- `Conversation.Spawned` - first user line has `entrypoint: sdk-cli` or a `teamName`: a candidate for nesting under the session that started it. No mark of its own: sdk-cli is also what an app (the desktop app, an editor) starts a session you type in with
+- `Conversation.Spawned` - first user line has `entrypoint: sdk-cli` or a `teamName`: a candidate for nesting under the session that started it. Apps you type in start sessions as `cli`, `claude-desktop` or `sdk-ts` (T3 Code); `sdk-cli` is `claude -p` and the Agent SDK's CLI
+- `Conversation.headless()` / `hideHeadless()` / `showHeadless` - a one-shot run nobody talks to is headless: `sdk-cli` with a single `promptId` (a second prompt, anything that talked to it, flips it back) and no user-set name, or a `codex exec`. `hideHeadless` (from `updateFilter`, after the search, so the search can't find them either) leaves them out unless `--all` (`showHeadless`), pinned, opened through `selectSession` (`revealed`), or nested under a session that is itself shown; running doesn't count, since a backtest runs dozens at once. The header says `N headless hidden (--all)` (`headlessHidden`). `ccs mcp`'s list and search skip them unless `include_headless`; `read_session` reads any
 - `nestFamilies()` / `spawnParent()` / `findSpawnParent()` / `spawnCmd` - a spawned session sits under the session that started it, marked `└` (`listItem.depth`). Claude Code records no parent, so `trackTools` keeps each `claude -p` / `cswap run` Bash command a session runs (`Conversation.spawns`, text normalised by `spawnText`), and the parent is the session whose command holds the child's first prompt within 10 minutes before it began (2 for a prompt under 20 characters), the closest in time; found once and cached in `m.parents`, a miss retried when the list grows. `sortList` nests after sorting: a family sits where its first member landed, so a waiting child brings it up; ^X G groups a family by its top session's folder (`familyCwd`). A child is nested only when its parent is shown
 - `pruneFile()` / `pruneStream()` - Shrink a conversation by dropping duplicate/redundant data (never touches user/assistant lines)
 - `runPrune()` - `ccs prune` subcommand driver

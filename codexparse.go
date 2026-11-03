@@ -167,6 +167,7 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 			meta = codexMeta{ID: p.ID, Cwd: p.Cwd, Roots: p.Roots}
 			source, parent := codexSource(p.Source)
 			conv.Spawned = source == "exec" || source == "subagent"
+			conv.codexExec = source == "exec"
 			conv.ParentID = parent
 		case rec.Type == "turn_context":
 			if p.Model != "" {

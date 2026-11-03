@@ -557,6 +557,62 @@ func searchPRs(author, owner string, filters ...string) ([]watchedPR, error) {
 
 // prDetails reads an open PR's head, draft, mergeability, checks and
 // reviews over REST.
+type checkRun struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+type commitStatus struct {
+	Context string `json:"context"`
+	State   string `json:"state"`
+}
+
+type prReview struct {
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	State string `json:"state"`
+}
+
+// ghMaxPages bounds ghPaged and the thread pages: past it a PR is unread,
+// never taken as clear.
+const ghMaxPages = 50
+
+// ghPaged is every page of a REST list, 100 at a time until a short page;
+// key picks the list out of an object page (check-runs, status).
+func ghPaged[T any](path, key string) ([]T, error) {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	var all []T
+	for page := 1; page <= ghMaxPages; page++ {
+		u := fmt.Sprintf("%s%sper_page=100&page=%d", path, sep, page)
+		var items []T
+		if key == "" {
+			if err := ghJSON(&items, u); err != nil {
+				return nil, err
+			}
+		} else {
+			var obj map[string]json.RawMessage
+			if err := ghJSON(&obj, u); err != nil {
+				return nil, err
+			}
+			if raw, ok := obj[key]; ok {
+				if err := json.Unmarshal(raw, &items); err != nil {
+					return nil, err
+				}
+			}
+		}
+		all = append(all, items...)
+		if len(items) < 100 {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("%s: more than %d pages", path, ghMaxPages)
+}
+
 func prDetails(p watchedPR) (*watchedPR, error) {
 	base := "repos/" + p.Repo
 	var pr struct {
@@ -574,22 +630,17 @@ func prDetails(p watchedPR) (*watchedPR, error) {
 	n.Conflicts = pr.MergeableState == "dirty"
 	n.conflictsUnknown = pr.MergeableState == "unknown" || pr.MergeableState == ""
 	var runs struct {
-		CheckRuns []struct {
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"check_runs"`
+		CheckRuns []checkRun `json:"check_runs"`
 	}
-	if err := ghJSON(&runs, fmt.Sprintf("%s/commits/%s/check-runs?per_page=100", base, n.Head)); err != nil {
+	// Every page: a failing or pending check after the first 100 still counts.
+	var err error
+	if runs.CheckRuns, err = ghPaged[checkRun](fmt.Sprintf("%s/commits/%s/check-runs", base, n.Head), "check_runs"); err != nil {
 		return nil, err
 	}
 	var status struct {
-		Statuses []struct {
-			Context string `json:"context"`
-			State   string `json:"state"`
-		} `json:"statuses"`
+		Statuses []commitStatus `json:"statuses"`
 	}
-	if err := ghJSON(&status, fmt.Sprintf("%s/commits/%s/status", base, n.Head)); err != nil {
+	if status.Statuses, err = ghPaged[commitStatus](fmt.Sprintf("%s/commits/%s/status", base, n.Head), "statuses"); err != nil {
 		return nil, err
 	}
 	pending, total := false, 0
@@ -623,13 +674,8 @@ func prDetails(p watchedPR) (*watchedPR, error) {
 	default:
 		n.Checks = "success"
 	}
-	var reviews []struct {
-		User struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		State string `json:"state"`
-	}
-	if err := ghJSON(&reviews, fmt.Sprintf("%s/pulls/%d/reviews?per_page=100", base, p.Number)); err != nil {
+	reviews, err := ghPaged[prReview](fmt.Sprintf("%s/pulls/%d/reviews", base, p.Number), "") // every page: a later approval counts
+	if err != nil {
 		return nil, err
 	}
 	n.threadsUnknown = true
@@ -675,59 +721,75 @@ func setThreadSelves(author, extra string) {
 
 // unresolvedThreads is how many of a PR's review threads are unresolved,
 // and of those the unanswered: thread id to its last comment's id, where
-// that comment isn't the operator's (threadSelves). One small GraphQL query,
-// since REST doesn't say (at most the first 100 threads).
+// that comment isn't the operator's (threadSelves). A small GraphQL query a
+// page (REST doesn't say), every page read.
 func unresolvedThreads(p watchedPR) (int, map[string]int64, error) {
 	owner, name, _ := strings.Cut(p.Repo, "/")
-	out, err := ghRun("api", "graphql",
-		"-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(last:1){nodes{databaseId author{login}}}}}}}}",
-		"-F", "owner="+owner, "-F", "name="+name, "-F", fmt.Sprintf("number=%d", p.Number))
-	if err != nil {
-		return 0, nil, err
-	}
-	var resp struct {
-		Data struct {
-			Repository *struct {
-				PullRequest *struct {
-					ReviewThreads struct {
-						Nodes []struct {
-							ID         string `json:"id"`
-							IsResolved bool   `json:"isResolved"`
-							Comments   struct {
-								Nodes []struct {
-									DatabaseID int64 `json:"databaseId"`
-									Author     *struct {
-										Login string `json:"login"`
-									} `json:"author"`
-								} `json:"nodes"`
-							} `json:"comments"`
-						} `json:"nodes"`
-					} `json:"reviewThreads"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return 0, nil, err
-	}
-	if resp.Data.Repository == nil || resp.Data.Repository.PullRequest == nil {
-		return 0, nil, errors.New("pull request not found")
-	}
 	n := 0
 	unanswered := map[string]int64{}
-	for _, t := range resp.Data.Repository.PullRequest.ReviewThreads.Nodes {
-		if t.IsResolved {
-			continue
+	after := ""
+	for range ghMaxPages {
+		args := []string{"api", "graphql",
+			"-f", "query=query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{databaseId author{login}}}}}}}}",
+			"-F", "owner=" + owner, "-F", "name=" + name, "-F", fmt.Sprintf("number=%d", p.Number)}
+		if after != "" {
+			args = append(args, "-f", "after="+after)
 		}
-		n++
-		if c := t.Comments.Nodes; len(c) > 0 {
-			last := c[len(c)-1]
-			if last.Author == nil || !threadSelves[strings.ToLower(last.Author.Login)] {
-				unanswered[t.ID] = last.DatabaseID
+		out, err := ghRun(args...)
+		if err != nil {
+			return 0, nil, err
+		}
+		var resp struct {
+			Data struct {
+				Repository *struct {
+					PullRequest *struct {
+						ReviewThreads struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []struct {
+								ID         string `json:"id"`
+								IsResolved bool   `json:"isResolved"`
+								Comments   struct {
+									Nodes []struct {
+										DatabaseID int64 `json:"databaseId"`
+										Author     *struct {
+											Login string `json:"login"`
+										} `json:"author"`
+									} `json:"nodes"`
+								} `json:"comments"`
+							} `json:"nodes"`
+						} `json:"reviewThreads"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(out, &resp); err != nil {
+			return 0, nil, err
+		}
+		if resp.Data.Repository == nil || resp.Data.Repository.PullRequest == nil {
+			return 0, nil, errors.New("pull request not found")
+		}
+		rt := resp.Data.Repository.PullRequest.ReviewThreads
+		for _, t := range rt.Nodes {
+			if t.IsResolved {
+				continue
+			}
+			n++
+			if c := t.Comments.Nodes; len(c) > 0 {
+				last := c[len(c)-1]
+				if last.Author == nil || !threadSelves[strings.ToLower(last.Author.Login)] {
+					unanswered[t.ID] = last.DatabaseID
+				}
 			}
 		}
+		if !rt.PageInfo.HasNextPage {
+			return n, unanswered, nil
+		}
+		after = rt.PageInfo.EndCursor
 	}
-	return n, unanswered, nil
+	return 0, nil, fmt.Errorf("more than %d pages of review threads", ghMaxPages)
 }
 
 // newReplies: now has a thread, or a later reviewer comment on one, that

@@ -266,3 +266,14 @@ func TestUnresolvedThreadsNeedYou(t *testing.T) {
 		}
 	}
 }
+
+func TestThreadsBeyondTheBatchAreNotClear(t *testing.T) {
+	p := prInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS", ThreadsUnread: true}
+	if g, why := p.status(); g == prReady || !strings.Contains(why, "100 review threads") {
+		t.Errorf("unread threads: never ready: %d %q", g, why)
+	}
+	p.Unresolved = 2
+	if _, why := p.status(); why != "2 unresolved threads" {
+		t.Errorf("an unresolved one read is the reason: %q", why)
+	}
+}

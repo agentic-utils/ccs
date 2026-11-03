@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -109,12 +111,31 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 				for _, t := range threads {
 					nodes = append(nodes, map[string]any{"id": t.id, "isResolved": false, "comments": comment(t.last, t.by)})
 				}
-				return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewThreads": map[string]any{"nodes": nodes}}}}})
+				start := 0 // served 100 a page, the cursor being the next index
+				for i, a := range args {
+					if a == "-f" && strings.HasPrefix(args[i+1], "after=") {
+						start, _ = strconv.Atoi(strings.TrimPrefix(args[i+1], "after="))
+					}
+				}
+				end := min(start+100, len(nodes))
+				more := end < len(nodes)
+				return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewThreads": map[string]any{
+					"pageInfo": map[string]any{"hasNextPage": more, "endCursor": fmt.Sprint(end)}, "nodes": nodes[start:end]}}}}})
 			}
 		}
 		return nil, fmt.Errorf("unexpected graphql %v", args)
 	}
-	path := args[1]
+	path, query, _ := strings.Cut(args[1], "?")
+	page := func(n int) (int, int) { // REST paging from per_page and page, as GitHub serves it
+		vals, _ := url.ParseQuery(query)
+		per, _ := strconv.Atoi(vals.Get("per_page"))
+		pg, _ := strconv.Atoi(vals.Get("page"))
+		if per == 0 {
+			per = 30
+		}
+		pg = max(pg, 1)
+		return min((pg-1)*per, n), min(pg*per, n)
+	}
 	for _, p := range g.prs {
 		base := fmt.Sprintf("repos/%s/pulls/%d", p.repo, p.number)
 		commit := fmt.Sprintf("repos/%s/commits/%s/", p.repo, p.head)
@@ -136,7 +157,8 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 			for _, r := range p.runs {
 				runs = append(runs, map[string]string{"name": r[0], "status": r[1], "conclusion": r[2]})
 			}
-			return json.Marshal(map[string]any{"check_runs": runs})
+			a, b := page(len(runs))
+			return json.Marshal(map[string]any{"check_runs": runs[a:b]})
 		case path == commit+"status":
 			return []byte(`{"statuses":[]}`), nil
 		case strings.HasPrefix(path, base+"/reviews"):
@@ -144,7 +166,8 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 			for _, r := range p.reviews {
 				rs = append(rs, map[string]any{"user": map[string]string{"login": r[0]}, "state": r[1]})
 			}
-			return json.Marshal(rs)
+			a, b := page(len(rs))
+			return json.Marshal(rs[a:b])
 		}
 	}
 	return nil, fmt.Errorf("unexpected gh %v", args)
@@ -564,5 +587,44 @@ func TestRemovedReviewFlagsSayWhereReviewsWent(t *testing.T) {
 		if got := runWatch(args); got != 2 {
 			t.Errorf("%v: exit %d, want 2 before anything runs", args, got)
 		}
+	}
+}
+
+func TestPRDetailsReadsEveryPage(t *testing.T) {
+	g := watchWorld(t)
+	var ok [][3]string
+	for i := range 100 {
+		ok = append(ok, [3]string{fmt.Sprintf("job-%d", i), "completed", "success"})
+	}
+	var comments [][2]string
+	for range 100 {
+		comments = append(comments, [2]string{"bot", "COMMENTED"})
+	}
+	var resolvedOnly []fakeThread // 120 threads answered by the operator, one unresolved on page 2
+	for i := range 120 {
+		resolvedOnly = append(resolvedOnly, fakeThread{fmt.Sprintf("T%d", i), int64(i), "me"})
+	}
+	resolvedOnly = append(resolvedOnly, fakeThread{"late", 999, "reviewer"})
+	g.prs = []*fakePR{
+		{repo: "o/r", number: 1, state: "open", head: "a", runs: append(slices.Clone(ok), [3]string{"late", "completed", "failure"})},
+		{repo: "o/r", number: 2, state: "open", head: "b", runs: ok, reviews: append(slices.Clone(comments), [2]string{"x", "APPROVED"})},
+		{repo: "o/r", number: 3, state: "open", head: "c", runs: ok, threads: resolvedOnly},
+	}
+	setThreadSelves("me", "")
+	d := func(n int) *watchedPR {
+		p, err := prDetails(watchedPR{URL: fmt.Sprintf("https://github.com/o/r/pull/%d", n), Repo: "o/r", Number: n})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	if p := d(1); p.Checks != "failing" || !slices.Equal(p.Failing, []string{"late"}) {
+		t.Errorf("a failing check on page 2 counts: %s %v", p.Checks, p.Failing)
+	}
+	if p := d(2); p.Review != "approved" {
+		t.Errorf("an approval on page 2 counts: %s", p.Review)
+	}
+	if p := d(3); p.Threads == nil || *p.Threads != 121 || len(p.Unanswered) != 1 {
+		t.Errorf("threads on page 2 count: %v %v", p.Threads, p.Unanswered)
 	}
 }

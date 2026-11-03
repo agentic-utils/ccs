@@ -200,6 +200,9 @@ type prInfo struct {
 	Checks     string   // the head commit's check rollup: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED or ""
 	Failing    []string // the names of its failing checks, first seen first
 	Unresolved int      // its unresolved review threads (of the first 100)
+	// ThreadsUnread: more threads than the batch reads and none of those
+	// unresolved, so it can't be called clear (the watcher reads them all).
+	ThreadsUnread bool
 }
 
 // threadsText is "1 unresolved thread" or "N unresolved threads".
@@ -259,6 +262,8 @@ func (p prInfo) status() (int, string) {
 		return prFix, "checks failing" + p.failingNames()
 	case p.Unresolved > 0: // never ready while a review thread is open, even if GitHub would merge it
 		return prFix, threadsText(p.Unresolved)
+	case p.ThreadsUnread:
+		return prWaiting, "over 100 review threads: see them on GitHub"
 	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
 		return prReady, "ready to merge"
 	case p.MergeState == "UNSTABLE" && (p.Checks == "PENDING" || p.Checks == "EXPECTED"):
@@ -565,7 +570,7 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 	q.WriteString("query{")
 	for i, u := range urls {
 		p := prURL.FindStringSubmatch(u) // validated when parsed; owner and repo are [A-Za-z0-9_.-]
-		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision reviewThreads(first:100){nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
+		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision reviewThreads(first:100){totalCount nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
 	}
 	q.WriteString("}")
 	raw, runErr := runBounded(30*time.Second, []string{"GH_PROMPT_DISABLED=1"}, gh, "api", "graphql", "-f", "query="+q.String())
@@ -579,7 +584,8 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 				MergeStateStatus string
 				ReviewDecision   string
 				ReviewThreads    struct {
-					Nodes []struct{ IsResolved bool }
+					TotalCount int
+					Nodes      []struct{ IsResolved bool }
 				}
 				Commits struct {
 					Nodes []struct {
@@ -622,6 +628,7 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 				info.Unresolved++
 			}
 		}
+		info.ThreadsUnread = info.Unresolved == 0 && pr.ReviewThreads.TotalCount > len(pr.ReviewThreads.Nodes)
 		if n := pr.Commits.Nodes; len(n) > 0 && n[0].Commit.StatusCheckRollup != nil {
 			roll := n[0].Commit.StatusCheckRollup
 			info.Checks = roll.State

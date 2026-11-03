@@ -2388,7 +2388,7 @@ func (m model) listMarks(item listItem) (string, string) {
 	default:
 		if m.chatStatus[conv.SessionID].status == "busy" {
 			liveColour = amber
-		} else if m.unseen(conv) {
+		} else if m.unseen(conv) && conv.SessionID != m.viewing { // being read now: no longer unread
 			liveColour = doneColour
 		}
 	}

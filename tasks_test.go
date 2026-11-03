@@ -111,17 +111,21 @@ func TestSubagentsInThePreviewAndTheList(t *testing.T) {
 		os.Chtimes(tr, last, last)
 	}
 	write("waiting-teammate", started, time.Now().Add(-time.Hour))
+	// Finished, then given more work: its transcript goes on after meta.json said finished.
+	os.WriteFile(filepath.Join(subs, "agent-resumed.meta.json"), []byte(`{"name":"resumed","finished":true}`), 0o600)
+	os.Chtimes(filepath.Join(subs, "agent-resumed.meta.json"), time.Now().Add(-time.Minute), time.Now().Add(-time.Minute))
+	os.WriteFile(filepath.Join(subs, "agent-resumed.jsonl"), []byte(fmt.Sprintf(`{"timestamp":%q}`+"\n", started)), 0o600)
 	write("before-resume", time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339), time.Now().Add(-2*time.Hour))
 	conv := Conversation{SessionID: "s1", FilePath: path,
 		tasks: []bgTask{{id: "b1", kind: "bash", desc: "watch", started: time.Now().UTC().Format(time.RFC3339)}}}
 	m := initialModel(buildItems([]Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s1": true}
 	m.lastScan = map[string]liveSession{"s1": {start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
-	if got := m.taskCell(conv, false); got != "⧗1 ◆2" {
+	if got := m.taskCell(conv, false); got != "⧗1 ◆3" {
 		t.Errorf("background tasks and subagents are counted apart: %q", got)
 	}
 	lines := strip2(strings.Join(m.subagentLines(conv, 100), "\n"))
-	for _, want := range []string{"Subagents:", "◆ otel-bumps · 3m", "◆ filelock-floor · 3m", "1 idle · 1 finished · 1 ended with the session"} {
+	for _, want := range []string{"Subagents:", "◆ otel-bumps · 3m", "◆ filelock-floor · 3m", "◆ resumed · 3m", "1 idle · 1 finished · 1 ended with the session"} {
 		if !strings.Contains(lines, want) {
 			t.Errorf("preview should show %q:\n%s", want, lines)
 		}

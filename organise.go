@@ -103,8 +103,8 @@ func (m model) unseen(c Conversation) bool {
 
 // noteSeen notes the selected done session as being looked at while you can
 // see it (ccs has the terminal's focus and its preview is drawn), and marks
-// it seen once the selection moves off it, so its circle stays cyan while
-// you read.
+// it seen once the selection moves off it. Its circle stops showing it
+// unread at once, but its place in the list waits for the move.
 func (m *model) noteSeen() {
 	sel := ""
 	if len(m.filtered) > 0 {

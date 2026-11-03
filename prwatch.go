@@ -162,13 +162,14 @@ func runWatch(args []string) int {
 	author := fs.String("author", "brtkwr", "PR author")
 	owner := fs.String("owner", "two-inc", "GitHub owner (org or user) whose repos to watch")
 	once := fs.Bool("once", false, "make one pass and exit")
+	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unresolved threads")
 	review := fs.Bool("review", false, "also request reviews: batch PRs that are green and need review, post to --review-channel what the planner routes there, draft the rest (ccs review)")
 	dryRun := fs.Bool("dry-run", false, "with --review: print the plan for the PRs waiting now, from the last pass's state, and post nothing")
 	fs.StringVar(&reviewCfg.Channel, "review-channel", "", "with --review: the Slack channel id review requests are posted to")
 	fs.StringVar(&reviewCfg.Mention, "review-mention", "", "with --review: the mention that post must carry, e.g. <!subteam^S…>")
 	fs.StringVar(&reviewCfg.Guide, "review-guide", "", "with --review: a file of routing instructions for the planner")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed. Only one\nccs watch runs at a time.\n\n", prEventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed; unless --no-nudge,\nnudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unresolved threads). Only one ccs watch runs at a time.\n\n", prEventsPath())
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -208,16 +209,29 @@ func runWatch(args []string) int {
 		if err := watchPass(*author, *owner, time.Now()); err != nil {
 			fmt.Fprintln(os.Stderr, "ccs watch:", err)
 			logActivity("pr watch: %v", err)
-		} else if *review {
-			if err := reviewTick(time.Now(), false, os.Stdout); err != nil {
-				fmt.Fprintln(os.Stderr, "ccs watch:", err)
-				logActivity("review: %v", err)
-			}
+		} else {
+			afterPass(!*noNudge, *review)
 		}
 		if *once {
 			return 0
 		}
 		time.Sleep(*interval)
+	}
+}
+
+// afterPass runs what follows a successful pass: nudges, then review requests.
+func afterPass(nudge, review bool) {
+	if nudge {
+		if err := nudgeTick(time.Now()); err != nil {
+			fmt.Fprintln(os.Stderr, "ccs watch:", err)
+			logActivity("nudge: %v", err)
+		}
+	}
+	if review {
+		if err := reviewTick(time.Now(), false, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "ccs watch:", err)
+			logActivity("review: %v", err)
+		}
 	}
 }
 

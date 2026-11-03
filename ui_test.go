@@ -318,7 +318,7 @@ func TestFormatListItemFillsWidth(t *testing.T) {
 		m.width = w
 		// Selected row has no ANSI codes; its width + the 2-char row prefix
 		// added by View should fill the terminal exactly.
-		if got := len(m.formatListItem(item, true)); got != w-listIndent-1 { // the last column is the scrollbar
+		if got := ansi.StringWidth(m.formatListItem(item, true)); got != w-listIndent-1 { // the last column is the scrollbar
 			t.Errorf("width=%d: row length = %d, want %d", w, got, w-listIndent-1)
 		}
 	}
@@ -725,11 +725,11 @@ func TestFormatListItemLiveMarker(t *testing.T) {
 	}
 	m.live = map[string]bool{"s1": true}
 	plain := m.formatListItem(item, true)
-	if !strings.Contains(plain, " ● Topic") {
+	if !strings.Contains(plain, " ●✻ Topic") {
 		t.Errorf("live row should be marked, got %q", plain)
 	}
 	coloured := m.formatListItem(item, false)
-	if !strings.Contains(coloured, " \033[32m●\033[0m Topic") {
+	if !strings.Contains(coloured, " \033[32m●\033[0m\033[38;5;173m✻\033[0m Topic") {
 		t.Errorf("live marker should be green, got %q", coloured)
 	}
 }
@@ -739,11 +739,11 @@ func TestFormatListItemErrorAndLiveMarkers(t *testing.T) {
 	m := initialModel([]listItem{item}, "", nil)
 	m.width = 120
 	m.live = map[string]bool{"s1": true}
-	if got := m.formatListItem(item, true); !strings.Contains(got, "●! Topic") {
+	if got := m.formatListItem(item, true); !strings.Contains(got, "●!✻ Topic") {
 		t.Errorf("selected row = %q", got)
 	}
 	got := m.formatListItem(item, false)
-	if !strings.Contains(got, "\033[32m●\033[0m\033[1;31m!\033[0m Topic") {
+	if !strings.Contains(got, "\033[32m●\033[0m\033[1;31m!\033[0m\033[38;5;173m✻\033[0m Topic") {
 		t.Errorf("unselected row = %q", got)
 	}
 	// Same visible width as an unmarked row.
@@ -954,7 +954,7 @@ func TestSessionStatsAndErrorIcon(t *testing.T) {
 	}
 	m := initialModel(buildItems([]Conversation{conv}), "", nil)
 	m.width = 140
-	if !strings.Contains(m.formatListItem(m.items[0], true), "! T") {
+	if !strings.Contains(m.formatListItem(m.items[0], true), "!✻ T") {
 		t.Error("a session whose last action errored should show ! in the list")
 	}
 }

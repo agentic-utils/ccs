@@ -254,6 +254,7 @@ type liveSession struct {
 	start      string // the file's procStart, so a kept session's pid can be checked later
 	unverified bool   // the pid's start time couldn't be checked against the file's: maybe a recycled pid
 	misses     int    // ticks in a row it was kept without a readable file
+	codex      bool   // a Codex session (codexLiveSessions), never kept from an earlier scan
 }
 
 // keepTicks is how long a session without a readable file is kept when its
@@ -311,8 +312,13 @@ func scanSessions(prev map[string]liveSession) map[string]liveSession {
 			}
 		}
 	}
+	for id, c := range liveCodexSessions() { // no session file: worked out afresh each time
+		if _, ok := live[id]; !ok {
+			live[id] = c
+		}
+	}
 	for id, p := range prev {
-		if _, ok := live[id]; ok || len(byPid[p.pid]) > 0 || !pidAlive(p.pid) {
+		if _, ok := live[id]; ok || p.codex || len(byPid[p.pid]) > 0 || !pidAlive(p.pid) {
 			continue
 		}
 		if match, checked := sameStart(p.start, actual[p.pid]); match && (checked || p.misses < keepTicks) {
@@ -381,11 +387,20 @@ func openResumeTab(conv Conversation, claudeFlags []string) (bool, error) {
 	if cwd == "" || cwd == "unknown" {
 		cwd = "."
 	}
-	claudePath, err := exec.LookPath("claude")
-	if err != nil {
-		return false, nil
+	var args []string
+	if conv.Kind == kindCodex { // claude's flags don't apply; a fork asks for one
+		codexPath, err := exec.LookPath("codex")
+		if err != nil {
+			return false, nil
+		}
+		args = codexResumeArgs(codexPath, conv, slices.Contains(claudeFlags, "--fork-session"))
+	} else {
+		claudePath, err := exec.LookPath("claude")
+		if err != nil {
+			return false, nil
+		}
+		args = append([]string{claudePath, "--resume", conv.SessionID}, claudeFlags...)
 	}
-	args := append([]string{claudePath, "--resume", conv.SessionID}, claudeFlags...)
 	// tmux first: inside tmux the iTerm tab would land outside the session.
 	if handled, err := resumeInTmuxWindow(cwd, args); handled {
 		return true, err

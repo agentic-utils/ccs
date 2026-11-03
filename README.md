@@ -10,7 +10,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 
 ## Features
 
-- Search through all your Claude Code conversations
+- Search through all your Claude Code conversations, and your Codex sessions beside them (each row starts with its agent: an orange `✻` for Claude, `⬡` for Codex; a Codex row's grey line starts `codex`, so searching `codex` finds them all)
 - See session names (your custom titles or Claude's auto-generated ones) in the list
 - Preview conversation context with search term highlighting
 - See context size (tokens as of the last reply), message counts, hit counts, and file size per conversation
@@ -20,6 +20,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Rename conversations (`Ctrl+X E`)
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
+- Codex sessions: read from `$CODEX_HOME/sessions` (default `~/.codex`), with their model and context, PRs their `gh pr create`/`merge` printed, and a live `●` (green idle, amber busy) while a `codex` tab has the thread open. Enter switches to that tab, else opens `codex resume <id>` in a new tab with `ccs launch --codex`'s sandbox (network on, your approval mode); `Ctrl+F` runs `codex fork <id>`; the message box sends with `codex queue`. A headless `codex exec` run sits `└` under the Claude session that ran it (when its prompt is on the command line), and a Codex subagent under its parent thread. ccs never renames, deletes or prunes a Codex session's files
 - Start and close named sessions in iTerm tabs (`ccs launch`, `ccs close`, or `Ctrl+X N` / `Ctrl+X K` in the list)
 - Watch your open PRs and get one JSON line per change (`ccs watch`)
 - Record which session owns each PR, and list your open PRs with their owners (`ccs claim`, `ccs prs`)

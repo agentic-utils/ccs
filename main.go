@@ -36,7 +36,7 @@ func startProfile(path string) (func(), error) {
 func printHelp() {
 	fmt.Printf(`ccs v%s - Claude Code Search
 
-Search and resume Claude Code conversations.
+Search and resume Claude Code conversations, and Codex sessions beside them.
 
 Usage: ccs [filter] [-- claude-flags...]
        ccs prune [flags]    Shrink large conversations (see ccs prune --help)
@@ -359,6 +359,17 @@ func main() {
 		fmt.Printf("\033[90mFlags: %s\033[0m\n", strings.Join(claudeFlags, " "))
 	}
 	fmt.Println()
+
+	if conv.Kind == kindCodex {
+		codexPath, err := exec.LookPath("codex")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "codex not found in PATH\n")
+			os.Exit(1)
+		}
+		args := codexResumeArgs("codex", *conv, final.fork)
+		syscall.Exec(codexPath, args, os.Environ())
+		return
+	}
 
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {

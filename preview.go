@@ -810,8 +810,12 @@ func (m model) renderPreview(item listItem, height int) string {
 // sessionStats is the preview header's model, token and error lines.
 func sessionStats(conv Conversation) []string {
 	var lines []string
+	if conv.Kind == kindCodex {
+		glyph, colour := agentGlyph(conv)
+		lines = append(lines, "\033[1;33mAgent:\033[0m   \033["+colour+"m"+glyph+"\033[0m codex")
+	}
 	if conv.ActiveModel != "" || conv.ContextTokens > 0 {
-		window := contextWindow(conv.ActiveModel, conv.PeakContext)
+		window := conv.window()
 		code, _ := ctxColour(conv.ContextTokens, window)
 		model := conv.ActiveModel
 		if model == "" {

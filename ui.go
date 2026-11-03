@@ -656,6 +656,9 @@ var stateSections = [...]struct{ name, colour string }{
 // spawnParent is the session whose claude -p started c, "" if none is known.
 // Found once and kept; a miss is retried when the list grows.
 func (m *model) spawnParent(c Conversation) string {
+	if c.ParentID != "" { // a Codex subagent names its parent thread
+		return c.ParentID
+	}
 	if p := m.parents[c.SessionID]; p != "" {
 		return p
 	}
@@ -1691,6 +1694,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, true)
 
 		case "ctrl+d":
+			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == kindCodex {
+				m.note("A Codex session: ccs leaves Codex's files alone (codex delete removes one)")
+				return m, nil
+			}
 			if len(m.filtered) > 0 {
 				m.confirmDelete = true
 				m.deleteIndex = m.cursor
@@ -1703,6 +1710,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "^x e":
 			if len(m.filtered) > 0 {
 				conv := m.filtered[m.cursor].conv
+				if conv.Kind == kindCodex {
+					m.note("A Codex session: rename it in Codex")
+					return m, nil
+				}
 				// A running claude re-appends its own title and would undo ours.
 				if m.isLive(conv.SessionID) {
 					m.errorMsg = "Session is open in claude - use /rename there"
@@ -1721,6 +1732,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "^x x":
+			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == kindCodex {
+				m.note("A Codex session: ccs only prunes Claude's transcripts")
+				return m, nil
+			}
 			if len(m.filtered) > 0 {
 				// Prune rewrites the file; a running claude's appends during
 				// the rewrite would be lost.
@@ -2220,7 +2235,7 @@ const (
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " on each row
 	numGaps    = 7
-	colMarks   = 3 // status icons (● !) packed right, then a space
+	colMarks   = 4 // status icons (● !) packed right, the agent's glyph (✻ ⬡), then a space
 )
 
 // searching: a search is typed, so HITS has something to count.
@@ -2280,7 +2295,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-mw)
 	// CTX is coloured by how full the context is (see ctxColour).
-	ctxCode, flash := ctxColour(item.conv.ContextTokens, contextWindow(item.conv.ActiveModel, item.conv.PeakContext))
+	ctxCode, flash := ctxColour(item.conv.ContextTokens, item.conv.window())
 	if flash && time.Now().Unix()%2 == 1 {
 		ctxCode = "2;31" // flashing: dim every other second
 	}
@@ -2348,8 +2363,9 @@ func (m model) listMarks(item listItem) (string, string) {
 		icons += s.glyph
 		colouredIcons += "\033[" + s.color + "m" + s.glyph + "\033[0m"
 	}
-	pad := strings.Repeat(" ", colMarks-1-n)
-	return pad + icons + " ", pad + colouredIcons + " "
+	glyph, colour := agentGlyph(conv) // every row: which agent it is
+	pad := strings.Repeat(" ", colMarks-2-n)
+	return pad + icons + glyph + " ", pad + colouredIcons + "\033[" + colour + "m" + glyph + "\033[0m "
 }
 
 // sidebarView is the session list as a sidebar with the preview (and message
@@ -2494,6 +2510,9 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
 	stats := strings.TrimSuffix(formatAgo(conv.LastTimestamp, time.Now()), " ago")
+	if conv.Kind != "" {
+		stats = conv.Kind + " · " + stats
+	}
 	if conv.ContextTokens > 0 {
 		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
 	}

@@ -407,6 +407,13 @@ func deliverMessage(pid int, id, name, text string, verified bool) (string, erro
 // socket: newline-delimited JSON, an auth line with the session's peer token
 // first, then the message wrapped so the session sees it came from ccs.
 func sendViaSocket(path, token, text string) (string, error) {
+	return sendEnvelope(path, token, ccsSender, ccsNote, text, true)
+}
+
+// sendEnvelope is sendViaSocket with its own sender name and leading note;
+// replyTo gives a return address for receipts (only a process that serves
+// them should ask for them).
+func sendEnvelope(path, token, sender, note, text string, replyTo bool) (string, error) {
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", errNotConnected, err)
@@ -422,14 +429,16 @@ func sendViaSocket(path, token, text string) (string, error) {
 	msgID := newUUID()
 	msg := map[string]any{
 		"type":    "user",
-		"message": map[string]string{"role": "user", "content": "<cross-session-message from-name=\"" + ccsSender + "\">\n" + ccsNote + body + "\n</cross-session-message>"},
+		"message": map[string]string{"role": "user", "content": "<cross-session-message from-name=\"" + sender + "\">\n" + note + body + "\n</cross-session-message>"},
 		"msg_id":  msgID,
 		"msgV":    1,
 	}
 	// A return address lets the session send receipts (held, refused…); it
 	// only replies to one in its own socket folder.
-	if inbox := receiptInbox(filepath.Dir(path)); inbox != "" {
-		msg["from"] = "uds:" + inbox
+	if replyTo {
+		if inbox := receiptInbox(filepath.Dir(path)); inbox != "" {
+			msg["from"] = "uds:" + inbox
+		}
 	}
 	line, _ := json.Marshal(msg)
 	out.Write(append(line, '\n'))

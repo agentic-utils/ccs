@@ -43,7 +43,8 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>]
                             Start a named claude (or codex) session in a new iTerm tab
        ccs close <name>     Stop the named session and close its tab
-       ccs watch [flags]    Report changes to your open PRs as JSON lines (see ccs watch --help)
+       ccs watch [flags]    Report changes to your open PRs as JSON lines, and tell the sessions
+                            that claimed them what's failing (see ccs watch --help)
        ccs claim <PR URL>   Record that the session running it owns the PR (--release drops it)
        ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline)
        ccs review list | send <id> | drop <id>

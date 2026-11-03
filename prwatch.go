@@ -35,10 +35,13 @@ type watchedPR struct {
 	Failing   []string `json:"failing,omitempty"`
 	Review    string   `json:"review,omitempty"` // approved, changes_requested, required
 	Conflicts bool     `json:"conflicts,omitempty"`
-	Threads   *int     `json:"threads,omitempty"`    // unresolved review threads; nil until counted (only GraphQL knows)
-	AskedHead string   `json:"asked_head,omitempty"` // the head needs_review was emitted for
-	Awaiting  bool     `json:"awaiting,omitempty"`   // needs_review emitted and no review_not_needed since
-	Ended     string   `json:"ended,omitempty"`      // when it merged or closed (RFC3339), to prune it later
+	Threads   *int     `json:"threads,omitempty"` // unresolved review threads; nil until counted (only GraphQL knows)
+	// Unanswered: the unresolved threads whose last comment isn't the
+	// operator's (threadSelves), thread id to that comment's id.
+	Unanswered map[string]int64 `json:"unanswered,omitempty"`
+	AskedHead  string           `json:"asked_head,omitempty"` // the head needs_review was emitted for
+	Awaiting   bool             `json:"awaiting,omitempty"`   // needs_review emitted and no review_not_needed since
+	Ended      string           `json:"ended,omitempty"`      // when it merged or closed (RFC3339), to prune it later
 
 	conflictsUnknown bool // GitHub hadn't worked out mergeability yet: keep the last answer
 	threadsUnknown   bool // not counted this pass (checks not green, or the query failed): keep the last count
@@ -90,6 +93,9 @@ type prEvent struct {
 	Review string   `json:"review,omitempty"`
 	// Unresolved review threads, on threads_unresolved.
 	Unresolved int `json:"unresolved,omitempty"`
+	// Unanswered review threads, on threads_unanswered: how many and their ids.
+	Count   int      `json:"count,omitempty"`
+	Threads []string `json:"threads,omitempty"`
 	// Why a PR stopped awaiting review, on review_not_needed.
 	Reason string `json:"reason,omitempty"`
 }
@@ -208,14 +214,15 @@ func runWatch(args []string) int {
 	author := fs.String("author", "", "PR author (default: the user gh is logged in as)")
 	owner := fs.String("owner", "", "GitHub owner (org or user) whose repos to watch (default: every owner)")
 	once := fs.Bool("once", false, "make one pass and exit")
-	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unresolved threads")
+	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unanswered review threads")
+	selfLogins := fs.String("self-logins", "", "comma-separated GitHub logins whose replies also answer a review thread (bots or co-authors acting for you), besides --author")
 	review := fs.Bool("review", false, "DEPRECATED, removed next release. also request reviews: batch PRs that are green and need review, post to --review-channel what the hook routes there, draft the rest (ccs review)")
 	dryRun := fs.Bool("dry-run", false, "DEPRECATED. with --review: print the plan for the PRs waiting now, from the last pass's state, and post nothing")
 	fs.StringVar(&reviewCfg.Channel, "review-channel", "", "DEPRECATED. with --review: the Slack channel id review requests are posted to")
 	fs.StringVar(&reviewCfg.Mention, "review-mention", "", "DEPRECATED. with --review: the mention that post must carry, e.g. <!subteam^S…>")
 	fs.StringVar(&reviewCfg.Hook, "review-hook", "", "DEPRECATED. with --review: the command that routes a batch (run with sh -c): the batch as JSON on its stdin, the plan as JSON on its stdout")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed; unless --no-nudge,\nnudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unresolved threads). Only one ccs watch runs at a time.\n\n", prEventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, threads_unanswered, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed; unless --no-nudge,\nnudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). Only one ccs watch runs at a time.\n\n", prEventsPath())
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -228,6 +235,7 @@ func runWatch(args []string) int {
 		fmt.Fprintln(os.Stderr, "ccs watch:", err)
 		return 1
 	}
+	setThreadSelves(*author, *selfLogins)
 	deprecated := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -333,6 +341,8 @@ func watchPass(author, owner string, now time.Time) error {
 			e.Review = p.Review
 		case "threads_unresolved":
 			e.Unresolved = *p.Threads
+		case "threads_unanswered":
+			e.Count, e.Threads = len(p.Unanswered), sortedKeys(p.Unanswered)
 		}
 		events = append(events, e)
 	}
@@ -370,7 +380,7 @@ func watchPass(author, owner string, now time.Time) error {
 				n.Conflicts = o.Conflicts
 			}
 			if n.threadsUnknown {
-				n.Threads = o.Threads
+				n.Threads, n.Unanswered = o.Threads, o.Unanswered
 			}
 		}
 		next.PRs[p.URL] = n
@@ -408,6 +418,9 @@ func watchPass(author, owner string, now time.Time) error {
 				emit(n, "threads_unresolved")
 			case *n.Threads == 0 && was > 0:
 				emit(n, "threads_resolved")
+			}
+			if newReplies(n.Unanswered, prev.Unanswered) {
+				emit(n, "threads_unanswered")
 			}
 		}
 		if n.ready() && !prev.ready() {
@@ -652,10 +665,10 @@ func prDetails(p watchedPR) (*watchedPR, error) {
 	}
 	n.threadsUnknown = true
 	if n.Checks == "success" && !n.Draft { // only then could it be ready or need a review
-		if c, err := unresolvedThreads(p); err != nil {
+		if c, unanswered, err := unresolvedThreads(p); err != nil {
 			logActivity("pr watch: %s: counting review threads: %v", p.URL, err)
 		} else {
-			n.Threads, n.threadsUnknown = &c, false
+			n.Threads, n.Unanswered, n.threadsUnknown = &c, unanswered, false
 		}
 	}
 	latest := map[string]string{} // each reviewer's last approve, request-changes or dismissal
@@ -677,40 +690,96 @@ func prDetails(p watchedPR) (*watchedPR, error) {
 	return &n, nil
 }
 
-// unresolvedThreads is how many of a PR's review threads are unresolved:
-// one small GraphQL query, since REST doesn't say (at most the first 100).
-func unresolvedThreads(p watchedPR) (int, error) {
+// threadSelves is the operator: the logins whose replies answer a review
+// thread. The gh user ccs watch runs as (--author) and --self-logins.
+var threadSelves = map[string]bool{}
+
+// setThreadSelves sets threadSelves from the author and a comma-separated list.
+func setThreadSelves(author, extra string) {
+	threadSelves = map[string]bool{}
+	for _, l := range append([]string{author}, strings.Split(extra, ",")...) {
+		if l = strings.ToLower(strings.TrimSpace(l)); l != "" {
+			threadSelves[l] = true
+		}
+	}
+}
+
+// unresolvedThreads is how many of a PR's review threads are unresolved,
+// and of those the unanswered: thread id to its last comment's id, where
+// that comment isn't the operator's (threadSelves). One small GraphQL query,
+// since REST doesn't say (at most the first 100 threads).
+func unresolvedThreads(p watchedPR) (int, map[string]int64, error) {
 	owner, name, _ := strings.Cut(p.Repo, "/")
 	out, err := ghRun("api", "graphql",
-		"-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved}}}}}",
+		"-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(last:1){nodes{databaseId author{login}}}}}}}}",
 		"-F", "owner="+owner, "-F", "name="+name, "-F", fmt.Sprintf("number=%d", p.Number))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	var resp struct {
 		Data struct {
 			Repository *struct {
 				PullRequest *struct {
 					ReviewThreads struct {
-						Nodes []struct{ IsResolved bool }
-					}
-				}
+						Nodes []struct {
+							ID         string `json:"id"`
+							IsResolved bool   `json:"isResolved"`
+							Comments   struct {
+								Nodes []struct {
+									DatabaseID int64 `json:"databaseId"`
+									Author     *struct {
+										Login string `json:"login"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return 0, nil, err
+	}
+	if resp.Data.Repository == nil || resp.Data.Repository.PullRequest == nil {
+		return 0, nil, errors.New("pull request not found")
+	}
+	n := 0
+	unanswered := map[string]int64{}
+	for _, t := range resp.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if t.IsResolved {
+			continue
+		}
+		n++
+		if c := t.Comments.Nodes; len(c) > 0 {
+			last := c[len(c)-1]
+			if last.Author == nil || !threadSelves[strings.ToLower(last.Author.Login)] {
+				unanswered[t.ID] = last.DatabaseID
 			}
 		}
 	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return 0, err
-	}
-	if resp.Data.Repository == nil || resp.Data.Repository.PullRequest == nil {
-		return 0, errors.New("pull request not found")
-	}
-	n := 0
-	for _, t := range resp.Data.Repository.PullRequest.ReviewThreads.Nodes {
-		if !t.IsResolved {
-			n++
+	return n, unanswered, nil
+}
+
+// newReplies: now has a thread, or a later reviewer comment on one, that
+// before didn't.
+func newReplies(now, before map[string]int64) bool {
+	for id, c := range now {
+		if b, ok := before[id]; !ok || b != c {
+			return true
 		}
 	}
-	return n, nil
+	return false
+}
+
+// sortedKeys is m's keys in order.
+func sortedKeys(m map[string]int64) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // prDetailsAll is prDetails for each PR, prWatchParallel at a time; a PR

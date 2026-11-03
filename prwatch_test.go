@@ -24,8 +24,16 @@ type fakePR struct {
 	reviews     [][2]string // login, state
 	mergedAt    time.Time
 	failDetails bool
-	unresolved  int  // review threads not resolved
-	threadsFail bool // the GraphQL thread count fails
+	unresolved  int          // review threads not resolved, each last commented on by a reviewer
+	threadsFail bool         // the GraphQL thread count fails
+	threads     []fakeThread // when set, the unresolved threads instead of unresolved
+}
+
+// fakeThread is an unresolved review thread: its id, last comment id and who wrote it.
+type fakeThread struct {
+	id   string
+	last int64
+	by   string
 }
 
 func (p *fakePR) url() string { return fmt.Sprintf("https://github.com/%s/pull/%d", p.repo, p.number) }
@@ -88,9 +96,18 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 				if p.threadsFail {
 					return nil, errors.New("RESOURCE_LIMITS_EXCEEDED")
 				}
-				var nodes []map[string]bool
-				for i := range p.unresolved + 1 { // one resolved thread besides
-					nodes = append(nodes, map[string]bool{"isResolved": i == p.unresolved})
+				comment := func(id int64, by string) map[string]any {
+					return map[string]any{"nodes": []map[string]any{{"databaseId": id, "author": map[string]string{"login": by}}}}
+				}
+				nodes := []map[string]any{{"id": "resolved", "isResolved": true, "comments": comment(1, "reviewer")}} // one resolved thread besides
+				threads := p.threads
+				if threads == nil {
+					for i := range p.unresolved {
+						threads = append(threads, fakeThread{fmt.Sprintf("T%d", i), int64(100 + i), "reviewer"})
+					}
+				}
+				for _, t := range threads {
+					nodes = append(nodes, map[string]any{"id": t.id, "isResolved": false, "comments": comment(t.last, t.by)})
 				}
 				return json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewThreads": map[string]any{"nodes": nodes}}}}})
 			}
@@ -364,8 +381,8 @@ func TestWatchUnresolvedThreads(t *testing.T) {
 	pr.head = "h2" // a new head: needs_review would fire again, but threads are open
 	// It was awaiting review (needs_review at the seed): a new head says it
 	// no longer is, then the threads.
-	if got := pass(); !slices.Equal(got, []string{"review_not_needed", "threads_unresolved"}) {
-		t.Errorf("open threads: %v, want review_not_needed, threads_unresolved and no needs_review", got)
+	if got := pass(); !slices.Equal(got, []string{"review_not_needed", "threads_unresolved", "threads_unanswered"}) {
+		t.Errorf("open threads: %v, want review_not_needed, threads_unresolved, threads_unanswered and no needs_review", got)
 	}
 	if data, _ := os.ReadFile(prEventsPath()); !strings.Contains(string(data), `"event":"review_not_needed"`) || !strings.Contains(string(data), `"reason":"new_head"`) {
 		t.Errorf("review_not_needed says why: %s", data)
@@ -499,5 +516,45 @@ func TestWatchStateFromBeforeAwaitingIsMigratedQuietly(t *testing.T) {
 	a.reviews = [][2]string{{"rev", "APPROVED"}}
 	if got := passEvents(t, now.Add(6*time.Minute)); !slices.Equal(got, []string{"review_not_needed " + a.url(), "ready " + a.url()}) {
 		t.Errorf("but knows it was awaiting: %v", got)
+	}
+}
+
+func TestThreadsUnansweredByTheOperator(t *testing.T) {
+	g := watchWorld(t)
+	pr := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean", runs: [][3]string{{"test", "completed", "success"}}}
+	g.prs = []*fakePR{pr}
+	setThreadSelves("me", "my-bot, Co-Author")
+	t.Cleanup(func() { setThreadSelves("", "") })
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	pass := func() []string {
+		t.Helper()
+		now = now.Add(3 * time.Minute)
+		got := passEvents(t, now)
+		for i := range got {
+			got[i] = strings.Fields(got[i])[0]
+		}
+		return got
+	}
+	pass() // seeds
+
+	pr.threads = []fakeThread{{"T1", 10, "reviewer"}, {"T2", 20, "me"}, {"T3", 30, "my-bot"}, {"T4", 40, "co-author"}}
+	if got := pass(); !slices.Equal(got, []string{"review_not_needed", "threads_unresolved", "threads_unanswered"}) {
+		t.Errorf("four unresolved, one unanswered: %v", got)
+	}
+	st, _ := loadPRWatchState()
+	if p := st.PRs[pr.url()]; len(p.Unanswered) != 1 || p.Unanswered["T1"] != 10 || *p.Threads != 4 {
+		t.Errorf("the operator's, its bot's and co-author's replies answer a thread: %+v", p)
+	}
+	if data, _ := os.ReadFile(prEventsPath()); !strings.Contains(string(data), `"event":"threads_unanswered"`) || !strings.Contains(string(data), `"count":1,"threads":["T1"]`) {
+		t.Errorf("the event carries the count and ids: %s", data)
+	}
+
+	pr.threads[0].by, pr.threads[0].last = "me", 11 // answered
+	if got := pass(); len(got) != 0 {
+		t.Errorf("answered, still unresolved: no event: %v", got)
+	}
+	pr.threads[1].by, pr.threads[1].last = "reviewer", 21 // a reviewer replies again
+	if got := pass(); !slices.Equal(got, []string{"threads_unanswered"}) {
+		t.Errorf("a new reviewer comment: %v", got)
 	}
 }

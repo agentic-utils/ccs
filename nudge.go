@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,8 +13,10 @@ import (
 )
 
 // Nudges: after each pass, ccs watch tells the session that claimed a PR
-// (ccs claim) what's wrong with it: unresolved review threads (when their
-// count goes up), failing checks, or conflicts with its base. Only live
+// (ccs claim) what's wrong with it: review threads waiting on an answer
+// (unresolved, the last comment not the operator's; told again only when one
+// is new or has a new reviewer comment), failing checks, or conflicts with
+// its base. Only live
 // owners are told, each once per PR, head and reason, over the session's own
 // message socket, in an envelope that says it's an automatic notice from
 // ccs watch, never typed by the user. A PR nobody owns gets nothing beyond
@@ -29,9 +32,11 @@ const (
 // nudgeSent is what one session was last told about one PR, at its head.
 type nudgeSent struct {
 	Head      string `json:"head"`
-	Threads   int    `json:"threads,omitempty"` // the unresolved count it was told of
 	Checks    bool   `json:"checks,omitempty"`
 	Conflicts bool   `json:"conflicts,omitempty"`
+	// Told: the unanswered threads it was told of, each at its last comment;
+	// kept across heads, since a push doesn't answer a thread.
+	Told map[string]int64 `json:"told,omitempty"`
 }
 
 // nudgeState is nudgesPath: what was sent, by nudgeKey.
@@ -81,8 +86,8 @@ func nudgeText(p *watchedPR, reasons []string) string {
 	for _, r := range reasons {
 		switch r {
 		case "threads":
-			n := *p.Threads
-			what = append(what, fmt.Sprintf("%d unresolved review thread%s", n, map[bool]string{true: "", false: "s"}[n == 1]))
+			n := len(p.Unanswered)
+			what = append(what, fmt.Sprintf("%d review thread%s waiting on a reply", n, map[bool]string{true: "", false: "s"}[n == 1]))
 		case "checks":
 			what = append(what, "checks failing: "+strings.Join(p.Failing, ", "))
 		case "conflicts":
@@ -95,14 +100,18 @@ func nudgeText(p *watchedPR, reasons []string) string {
 // nudgeReasons is what to tell a session about p that it hasn't been told
 // at this head, given what it was told (nil: nothing yet).
 func nudgeReasons(p *watchedPR, sent *nudgeSent) []string {
+	var told map[string]int64
+	if sent != nil {
+		told = sent.Told
+	}
 	if sent != nil && sent.Head != p.Head {
-		sent = nil // a new head: everything wrong with it is news
+		sent = nil // a new head: failing checks and conflicts are news again
 	}
 	if sent == nil {
 		sent = &nudgeSent{}
 	}
 	var reasons []string
-	if p.Threads != nil && *p.Threads > sent.Threads {
+	if newReplies(p.Unanswered, told) {
 		reasons = append(reasons, "threads")
 	}
 	if p.Checks == "failing" && !sent.Checks {
@@ -163,13 +172,17 @@ func nudgeTick(now time.Time) error {
 				events = append(events, e)
 				sent := s.Sent[key]
 				if sent == nil || sent.Head != p.Head {
-					sent = &nudgeSent{Head: p.Head}
+					var told map[string]int64
+					if sent != nil {
+						told = sent.Told
+					}
+					sent = &nudgeSent{Head: p.Head, Told: told}
 					s.Sent[key] = sent
 				}
 				for _, r := range reasons {
 					switch r {
 					case "threads":
-						sent.Threads = *p.Threads
+						sent.Told = maps.Clone(p.Unanswered)
 					case "checks":
 						sent.Checks = true
 					case "conflicts":

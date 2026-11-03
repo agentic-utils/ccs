@@ -45,7 +45,7 @@ Claude starts it when needed (no ccs window has to be open, no network port). It
 
 ```bash
 ccs launch --name fix-login --brief brief.md --cwd ~/code/app   # claude, the brief as its first prompt
-ccs launch --name fix-login --resume <session-id>               # resume one under a name
+ccs launch --name fix-login --resume <session-id>               # resume one under a name (refused, with no tab opened, when there's no such session)
 ccs launch --name tests --brief brief.md --codex                # codex instead
 ccs close fix-login
 ```

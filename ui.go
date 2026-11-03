@@ -30,6 +30,7 @@ type listItem struct {
 	familyCwd   string // its top-level session's cwd, which ^X G groups the family by
 	state       int    // its liveGroup as of the last sortList
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
+	sectioned   bool   // familyState is set: listed under a section heading (nestFamilies)
 	hidden      bool   // in a collapsed folder, under the one session it shows (^X C)
 }
 
@@ -436,10 +437,10 @@ func (m *model) updateFilter() {
 var showHeadless bool
 
 // hideHeadless drops headless runs from m.filtered unless --all, or the run
-// is pinned, opened through selectSession, or nested under a session that is
-// itself shown: a run a session started is what nesting is for. Running
-// doesn't count: a backtest runs dozens at once, and a run anyone talks to
-// gets a second prompt and stops being headless.
+// is pinned or opened through selectSession. Nesting under a shown parent
+// doesn't keep one: a script's claude -p loop would hang dozens under it.
+// Running doesn't count either: a backtest runs dozens at once, and a run
+// anyone talks to gets a second prompt and stops being headless.
 func (m *model) hideHeadless() {
 	m.headlessHidden = 0
 	if showHeadless {
@@ -448,17 +449,11 @@ func (m *model) hideHeadless() {
 	shown := func(c Conversation) bool {
 		return !c.headless() || m.pinIndex(c.SessionID) >= 0 || m.revealed[c.SessionID]
 	}
-	byID := make(map[string]*Conversation, len(m.items))
-	for i := range m.items {
-		byID[m.items[i].conv.SessionID] = &m.items[i].conv
-	}
 	kept := m.filtered[:0]
 	for _, it := range m.filtered {
 		if !shown(it.conv) {
-			if p := byID[m.spawnParent(it.conv)]; p == nil || !shown(*p) {
-				m.headlessHidden++
-				continue
-			}
+			m.headlessHidden++
+			continue
 		}
 		kept = append(kept, it)
 	}
@@ -636,7 +631,7 @@ func (m *model) nestFamilies() {
 			state = pin - len(m.marks.Pinned)
 		}
 		for i := start; i < end; i++ {
-			out[i].familyState = state
+			out[i].familyState, out[i].sectioned = state, true
 		}
 		start = end
 	}
@@ -2392,10 +2387,18 @@ func (m model) listMarks(item listItem) (string, string) {
 			liveColour = doneColour
 		}
 	}
+	// In a state section the heading already says the state, so the circle
+	// shows only what it doesn't: done (cyan), hosted in another app (○), or a
+	// nested session whose own state differs from its family's. Pinned rows
+	// have no state heading and keep it.
+	dot := m.live[conv.SessionID]
+	if dot && item.sectioned && item.familyState >= 0 && item.state == item.familyState && liveGlyph == "●" && liveColour != doneColour {
+		dot = false
+	}
 	for _, s := range []struct {
 		on           bool
 		glyph, color string
-	}{{m.live[conv.SessionID], liveGlyph, liveColour}, {conv.LastError != "", "!", "1;31"}} {
+	}{{dot, liveGlyph, liveColour}, {conv.LastError != "", "!", "1;31"}} {
 		if !s.on {
 			continue
 		}

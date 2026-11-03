@@ -390,8 +390,8 @@ func TestWaitMarkersAndHeaderCount(t *testing.T) {
 	}
 	for _, id := range []string{"live", "asks"} {
 		for _, item := range m.filtered {
-			if item.conv.SessionID == id && !strings.Contains(strip2(m.formatListItem(item, false)), "●✻ ") {
-				t.Errorf("%s keeps its ●, coloured for the question", id)
+			if item.conv.SessionID == id && strings.Contains(strip2(m.formatListItem(item, false)), "●") {
+				t.Errorf("%s needs no ●: its section heading says it waits", id)
 			}
 		}
 	}

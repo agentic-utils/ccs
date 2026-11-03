@@ -411,8 +411,8 @@ func TestT3SessionOpensInT3(t *testing.T) {
 	m.live = map[string]bool{"t3": true}
 	m.hosts = map[string]string{"t3": "T3 Code"}
 	m.chatStatus = map[string]sessionStat{"t3": {status: "idle"}}
-	if v := strip2(m.View()); !strings.Contains(v, "●✻ from t3") || !strings.Contains(v, "in T3 Code ·") {
-		t.Errorf("one ccs can open keeps a solid mark and says where it runs:\n%s", v)
+	if v := strip2(m.View()); !strings.Contains(v, "  ✻ from t3") || strings.Contains(v, "○") || !strings.Contains(v, "in T3 Code ·") {
+		t.Errorf("one ccs can open gets no hollow mark (its section says idle) and says where it runs:\n%s", v)
 	}
 	dir := t.TempDir()
 	old := getSessionsDir
@@ -473,8 +473,8 @@ func TestBackgroundSessionsOpenWithAttach(t *testing.T) {
 	m.bg = map[string]bgSession{"bg1": {ID: "k3x9", State: "working"}}
 	m.chatStatus = map[string]sessionStat{"bg1": {status: "busy"}}
 	v := strip2(m.View())
-	if !strings.Contains(v, "●✻ night job") || !strings.Contains(v, "bg working") {
-		t.Errorf("a background session can be opened, so it keeps ●, and says it's in the background:\n%s", v)
+	if !strings.Contains(v, "  ✻ night job") || strings.Contains(v, "○") || !strings.Contains(v, "bg working") {
+		t.Errorf("a background session can be opened, so it's never hollow, and says it's in the background:\n%s", v)
 	}
 	cmd := m.resumeCmd(conv, false)
 	if cmd == nil {

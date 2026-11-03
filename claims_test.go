@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -206,6 +207,20 @@ func TestClaimOfARecycledPIDIsDropped(t *testing.T) {
 	rep, _ := prsList("me", "o", true, time.Now())
 	if len(rep.PRs) != 1 || !rep.PRs[0].Unowned {
 		t.Errorf("same pid, different process: not the owner: %+v", rep.PRs)
+	}
+}
+
+func TestClaimFollowsARename(t *testing.T) {
+	live := claimEnv(t)
+	claim(claimA, false, time.Now())
+	live[os.Getppid()] = prClaim{Session: "s-alpha", Name: "alpha-renamed", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"}
+	writeWatchState(t, time.Now(), &watchedPR{URL: claimA, Repo: "o/r", Number: 1, State: "open"})
+	rep, _ := prsList("me", "o", true, time.Now())
+	if len(rep.PRs) != 1 || !slices.Equal(rep.PRs[0].Owners, []string{"alpha-renamed"}) {
+		t.Errorf("a /rename after the claim: still its owner, under its new name: %+v", rep.PRs)
+	}
+	if c := loadClaims().Claims[claimA]; len(c) != 1 || c[0].Name != "alpha-renamed" {
+		t.Errorf("the stored claim takes the new name: %+v", c)
 	}
 }
 

@@ -147,6 +147,15 @@ func claimLive(c prClaim, live map[int]prClaim) bool {
 	return ok && s.Session == c.Session && s.ProcStart == c.ProcStart
 }
 
+// ownerName is the name c's session goes by now: a /rename after the claim
+// changes the session file's name, never the claim's session or pid.
+func ownerName(c prClaim, live map[int]prClaim) string {
+	if s, ok := live[c.PID]; ok && c.Kind != "codex" && s.Session == c.Session && s.Name != "" {
+		return s.Name
+	}
+	return c.Name
+}
+
 // claim records (or with release, drops) the calling session's claim on pr.
 // Another session's claim on it stays: two owners is something to flag.
 func claim(pr string, release bool, now time.Time) (string, error) {
@@ -303,10 +312,16 @@ func prsList(author, owner string, offline bool, now time.Time) (prsReport, erro
 		changed := false
 		for u, cs := range c.Claims {
 			kept := slices.DeleteFunc(slices.Clone(cs), func(x prClaim) bool { return !claimLive(x, live) })
+			for i := range kept {
+				if n := ownerName(kept[i], live); n != kept[i].Name {
+					kept[i].Name = n // renamed since it claimed
+					changed = true
+				}
+			}
 			if ended[u] || len(kept) == 0 {
 				delete(c.Claims, u)
 				changed = true
-			} else if len(kept) != len(cs) {
+			} else if changed || len(kept) != len(cs) {
 				c.Claims[u] = kept
 				changed = true
 			}
@@ -323,7 +338,7 @@ func prsList(author, owner string, offline bool, now time.Time) (prsReport, erro
 		g, why := p.status()
 		row := prRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Group: groupNames[g], Status: why}
 		for _, c := range claims.Claims[u] {
-			row.Owners = append(row.Owners, c.Name)
+			row.Owners = append(row.Owners, ownerName(c, live))
 		}
 		row.Unowned = len(row.Owners) == 0
 		row.Contested = len(row.Owners) > 1

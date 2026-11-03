@@ -60,13 +60,14 @@ func TestNudgesOncePerHeadAndReason(t *testing.T) {
 	live, sent := nudgeEnv(t)
 	alpha := os.Getppid()
 	claimAs(t, live, alpha, claimA)
-	pr := &watchedPR{URL: claimA, Repo: "o/r", Number: 1, Title: "fix it", State: "open", Head: "h1", Checks: "failing", Failing: []string{"setup", "lint"}, Threads: intp(2)}
+	pr := &watchedPR{URL: claimA, Repo: "o/r", Number: 1, Title: "fix it", State: "open", Head: "h1", Checks: "failing", Failing: []string{"setup", "lint"},
+		Threads: intp(2), Unanswered: map[string]int64{"T1": 11, "T2": 21}}
 	writeWatchState(t, time.Now(), pr)
 	from := eventsLen()
 	if err := nudgeTick(time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	want := "alpha: " + claimA + " (fix it) has 2 unresolved review threads; checks failing: setup, lint.\nThis session claimed it with ccs claim. If it's yours, deal with it; if not, run: ccs claim " + claimA + " --release"
+	want := "alpha: " + claimA + " (fix it) has 2 review threads waiting on a reply; checks failing: setup, lint.\nThis session claimed it with ccs claim. If it's yours, deal with it; if not, run: ccs claim " + claimA + " --release"
 	if len(*sent) != 1 || (*sent)[0] != want {
 		t.Fatalf("one nudge with every reason:\n got %q\nwant %q", *sent, want)
 	}
@@ -80,23 +81,29 @@ func TestNudgesOncePerHeadAndReason(t *testing.T) {
 		t.Errorf("the same state is never told twice: %q", *sent)
 	}
 
-	// Fewer threads: nothing; more threads and conflicts: those only.
-	pr.Threads = intp(1)
+	// Answered (one thread's last comment is now the operator's, so it left
+	// the set) but unresolved: nothing. A new reviewer comment on the other,
+	// and conflicts: those only.
+	pr.Unanswered = map[string]int64{"T2": 21}
 	writeWatchState(t, time.Now(), pr)
 	nudgeTick(time.Now())
-	pr.Threads, pr.Conflicts = intp(3), true
+	if len(*sent) != 1 {
+		t.Errorf("answered threads, still unresolved, never nudge: %q", *sent)
+	}
+	pr.Unanswered, pr.Conflicts = map[string]int64{"T2": 22}, true
 	writeWatchState(t, time.Now(), pr)
 	nudgeTick(time.Now())
-	if len(*sent) != 2 || !strings.Contains((*sent)[1], "has 3 unresolved review threads; merge conflicts with its base.") || strings.Contains((*sent)[1], "checks failing") {
-		t.Errorf("only what's new at this head: %q", *sent)
+	if len(*sent) != 2 || !strings.Contains((*sent)[1], "has 1 review thread waiting on a reply; merge conflicts with its base.") || strings.Contains((*sent)[1], "checks failing") {
+		t.Errorf("a new reviewer comment and conflicts, only those: %q", *sent)
 	}
 
-	// A new head that still fails is told again.
-	pr.Head, pr.Threads, pr.Conflicts = "h2", intp(0), false
+	// A new head that still fails is told again; the same unanswered
+	// threads are not (a push answers nothing, but it was told already).
+	pr.Head, pr.Conflicts = "h2", false
 	writeWatchState(t, time.Now(), pr)
 	nudgeTick(time.Now())
-	if len(*sent) != 3 || !strings.Contains((*sent)[2], "has checks failing: setup, lint.") {
-		t.Errorf("a new head failing again: %q", *sent)
+	if len(*sent) != 3 || !strings.Contains((*sent)[2], "has checks failing: setup, lint.") || strings.Contains((*sent)[2], "thread") {
+		t.Errorf("a new head failing again, threads not repeated: %q", *sent)
 	}
 
 	// Merged: its record goes.

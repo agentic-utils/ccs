@@ -184,7 +184,7 @@ ccs watch --author me --owner my-org --interval 5m
 ccs watch --once                           # one pass, then exit
 ```
 
-Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (awaiting review now: see below), `review_not_needed`, `ready` (approved, checks green, not a draft), `conflicts`, `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `merged`, `closed`. Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
+Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (awaiting review now: see below), `review_not_needed`, `ready` (approved, checks green, not a draft), `conflicts`, `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `threads_unanswered` (with `count` and the thread ids in `threads`, when an unresolved thread's last comment isn't yours: a new one, or a reviewer's new comment on one), `merged`, `closed`. Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
 
 ```json
 {"at":"2026-11-03T09:12:51Z","event":"checks_failing","pr":"https://github.com/o/r/pull/220","repo":"o/r","number":220,"title":"...","head":"0fc4f95...","checks":["setup"]}
@@ -245,12 +245,12 @@ Events: `review_requested` (channel, PRs, permalink), `review_dm_pending` (id, r
 
 ## Telling sessions about their PRs
 
-After each pass, `ccs watch` tells the session that claimed a PR (`ccs claim`, below) what's wrong with it: checks failing (by name), conflicts with its base, or more unresolved review threads than it was last told of. Each running owner is told once per PR, head commit and reason, so it isn't nagged every pass; a new commit that still fails is told again. A session that isn't running, or a PR nobody claimed, gets nothing beyond the usual events.
+After each pass, `ccs watch` tells the session that claimed a PR (`ccs claim`, below) what's wrong with it: checks failing (by name), conflicts with its base, or review threads waiting on a reply: unresolved, with the last comment not yours. Yours means the account `ccs watch` runs as (`--author`, by default the gh login, which the sessions reply through too) and any `--self-logins` (comma separated, for a bot or co-author acting for you). A thread the session has replied to stops counting even while it waits for you to resolve it, and the same threads are never told twice: only a new one, or a reviewer's new comment on one, is. Failing checks and conflicts are told once per PR, head commit and reason, so it isn't nagged every pass; a new commit that still fails is told again. A session that isn't running, or a PR nobody claimed, gets nothing beyond the usual events.
 
 The notice goes over the session's own message socket, as `ccs watch`, and says it's an automatic status notice, not typed by you, so the session treats it as information rather than your instruction. A Codex session has no socket: its notice goes in with `codex queue --thread <id>`, which hands it to the running session at its next turn, opening with the same "automatic status notice, not typed by the user" line, since Codex shows it as a user message:
 
 ```
-<PR URL> (<title>) has 2 unresolved review threads; checks failing: setup.
+<PR URL> (<title>) has 2 review threads waiting on a reply; checks failing: setup.
 This session claimed it with ccs claim. If it's yours, deal with it; if not, run: ccs claim <PR URL> --release
 ```
 

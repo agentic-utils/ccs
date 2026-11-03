@@ -1919,7 +1919,8 @@ const (
 // shortcuts is the keys that do something right now on the list, for the
 // ? popup (the usage screen's header and the overlay's hint row list
 // their own): whether a conversation is selected and live, and whether the
-// message box has focus.
+// message box has focus. An entry with no key is a group's heading; a
+// heading with nothing under it is left out.
 func (m model) shortcuts() [][2]string {
 	var out [][2]string
 	add := func(on bool, k, what string) {
@@ -1927,72 +1928,88 @@ func (m model) shortcuts() [][2]string {
 			out = append(out, [2]string{k, what})
 		}
 	}
+	group := func(title string) {
+		if n := len(out); n > 0 && out[n-1][0] == "" {
+			out = out[:n-1]
+		}
+		out = append(out, [2]string{"", title})
+	}
 	hasCswap := cswapPath() != ""
 	sel := len(m.filtered) > 0
 	live := sel && m.selectedLive()
+	pinned := sel && m.pinIndex(m.filtered[m.cursor].conv.SessionID) >= 0
+
+	group("moving around")
+	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
+	add(sel, "pgup/dn", "scroll the conversation (the mouse wheel too)")
+	add(sel && m.textInput.Value() != "" && len(m.hitLines()) > 0, "^] ^\\", "jump to the next / previous search hit")
+	add(!m.chatFocus && m.textInput.Value() != "", keyEsc, "clear the search and go back to the top")
+
+	group("this session")
 	switch {
 	case m.chatFocus:
-		add(true, keyEnter, "send; on an empty box, open the session")
-		add(true, keyEsc, "back to the search")
+		add(true, keyEnter, "send the message; on an empty box, go to its tab")
+		add(true, keyEsc, "leave the message box for the search")
 	case live:
-		add(true, keyEnter, "open its tab")
-		add(!m.boxHidden(), "^S", "message it")
+		add(true, keyEnter, "go to its tab")
+		add(!m.boxHidden(), "^S", "message it: type into a box, sent into its conversation")
 	default:
-		add(sel, keyEnter, "resume")
+		add(sel, keyEnter, "resume it in claude, in a new tab in tmux or iTerm")
 	}
-	add(sel, "^F", "fork")
-	add(sel && !live, "^X E", "edit its name")
-	add(true, "^R", "refresh now, and check for a ccs update")
-	add(sel, "^D", "delete")
-	add(sel, "^X X", "prune")
-	add(sel, "pgup/dn", "scroll the conversation")
-	add(sel && m.textInput.Value() != "" && len(m.hitLines()) > 0, "^] ^\\", "next / previous search hit")
-	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
-	add(true, keyTab, "usage")
-	add(!m.chatFocus && m.textInput.Value() != "", keyEsc, "clear the search")
-	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you")
-	add(hasCswap, "^X U", "switch account")
+	add(sel, "^F", "fork it: a new session with the same history, in a new tab")
 	add(sel && len(m.linksWithPRs()) > 0, "^O", "open a link in view or one of its PRs")
-	add(inITerm(), "^X N", "start a new session in an iTerm tab, in this one's folder")
-	add(!m.table, "^X T", "the full table, every column")
-	add(m.table, "^X T", "back to the sidebar")
-	add(!m.autoFocus, "^X A", "switch to a session when it starts waiting on you")
-	add(m.autoFocus, "^X A", "stop switching to waiting sessions")
-	add(!showHeadless, "^X H", "show headless runs (claude -p, codex exec)")
-	add(showHeadless, "^X H", "hide headless runs")
-	if sel {
-		id := m.filtered[m.cursor].conv.SessionID
-		if _, bg := m.bg[id]; bg && live {
-			add(true, "^X K", "stop this background session")
-		} else if live && m.hostedApp(id) == "" {
-			add(true, "^X K", "stop this session and close its tab")
+	add(sel, "^D", "delete its transcript file; asks first, can't be undone")
+	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned sessions")
+
+	group("^X then a letter: this session")
+	add(sel && !live, "^X E", "edit its name, as /rename does")
+	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top of the list")
+	add(pinned, "^X P", "unpin it")
+	if sel && m.marks != nil {
+		if m.putAway(m.filtered[m.cursor].conv) != awake {
+			add(true, "^X S", "bring it back from settled or snoozed")
+		} else {
+			add(true, "^X S", "put it away: settle until its next message, or snooze it")
 		}
 	}
-	pinned := sel && m.pinIndex(m.filtered[m.cursor].conv.SessionID) >= 0
-	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top")
-	add(pinned, "^X P", "unpin it")
-	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned")
 	if sel && m.grouped && m.marks != nil {
 		if m.collapsed(m.filtered[m.cursor].familyCwd) {
 			add(true, "^X C", "expand its folder")
 		} else {
-			add(true, "^X C", "collapse its folder to one session")
+			add(true, "^X C", "collapse its folder to its most urgent session")
 		}
 	}
-	if sel && m.marks != nil {
-		if m.putAway(m.filtered[m.cursor].conv) != awake {
-			add(true, "^X S", "bring it back")
-		} else {
-			add(true, "^X S", "snooze or settle it")
+	if sel {
+		id := m.filtered[m.cursor].conv.SessionID
+		if _, bg := m.bg[id]; bg && live {
+			add(true, "^X K", "stop this background session (press twice)")
+		} else if live && m.hostedApp(id) == "" {
+			add(true, "^X K", "stop this session and close its tab (press twice)")
 		}
 	}
-	add(m.autoUpdate, "^X I", "stop installing updates on their own")
-	add(!m.autoUpdate, "^X I", "install updates on their own once you're away")
-	add(m.profileStop == nil, "^X R", "record a CPU profile, for slowness")
-	add(m.profileStop != nil, "^X R", "stop recording the CPU profile")
-	add(!m.grouped, "^X G", "group by folder")
-	add(m.grouped, "^X G", "ungroup")
-	add(true, "^L", "changelog")
+	add(sel, "^X X", "shrink its file, keeping the dialogue; loses rewind history")
+
+	group("^X then a letter: view and tools")
+	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you: answer, open or snooze them")
+	add(inITerm(), "^X N", "start a new session in an iTerm tab, in this one's folder")
+	add(!m.grouped, "^X G", "group the list by folder")
+	add(m.grouped, "^X G", "stop grouping by folder")
+	add(!m.table, "^X T", "the full table, every column")
+	add(m.table, "^X T", "back to the sidebar")
+	add(!showHeadless, "^X H", "show headless runs (claude -p, codex exec)")
+	add(showHeadless, "^X H", "hide headless runs")
+	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
+	add(m.autoFocus, "^X A", "stop switching to sessions that wait on you")
+	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
+	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
+	add(m.profileStop == nil, "^X R", "record a CPU profile, for when ccs feels slow")
+	add(m.profileStop != nil, "^X R", "stop recording and save the CPU profile")
+	add(hasCswap, "^X U", "switch Claude account (cswap)")
+
+	group("ccs")
+	add(true, "^R", "refresh sessions, PRs and allowance now; check for an update")
+	add(true, keyTab, "token use of every session in the last 12h, and your allowance")
+	add(true, "^L", "what changed in each ccs release")
 	add(true, "^C", "quit")
 	return out
 }
@@ -2056,7 +2073,14 @@ func hints(pairs ...string) string {
 func (m model) helpPopup() string {
 	var b strings.Builder
 	b.WriteString("\033[1mshortcuts\033[0m\n\n")
-	for _, s := range m.shortcuts() {
+	for i, s := range m.shortcuts() {
+		if s[0] == "" { // a group's heading
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString("\033[90m" + s[1] + "\033[0m\n")
+			continue
+		}
 		fmt.Fprintf(&b, "\033[33m%-8s\033[0m %s\n", s[0], s[1])
 	}
 	b.WriteString("\n\033[90m" + hints("?/"+keyEsc, "close") + "\033[0m")
@@ -2143,19 +2167,15 @@ func (m model) viewScreen() string {
 		}
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
-	group := "group" // the modes toggled while working; ^X T and the rest are in ? help
-	if m.grouped {
-		group = "ungroup"
-	}
-	pairs, keep := []string{"^X G", group, "?", "help", "^C", "quit"}, 2 // ^X A is beside auto-focus in the title
-	if m.showUsage {                                                     // only Tab, account, help and quit do anything there
+	pairs, keep := []string{"?", "help", "^C", "quit"}, 2 // the rest are in ? help
+	if m.showUsage {                                      // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^X U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
 		if len(m.waitQueue(true)) > 0 {
 			pairs = append(pairs, "^X W", "waiting")
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}

@@ -117,13 +117,13 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 ### Keybindings
 
 - Text boxes (the search, the message box) edit like Claude Code's prompt: `Ctrl+A`/`Ctrl+E` start/end, `Ctrl+K`/`Ctrl+U` delete to the end/start, `Ctrl+W` the word before, `Ctrl+Y` puts back what they deleted, `Alt+B`/`Alt+F` move by word. So ccs's own actions are `Ctrl+X` then a letter (`Ctrl+X Ctrl+W` works too)
-- `↑/↓` or `Ctrl+P/N` - Navigate list
+- `↑/↓` or `Ctrl+P/N` - Move through the list
 - Background sessions (`claude --bg`) show `bg <state>` on the grey row: Enter opens one with `claude attach` in a new tmux window or iTerm tab, and `Ctrl+X K` twice stops it (on a session in a terminal tab, `Ctrl+X K` twice stops it and closes the tab). One started from another session's `claude --bg` sits under it
 - Messages between sessions show at both ends: the sender's preview shows each `SendMessage` as `To <session>` (`✓ arrived` once it's in that session's transcript), the recipient's `From <session>`
 - A live session run by an app without a terminal shows `in <app>`. One in T3 Code opens in T3 Code with Enter, at its thread; any other app gets a hollow `○`, since ccs can't switch to it, and Enter says to open it there. Messaging it (`Ctrl+S`) and forking it (`Ctrl+F`) work either way
 - Each open session has a circle, `●` (or `○` in an app ccs can't open), coloured by its state: magenta waiting on you, light magenta asked you something, cyan done, green idle, amber busy. Under a section heading, which already names the state, it shows only when it adds something: a done session, one in another app, or a nested one in a different state; pinned sessions always have it
 - The list is in sections by state, each with a header: waiting on you, asked you something, idle (a cyan `●` marks one finished since you last looked at it in ccs; it turns green once you select it and move on, without moving), busy, not open in `claude`
-- `Ctrl+X W` - Sessions waiting on you: their question, a box to answer, Enter opens the session's tab, Esc snoozes
+- `Ctrl+X W` - Sessions waiting on you: answer, open or snooze them. Shows their question, a box to answer, Enter opens the session's tab, Esc snoozes
 - `Ctrl+X R` - Record a CPU profile while you do whatever feels slow, then `Ctrl+X R` again to save it beside the update log (`~/Library/Logs/ccs/cpu-<time>.pprof` on macOS; read it with `go tool pprof -top`). The header says `recording profile` until you stop it. `CCS_CPUPROFILE=path ccs` records the whole run instead
 - `Ctrl+X I` - Automatic updates, off by default: turned on, a new ccs release downloads in the background and installs once you're away (ccs not focused, or no key for 3 minutes, with nothing unsent), then ccs restarts where you were and says it updated itself, with what changed. Off, new versions are offered in a popup instead. Installs from before this was opt-in keep the setting they had. The header shows which (`auto-update on`), remembered across restarts
 - The modes these keys toggle (auto-focus, auto-update) sit on the right of the header, in grey with their keys, and only `on` is green; `off` stays grey
@@ -132,23 +132,23 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Ctrl+X P` - Pin the selected session: pinned sessions sit in their own section at the top, whatever their state, in the order you pinned them; `Alt+↑`/`Alt+↓` move one among them. Again to unpin. Kept across restarts
 - `Ctrl+X C` - With folders grouped, collapse the selected session's folder to its most urgent session, its header counting the rest (`▸ api 5 · 4 more`). Again to expand. Kept across restarts
 - `Ctrl+X S` - Put the selected session away: settle it (until its next message) or snooze it (an hour, 4 hours, tomorrow 9:00). It moves to the settled or snoozed section at the bottom, and comes back early if it waits on you. Again to bring it back
-- `Ctrl+X G` - Group sessions by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^X T layout, and reopens the way you left it
+- `Ctrl+X G` - Group the list by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^X T layout, and reopens the way you left it
 - `Ctrl+X T` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view
-- `Enter` - Resume the selected conversation. On one already open in `claude` (`●`), Enter jumps to its iTerm tab / tmux pane instead
-- `Ctrl+F` - Fork selected conversation (`claude --resume <id> --fork-session`)
-- `Ctrl+D` - Delete selected conversation (with confirmation)
+- `Enter` - Resume it in claude, in a new tab in tmux or iTerm. On one already open in `claude` (`●`), go to its iTerm tab / tmux pane instead
+- `Ctrl+F` - Fork it: a new session with the same history, in a new tab (`claude --resume <id> --fork-session`); the original is left as it was
+- `Ctrl+D` - Delete its transcript file; asks first, can't be undone (the file is removed, not moved to the bin)
 - `Ctrl+X N` - Start a new session in an iTerm tab, in the selected session's folder: type its name, Enter, then its brief, Enter (`ccs launch`)
-- `Ctrl+X E` - Edit the selected conversation's name (not while it's open in `claude`; use `/rename` there)
-- `Ctrl+R` - Refresh now: rescan sessions, re-check PRs and the usage allowance, and check for a ccs update
-- `Ctrl+X X` - Prune selected conversation - shrink it losslessly (with confirmation; not while it's open in `claude`)
-- `PgUp`/`PgDn` - Scroll preview (also the mouse wheel)
+- `Ctrl+X E` - Edit its name, as `/rename` does (not while it's open in `claude`; use `/rename` there)
+- `Ctrl+R` - Refresh sessions, PRs and allowance now; check for an update
+- `Ctrl+X X` - Shrink its file, keeping the dialogue; loses rewind history. It drops the copies of tool output Claude Code stores twice and the rewind checkpoints, so the conversation still resumes in full but `/rewind` has nothing to go back to. Asks first, can't be undone, not while it's open in `claude` (see [Pruning](#pruning))
+- `PgUp`/`PgDn` - Scroll the conversation (the mouse wheel too)
 - Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it, click a link in the conversation to open it. Hold `⌥ Option` while dragging to select text in iTerm
-- `Esc` - Clear the search and go back to the top of the list
+- `Esc` - Clear the search and go back to the top
 - Message box - select an open (`●`) session and press `Ctrl+S` (or click the box) to type in the box under its conversation; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search
-- `Tab` - Switch between the session list and the usage screen
+- `Tab` - Token use of every session in the last 12h, and your allowance: charts over time, totals, cache mix and the 5-hour and weekly limits. `Tab` again to go back
 - `Ctrl+X U` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
 - `?` - Show the shortcuts that apply right now (the header lists only the common ones, in compact form: `^S` for Ctrl+S, and drops hints on narrow terminals rather than wrapping)
-- `Ctrl+L` - Changelog: what changed in every release, newest first, the installed and newer ones marked; scroll with ↑↓, PgUp/PgDn or the wheel
+- `Ctrl+L` - What changed in each ccs release, newest first, the installed and newer ones marked; scroll with ↑↓, PgUp/PgDn or the wheel
 - `Ctrl+O` - Links: the sessions the selected one messaged or heard from (Enter selects that session in the list), its PRs, then the links in the visible part of the conversation, each PR with its status; type to filter them (text, address or status, e.g. `merged`), ↑↓ and Enter to open one in the browser, staying open for the next (clicking a link works too)
 - `Ctrl+]` / `Ctrl+\` - With a search typed, jump to the next / previous matching message in the conversation (wraps round); the preview shows `hit 2/5`
 - `Ctrl+C` - Quit

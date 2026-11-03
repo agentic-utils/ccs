@@ -43,6 +43,7 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>]
                             Start a named claude (or codex) session in a new iTerm tab
        ccs close <name>     Stop the named session and close its tab
+       ccs watch [flags]    Report changes to your open PRs as JSON lines (see ccs watch --help)
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
 
@@ -124,6 +125,9 @@ func main() {
 	}
 	if len(args) > 0 && args[0] == "close" {
 		os.Exit(runClose(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "watch" {
+		os.Exit(runWatch(args[1:]))
 	}
 
 	for _, arg := range args {

@@ -21,6 +21,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Start and close named sessions in iTerm tabs (`ccs launch`, `ccs close`, or `Ctrl+X N` / `Ctrl+X K` in the list)
+- Watch your open PRs and get one JSON line per change (`ccs watch`)
 - Pass flags through to `claude` (e.g., `--plan`)
 - Usage screen (`Tab`): the last 12 hours of token usage across all sessions (including subagents) as three charts (cache-write disposition, context assembly, output), a summary with effective tokens, and your live 5-hour and weekly allowance. The allowance reads Claude Code's stored login read-only (macOS Keychain, else `~/.claude/.credentials.json`); ccs never refreshes or writes it, so if it has expired, open `claude` to refresh it
 - Checks for new releases at startup and every 2 minutes (update steps are logged to `~/Library/Logs/ccs/update.log`) and offers to update and restart from a popup (via `brew upgrade` for Homebrew installs, otherwise by replacing the binary with the checksum-verified release). Every update, Homebrew included, is checked against a signature that only ccs's release pipeline on `main` can make, so a release uploaded any other way is refused
@@ -168,6 +169,24 @@ ccs prune --apply --no-tool-results  # keep tool results, only drop snapshot bac
 Run `ccs prune --help` for all flags.
 
 You can also prune a single conversation from the search interface: select it and press `Ctrl+X X` (with confirmation).
+
+## Watching your PRs
+
+`ccs watch` checks one author's open PRs in one GitHub owner every 3 minutes and appends a JSON line for each change to `~/Library/Logs/ccs/pr-events.jsonl` (and prints it), for a script or a coordinating Claude session to follow with `tail -F`. It uses gh and GitHub's REST API.
+
+```bash
+ccs watch                                  # brtkwr's PRs in two-inc, every 3 minutes
+ccs watch --author me --owner my-org --interval 5m
+ccs watch --once                           # one pass, then exit
+```
+
+Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (checks green, not a draft, no approval: once per head commit), `ready` (approved, checks green, not a draft), `conflicts`, `merged`, `closed`. Any failed check, optional or not, counts as failing, so such a PR is never `ready` or `needs_review`. Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
+
+```json
+{"at":"2026-11-03T09:12:51Z","event":"checks_failing","pr":"https://github.com/o/r/pull/220","repo":"o/r","number":220,"title":"...","head":"0fc4f95...","checks":["setup"]}
+```
+
+The first run only records what it finds and writes one `watch_started` line, so it doesn't report every PR as news. Its state is kept beside ccs's settings (`pr-watch.json`), so a restart reports what changed while it was stopped, without repeating anything. Only one `ccs watch` runs at a time.
 
 ## How it works
 

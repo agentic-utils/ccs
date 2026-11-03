@@ -177,8 +177,10 @@ func TestWatchSeedsQuietly(t *testing.T) {
 	green(a)
 	old := &fakePR{repo: "o/a", number: 2, state: "merged", head: "h2", mergedAt: now.Add(-time.Hour)}
 	g.prs = []*fakePR{a, old}
-	if got := passEvents(t, now); !slices.Equal(got, []string{"watch_started"}) {
-		t.Errorf("the first pass only says it started: %v", got)
+	// The first pass says it started, and which PRs await review already
+	// (a consumer starting with it must know); nothing else.
+	if got := passEvents(t, now); !slices.Equal(got, []string{"watch_started", "needs_review " + a.url()}) {
+		t.Errorf("the first pass says it started and what awaits review: %v", got)
 	}
 	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 {
 		t.Errorf("nothing changed, nothing reported, and a PR green before the start isn't asked about: %v", got)
@@ -227,14 +229,14 @@ func TestWatchTransitions(t *testing.T) {
 	step() // keeps the conflict, no repeat
 	a.mergeable = "clean"
 	a.reviews = [][2]string{{"rev", "COMMENTED"}, {"rev", "APPROVED"}}
-	step("ready")
+	step("review_not_needed", "ready") // approved: no longer awaiting review
 	a.head = "h3"
 	a.reviews = [][2]string{{"rev", "DISMISSED"}}
 	step("needs_review") // new head, approval dismissed: asked again
 	a.state, a.mergedAt = "merged", now
 	b.state = "closed"
-	step("merged", "closed")
-	step() // never again
+	step("review_not_needed", "merged", "closed") // a was awaiting review again at h3
+	step()                                        // never again
 }
 
 func TestWatchMergedWindow(t *testing.T) {
@@ -300,7 +302,7 @@ func TestWatchRestartDoesntReplay(t *testing.T) {
 	}
 	// a change while it was down is reported, not lost
 	a.state, a.mergedAt = "merged", now.Add(time.Hour)
-	if got := passEvents(t, now.Add(2*time.Hour)); !slices.Equal(got, []string{"merged " + a.url()}) {
+	if got := passEvents(t, now.Add(2*time.Hour)); !slices.Equal(got, []string{"review_not_needed " + a.url(), "merged " + a.url()}) {
 		t.Errorf("got %v", got)
 	}
 }
@@ -360,8 +362,13 @@ func TestWatchUnresolvedThreads(t *testing.T) {
 
 	pr.unresolved = 2
 	pr.head = "h2" // a new head: needs_review would fire again, but threads are open
-	if got := pass(); !slices.Equal(got, []string{"threads_unresolved"}) {
-		t.Errorf("open threads: %v, want threads_unresolved and no needs_review", got)
+	// It was awaiting review (needs_review at the seed): a new head says it
+	// no longer is, then the threads.
+	if got := pass(); !slices.Equal(got, []string{"review_not_needed", "threads_unresolved"}) {
+		t.Errorf("open threads: %v, want review_not_needed, threads_unresolved and no needs_review", got)
+	}
+	if data, _ := os.ReadFile(prEventsPath()); !strings.Contains(string(data), `"event":"review_not_needed"`) || !strings.Contains(string(data), `"reason":"new_head"`) {
+		t.Errorf("review_not_needed says why: %s", data)
 	}
 	if data, _ := os.ReadFile(prEventsPath()); !strings.Contains(string(data), `"event":"threads_unresolved","pr":"https://github.com/o/a/pull/1"`) || !strings.Contains(string(data), `"unresolved":2`) {
 		t.Errorf("the event carries the count: %s", data)
@@ -385,7 +392,7 @@ func TestWatchUnresolvedThreads(t *testing.T) {
 
 	pr.runs = [][3]string{{"test", "completed", "failure"}}
 	pr.head, pr.unresolved = "h3", 1 // not counted while checks fail
-	if got := pass(); !slices.Equal(got, []string{"checks_failing"}) {
+	if got := pass(); !slices.Equal(got, []string{"review_not_needed", "checks_failing"}) {
 		t.Errorf("failing checks: %v", got)
 	}
 }
@@ -437,5 +444,60 @@ func TestWatchDefaultsToTheGhUserInEveryOwner(t *testing.T) {
 	searchPRs("someone", "o", "--state", "open")
 	if i := slices.Index(args, "--owner"); i < 0 || args[i+1] != "o" {
 		t.Errorf("--owner o: %v", args)
+	}
+}
+
+func TestNeedsReviewIsRecheckedAndEndsWithReviewNotNeeded(t *testing.T) {
+	g := watchWorld(t)
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	a := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean"}
+	pending(a)
+	g.prs = []*fakePR{a}
+	passEvents(t, now) // seed: not green yet
+
+	// The pass says green and waiting, but GitHub, asked again just before
+	// the event, has it approved: no needs_review.
+	green(a)
+	old := reviewRecheck
+	t.Cleanup(func() { reviewRecheck = old })
+	reviewRecheck = func(p watchedPR) (*watchedPR, error) { p.Review = "approved"; return &p, nil }
+	if got := passEvents(t, now.Add(3*time.Minute)); slices.Contains(got, "needs_review "+a.url()) {
+		t.Errorf("stale pass data never says awaiting review: %v", got)
+	}
+	reviewRecheck = old
+	if got := passEvents(t, now.Add(6*time.Minute)); !slices.Contains(got, "needs_review "+a.url()) {
+		t.Errorf("asked again next pass, and still waiting: %v", got)
+	}
+	if st, _ := loadPRWatchState(); !st.PRs[a.url()].Awaiting || st.Version != prWatchVersion {
+		t.Errorf("awaiting is kept: %+v", st.PRs[a.url()])
+	}
+
+	a.draft = true
+	got := passEvents(t, now.Add(9*time.Minute))
+	data, _ := os.ReadFile(prEventsPath())
+	if !slices.Contains(got, "review_not_needed "+a.url()) || !strings.Contains(string(data), `"reason":"draft"`) {
+		t.Errorf("leaving it says so, with why: %v\n%s", got, data)
+	}
+	if got := passEvents(t, now.Add(12*time.Minute)); len(got) != 0 {
+		t.Errorf("said once: %v", got)
+	}
+}
+
+func TestWatchStateFromBeforeAwaitingIsMigratedQuietly(t *testing.T) {
+	g := watchWorld(t)
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	a := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean"}
+	green(a)
+	g.prs = []*fakePR{a}
+	passEvents(t, now)
+	st, _ := loadPRWatchState()
+	st.Version, st.PRs[a.url()].Awaiting = 0, false // as an older ccs wrote it
+	savePRWatchState(st)
+	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 {
+		t.Errorf("an upgrade emits nothing: %v", got)
+	}
+	a.reviews = [][2]string{{"rev", "APPROVED"}}
+	if got := passEvents(t, now.Add(6*time.Minute)); !slices.Equal(got, []string{"review_not_needed " + a.url(), "ready " + a.url()}) {
+		t.Errorf("but knows it was awaiting: %v", got)
 	}
 }

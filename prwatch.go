@@ -37,6 +37,7 @@ type watchedPR struct {
 	Conflicts bool     `json:"conflicts,omitempty"`
 	Threads   *int     `json:"threads,omitempty"`    // unresolved review threads; nil until counted (only GraphQL knows)
 	AskedHead string   `json:"asked_head,omitempty"` // the head needs_review was emitted for
+	Awaiting  bool     `json:"awaiting,omitempty"`   // needs_review emitted and no review_not_needed since
 	Ended     string   `json:"ended,omitempty"`      // when it merged or closed (RFC3339), to prune it later
 
 	conflictsUnknown bool // GitHub hadn't worked out mergeability yet: keep the last answer
@@ -66,7 +67,15 @@ type prWatchState struct {
 	Started time.Time             `json:"started"` // the first pass: merges before it are never news
 	Updated time.Time             `json:"updated"` // the last complete pass
 	PRs     map[string]*watchedPR `json:"prs"`
+	Version int                   `json:"version,omitempty"` // 2: Awaiting is kept
 }
+
+// reviewDeprecated is printed by ccs watch --review and its flags, and by
+// ccs review, for one release before they go.
+const reviewDeprecated = "ccs watch --review is deprecated and will be removed in the next release: review requests move to the two-slack plugin's consumer, which reads ccs watch's events"
+
+// prWatchVersion is the state format: 2 added Awaiting.
+const prWatchVersion = 2
 
 // prEvent is one line of prEventsPath.
 type prEvent struct {
@@ -81,6 +90,42 @@ type prEvent struct {
 	Review string   `json:"review,omitempty"`
 	// Unresolved review threads, on threads_unresolved.
 	Unresolved int `json:"unresolved,omitempty"`
+	// Why a PR stopped awaiting review, on review_not_needed.
+	Reason string `json:"reason,omitempty"`
+}
+
+// notNeededReason is why p, which was awaiting review at head asked, no
+// longer is: "" while it still is.
+func notNeededReason(p *watchedPR, asked string) string {
+	switch {
+	case p.State == "merged" || p.State == "closed":
+		return p.State
+	case p.Head != asked:
+		return "new_head"
+	case p.Review == "approved":
+		return "approved"
+	case p.Review == "changes_requested":
+		return "changes_requested"
+	case p.Draft:
+		return "draft"
+	case p.Checks != "success":
+		return "checks"
+	case !p.threadsClear():
+		return "threads"
+	}
+	return ""
+}
+
+// stillNeedsReview asks GitHub about p again just before needs_review is
+// emitted (prDetails, shared with review batching's recheck), so stale pass
+// data never says a PR is waiting when it isn't. An error means not now.
+func stillNeedsReview(p *watchedPR) bool {
+	f, err := reviewRecheck(*p)
+	if err != nil {
+		logActivity("pr watch: couldn't recheck %s before needs_review: %v", p.URL, err)
+		return false
+	}
+	return f.Review != "approved" && f.Review != "changes_requested" && f.Head == p.Head && !f.Draft && f.Checks == "success"
 }
 
 func prWatchStatePath() string { return filepath.Join(filepath.Dir(settingsPath), "pr-watch.json") }
@@ -164,13 +209,13 @@ func runWatch(args []string) int {
 	owner := fs.String("owner", "", "GitHub owner (org or user) whose repos to watch (default: every owner)")
 	once := fs.Bool("once", false, "make one pass and exit")
 	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unresolved threads")
-	review := fs.Bool("review", false, "also request reviews: batch PRs that are green and need review, post to --review-channel what the hook routes there, draft the rest (ccs review)")
-	dryRun := fs.Bool("dry-run", false, "with --review: print the plan for the PRs waiting now, from the last pass's state, and post nothing")
-	fs.StringVar(&reviewCfg.Channel, "review-channel", "", "with --review: the Slack channel id review requests are posted to")
-	fs.StringVar(&reviewCfg.Mention, "review-mention", "", "with --review: the mention that post must carry, e.g. <!subteam^S…>")
-	fs.StringVar(&reviewCfg.Hook, "review-hook", "", "with --review: the command that routes a batch (run with sh -c): the batch as JSON on its stdin, the plan as JSON on its stdout")
+	review := fs.Bool("review", false, "DEPRECATED, removed next release. also request reviews: batch PRs that are green and need review, post to --review-channel what the hook routes there, draft the rest (ccs review)")
+	dryRun := fs.Bool("dry-run", false, "DEPRECATED. with --review: print the plan for the PRs waiting now, from the last pass's state, and post nothing")
+	fs.StringVar(&reviewCfg.Channel, "review-channel", "", "DEPRECATED. with --review: the Slack channel id review requests are posted to")
+	fs.StringVar(&reviewCfg.Mention, "review-mention", "", "DEPRECATED. with --review: the mention that post must carry, e.g. <!subteam^S…>")
+	fs.StringVar(&reviewCfg.Hook, "review-hook", "", "DEPRECATED. with --review: the command that routes a batch (run with sh -c): the batch as JSON on its stdin, the plan as JSON on its stdout")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed; unless --no-nudge,\nnudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unresolved threads). Only one ccs watch runs at a time.\n\n", prEventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed; unless --no-nudge,\nnudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unresolved threads). Only one ccs watch runs at a time.\n\n", prEventsPath())
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -182,6 +227,16 @@ func runWatch(args []string) int {
 	if err := defaultAuthor(author); err != nil {
 		fmt.Fprintln(os.Stderr, "ccs watch:", err)
 		return 1
+	}
+	deprecated := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "review", "dry-run", "review-channel", "review-mention", "review-hook":
+			deprecated = true
+		}
+	})
+	if deprecated {
+		fmt.Fprintln(os.Stderr, reviewDeprecated)
 	}
 	if *review {
 		if err := reviewCfg.check(); err != nil {
@@ -260,7 +315,14 @@ func watchPass(author, owner string, now time.Time) error {
 		return fmt.Errorf("merged PRs: %w", err)
 	}
 
-	next := prWatchState{Author: author, Owner: owner, Started: old.Started, Updated: now, PRs: map[string]*watchedPR{}}
+	if !seeding && old.Version < 2 {
+		// From before Awaiting was kept: a PR asked about at its current head
+		// and still waiting was awaiting review.
+		for _, p := range old.PRs {
+			p.Awaiting = p.AskedHead != "" && p.AskedHead == p.Head && p.needsReview()
+		}
+	}
+	next := prWatchState{Author: author, Owner: owner, Started: old.Started, Updated: now, PRs: map[string]*watchedPR{}, Version: prWatchVersion}
 	var events []prEvent
 	emit := func(p *watchedPR, event string) {
 		e := prEvent{At: now.UTC().Format(time.RFC3339), Event: event, PR: p.URL, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head}
@@ -272,6 +334,21 @@ func watchPass(author, owner string, now time.Time) error {
 		case "threads_unresolved":
 			e.Unresolved = *p.Threads
 		}
+		events = append(events, e)
+	}
+	// notNeeded emits review_not_needed for a PR that was awaiting review and
+	// isn't now (n carries its state now, o what it was awaiting at).
+	notNeeded := func(n, o *watchedPR) {
+		if o == nil || !o.Awaiting {
+			return
+		}
+		why := notNeededReason(n, o.AskedHead)
+		if why == "" {
+			n.Awaiting = true
+			return
+		}
+		n.Awaiting = false
+		e := prEvent{At: now.UTC().Format(time.RFC3339), Event: "review_not_needed", PR: n.URL, Repo: n.Repo, Number: n.Number, Title: n.Title, Head: o.AskedHead, Reason: why}
 		events = append(events, e)
 	}
 
@@ -288,7 +365,7 @@ func watchPass(author, owner string, now time.Time) error {
 			continue
 		}
 		if o != nil {
-			n.AskedHead = o.AskedHead
+			n.AskedHead, n.Awaiting = o.AskedHead, o.Awaiting
 			if n.conflictsUnknown {
 				n.Conflicts = o.Conflicts
 			}
@@ -298,11 +375,15 @@ func watchPass(author, owner string, now time.Time) error {
 		}
 		next.PRs[p.URL] = n
 		if seeding {
-			if n.needsReview() {
-				n.AskedHead = n.Head
+			// Awaiting review already: said now, so a consumer starting
+			// with the watcher knows (once per head, as ever).
+			if n.needsReview() && stillNeedsReview(n) {
+				n.AskedHead, n.Awaiting = n.Head, true
+				emit(n, "needs_review")
 			}
 			continue
 		}
+		notNeeded(n, o)
 		prev := o
 		if prev == nil || prev.State != "open" {
 			emit(n, "new")
@@ -332,8 +413,8 @@ func watchPass(author, owner string, now time.Time) error {
 		if n.ready() && !prev.ready() {
 			emit(n, "ready")
 		}
-		if n.needsReview() && n.AskedHead != n.Head {
-			n.AskedHead = n.Head
+		if n.needsReview() && n.AskedHead != n.Head && stillNeedsReview(n) {
+			n.AskedHead, n.Awaiting = n.Head, true
 			emit(n, "needs_review")
 		}
 	}
@@ -354,6 +435,7 @@ func watchPass(author, owner string, now time.Time) error {
 		}
 		next.PRs[p.URL] = &n
 		if !seeding {
+			notNeeded(&n, o)
 			emit(&n, "merged")
 		}
 	}
@@ -380,11 +462,12 @@ func watchPass(author, owner string, now time.Time) error {
 		n := *o
 		n.State, n.Ended = state, now.UTC().Format(time.RFC3339)
 		next.PRs[url] = &n
+		notNeeded(&n, o)
 		emit(&n, state)
 	}
 
 	if seeding {
-		events = []prEvent{{At: now.UTC().Format(time.RFC3339), Event: "watch_started", Review: fmt.Sprintf("%d open PRs by %s in %s", len(open), author, cmp.Or(owner, "any owner"))}}
+		events = append([]prEvent{{At: now.UTC().Format(time.RFC3339), Event: "watch_started", Review: fmt.Sprintf("%d open PRs by %s in %s", len(open), author, cmp.Or(owner, "any owner"))}}, events...)
 	}
 	if err := writePREvents(events); err != nil {
 		return fmt.Errorf("writing events: %w", err)

@@ -476,3 +476,12 @@ func TestRecheckDropsPRsApprovedSincePlanning(t *testing.T) {
 		t.Errorf("all approved: no post: %+v", got.ChannelPost)
 	}
 }
+
+func TestReviewSaysItIsDeprecated(t *testing.T) {
+	reviewSetup(t)
+	var out, errb strings.Builder
+	runReview([]string{"list"}, &out, &errb)
+	if !strings.Contains(errb.String(), "deprecated") {
+		t.Errorf("ccs review warns it goes next release: %q", errb.String())
+	}
+}

@@ -27,8 +27,9 @@ func TestLaunchScript(t *testing.T) {
 		t.Errorf("resume, no brief:\n%s", got)
 	}
 	got = launchScript(launchOpts{name: "n", brief: "x", cwd: "/w", codex: true}, "/bin/codex", dir)
-	if !strings.Contains(got, `exec '/bin/codex' -s workspace-write -a never --add-dir '/c/launch/n' "$(cat '/c/launch/n/brief.md')"`) || strings.Contains(got, "claude.secret") {
-		t.Errorf("codex, its launch folder writable and marking it:\n%s", got)
+	state := shellQuote(filepath.Dir(settingsPath))
+	if !strings.Contains(got, `exec '/bin/codex' -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir '/c/launch/n' --add-dir `+state+` "$(cat '/c/launch/n/brief.md')"`) || strings.Contains(got, "claude.secret") {
+		t.Errorf("codex: the user's approval mode, network on, its launch folder (marking it) and ccs's state writable:\n%s", got)
 	}
 	got = launchScript(launchOpts{name: "n", resume: "r1", cwd: "/w", codex: true}, "/bin/codex", dir)
 	if !strings.Contains(got, `exec '/bin/codex' resume 'r1' -s`) {

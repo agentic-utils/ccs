@@ -49,7 +49,7 @@ ccs launch --name tests --brief brief.md --codex                # codex instead
 ccs close fix-login
 ```
 
-`ccs launch` opens an iTerm tab (at the end of the tab strip if iTerm's "new tabs at the end" setting is on, focus staying where it was), clears the prompt and runs a launcher kept in `~/Library/Caches/ccs/launch/<name>/`: a login zsh that sources `~/.claude.secret` when there is one and runs `claude "<brief>" --name <name> $CCS_CLAUDE_ARGS`, the brief first since `--channels` takes every word after it. It then waits up to 20 seconds for a session with that name to start, printing its pid and tty, and fails if none does. A name already running is refused. With `--codex` it runs `codex -s workspace-write -a never --add-dir <that folder>`, the folder being how ccs finds it again.
+`ccs launch` opens an iTerm tab (at the end of the tab strip if iTerm's "new tabs at the end" setting is on, focus staying where it was), clears the prompt and runs a launcher kept in `~/Library/Caches/ccs/launch/<name>/`: a login zsh that sources `~/.claude.secret` when there is one and runs `claude "<brief>" --name <name> $CCS_CLAUDE_ARGS`, the brief first since `--channels` takes every word after it. It then waits up to 20 seconds for a session with that name to start, printing its pid and tty, and fails if none does. A name already running is refused. With `--codex` it runs `codex -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir <that folder> --add-dir <ccs's settings folder>`: your usual approval mode, network on (Codex's sandbox has none by default, so git and gh would fail), the launch folder (how ccs finds the session again) and ccs's settings folder (so `ccs claim` can write) writable. It also waits for Codex's transcript of the session and prints its thread id, which nudges need; a Codex session that writes none in time fails the launch.
 
 `ccs close <name>` finds the one running session with that name (two with the same name are left alone), stops it, confirms its process has exited, then closes its iTerm tab (or tmux pane). A session with no terminal (an app's, or `claude --bg`) is refused.
 
@@ -235,7 +235,7 @@ Events: `review_requested` (channel, PRs, permalink), `review_dm_pending` (id, r
 
 After each pass, `ccs watch` tells the session that claimed a PR (`ccs claim`, below) what's wrong with it: checks failing (by name), conflicts with its base, or more unresolved review threads than it was last told of. Each running owner is told once per PR, head commit and reason, so it isn't nagged every pass; a new commit that still fails is told again. A session that isn't running, or a PR nobody claimed, gets nothing beyond the usual events.
 
-The notice goes over the session's own message socket, as `ccs watch`, and says it's an automatic status notice, not typed by you, so the session treats it as information rather than your instruction:
+The notice goes over the session's own message socket, as `ccs watch`, and says it's an automatic status notice, not typed by you, so the session treats it as information rather than your instruction. A Codex session has no socket: its notice goes in with `codex queue --thread <id>`, which hands it to the running session at its next turn, opening with the same "automatic status notice, not typed by the user" line, since Codex shows it as a user message:
 
 ```
 <PR URL> (<title>) has 2 unresolved review threads; checks failing: setup.
@@ -246,7 +246,7 @@ Events: `nudged` (pr, head, session, reasons) and `nudge_failed` (the same plus 
 
 ## Who owns each PR
 
-A session that owns a PR says so by running `ccs claim <PR URL>` (`--release` to give it up). ccs works out which session ran it from the claude process it runs under, and records the session's id and name in `claims.json` beside its settings. A claim ends by itself when the PR merges or closes, or the session stops.
+A session that owns a PR says so by running `ccs claim <PR URL>` (`--release` to give it up). ccs works out which session ran it from the claude process it runs under, and records the session's id and name in `claims.json` beside its settings. In Codex it uses the `CODEX_THREAD_ID` Codex gives every command (Codex's sandbox can't run `ps`), named by its `ccs launch` name, else Codex's title for the thread; such a claim counts as running while its `ccs launch` codex process runs, or, for one ccs didn't launch, while Codex wrote to its transcript within 12 hours. A claim ends by itself when the PR merges or closes, or the session stops.
 
 `ccs prs` lists your open PRs with their owners, needing you first, and flags any PR nobody has claimed (`UNOWNED`) and any PR two running sessions both claim (`CONTESTED`). It uses `ccs watch`'s state when that is under 10 minutes old, and otherwise asks GitHub (REST) itself. Without `--author`, it lists the running `ccs watch`'s author and owner, else the gh user's PRs in every owner's repos; `--statusline` never asks gh. A PR with a failed check, optional or not, needs you.
 

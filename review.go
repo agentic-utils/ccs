@@ -484,6 +484,85 @@ func checkPlan(p reviewPlan, items []reviewItem) (reviewPlan, []string, error) {
 	return out, warn, nil
 }
 
+// reviewRecheck is a PR as GitHub has it now (prDetails). Stubbed in tests.
+var reviewRecheck = func(p watchedPR) (*watchedPR, error) { return prDetails(p) }
+
+// recheckPlan asks GitHub about each PR the plan asks for, just before
+// posting, and drops those that no longer need a review: approved, a new
+// head, a draft, or checks no longer passing since the watcher's last pass.
+// A dropped PR's lines go from the post or draft; one left with no PRs goes.
+// A PR GitHub can't be asked about now is kept.
+func recheckPlan(p reviewPlan, w prWatchState) (reviewPlan, []string) {
+	var urls []string
+	if c := p.ChannelPost; c != nil {
+		urls = append(urls, c.PRs...)
+	}
+	for _, d := range p.Drafts {
+		urls = append(urls, d.PRs...)
+	}
+	stale := map[string]string{}
+	for _, u := range urls {
+		old := w.PRs[u]
+		if old == nil || stale[u] != "" {
+			continue
+		}
+		now, err := reviewRecheck(*old)
+		switch {
+		case err != nil:
+			logActivity("review: couldn't recheck %s: %v", u, err)
+		case now.Review == "approved":
+			stale[u] = "approved since the last pass"
+		case now.Head != old.Head:
+			stale[u] = "new commits since the last pass"
+		case now.Draft:
+			stale[u] = "now a draft"
+		case now.Checks != "success":
+			stale[u] = "checks no longer passing"
+		}
+	}
+	if len(stale) == 0 {
+		return p, nil
+	}
+	var warn []string
+	for u, why := range stale {
+		warn = append(warn, u+" dropped: "+why)
+	}
+	slices.Sort(warn)
+	strip := func(text string, prs []string) (string, []string) {
+		var keep []string
+		for _, u := range prs {
+			if stale[u] == "" {
+				keep = append(keep, u)
+			}
+		}
+		var lines []string
+		for _, l := range strings.Split(text, "\n") {
+			if !slices.ContainsFunc(prs, func(u string) bool { return stale[u] != "" && strings.Contains(l, u) }) {
+				lines = append(lines, l)
+			}
+		}
+		return strings.Join(lines, "\n"), keep
+	}
+	out := reviewPlan{Holds: p.Holds}
+	if c := p.ChannelPost; c != nil {
+		text, keep := strip(c.Text, c.PRs)
+		if len(keep) > 0 && strings.Contains(text, reviewCfg.Mention) {
+			cp := *c
+			cp.Text, cp.PRs = text, keep
+			out.ChannelPost = &cp
+		} else if len(keep) > 0 {
+			warn = append(warn, "channel post dropped: its mention went with a dropped PR's line")
+		}
+	}
+	for _, d := range p.Drafts {
+		if text, keep := strip(d.Text, d.PRs); len(keep) > 0 {
+			d.Text, d.PRs = text, keep
+			out.Drafts = append(out.Drafts, d)
+		}
+	}
+	return out, warn
+}
+
 // slackBase and slackHTTP are Slack's Web API; tests point them at a stub.
 var (
 	slackBase = "https://slack.com/api/"
@@ -652,6 +731,14 @@ func reviewTick(now time.Time, dryRun bool, stdout io.Writer) error {
 		if err != nil && dryRun {
 			out, _ := json.MarshalIndent(raw, "", "  ")
 			fmt.Fprintln(stdout, string(out))
+		}
+	}
+	if err == nil {
+		var dropped []string
+		plan, dropped = recheckPlan(plan, w)
+		warnings = append(warnings, dropped...)
+		if plan.ChannelPost == nil && len(plan.Drafts) == 0 && len(plan.Holds) == 0 {
+			err = errors.New("nothing left to ask for: " + strings.Join(dropped, "; "))
 		}
 	}
 	at := now.UTC().Format(time.RFC3339)

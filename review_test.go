@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -52,12 +53,13 @@ func reviewSetup(t *testing.T) *fakeSlack {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	oldS, oldL, oldBase, oldTok, oldPlan, oldCfg := settingsPath, updateLogPath, slackBase, slackToken, planReview, reviewCfg
+	oldS, oldL, oldBase, oldTok, oldPlan, oldCfg, oldRecheck := settingsPath, updateLogPath, slackBase, slackToken, planReview, reviewCfg, reviewRecheck
+	reviewRecheck = func(p watchedPR) (*watchedPR, error) { return &p, nil } // unchanged on GitHub
 	reviewCfg = reviewConfig{Channel: revChannel, Mention: revMention, Hook: "true"}
 	settingsPath, updateLogPath, slackBase = dir+"/settings.json", dir+"/update.log", srv.URL+"/"
 	slackToken = func() (string, error) { return "xoxp-secret", nil }
 	t.Cleanup(func() {
-		settingsPath, updateLogPath, slackBase, slackToken, planReview, reviewCfg = oldS, oldL, oldBase, oldTok, oldPlan, oldCfg
+		settingsPath, updateLogPath, slackBase, slackToken, planReview, reviewCfg, reviewRecheck = oldS, oldL, oldBase, oldTok, oldPlan, oldCfg, oldRecheck
 	})
 	return fs
 }
@@ -442,5 +444,35 @@ echo '{"channel_post":{"text":"<!subteam^S0TEAM1> please review","prs":["https:/
 	os.WriteFile(hook, []byte("#!/bin/sh\necho 'no routing table' >&2\nexit 3\n"), 0o700)
 	if _, err := hookPlan(items); err == nil || !strings.Contains(err.Error(), "no routing table") {
 		t.Errorf("a failed hook's stderr is reported: %v", err)
+	}
+}
+
+func TestRecheckDropsPRsApprovedSincePlanning(t *testing.T) {
+	reviewSetup(t)
+	w := prWatchState{PRs: map[string]*watchedPR{
+		revA: {URL: revA, Head: "h1", Checks: "success", Review: "required"},
+		revB: {URL: revB, Head: "h2", Checks: "success", Review: "required"},
+	}}
+	reviewRecheck = func(p watchedPR) (*watchedPR, error) {
+		if p.URL == revB {
+			p.Review = "approved"
+		}
+		return &p, nil
+	}
+	var p reviewPlan
+	p.ChannelPost = &struct {
+		Text string   `json:"text"`
+		PRs  []string `json:"prs"`
+	}{revMention + " review please\n" + revA + " infra\n" + revB + " infra", []string{revA, revB}}
+	got, warn := recheckPlan(p, w)
+	if got.ChannelPost == nil || !slices.Equal(got.ChannelPost.PRs, []string{revA}) || strings.Contains(got.ChannelPost.Text, revB) || !strings.Contains(got.ChannelPost.Text, revMention) {
+		t.Errorf("the approved PR goes from the post, line and all: %+v", got.ChannelPost)
+	}
+	if len(warn) != 1 || !strings.Contains(warn[0], "approved") {
+		t.Errorf("and says why: %v", warn)
+	}
+	reviewRecheck = func(p watchedPR) (*watchedPR, error) { p.Review = "approved"; return &p, nil }
+	if got, _ := recheckPlan(p, w); got.ChannelPost != nil {
+		t.Errorf("all approved: no post: %+v", got.ChannelPost)
 	}
 }

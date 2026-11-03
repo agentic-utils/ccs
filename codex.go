@@ -36,9 +36,11 @@ const codexIdle = 12 * time.Hour
 
 // codexMeta is the first line of a Codex transcript (its session_meta).
 type codexMeta struct {
-	ID    string   `json:"id"`
-	Cwd   string   `json:"cwd"`
-	Roots []string `json:"runtime_workspace_roots"`
+	ID        string          `json:"id"`
+	Cwd       string          `json:"cwd"`
+	Roots     []string        `json:"runtime_workspace_roots"`
+	Source    json.RawMessage `json:"source"`
+	Timestamp string          `json:"timestamp"`
 }
 
 // codexRollouts is Codex's transcripts, newest first by name (each starts

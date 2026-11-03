@@ -123,6 +123,7 @@ func TestMain(m *testing.M) {
 	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
 	closeTab = func(string) bool { return false }
 	psAll = func() (string, error) { return "", nil }
+	psTree = func() (string, error) { return "", nil } // never the machine's own processes
 	// never the real Codex: its data folder is a temp one, and nothing is queued.
 	codexHome = func() string { return filepath.Join(dir, "codex") }
 	codexQueue = func(string, string) error { return errors.New("tests queue nothing") }

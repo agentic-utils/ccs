@@ -98,6 +98,7 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 				msg.unverified[id] = true
 			}
 		}
+		noteCodexExecs(sessions)
 		if record { // only once the last boot's record has been read
 			recordOpen(live)
 		}

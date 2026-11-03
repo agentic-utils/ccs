@@ -101,7 +101,7 @@ func mustStat(t *testing.T, path string) os.FileInfo {
 func TestMain(m *testing.M) {
 	// Not in iTerm unless a test says so: inITerm also reads these, and a
 	// test must never drive the real iTerm (open tabs, type into sessions).
-	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX"} {
+	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID"} {
 		os.Unsetenv(k)
 	}
 	// Keep tests from writing into the real update log.
@@ -123,6 +123,9 @@ func TestMain(m *testing.M) {
 	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
 	closeTab = func(string) bool { return false }
 	psAll = func() (string, error) { return "", nil }
+	// never the real Codex: its data folder is a temp one, and nothing is queued.
+	codexHome = func() string { return filepath.Join(dir, "codex") }
+	codexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	ttyOf = func(int) string { return "" }
 	signalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	ghUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }

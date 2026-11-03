@@ -58,6 +58,9 @@ type nudgeEvent struct {
 
 // sendNudge delivers a nudge to a live session; stubbed in tests.
 var sendNudge = func(c prClaim, text string) error {
+	if c.Kind == "codex" {
+		return codexQueue(c.Thread, codexNudgeNote+text)
+	}
 	f, err := readSessionFile(c.PID)
 	if err != nil {
 		return fmt.Errorf("session file: %w", err)

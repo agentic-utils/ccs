@@ -46,6 +46,7 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs watch [flags]    Report changes to your open PRs as JSON lines, and tell the sessions
                             that claimed them what's failing (see ccs watch --help)
        ccs claim <PR URL>   Record that the session running it owns the PR (--release drops it)
+                            (a Claude Code or Codex session)
        ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline)
        ccs review list | send <id> | drop <id>
                             Review requests ccs watch --review drafted for you to confirm

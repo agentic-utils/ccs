@@ -70,7 +70,11 @@ func launchScript(o launchOpts, bin, dir string) string {
 		if o.resume != "" {
 			args = append(args, "resume", shellQuote(o.resume))
 		}
-		args = append(args, "-s", "workspace-write", "-a", "never", "--add-dir", shellQuote(dir))
+		// The user's own approval mode; network on (Codex's sandbox has none by
+		// default, so git and gh fail); its launch folder first (sessionsNamed
+		// finds it by that), then ccs's state, which ccs claim writes.
+		args = append(args, "-s", "workspace-write", "-a", "on-request", "-c", "sandbox_workspace_write.network_access=true",
+			"--add-dir", shellQuote(dir), "--add-dir", shellQuote(filepath.Dir(settingsPath)))
 		if o.brief != "" {
 			args = append(args, brief)
 		}
@@ -90,10 +94,12 @@ func launchScript(o launchOpts, bin, dir string) string {
 	return b.String()
 }
 
-// launched is a session launch started: its process and terminal.
+// launched is a session launch started: its process and terminal, and a
+// Codex session's thread.
 type launched struct {
-	pid int
-	tty string
+	pid    int
+	tty    string
+	thread string
 }
 
 // launchSession starts o in a new iTerm tab and waits until it's running.
@@ -153,10 +159,17 @@ func launchSession(o launchOpts) (launched, error) {
 	deadline := time.Now().Add(launchWait)
 	for {
 		pids, _ := sessionsNamed(o.name)
-		if len(pids) > 0 {
-			return launched{pids[0], tty}, nil
+		thread := ""
+		if o.codex {
+			thread = codexThreadFor(o.name) // queue and claim need it
+		}
+		if len(pids) > 0 && (!o.codex || thread != "" || o.resume != "") {
+			return launched{pids[0], tty, thread}, nil
 		}
 		if time.Now().After(deadline) {
+			if len(pids) > 0 {
+				return launched{pids[0], tty, ""}, fmt.Errorf("%s started (pid %d) but Codex wrote no transcript for it within %s, so it can't be messaged: see the tab on %s", o.name, pids[0], launchWait, tty)
+			}
 			return launched{tty: tty}, fmt.Errorf("%s didn't start within %s: see the tab on %s (launcher %s)", o.name, launchWait, tty, script)
 		}
 		sleep(250 * time.Millisecond)
@@ -360,7 +373,11 @@ func runLaunch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ccs launch:", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "launched %s: pid %d, %s\n", o.name, l.pid, l.tty)
+	if l.thread != "" {
+		fmt.Fprintf(stdout, "launched %s: pid %d, %s, codex thread %s\n", o.name, l.pid, l.tty, l.thread)
+	} else {
+		fmt.Fprintf(stdout, "launched %s: pid %d, %s\n", o.name, l.pid, l.tty)
+	}
 	return 0
 }
 

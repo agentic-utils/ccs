@@ -22,10 +22,12 @@ import (
 
 // prClaim is one session's claim on a PR.
 type prClaim struct {
-	Session   string    `json:"session"`    // Claude Code session id
-	Name      string    `json:"name"`       // the session's name when it claimed
-	PID       int       `json:"pid"`        // its claude process
-	ProcStart string    `json:"proc_start"` // that process's start, as its session file says: a recycled pid isn't it
+	Session   string    `json:"session"`          // Claude Code session id, or a Codex thread id
+	Kind      string    `json:"kind,omitempty"`   // "codex" for a Codex session, else Claude Code
+	Thread    string    `json:"thread,omitempty"` // a Codex session's thread id
+	Name      string    `json:"name"`             // the session's name when it claimed
+	PID       int       `json:"pid"`              // its claude process
+	ProcStart string    `json:"proc_start"`       // that process's start, as its session file says: a recycled pid isn't it
 	ClaimedAt time.Time `json:"claimed_at"`
 	Notify    bool      `json:"notify,omitempty"` // reserved: the session asks to be told of its PR's failures
 }
@@ -118,6 +120,9 @@ var liveByPID = func() map[int]prClaim {
 // callingSession is the claude session this process runs under: the first
 // ancestor that is a live session's claude process.
 func callingSession() (prClaim, error) {
+	if c, ok := codexSession(); ok {
+		return c, nil
+	}
 	live := liveByPID()
 	pid := os.Getppid()
 	for range 30 {
@@ -129,11 +134,15 @@ func callingSession() (prClaim, error) {
 		}
 		pid = parentPID(pid)
 	}
-	return prClaim{}, errors.New("not run from a Claude Code session: ccs claim must be run by the session that owns the PR")
+	return prClaim{}, errors.New("not run from a Claude Code or Codex session: ccs claim must be run by the session that owns the PR")
 }
 
-// claimLive: the claim's session still runs in the same process.
+// claimLive: the claim's session still runs in the same process (a Codex
+// session: codexLive).
 func claimLive(c prClaim, live map[int]prClaim) bool {
+	if c.Kind == "codex" {
+		return codexLive(c.Thread)
+	}
 	s, ok := live[c.PID]
 	return ok && s.Session == c.Session && s.ProcStart == c.ProcStart
 }

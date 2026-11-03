@@ -256,7 +256,10 @@ ccs claim https://github.com/o/r/pull/12
 ccs prs                  # one line per PR
 ccs prs --json           # the same, for scripts
 ccs prs --statusline     # e.g. "PRs 3 ready · 1 need you · 2 unowned", from saved state only
+ccs prs --session-id <id> --statusline   # one session's PRs: "PRs ✓1 ✗1 2" (ready, need you, waiting)
 ```
+
+`--session-id` keeps only the PRs that session claims: a Claude Code session id (the `session_id` in Claude Code's status line input) or a Codex thread id; ids, not names, so a `/rename` or two sessions with one name can't confuse it. `--json` gives each PR's `owners` (names) and `owners_detail` (`name`, `kind` claude or codex, `session` id).
 
 `--statusline` never asks GitHub, so it is quick enough for Claude Code's status line; it prints nothing when there is nothing to count, and adds `(stale)` when `ccs watch` hasn't refreshed the state for 10 minutes.
 

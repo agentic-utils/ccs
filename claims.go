@@ -201,15 +201,77 @@ func claim(pr string, release bool, now time.Time) (string, error) {
 
 // prRow is one line of ccs prs.
 type prRow struct {
-	PR        string   `json:"pr"`
-	Repo      string   `json:"repo"`
-	Number    int      `json:"number"`
-	Title     string   `json:"title"`
-	Owners    []string `json:"owners"` // names of the live sessions claiming it
-	Group     string   `json:"group"`  // ready, needs_you, waiting
-	Status    string   `json:"status"` // why, as the list says it
-	Unowned   bool     `json:"unowned,omitempty"`
-	Contested bool     `json:"contested,omitempty"` // claimed by two or more live sessions
+	PR     string   `json:"pr"`
+	Repo   string   `json:"repo"`
+	Number int      `json:"number"`
+	Title  string   `json:"title"`
+	Owners []string `json:"owners"` // names of the live sessions claiming it
+	// OwnersDetail is the same owners with their kind ("claude" or "codex")
+	// and id (the Claude Code session id, or the Codex thread id).
+	OwnersDetail []prOwner `json:"owners_detail,omitempty"`
+	Group        string    `json:"group"`  // ready, needs_you, waiting
+	Status       string    `json:"status"` // why, as the list says it
+	Unowned      bool      `json:"unowned,omitempty"`
+	Contested    bool      `json:"contested,omitempty"` // claimed by two or more live sessions
+}
+
+// prOwner is one live session claiming a PR.
+type prOwner struct {
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	Session string `json:"session"`
+}
+
+// ownerOf is c as a prOwner: a Codex claim's id is its thread.
+func ownerOf(c prClaim, live map[int]prClaim) prOwner {
+	o := prOwner{Name: ownerName(c, live), Kind: "claude", Session: c.Session}
+	if c.Kind == "codex" {
+		o.Kind = "codex"
+		if c.Thread != "" {
+			o.Session = c.Thread
+		}
+	}
+	return o
+}
+
+// ownedBy keeps the PRs the session (a Claude Code session id or a Codex
+// thread id) claims. Ids are UUIDs, so one never names two sessions.
+func (r prsReport) ownedBy(id string) prsReport {
+	out := r
+	out.PRs = nil
+	for _, p := range r.PRs {
+		if slices.ContainsFunc(p.OwnersDetail, func(o prOwner) bool { return o.Session == id }) {
+			out.PRs = append(out.PRs, p)
+		}
+	}
+	return out
+}
+
+// sessionLine is --statusline for one session: its PRs by group, "PRs ✓1
+// ✗1 2" (ready, needing you, waiting), empty when it claims none.
+func (r prsReport) sessionLine() string {
+	n := map[string]int{}
+	for _, p := range r.PRs {
+		n[p.Group]++
+	}
+	var parts []string
+	if n["ready"] > 0 {
+		parts = append(parts, fmt.Sprintf("✓%d", n["ready"]))
+	}
+	if n["needs_you"] > 0 {
+		parts = append(parts, fmt.Sprintf("✗%d", n["needs_you"]))
+	}
+	if n["waiting"] > 0 {
+		parts = append(parts, fmt.Sprint(n["waiting"]))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	s := "PRs " + strings.Join(parts, " ")
+	if r.Stale {
+		s += " (stale)"
+	}
+	return s
 }
 
 // prsReport is ccs prs: the author's open PRs and how fresh the answer is.
@@ -338,7 +400,9 @@ func prsList(author, owner string, offline bool, now time.Time) (prsReport, erro
 		g, why := p.status()
 		row := prRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Group: groupNames[g], Status: why}
 		for _, c := range claims.Claims[u] {
-			row.Owners = append(row.Owners, ownerName(c, live))
+			o := ownerOf(c, live)
+			row.Owners = append(row.Owners, o.Name)
+			row.OwnersDetail = append(row.OwnersDetail, o)
 		}
 		row.Unowned = len(row.Owners) == 0
 		row.Contested = len(row.Owners) > 1
@@ -458,6 +522,7 @@ func runPRs(args []string, stdout, stderr io.Writer) int {
 	line := fs.Bool("statusline", false, "print one short line of counts from saved state, without asking GitHub")
 	author := fs.String("author", "", "PR author (default: the user gh is logged in as, or the running ccs watch's)")
 	owner := fs.String("owner", "", "GitHub owner (org or user) whose repos to list (default: every owner, or the running ccs watch's)")
+	sessionID := fs.String("session-id", "", "only the PRs this session claims: a Claude Code session id or a Codex thread id")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: ccs prs [flags]\n\nList the author's open PRs with the session that owns each (ccs claim),\nflagging unowned PRs and PRs claimed by two live sessions. Uses ccs watch's\nstate when it is under %s old, else asks GitHub.\n\n", prsFresh)
 		fs.PrintDefaults()
@@ -487,7 +552,14 @@ func runPRs(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ccs prs:", err)
 		return 1
 	}
+	if *sessionID != "" {
+		rep = rep.ownedBy(*sessionID)
+	}
 	switch {
+	case *line && *sessionID != "":
+		if s := rep.sessionLine(); s != "" {
+			fmt.Fprintln(stdout, s)
+		}
 	case *line:
 		if s := rep.statusLine(); s != "" {
 			fmt.Fprintln(stdout, s)

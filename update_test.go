@@ -902,11 +902,11 @@ func TestAutoUpdateToggle(t *testing.T) {
 	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
 	m.autoUpdate = true
 	m, _ = chord(m, "i")
-	if m.autoUpdate || !loadSettings().ManualUpdate {
+	if m.autoUpdate || loadSettings().autoUpdateOn() {
 		t.Error("^X I turns it off, and that's saved")
 	}
 	m, _ = chord(m, "i")
-	if !m.autoUpdate || loadSettings().ManualUpdate {
+	if !m.autoUpdate || !loadSettings().autoUpdateOn() {
 		t.Error("again turns it back on")
 	}
 }
@@ -922,5 +922,39 @@ func TestHeaderShowsAutoUpdate(t *testing.T) {
 	m.autoUpdate = false
 	if v := strip2(m.View()); !strings.Contains(v, "^X I auto-update off") {
 		t.Errorf("or off:\n%s", v)
+	}
+}
+
+func TestAutoUpdateOptIn(t *testing.T) {
+	defer func(p string) { settingsPath = p }(settingsPath)
+	settingsPath = t.TempDir() + "/settings.json"
+	for _, c := range []struct {
+		name, file string
+		missing    bool
+		want       bool
+	}{
+		{"new install, no file", "", true, false},
+		{"older install, never turned off", `{"auto_focus":true}`, false, true},
+		{"older install, turned off", `{"manual_update":true}`, false, false},
+		{"chose on", `{"auto_update":true}`, false, true},
+		{"chose off", `{"auto_update":false}`, false, false},
+	} {
+		os.Remove(settingsPath)
+		if !c.missing {
+			os.WriteFile(settingsPath, []byte(c.file), 0o600)
+		}
+		if got := loadSettings().autoUpdateOn(); got != c.want {
+			t.Errorf("%s: auto-update %v, want %v", c.name, got, c.want)
+		}
+	}
+	on := true
+	saveSettings(settings{AutoUpdate: &on})
+	if b, _ := os.ReadFile(settingsPath); !strings.Contains(string(b), `"auto_update":true`) {
+		t.Errorf("the choice is saved explicitly: %s", b)
+	}
+	off := false
+	saveSettings(settings{AutoUpdate: &off})
+	if b, _ := os.ReadFile(settingsPath); !strings.Contains(string(b), `"auto_update":false`) {
+		t.Errorf("off is saved too, so it isn't read as an older install: %s", b)
 	}
 }

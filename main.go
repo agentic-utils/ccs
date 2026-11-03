@@ -85,7 +85,7 @@ Key bindings:
   Ctrl+S          Message the selected live session (Enter sends, Esc back)
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X A        Auto-focus: switch to a session's tab when it starts waiting on you
-  Ctrl+X I        Automatic updates (on by default): install new versions once you're away
+  Ctrl+X I        Automatic updates (off by default): install new versions once you're away
   Ctrl+X C        Collapse the selected session's folder (grouped) to one session
   Ctrl+X S        Settle or snooze the selected session (again to bring it back)
   Ctrl+X G        Group sessions by folder
@@ -262,7 +262,10 @@ func main() {
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus = s.Table, s.Grouped, s.AutoFocus
-	m.autoUpdate = !s.ManualUpdate // on unless turned off with ^X I
+	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
+	if s.AutoUpdate == nil && s.found {
+		saveSettings(m.settings()) // pin what an older install had
+	}
 	if from := os.Getenv(updatedEnv); from != "" {
 		os.Unsetenv(updatedEnv) // once only
 		m.updatedFrom, m.updatedOpen = from, true

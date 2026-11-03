@@ -234,13 +234,13 @@ func ownerOf(c prClaim, live map[int]prClaim) prOwner {
 	return o
 }
 
-// ownedBy keeps the PRs the session (a Claude Code session id or a Codex
-// thread id) claims. Ids are UUIDs, so one never names two sessions.
-func (r prsReport) ownedBy(id string) prsReport {
+// ownedBy keeps the PRs the session of that kind ("claude": its session
+// id; "codex": its thread id) claims; a claim of the other kind never matches.
+func (r prsReport) ownedBy(kind, id string) prsReport {
 	out := r
 	out.PRs = nil
 	for _, p := range r.PRs {
-		if slices.ContainsFunc(p.OwnersDetail, func(o prOwner) bool { return o.Session == id }) {
+		if slices.ContainsFunc(p.OwnersDetail, func(o prOwner) bool { return o.Kind == kind && o.Session == id }) {
 			out.PRs = append(out.PRs, p)
 		}
 	}
@@ -522,7 +522,8 @@ func runPRs(args []string, stdout, stderr io.Writer) int {
 	line := fs.Bool("statusline", false, "print one short line of counts from saved state, without asking GitHub")
 	author := fs.String("author", "", "PR author (default: the user gh is logged in as, or the running ccs watch's)")
 	owner := fs.String("owner", "", "GitHub owner (org or user) whose repos to list (default: every owner, or the running ccs watch's)")
-	sessionID := fs.String("session-id", "", "only the PRs this session claims: a Claude Code session id or a Codex thread id")
+	claudeID := fs.String("claude-session-id", "", "only the PRs this Claude Code session claims")
+	codexID := fs.String("codex-session-id", "", "only the PRs this Codex session (thread id) claims")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: ccs prs [flags]\n\nList the author's open PRs with the session that owns each (ccs claim),\nflagging unowned PRs and PRs claimed by two live sessions. Uses ccs watch's\nstate when it is under %s old, else asks GitHub.\n\n", prsFresh)
 		fs.PrintDefaults()
@@ -552,11 +553,15 @@ func runPRs(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ccs prs:", err)
 		return 1
 	}
-	if *sessionID != "" {
-		rep = rep.ownedBy(*sessionID)
+	one := *claudeID != "" || *codexID != ""
+	if *claudeID != "" {
+		rep = rep.ownedBy("claude", *claudeID)
+	}
+	if *codexID != "" {
+		rep = rep.ownedBy("codex", *codexID)
 	}
 	switch {
-	case *line && *sessionID != "":
+	case *line && one:
 		if s := rep.sessionLine(); s != "" {
 			fmt.Fprintln(stdout, s)
 		}

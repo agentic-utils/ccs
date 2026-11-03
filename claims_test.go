@@ -271,7 +271,7 @@ func TestPRsForOneSession(t *testing.T) {
 	live[os.Getppid()] = alpha
 
 	var out, errs strings.Builder
-	if code := runPRs([]string{"--json", "--session-id", "s-alpha"}, &out, &errs); code != 0 {
+	if code := runPRs([]string{"--json", "--claude-session-id", "s-alpha"}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
 	var rep prsReport
@@ -283,11 +283,11 @@ func TestPRsForOneSession(t *testing.T) {
 		t.Errorf("owners_detail: %+v", d)
 	}
 	out.Reset()
-	if code := runPRs([]string{"--statusline", "--session-id", "s-alpha"}, &out, &errs); code != 0 || out.String() != "PRs ✓1 ✗1\n" {
+	if code := runPRs([]string{"--statusline", "--claude-session-id", "s-alpha"}, &out, &errs); code != 0 || out.String() != "PRs ✓1 ✗1\n" {
 		t.Errorf("statusline for one session: %d %q", code, out.String())
 	}
 	out.Reset()
-	if runPRs([]string{"--statusline", "--session-id", "nobody"}, &out, &errs); out.Len() != 0 {
+	if runPRs([]string{"--statusline", "--claude-session-id", "nobody"}, &out, &errs); out.Len() != 0 {
 		t.Errorf("a session with no claims prints nothing: %q", out.String())
 	}
 
@@ -297,8 +297,18 @@ func TestPRsForOneSession(t *testing.T) {
 		t.Errorf("codex owner: %+v", o)
 	}
 	r := prsReport{PRs: []prRow{{PR: claimC, OwnersDetail: []prOwner{cx}}}}
-	if got := r.ownedBy("th-1"); len(got.PRs) != 1 {
+	if got := r.ownedBy("codex", "th-1"); len(got.PRs) != 1 {
 		t.Errorf("by codex thread: %+v", got)
+	}
+	if got := r.ownedBy("claude", "th-1"); len(got.PRs) != 0 {
+		t.Errorf("--claude-session-id never matches a Codex claim: %+v", got)
+	}
+	out.Reset()
+	if runPRs([]string{"--json", "--codex-session-id", "s-alpha"}, &out, &errs); strings.Contains(out.String(), claimA) {
+		t.Errorf("--codex-session-id never matches a Claude claim: %s", out.String())
+	}
+	if code := runPRs([]string{"--session-id", "s-alpha"}, &out, &errs); code != 2 {
+		t.Errorf("no bare --session-id: exit %d", code)
 	}
 }
 

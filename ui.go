@@ -2740,20 +2740,37 @@ var settingsPath = func() string {
 }()
 
 type settings struct {
-	Table        bool `json:"table,omitempty"`
-	Grouped      bool `json:"grouped,omitempty"`
-	AutoFocus    bool `json:"auto_focus,omitempty"`
-	ManualUpdate bool `json:"manual_update,omitempty"` // ^X I off: offer updates instead of installing them
+	Table     bool `json:"table,omitempty"`
+	Grouped   bool `json:"grouped,omitempty"`
+	AutoFocus bool `json:"auto_focus,omitempty"`
+	// AutoUpdate (^X I) installs new versions once you're away instead of
+	// offering them. Off unless chosen; always written once known.
+	AutoUpdate *bool `json:"auto_update,omitempty"`
+	// ManualUpdate is the old setting, read only to carry a choice forward.
+	ManualUpdate bool `json:"manual_update,omitempty"`
+	found        bool // the file existed
+}
+
+// autoUpdateOn is the remembered ^X I choice. An install from before updates
+// were opt-in keeps what it had (on unless manual_update), so upgrading
+// changes nobody's behaviour; a new install starts off.
+func (s settings) autoUpdateOn() bool {
+	if s.AutoUpdate != nil {
+		return *s.AutoUpdate
+	}
+	return s.found && !s.ManualUpdate
 }
 
 func (m model) settings() settings {
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, ManualUpdate: !m.autoUpdate}
+	auto := m.autoUpdate
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, AutoUpdate: &auto}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.
 func loadSettings() (s settings) {
 	if b, err := os.ReadFile(settingsPath); err == nil {
 		json.Unmarshal(b, &s)
+		s.found = true
 	}
 	return s
 }

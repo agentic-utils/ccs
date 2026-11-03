@@ -53,7 +53,7 @@ func reviewSetup(t *testing.T) *fakeSlack {
 	}))
 	t.Cleanup(srv.Close)
 	oldS, oldL, oldBase, oldTok, oldPlan, oldCfg := settingsPath, updateLogPath, slackBase, slackToken, planReview, reviewCfg
-	reviewCfg = reviewConfig{Channel: revChannel, Mention: revMention, Guide: dir + "/guide.md"}
+	reviewCfg = reviewConfig{Channel: revChannel, Mention: revMention, Hook: "true"}
 	settingsPath, updateLogPath, slackBase = dir+"/settings.json", dir+"/update.log", srv.URL+"/"
 	slackToken = func() (string, error) { return "xoxp-secret", nil }
 	t.Cleanup(func() {
@@ -291,7 +291,7 @@ func TestReviewDropDiscardsADraft(t *testing.T) {
 
 func TestReviewPlanFailureKeepsTheQueue(t *testing.T) {
 	slack := reviewSetup(t)
-	planReview = func([]reviewItem) (reviewPlan, error) { return reviewPlan{}, errors.New("claude -p: timed out") }
+	planReview = func([]reviewItem) (reviewPlan, error) { return reviewPlan{}, errors.New("review hook: timed out") }
 	saveWatch(t, greenPR(revA, "h1"))
 	reviewTick(reviewT0, false, io.Discard)
 	if err := reviewTick(reviewT0.Add(reviewDebounce), false, io.Discard); err == nil {
@@ -377,16 +377,15 @@ func TestReviewDryRunPostsAndRecordsNothing(t *testing.T) {
 }
 
 func TestReviewConfigChecked(t *testing.T) {
-	guide := t.TempDir() + "/guide.md"
-	os.WriteFile(guide, []byte("route everything to the channel"), 0o600)
-	good := reviewConfig{Channel: "C0REVIEW1", Mention: "<!subteam^S0TEAM1>", Guide: guide}
+	good := reviewConfig{Channel: "C0REVIEW1", Mention: "<!subteam^S0TEAM1>", Hook: "cat --some-flag"}
 	if err := good.check(); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []reviewConfig{
-		{Channel: "#control", Mention: good.Mention, Guide: guide},
-		{Channel: good.Channel, Mention: "@team", Guide: guide},
-		{Channel: good.Channel, Mention: good.Mention, Guide: guide + ".missing"},
+		{Channel: "#control", Mention: good.Mention, Hook: good.Hook},
+		{Channel: good.Channel, Mention: "@team", Hook: good.Hook},
+		{Channel: good.Channel, Mention: good.Mention, Hook: ""},
+		{Channel: good.Channel, Mention: good.Mention, Hook: "no-such-routing-hook-xyz"},
 	} {
 		if c.check() == nil {
 			t.Errorf("%+v accepted", c)
@@ -402,16 +401,31 @@ func TestQuietHours(t *testing.T) {
 	}
 }
 
-func TestClaudeResultEitherShape(t *testing.T) {
-	for _, out := range []string{
-		`{"type":"result","result":"{}","is_error":false}`,
-		`[{"type":"system"},{"type":"assistant"},{"type":"result","result":"{}","is_error":false}]`,
-	} {
-		if r, err := claudeResult([]byte(out)); err != nil || r.Result != "{}" {
-			t.Errorf("%s: %+v %v", out, r, err)
-		}
+func TestReviewHookContract(t *testing.T) {
+	dir := t.TempDir()
+	hook := dir + "/route.sh"
+	// The hook sees the batch on stdin only, and its stdout is the plan.
+	os.WriteFile(hook, []byte(`#!/bin/sh
+cat > "$(dirname "$0")/stdin.json"
+echo "some chatter before the plan"
+echo '{"channel_post":{"text":"<!subteam^S0TEAM1> please review","prs":["https://github.com/o/r/pull/1"]},"drafts":[],"holds":[]}'
+`), 0o700)
+	old := reviewCfg
+	t.Cleanup(func() { reviewCfg = old })
+	reviewCfg = reviewConfig{Channel: "C0REVIEW1", Mention: "<!subteam^S0TEAM1>", Hook: hook + " --arg"}
+	items := []reviewItem{{URL: "https://github.com/o/r/pull/1", Title: "t; rm -rf / $(x)", Repo: "o/r", Head: "h"}}
+	plan, err := hookPlan(items)
+	if err != nil || plan.ChannelPost == nil || plan.ChannelPost.PRs[0] != items[0].URL {
+		t.Fatalf("plan from the hook's stdout: %+v %v", plan, err)
 	}
-	if _, err := claudeResult([]byte(`[{"type":"system"}]`)); err == nil {
-		t.Error("no result: accepted")
+	var in hookInput
+	data, _ := os.ReadFile(dir + "/stdin.json")
+	if json.Unmarshal(data, &in) != nil || in.Channel != "C0REVIEW1" || in.Mention != "<!subteam^S0TEAM1>" || len(in.PRs) != 1 || in.PRs[0].Title != items[0].Title {
+		t.Errorf("stdin = %s", data)
+	}
+
+	os.WriteFile(hook, []byte("#!/bin/sh\necho 'no routing table' >&2\nexit 3\n"), 0o700)
+	if _, err := hookPlan(items); err == nil || !strings.Contains(err.Error(), "no routing table") {
+		t.Errorf("a failed hook's stderr is reported: %v", err)
 	}
 }

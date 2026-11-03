@@ -2123,7 +2123,7 @@ func (m model) viewScreen() string {
 			status += " · " + key("^X I") + "auto-update " + state
 		}
 	}
-	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· claude code search · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
+	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
 	group := "group" // the modes toggled while working; ^X T and the rest are in ? help
 	if m.grouped {
 		group = "ungroup"

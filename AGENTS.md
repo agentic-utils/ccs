@@ -171,7 +171,7 @@ One package, split by area (all `package main`, same directory):
 The default, a sidebar (^X T switches to the table below it):
 
 ```
-  ccs · claude code search · v0.66.0 · refreshed just now · ^X W 1 waiting · ^X A auto-focus off · ^X I auto-update on   ^X G group  ? help  ^C quit
+  ccs · coding cli sessions · v0.66.0 · refreshed just now · ^X W 1 waiting · ^X A auto-focus off · ^X I auto-update on   ^X G group  ? help  ^C quit
   > type to search...                                                                          (N/total)
 ───────────────────────────┬────────────────────────────────────────────────
   ● fix login flow         ┃Project: /path/to/project

@@ -1,10 +1,10 @@
-# ccs - Claude Code Search
+# ccs - Coding CLI Sessions
 
 [![Tests](https://github.com/agentic-utils/ccs/actions/workflows/test.yaml/badge.svg)](https://github.com/agentic-utils/ccs/actions/workflows/test.yaml)
 [![Release](https://img.shields.io/github/v/release/agentic-utils/ccs)](https://github.com/agentic-utils/ccs/releases/latest)
 [![License](https://img.shields.io/github/license/agentic-utils/ccs)](LICENSE)
 
-Globally search and resume [Claude Code](https://claude.ai/claude-code) conversations.
+Launch, watch, search and resume your coding CLI sessions: [Claude Code](https://claude.ai/claude-code) conversations and the Codex sessions beside them.
 
 ![Demo: searching, jumping between hits, the usage screen, help and the changelog](demo.gif)
 

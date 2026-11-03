@@ -81,6 +81,10 @@ type model struct {
 	opened          map[string]time.Time // sessions ccs opened in a tab, until their session file appears
 	renameIndex     int                  // Index of item being renamed
 	renameInput     textinput.Model
+	launchStep      int // ^X N: 1 typing the new session's name, 2 its brief
+	launchInput     textinput.Model
+	launchName      string               // the name typed at step 1
+	launchCwd       string               // where it starts: the selected session's folder
 	errorMsg        string               // Show deletion/prune errors
 	noteMsg         string               // errorMsg set by note(): information, not an error, so not red
 	preview         *previewCache        // memoised preview lines for the selected conversation
@@ -339,7 +343,7 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 
 // prompting reports an open rename, delete or prune prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.launchStep > 0
 }
 
 func initialModel(items []listItem, filterQuery string, claudeFlags []string) model {
@@ -820,6 +824,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorMsg = fmt.Sprintf("Opening a new tab timed out, it may still have opened - check before retrying (%v)", msg.err)
 		case !msg.opened:
 			m.errorMsg = "A background session opens in a new tmux window or iTerm tab: run claude attach " + msg.id
+		}
+		return m, nil
+
+	case launchDoneMsg:
+		if msg.err != nil {
+			m.errorMsg = "Couldn't start " + msg.name + ": " + msg.err.Error()
+		} else {
+			m.note(fmt.Sprintf("Started %s (pid %d, %s)", msg.name, msg.l.pid, msg.l.tty))
+		}
+		return m, nil
+
+	case closeDoneMsg:
+		if msg.err != nil {
+			m.errorMsg = msg.err.Error()
+		} else {
+			m.note(msg.text)
 		}
 		return m, nil
 
@@ -1346,17 +1366,41 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			conv := m.filtered[m.cursor].conv
-			b, ok := m.bg[conv.SessionID]
+			b, bg := m.bg[conv.SessionID]
+			pid, live := m.livePIDs[conv.SessionID]
 			switch {
-			case !ok || !m.live[conv.SessionID]:
-				m.errorMsg = "^X K stops a background session (claude --bg); this one isn't"
+			case !m.live[conv.SessionID] || !bg && (!live || m.hostedApp(conv.SessionID) != ""):
+				m.errorMsg = "^X K stops a live session in a terminal tab, or a background one; this one isn't"
 			case m.stopArmed != conv.SessionID || time.Since(m.stopArmedAt) > 5*time.Second:
 				m.stopArmed, m.stopArmedAt = conv.SessionID, time.Now()
-				m.errorMsg = "^X K again to stop " + m.sessionName(conv)
-			default:
+				if bg {
+					m.errorMsg = "^X K again to stop " + m.sessionName(conv)
+				} else {
+					m.errorMsg = "^X K again to stop " + m.sessionName(conv) + " and close its tab"
+				}
+			case bg:
 				m.stopArmed = ""
 				return m, stopCmd(m.sessionName(conv), b)
+			default:
+				m.stopArmed = ""
+				return m, closeCmd(m.sessionName(conv), pid)
 			}
+			return m, nil
+		}
+		if k == "^x n" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			if !inITerm() {
+				m.errorMsg = "^X N opens the new session in an iTerm tab, and this isn't iTerm"
+				return m, nil
+			}
+			m.launchCwd, _ = os.Getwd()
+			if len(m.filtered) > 0 {
+				if cwd := m.filtered[m.cursor].conv.Cwd; cwd != "" && cwd != "unknown" {
+					m.launchCwd = cwd
+				}
+			}
+			m.launchStep, m.errorMsg = 1, ""
+			m.launchInput = launchPrompt("New session name: ", "")
 			return m, nil
 		}
 		if k == "^x r" && !m.prompting() && !m.acctOpen && !m.waitOpen {
@@ -1480,6 +1524,35 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m, nil
+		}
+		if m.launchStep > 0 {
+			switch msg.String() {
+			case "enter":
+				v := strings.TrimSpace(m.launchInput.Value())
+				if m.launchStep == 1 {
+					if !sessionName.MatchString(v) {
+						m.errorMsg = "A session name is letters, digits, '.', '_' and '-'"
+						return m, nil
+					}
+					m.launchName, m.launchStep = v, 2
+					m.launchInput = launchPrompt("Brief: ", "")
+					m.errorMsg = ""
+					return m, nil
+				}
+				if v == "" {
+					m.errorMsg = "Type its first prompt"
+					return m, nil
+				}
+				m.launchStep, m.errorMsg = 0, ""
+				m.note("Starting " + m.launchName + "…")
+				return m, launchCmd(launchOpts{name: m.launchName, brief: v, cwd: m.launchCwd})
+			case "esc", "ctrl+c":
+				m.launchStep = 0
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.launchInput, cmd = editKey(m.launchInput, msg)
+			return m, cmd
 		}
 		if m.renaming {
 			switch msg.String() {
@@ -1707,6 +1780,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case m.renaming:
 			m.renameInput, cmd = editKey(m.renameInput, msg)
 			return m, cmd
+		case m.launchStep > 0:
+			m.launchInput, cmd = editKey(m.launchInput, msg)
+			return m, cmd
 		case m.chatFocus:
 			m.chatInput, cmd = editKey(m.chatInput, msg)
 			return m, cmd
@@ -1816,13 +1892,17 @@ func (m model) shortcuts() [][2]string {
 	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you")
 	add(hasCswap, "^X U", "switch account")
 	add(sel && len(m.linksWithPRs()) > 0, "^O", "open a link in view or one of its PRs")
+	add(inITerm(), "^X N", "start a new session in an iTerm tab, in this one's folder")
 	add(!m.table, "^X T", "the full table, every column")
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.autoFocus, "^X A", "switch to a session when it starts waiting on you")
 	add(m.autoFocus, "^X A", "stop switching to waiting sessions")
 	if sel {
-		if _, bg := m.bg[m.filtered[m.cursor].conv.SessionID]; bg && live {
+		id := m.filtered[m.cursor].conv.SessionID
+		if _, bg := m.bg[id]; bg && live {
 			add(true, "^X K", "stop this background session")
+		} else if live && m.hostedApp(id) == "" {
+			add(true, "^X K", "stop this session and close its tab")
 		}
 	}
 	pinned := sel && m.pinIndex(m.filtered[m.cursor].conv.SessionID) >= 0
@@ -2010,7 +2090,9 @@ func (m model) viewScreen() string {
 	// Search line or delete confirmation
 	var sections []string
 	var inputSection string
-	if m.renaming {
+	if m.launchStep > 0 {
+		sections = append(sections, "  "+m.launchInput.View()+"  \033[90min "+tildePath(m.launchCwd)+"  "+hints(keyEnter, map[bool]string{true: "next", false: "start it"}[m.launchStep == 1], keyEsc, "cancel")+"\033[0m")
+	} else if m.renaming {
 		sections = append(sections, "  "+m.renameInput.View()+"  \033[90m"+hints(keyEnter, "save", keyEsc, "cancel")+"\033[0m")
 	} else if m.confirmPrune {
 		conv := m.filtered[m.pruneIndex].conv

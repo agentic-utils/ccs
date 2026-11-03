@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -71,7 +72,8 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 			"serverInfo":      map[string]any{"name": "ccs", "version": version},
 			"instructions": "Search and read the user's earlier Claude Code sessions (from ~/.claude/projects). " +
 				"Use search_sessions to find a past conversation by what was said in it, list_sessions for recent ones, " +
-				"and read_session to read one. Sessions are the user's private history; quote only what's relevant.",
+				"and read_session to read one. Sessions are the user's private history; quote only what's relevant. " +
+				"launch_session starts a named session in a new iTerm tab and close_session stops one and closes its tab.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -133,9 +135,60 @@ var mcpTools = []map[string]any{
 			"required": []string{"session_id"},
 		},
 	},
+	{
+		"name":        "launch_session",
+		"description": "Start a new named Claude Code (or codex) session in a new iTerm tab, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":   map[string]any{"type": "string", "description": "the session's name: letters, digits, '.', '_' and '-'"},
+				"brief":  map[string]any{"type": "string", "description": "its first prompt"},
+				"resume": map[string]any{"type": "string", "description": "a session id to resume instead (or as well)"},
+				"cwd":    map[string]any{"type": "string", "description": "absolute path of the folder to start in"},
+				"codex":  map[string]any{"type": "boolean", "description": "start codex instead of claude"},
+			},
+			"required": []string{"name", "cwd"},
+		},
+	},
+	{
+		"name":        "close_session",
+		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab.",
+		"inputSchema": map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"name": map[string]any{"type": "string", "description": "the session's name"}},
+			"required":   []string{"name"},
+		},
+	},
+}
+
+// mcpSessionCall runs launch_session and close_session, which need no transcripts.
+func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
+	var a struct {
+		Name, Brief, Resume, Cwd string
+		Codex                    bool
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return "", fmt.Errorf("bad arguments: %v", err)
+		}
+	}
+	if name == "close_session" {
+		return closeByName(a.Name)
+	}
+	if !filepath.IsAbs(a.Cwd) {
+		return "", fmt.Errorf("cwd must be an absolute path")
+	}
+	l, err := launchSession(launchOpts{name: a.Name, brief: a.Brief, resume: a.Resume, cwd: a.Cwd, codex: a.Codex})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("launched %s: pid %d, %s", a.Name, l.pid, l.tty), nil
 }
 
 func mcpCall(name string, raw json.RawMessage, load mcpSource) (string, error) {
+	if name == "launch_session" || name == "close_session" {
+		return mcpSessionCall(name, raw)
+	}
 	var a struct {
 		Query      string `json:"query"`
 		Project    string `json:"project"`

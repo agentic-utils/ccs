@@ -1438,6 +1438,25 @@ func rowOf(m model, i int) int {
 	return slices.IndexFunc(m.listRows(), func(r listRow) bool { return r.item == i })
 }
 
+func TestHeaderTogglesGreyWithOnGreen(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 170, 20
+	m.checkLatest = func() (string, error) { return "", nil }
+	m.autoFocus, m.autoUpdate = true, false
+	head := strings.Split(m.View(), "\n")[0]
+	plain := strip2(head)
+	if !strings.HasSuffix(plain, "^X A auto-focus on  ^X I auto-update off  ^X H headless off   ^X G group  ? help  ^C quit") {
+		t.Errorf("the toggles sit on the right, before the key hints: %q", plain)
+	}
+	if !strings.Contains(head, "auto-focus \033[32mon\033[90m") || !strings.Contains(head, "auto-update off") || strings.Contains(head, "\033[33m^") {
+		t.Errorf("only an on state is green, the rest grey: %q", head)
+	}
+	m.width = 90 // the toggles go before the title is cut
+	if plain := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(plain, "auto-focus") || !strings.Contains(plain, "coding cli sessions") {
+		t.Errorf("a narrow header drops the toggles first: %q", plain)
+	}
+}
+
 func TestHeaderShowsAutoFocusKey(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 150, 20

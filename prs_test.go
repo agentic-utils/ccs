@@ -232,14 +232,16 @@ func TestPRColoursMatchGitHub(t *testing.T) {
 
 func TestUnstableSaysWhyNotClean(t *testing.T) {
 	for _, c := range []struct {
-		p    prInfo
-		want string
+		p     prInfo
+		group int
+		want  string
 	}{
-		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "PENDING"}, "ready to merge · optional checks running"},
-		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "FAILURE", Failing: []string{"lint"}}, "ready to merge · optional checks failing: lint"},
-		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "SUCCESS"}, "ready to merge"},
+		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "PENDING"}, prReady, "ready to merge · optional checks running"},
+		// mergeable, but a failed check needs looking at, whether required or not
+		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "FAILURE", Failing: []string{"lint"}}, prFix, "optional checks failing: lint"},
+		{prInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "SUCCESS"}, prReady, "ready to merge"},
 	} {
-		if g, why := c.p.status(); g != prReady || why != c.want {
+		if g, why := c.p.status(); g != c.group || why != c.want {
 			t.Errorf("%+v: %d %q, want %q", c.p, g, why, c.want)
 		}
 	}

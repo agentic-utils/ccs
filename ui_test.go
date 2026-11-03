@@ -1053,7 +1053,7 @@ func TestHelpPopup(t *testing.T) {
 		}
 	}
 	// Only what applies: one idle conversation, no search typed.
-	if !strings.Contains(v, "resume") || !strings.Contains(v, "edit its name") || !strings.Contains(v, "refresh now") || strings.Contains(v, "message it") ||
+	if !strings.Contains(v, "resume") || !strings.Contains(v, "edit its name") || !strings.Contains(v, "refresh sessions") || strings.Contains(v, "message it") ||
 		strings.Contains(v, "clear the search") || strings.Contains(v, "move through the list") {
 		t.Errorf("popup should list only the keys that apply:\n%s", v)
 	}
@@ -1445,7 +1445,7 @@ func TestHeaderTogglesGreyWithOnGreen(t *testing.T) {
 	m.autoFocus, m.autoUpdate = true, false
 	head := strings.Split(m.View(), "\n")[0]
 	plain := strip2(head)
-	if !strings.HasSuffix(plain, "^X A auto-focus on  ^X I auto-update off   ^X G group  ? help  ^C quit") {
+	if !strings.HasSuffix(plain, "^X A auto-focus on  ^X I auto-update off   ? help  ^C quit") {
 		t.Errorf("the toggles sit on the right, before the key hints: %q", plain)
 	}
 	if !strings.Contains(head, "auto-focus \033[32mon\033[90m") || !strings.Contains(head, "auto-update off") || strings.Contains(head, "\033[33m^") {
@@ -1483,7 +1483,7 @@ func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
 	if m, _ = key(m, q); m.helpOpen || m.textInput.Value() != "why?" {
 		t.Errorf("with a search typed, ? is text: help=%v search=%q", m.helpOpen, m.textInput.Value())
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X G group  ? help  ^C quit") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.HasSuffix(head, "auto-focus off   ? help  ^C quit") || strings.Contains(head, "^X G") {
 		t.Errorf("header keys: %q", head)
 	}
 }
@@ -1658,5 +1658,31 @@ func TestDotOnlyWhenItAdds(t *testing.T) {
 	}
 	if r := row("pin"); !strings.Contains(r, "●✻ pin one") {
 		t.Errorf("a pinned row has no state heading, so it keeps its circle: %q", r)
+	}
+}
+
+func TestShortcutsKeepChordsTogether(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.width, m.height = 120, 40
+	first, last, n := -1, -1, 0
+	for i, s := range m.shortcuts() {
+		if len(s[1]) > 70 {
+			t.Errorf("%s is longer than a line: %q", s[0], s[1])
+		}
+		if strings.HasPrefix(s[0], "^X") {
+			if first < 0 {
+				first = i
+			}
+			last = i
+			n++
+		}
+	}
+	for i, s := range m.shortcuts()[first : last+1] {
+		if s[0] != "" && !strings.HasPrefix(s[0], "^X") {
+			t.Errorf("%q sits among the ^X chords (row %d)", s[0], first+i)
+		}
+	}
+	if n == 0 {
+		t.Fatal("no ^X chords listed")
 	}
 }

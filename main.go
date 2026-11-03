@@ -80,33 +80,50 @@ Examples:
   ccs buyer -- --plan                Search "buyer", resume with plan mode
 
 Key bindings:
+ Moving around
   ↑/↓, Ctrl+P/N   Move through the list
-  Enter           Resume the conversation, or go to its tab if it's open in claude
-  Ctrl+S          Message the selected live session (Enter sends, Esc back)
+  PgUp/PgDn       Scroll the conversation (the mouse wheel too)
+  Ctrl+] / Ctrl+\  Jump to the next / previous search hit
+  Esc             Clear the search and go back to the top
+
+ This session
+  Enter           Resume it in claude, in a new tab in tmux or iTerm; on one
+                  open in claude, go to its tab
+  Ctrl+S          Message it: type into a box, sent into its conversation
+  Ctrl+F          Fork it: a new session with the same history, in a new tab
+  Ctrl+O          Open a link in view or one of its PRs
+  Ctrl+D          Delete its transcript file; asks first, can't be undone
+  Alt+Up/Down     Move it among the pinned sessions
+
+ Ctrl+X then a letter: this session
+  Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
+  Ctrl+X P        Pin it to the top of the list (again to unpin)
+  Ctrl+X S        Put it away: settle until its next message, or snooze it
+                  (again to bring it back)
+  Ctrl+X C        Collapse its folder to its most urgent session (grouped)
+  Ctrl+X K        Stop it and close its tab, or stop a background session
+                  (press twice)
+  Ctrl+X X        Shrink its file, keeping the dialogue; loses rewind history
+
+ Ctrl+X then a letter: view and tools
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
-  Ctrl+X A        Auto-focus: switch to a session's tab when it starts waiting on you
-  Ctrl+X I        Automatic updates (off by default): install new versions once you're away
-  Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all starts shown
-  Ctrl+X C        Collapse the selected session's folder (grouped) to one session
-  Ctrl+X S        Settle or snooze the selected session (again to bring it back)
-  Ctrl+X G        Group sessions by folder
-  Ctrl+X K        Stop the selected background session (press twice)
-  Ctrl+X R        Record a CPU profile, again to stop (or set CCS_CPUPROFILE=path)
-  Ctrl+X P        Pin the selected session to the top (again to unpin);
-                  Alt+Up/Down move it among the pinned
-  Ctrl+X T        Table: every column, instead of the sidebar
-  Ctrl+F          Fork conversation (resume into a new session id)
-  Ctrl+R          Refresh now: rescan sessions, PRs and usage, check for a ccs update
-  Ctrl+X E        Edit the conversation's name (not while it's open in claude)
-  Ctrl+D          Delete conversation (with confirmation)
-  Ctrl+X X        Prune conversation - shrink it losslessly (with confirmation)
-  PgUp/PgDn       Scroll the conversation preview (also the mouse wheel)
-  Esc             Clear the search and go back to the top of the list
-  Tab             Usage screen (Tab again to go back)
+  Ctrl+X N        Start a new session in an iTerm tab, in this one's folder
+  Ctrl+X G        Group the list by folder (again to stop)
+  Ctrl+X T        The full table, every column, instead of the sidebar
+  Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
+                  starts shown
+  Ctrl+X A        Switch to a session's tab when it starts waiting on you
+  Ctrl+X I        Install ccs updates on their own once you're away (off by
+                  default)
+  Ctrl+X R        Record a CPU profile, for when ccs feels slow; again to stop
+                  (or set CCS_CPUPROFILE=path)
   Ctrl+X U        Switch Claude account (needs cswap)
-  Ctrl+L          Changelog
-  Ctrl+O          Open one of the session's PRs or a link in view
-  Ctrl+] / Ctrl+\  Next / previous search hit
+
+ ccs
+  Ctrl+R          Refresh sessions, PRs and allowance now; check for an update
+  Tab             Token use of every session in the last 12h, and your
+                  allowance (Tab again to go back)
+  Ctrl+L          What changed in each ccs release
   ?               Show the shortcuts that apply right now (on an empty search)
   Ctrl+C          Quit
 

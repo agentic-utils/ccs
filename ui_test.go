@@ -1193,7 +1193,9 @@ func TestLiveMarkerColours(t *testing.T) {
 	m.live = map[string]bool{"s": true}
 	row := func(status string) string {
 		m.chatStatus = map[string]sessionStat{"s": {status: status}}
-		return m.formatListItem(m.filtered[0], false)
+		it := m.filtered[0]
+		it.sectioned = false // no section heading to say it, so the circle does
+		return m.formatListItem(it, false)
 	}
 	if r := row("idle"); !strings.Contains(r, "\033[32m●") {
 		t.Errorf("idle should be a green ●: %q", r)
@@ -1595,5 +1597,47 @@ func TestScrollingDoesntSort(t *testing.T) {
 	res, _ := m.Update(chatTickResult{id: "b"})
 	if m = res.(model); m.filtered[0].conv.SessionID != "b" {
 		t.Error("any other message should sort it")
+	}
+}
+
+func TestDotOnlyWhenItAdds(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "idle", Title: "idle one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
+		{SessionID: "done", Title: "done one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok.", Ts: "2026-09-29T11:00:00Z"}}},
+		{SessionID: "app", Title: "app one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
+		{SessionID: "pin", Title: "pin one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 140, 30
+	m.live = map[string]bool{"idle": true, "done": true, "app": true, "pin": true}
+	m.chatStatus = map[string]sessionStat{"idle": {status: "idle"}, "done": {status: "idle"}, "app": {status: "idle"}, "pin": {status: "idle"}}
+	m.hosts = map[string]string{"app": "Zed"}
+	seen := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	m.marks = &sessionMarks{
+		Since:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // done: replied since ccs first ran, never looked at
+		Seen:   map[string]time.Time{"idle": seen, "app": seen, "pin": seen},
+		Pinned: []string{"pin"},
+	}
+	m.sortList()
+	row := func(id string) string {
+		for _, it := range m.filtered {
+			if it.conv.SessionID == id {
+				return strip2(m.formatListItem(it, false))
+			}
+		}
+		t.Fatalf("%s not listed", id)
+		return ""
+	}
+	if r := row("idle"); strings.Contains(r, "●") {
+		t.Errorf("idle under the idle heading needs no circle: %q", r)
+	}
+	if r := row("done"); !strings.Contains(r, "●✻ done one") {
+		t.Errorf("done keeps its (cyan) circle, which the heading doesn't say: %q", r)
+	}
+	if r := row("app"); !strings.Contains(r, "○✻ app one") {
+		t.Errorf("hosted in another app keeps its hollow circle: %q", r)
+	}
+	if r := row("pin"); !strings.Contains(r, "●✻ pin one") {
+		t.Errorf("a pinned row has no state heading, so it keeps its circle: %q", r)
 	}
 }

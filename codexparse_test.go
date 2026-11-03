@@ -185,7 +185,7 @@ func TestCodexRowsAndPreview(t *testing.T) {
 	m.width, m.height = 140, 30
 	m.live = map[string]bool{cxA: true}
 	v := strip2(m.View())
-	if !strings.Contains(v, "●⬡ flux") || !strings.Contains(v, " ✻ claude one") || !strings.Contains(v, "codex · ") {
+	if !strings.Contains(v, " ⬡ flux") || !strings.Contains(v, " ✻ claude one") || !strings.Contains(v, "codex · ") {
 		t.Errorf("each row carries its agent's glyph, and a Codex row says codex:\n%s", v)
 	}
 	if !strings.Contains(v, "Agent:   ⬡ codex") || !strings.Contains(v, "of 475k") {

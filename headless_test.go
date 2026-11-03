@@ -104,7 +104,7 @@ func TestHeadlessHiddenFromList(t *testing.T) {
 	}
 }
 
-func TestHeadlessChildStaysUnderItsParent(t *testing.T) {
+func TestHeadlessChildHiddenUnderItsParent(t *testing.T) {
 	parent := parsedSession("parent", userLine("cli", "p1", "start it"))
 	child := parsedSession("child", userLine("sdk-cli", "p1", "do the thing"))
 	orphan := parsedSession("orphan", userLine("sdk-cli", "p1", "do another"))
@@ -112,8 +112,8 @@ func TestHeadlessChildStaysUnderItsParent(t *testing.T) {
 	m.parents = map[string]string{"child": "parent"}
 	m.noParent = map[string]int{"orphan": len(m.items)}
 	m.updateFilter()
-	if got := ids(m); !slices.Equal(got, []string{"child", "parent"}) {
-		t.Errorf("a run nested under a shown session stays, one without a parent goes: %v", got)
+	if got := ids(m); !slices.Equal(got, []string{"parent"}) || m.headlessHidden != 2 {
+		t.Errorf("a headless run goes, nested under a shown session or not: %v, %d hidden", got, m.headlessHidden)
 	}
 }
 

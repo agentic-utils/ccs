@@ -181,7 +181,20 @@ func launchSession(o launchOpts) (launched, error) {
 		return launched{}, fmt.Errorf("couldn't open an iTerm tab: %v", err)
 	}
 	deadline := time.Now().Add(launchWait)
+	retypeAt := time.Now().Add(launchRetype)
 	for {
+		if !retypeAt.IsZero() && time.Now().After(retypeAt) {
+			retypeAt = time.Time{}
+			// The shell can draw (a "Last login" line) before it reads input,
+			// and what was typed then is lost: type it again, once, if
+			// nothing on the tab runs the launcher yet.
+			if !launcherRunning(tty, script) {
+				logActivity("launch %s: nothing ran the launcher on %s, typing it again", o.name, tty)
+				if err := retypeLauncher(tty, script); err != nil {
+					logActivity("launch %s: couldn't type it again: %v", o.name, err)
+				}
+			}
+		}
 		pids, _ := sessionsNamed(o.name)
 		thread := ""
 		if o.codex {
@@ -198,6 +211,52 @@ func launchSession(o launchOpts) (launched, error) {
 		}
 		sleep(250 * time.Millisecond)
 	}
+}
+
+// launchRetype is how long after typing the launcher ccs checks that
+// something on the tab runs it.
+var launchRetype = 4 * time.Second
+
+// launcherRunning: a process on tty runs the launcher, or the claude or
+// codex it execs.
+var launcherRunning = func(tty, script string) bool {
+	out, err := psAll()
+	if err != nil {
+		return true // can't tell: never type into what may be running
+	}
+	short := strings.TrimPrefix(tty, "/dev/")
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || f[1] != short {
+			continue
+		}
+		cmd := strings.Join(f[2:], " ")
+		if strings.Contains(cmd, script) || strings.Contains(f[2], "claude") || strings.Contains(f[2], "codex") {
+			return true
+		}
+	}
+	return false
+}
+
+// retypeLauncher types ctrl-U and the launcher into the iTerm session on tty.
+var retypeLauncher = func(tty, script string) error {
+	as := fmt.Sprintf(`tell application "iTerm2"
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				if tty of s is %q then
+					tell s to write text ((character id 21) & %q)
+					return "typed"
+				end if
+			end repeat
+		end repeat
+	end repeat
+end tell`, tty, shellQuote(script))
+	out, err := runBounded(5*time.Second, nil, "osascript", "-e", as)
+	if err == nil && strings.TrimSpace(string(out)) != "typed" {
+		err = errors.New("no iTerm session on " + tty)
+	}
+	return err
 }
 
 // sleep is time.Sleep, stubbed in tests.

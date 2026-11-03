@@ -121,6 +121,7 @@ func TestMain(m *testing.M) {
 	// launch and close never touch real tabs or processes unless a test stubs them.
 	launchDir = func() string { return filepath.Join(dir, "launch") }
 	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
+	retypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
 	closeTab = func(string) bool { return false }
 	psAll = func() (string, error) { return "", nil }
 	psTree = func() (string, error) { return "", nil } // never the machine's own processes

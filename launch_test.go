@@ -57,8 +57,10 @@ func stubLaunch(t *testing.T) {
 	oldBin, oldWait := lookBin, launchWait
 	lookBin = func(name string) (string, error) { return "/bin/" + name, nil }
 	launchWait = 300 * time.Millisecond
-	oldTab := openLaunchTab
-	t.Cleanup(func() { lookBin, launchWait, openLaunchTab = oldBin, oldWait, oldTab })
+	oldTab, oldRetype, oldRetypeAt, oldRunning := openLaunchTab, retypeLauncher, launchRetype, launcherRunning
+	t.Cleanup(func() {
+		lookBin, launchWait, openLaunchTab, retypeLauncher, launchRetype, launcherRunning = oldBin, oldWait, oldTab, oldRetype, oldRetypeAt, oldRunning
+	})
 }
 
 func TestLaunchWaitsForTheSession(t *testing.T) {
@@ -94,6 +96,38 @@ func TestLaunchWaitsForTheSession(t *testing.T) {
 	}
 	if _, err := launchSession(launchOpts{name: "ok", cwd: cwd}); err == nil {
 		t.Error("nothing to start: no brief and nothing to resume")
+	}
+}
+
+func TestLaunchTypesTheLauncherAgainWhenTheShellLostIt(t *testing.T) {
+	write := sessionsFixture(t)
+	stubLaunch(t)
+	launchWait, launchRetype = time.Second, 50*time.Millisecond
+	openLaunchTab = func(string) (string, error) { return "/dev/ttys044", nil } // typed before the shell read input: lost
+	running := false
+	launcherRunning = func(tty, script string) bool { return running }
+	typed := 0
+	retypeLauncher = func(tty, script string) error {
+		typed++
+		if tty != "/dev/ttys044" || !strings.HasSuffix(script, "launch.sh") {
+			t.Errorf("typed into %s: %s", tty, script)
+		}
+		running = true
+		write("1.json", os.Getpid(), "late") // this time it starts
+		return nil
+	}
+	if l, err := launchSession(launchOpts{name: "late", brief: "x", cwd: t.TempDir()}); err != nil || l.pid != os.Getpid() || typed != 1 {
+		t.Errorf("typed again once and started: %+v %v, typed %d", l, err, typed)
+	}
+
+	// Something runs the launcher already (claude at a trust prompt): never typed into.
+	openLaunchTab = func(string) (string, error) { return "/dev/ttys045", nil }
+	launcherRunning = func(string, string) bool { return true }
+	typed = 0
+	launchWait = 200 * time.Millisecond
+	launchSession(launchOpts{name: "stuck", brief: "x", cwd: t.TempDir()})
+	if typed != 0 {
+		t.Errorf("typed into a tab that runs it: %d", typed)
 	}
 }
 

@@ -211,6 +211,8 @@ func (p *watchedPR) status() (int, string) {
 		return prFix, "conflicts"
 	case p.Checks == "failing":
 		return prFix, "checks failing: " + strings.Join(p.Failing, ", ")
+	case p.Threads != nil && *p.Threads > 0:
+		return prFix, threadsText(*p.Threads)
 	case p.Review == "changes_requested":
 		return prFix, "changes requested"
 	case p.Checks == "pending":

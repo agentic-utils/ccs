@@ -34,20 +34,27 @@ type watchedPR struct {
 	Failing   []string `json:"failing,omitempty"`
 	Review    string   `json:"review,omitempty"` // approved, changes_requested, required
 	Conflicts bool     `json:"conflicts,omitempty"`
+	Threads   *int     `json:"threads,omitempty"`    // unresolved review threads; nil until counted (only GraphQL knows)
 	AskedHead string   `json:"asked_head,omitempty"` // the head needs_review was emitted for
 	Ended     string   `json:"ended,omitempty"`      // when it merged or closed (RFC3339), to prune it later
 
 	conflictsUnknown bool // GitHub hadn't worked out mergeability yet: keep the last answer
+	threadsUnknown   bool // not counted this pass (checks not green, or the query failed): keep the last count
 }
 
-// ready: approved, checks green, not a draft.
+// threadsClear: its review threads were counted and none is unresolved.
+func (p *watchedPR) threadsClear() bool { return p.Threads != nil && *p.Threads == 0 }
+
+// ready: approved, checks green, no unresolved thread, not a draft.
 func (p *watchedPR) ready() bool {
-	return p.State == "open" && !p.Draft && p.Checks == "success" && p.Review == "approved"
+	return p.State == "open" && !p.Draft && p.Checks == "success" && p.threadsClear() && p.Review == "approved"
 }
 
-// needsReview: green and not a draft, waiting for an approval.
+// needsReview: green, no unresolved thread and not a draft, waiting for an
+// approval. The one test of whether to ask anyone for a review (review
+// batching uses it too).
 func (p *watchedPR) needsReview() bool {
-	return p.State == "open" && !p.Draft && p.Checks == "success" && p.Review == "required"
+	return p.State == "open" && !p.Draft && p.Checks == "success" && p.threadsClear() && p.Review == "required"
 }
 
 // prWatchState is the watcher's record, kept between passes and restarts.
@@ -71,6 +78,8 @@ type prEvent struct {
 	Head   string   `json:"head,omitempty"`
 	Checks []string `json:"checks,omitempty"` // failing checks, on checks_failing
 	Review string   `json:"review,omitempty"`
+	// Unresolved review threads, on threads_unresolved.
+	Unresolved int `json:"unresolved,omitempty"`
 }
 
 func prWatchStatePath() string { return filepath.Join(filepath.Dir(settingsPath), "pr-watch.json") }
@@ -154,7 +163,7 @@ func runWatch(args []string) int {
 	owner := fs.String("owner", "two-inc", "GitHub owner (org or user) whose repos to watch")
 	once := fs.Bool("once", false, "make one pass and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, checks_failing, checks_passed,\nconflicts, merged, closed. Only one ccs watch runs at a time.\n\n", prEventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, merged, closed. Only one ccs watch\nruns at a time.\n\n", prEventsPath())
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -210,6 +219,8 @@ func watchPass(author, owner string, now time.Time) error {
 			e.Checks = p.Failing
 		case "ready", "needs_review":
 			e.Review = p.Review
+		case "threads_unresolved":
+			e.Unresolved = *p.Threads
 		}
 		events = append(events, e)
 	}
@@ -230,6 +241,9 @@ func watchPass(author, owner string, now time.Time) error {
 			n.AskedHead = o.AskedHead
 			if n.conflictsUnknown {
 				n.Conflicts = o.Conflicts
+			}
+			if n.threadsUnknown {
+				n.Threads = o.Threads
 			}
 		}
 		next.PRs[p.URL] = n
@@ -252,6 +266,18 @@ func watchPass(author, owner string, now time.Time) error {
 		}
 		if n.Conflicts && !prev.Conflicts {
 			emit(n, "conflicts")
+		}
+		if !n.threadsUnknown {
+			was := 0
+			if prev.Threads != nil {
+				was = *prev.Threads
+			}
+			switch {
+			case *n.Threads > was:
+				emit(n, "threads_unresolved")
+			case *n.Threads == 0 && was > 0:
+				emit(n, "threads_resolved")
+			}
 		}
 		if n.ready() && !prev.ready() {
 			emit(n, "ready")
@@ -455,6 +481,14 @@ func prDetails(p watchedPR) (*watchedPR, error) {
 	if err := ghJSON(&reviews, fmt.Sprintf("%s/pulls/%d/reviews?per_page=100", base, p.Number)); err != nil {
 		return nil, err
 	}
+	n.threadsUnknown = true
+	if n.Checks == "success" && !n.Draft { // only then could it be ready or need a review
+		if c, err := unresolvedThreads(p); err != nil {
+			logActivity("pr watch: %s: counting review threads: %v", p.URL, err)
+		} else {
+			n.Threads, n.threadsUnknown = &c, false
+		}
+	}
 	latest := map[string]string{} // each reviewer's last approve, request-changes or dismissal
 	for _, r := range reviews {
 		if r.State == "APPROVED" || r.State == "CHANGES_REQUESTED" || r.State == "DISMISSED" {
@@ -472,6 +506,42 @@ func prDetails(p watchedPR) (*watchedPR, error) {
 		}
 	}
 	return &n, nil
+}
+
+// unresolvedThreads is how many of a PR's review threads are unresolved:
+// one small GraphQL query, since REST doesn't say (at most the first 100).
+func unresolvedThreads(p watchedPR) (int, error) {
+	owner, name, _ := strings.Cut(p.Repo, "/")
+	out, err := ghRun("api", "graphql",
+		"-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved}}}}}",
+		"-F", "owner="+owner, "-F", "name="+name, "-F", fmt.Sprintf("number=%d", p.Number))
+	if err != nil {
+		return 0, err
+	}
+	var resp struct {
+		Data struct {
+			Repository *struct {
+				PullRequest *struct {
+					ReviewThreads struct {
+						Nodes []struct{ IsResolved bool }
+					}
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return 0, err
+	}
+	if resp.Data.Repository == nil || resp.Data.Repository.PullRequest == nil {
+		return 0, errors.New("pull request not found")
+	}
+	n := 0
+	for _, t := range resp.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if !t.IsResolved {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // prDetailsAll is prDetails for each PR, prWatchParallel at a time; a PR

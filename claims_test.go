@@ -253,6 +253,65 @@ func TestPRsFreshnessAndStatusline(t *testing.T) {
 	}
 }
 
+func TestPRsForOneSession(t *testing.T) {
+	live := claimEnv(t)
+	now := time.Now()
+	writeWatchState(t, now,
+		&watchedPR{URL: claimA, Repo: "o/r", Number: 1, Title: "a", State: "open", Checks: "success", Review: "approved"},
+		&watchedPR{URL: claimB, Repo: "o/r", Number: 2, Title: "b", State: "open", Checks: "failing", Failing: []string{"x"}},
+		&watchedPR{URL: claimC, Repo: "o/r", Number: 3, Title: "c", State: "open", Checks: "pending"},
+	)
+	claim(claimA, false, now)
+	claim(claimB, false, now)
+	alpha := live[os.Getppid()]
+	live[4242] = prClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
+	delete(live, os.Getppid())
+	asSession(4242)
+	claim(claimC, false, now)
+	live[os.Getppid()] = alpha
+
+	var out, errs strings.Builder
+	if code := runPRs([]string{"--json", "--claude-session-id", "s-alpha"}, &out, &errs); code != 0 {
+		t.Fatalf("exit %d: %s", code, errs.String())
+	}
+	var rep prsReport
+	json.Unmarshal([]byte(out.String()), &rep)
+	if len(rep.PRs) != 2 || rep.PRs[0].PR != claimB || rep.PRs[1].PR != claimA {
+		t.Errorf("only alpha's PRs, needing you first: %s", out.String())
+	}
+	if d := rep.PRs[0].OwnersDetail; len(d) != 1 || d[0] != (prOwner{Name: "alpha", Kind: "claude", Session: "s-alpha"}) {
+		t.Errorf("owners_detail: %+v", d)
+	}
+	out.Reset()
+	if code := runPRs([]string{"--statusline", "--claude-session-id", "s-alpha"}, &out, &errs); code != 0 || out.String() != "PRs ✓1 ✗1\n" {
+		t.Errorf("statusline for one session: %d %q", code, out.String())
+	}
+	out.Reset()
+	if runPRs([]string{"--statusline", "--claude-session-id", "nobody"}, &out, &errs); out.Len() != 0 {
+		t.Errorf("a session with no claims prints nothing: %q", out.String())
+	}
+
+	// A Codex claim is found by its thread id.
+	cx := prOwner{Name: "cx", Kind: "codex", Session: "th-1"}
+	if o := ownerOf(prClaim{Session: "th-1", Kind: "codex", Thread: "th-1", Name: "cx"}, live); o != cx {
+		t.Errorf("codex owner: %+v", o)
+	}
+	r := prsReport{PRs: []prRow{{PR: claimC, OwnersDetail: []prOwner{cx}}}}
+	if got := r.ownedBy("codex", "th-1"); len(got.PRs) != 1 {
+		t.Errorf("by codex thread: %+v", got)
+	}
+	if got := r.ownedBy("claude", "th-1"); len(got.PRs) != 0 {
+		t.Errorf("--claude-session-id never matches a Codex claim: %+v", got)
+	}
+	out.Reset()
+	if runPRs([]string{"--json", "--codex-session-id", "s-alpha"}, &out, &errs); strings.Contains(out.String(), claimA) {
+		t.Errorf("--codex-session-id never matches a Claude claim: %s", out.String())
+	}
+	if code := runPRs([]string{"--session-id", "s-alpha"}, &out, &errs); code != 2 {
+		t.Errorf("no bare --session-id: exit %d", code)
+	}
+}
+
 func TestPRsCLIAndMCP(t *testing.T) {
 	claimEnv(t)
 	writeWatchState(t, time.Now(), &watchedPR{URL: claimA, Repo: "o/r", Number: 1, Title: "t", State: "open", Checks: "success", Review: "approved"})

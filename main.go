@@ -47,7 +47,7 @@ Usage: ccs [filter] [-- claude-flags...]
                             that claimed them what's failing (see ccs watch --help)
        ccs claim <PR URL>   Record that the session running it owns the PR (--release drops it)
                             (a Claude Code or Codex session)
-       ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline)
+       ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline, --claude-session-id / --codex-session-id <id>)
        ccs review list | send <id> | drop <id>
                             Review requests ccs watch --review drafted for you to confirm
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with

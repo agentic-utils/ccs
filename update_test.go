@@ -579,7 +579,7 @@ func TestUpdatePopupOverlaysEveryScreen(t *testing.T) {
 		if !strings.Contains(v, "v0.37.0 is available") {
 			t.Errorf("usage=%v: popup not shown", usage)
 		}
-		if !strings.Contains(v, "claude code search") {
+		if !strings.Contains(v, "coding cli sessions") {
 			t.Errorf("usage=%v: the screen behind the popup should stay visible", usage)
 		}
 		for i, line := range strings.Split(v, "\n") {

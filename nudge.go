@@ -152,10 +152,11 @@ func nudgeTick(now time.Time) error {
 				if len(reasons) == 0 {
 					continue
 				}
-				e := nudgeEvent{At: now.UTC().Format(time.RFC3339), Event: "nudged", PR: u, Head: p.Head, Session: c.Name, Reasons: reasons}
+				name := ownerName(c, live)
+				e := nudgeEvent{At: now.UTC().Format(time.RFC3339), Event: "nudged", PR: u, Head: p.Head, Session: name, Reasons: reasons}
 				if err := sendNudge(c, nudgeText(p, reasons)); err != nil {
 					e.Event, e.Error = "nudge_failed", err.Error()
-					logActivity("nudge %s about %s: %v", c.Name, u, err)
+					logActivity("nudge %s about %s: %v", name, u, err)
 					events = append(events, e)
 					continue // not recorded: tried again next pass
 				}

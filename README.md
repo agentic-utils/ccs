@@ -39,7 +39,7 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 claude mcp add --scope user ccs -- ccs mcp
 ```
 
-Claude starts it when needed (no ccs window has to be open, no network port). It has six tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first) `read_session` (a session's messages, paged, optionally only those around a search term), `launch_session` / `close_session`, which do what `ccs launch` and `ccs close` do (below), and `list_prs`, which is `ccs prs --json`. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
+Claude starts it when needed (no ccs window has to be open, no network port). It has six tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first; both leave out headless runs unless `include_headless`) `read_session` (a session's messages, paged, optionally only those around a search term), `launch_session` / `close_session`, which do what `ccs launch` and `ccs close` do (below), and `list_prs`, which is `ccs prs --json`. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
 
 ## Start and close sessions
 
@@ -112,7 +112,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 |------|---------|-------------|
 | `--max-age=N` | 60 | Only search files modified in the last N days (0 = no limit) |
 | `--max-size=N` | 1024 | Max file size in MB to include (0 = no limit) |
-| `--all` | - | Include everything (same as `--max-age=0 --max-size=0`) |
+| `--all` | - | Include everything: `--max-age=0 --max-size=0`, plus headless runs (`claude -p` given a single prompt and never named, `codex exec`), which are hidden otherwise |
 | `--exclude=a,b` | observer-sessions | Exclude project dirs whose path contains any of these substrings |
 
 ### Keybindings

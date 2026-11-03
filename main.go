@@ -67,7 +67,9 @@ Flags:
   -v, --version    Show version
   --max-age=N      Only search last N days (default: 60, 0 = no limit)
   --max-size=N     Max file size in MB (default: 1024, 0 = no limit)
-  --all            Include everything (same as --max-age=0 --max-size=0)
+  --all            Include everything: --max-age=0 --max-size=0, and headless
+                   runs (claude -p with a single prompt, codex exec), hidden
+                   otherwise
   --exclude=a,b    Exclude dirs containing these strings (default: observer-sessions)
   --dump [query]   Debug: print all search items (with optional highlighting)
 
@@ -164,6 +166,7 @@ func main() {
 		if arg == "--all" {
 			maxAgeDays = 0
 			maxSizeMB = 0
+			showHeadless = true
 		} else if strings.HasPrefix(arg, "--max-age=") {
 			val := strings.TrimPrefix(arg, "--max-age=")
 			fmt.Sscanf(val, "%d", &maxAgeDays)

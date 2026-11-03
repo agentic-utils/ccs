@@ -105,9 +105,10 @@ var mcpTools = []map[string]any{
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"query":       map[string]any{"type": "string", "description": "words to look for, all must appear"},
-				"project":     map[string]any{"type": "string", "description": "only sessions whose working directory contains this"},
-				"max_results": map[string]any{"type": "integer", "description": "default 10, at most 50"},
+				"query":            map[string]any{"type": "string", "description": "words to look for, all must appear"},
+				"project":          map[string]any{"type": "string", "description": "only sessions whose working directory contains this"},
+				"max_results":      map[string]any{"type": "integer", "description": "default 10, at most 50"},
+				"include_headless": map[string]any{"type": "boolean", "description": "also one-shot runs nobody talked to (claude -p with a single prompt, codex exec); default false"},
 			},
 			"required": []string{"query"},
 		},
@@ -118,8 +119,9 @@ var mcpTools = []map[string]any{
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"project": map[string]any{"type": "string", "description": "only sessions whose working directory contains this"},
-				"limit":   map[string]any{"type": "integer", "description": "default 20, at most 100"},
+				"project":          map[string]any{"type": "string", "description": "only sessions whose working directory contains this"},
+				"limit":            map[string]any{"type": "integer", "description": "default 20, at most 100"},
+				"include_headless": map[string]any{"type": "boolean", "description": "also one-shot runs nobody talked to (claude -p with a single prompt, codex exec); default false"},
 			},
 		},
 	},
@@ -210,6 +212,7 @@ func mcpCall(name string, raw json.RawMessage, load mcpSource) (string, error) {
 		Limit      int    `json:"limit"`
 		Offset     int    `json:"offset"`
 		SessionID  string `json:"session_id"`
+		Headless   bool   `json:"include_headless"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -225,6 +228,15 @@ func mcpCall(name string, raw json.RawMessage, load mcpSource) (string, error) {
 		kept := convs[:0:0]
 		for _, c := range convs {
 			if strings.Contains(strings.ToLower(c.Cwd), p) {
+				kept = append(kept, c)
+			}
+		}
+		convs = kept
+	}
+	if name != "read_session" && !a.Headless { // read_session reads any session by id
+		kept := convs[:0:0]
+		for _, c := range convs {
+			if !c.headless() {
 				kept = append(kept, c)
 			}
 		}

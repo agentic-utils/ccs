@@ -206,6 +206,10 @@ type subagent struct {
 // down), not running.
 const subagentIdle = 10 * time.Minute
 
+// subagentResumed is how long after its meta.json says finished a
+// subagent's transcript may still be written before it counts as resumed.
+const subagentResumed = 5 * time.Second
+
 // subagentsTTL is how long subagentsOf trusts what it last read.
 const subagentsTTL = 2 * time.Second
 
@@ -247,6 +251,11 @@ func subagentsOf(conv Conversation) []subagent {
 		s.started = firstTimestamp(transcript)
 		if info, err := os.Stat(transcript); err == nil {
 			s.lastWrite = info.ModTime()
+			// Resumed (SendMessage to a finished subagent): Claude Code leaves
+			// finished set, but the transcript goes on past the meta.json write.
+			if mi, err := os.Stat(path); err == nil && s.finished && s.lastWrite.Sub(mi.ModTime()) > subagentResumed {
+				s.finished = false
+			}
 		}
 		subs = append(subs, s)
 	}

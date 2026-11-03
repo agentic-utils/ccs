@@ -33,6 +33,12 @@ func TestDoneUntilSeen(t *testing.T) {
 	m.cursor = 0 // the done one
 	nm, _ := m.Update(tea.FocusMsg{})
 	m = nm.(model)
+	if m.viewing != "new" {
+		t.Fatalf("selected with ccs focused: being looked at, got %q", m.viewing)
+	}
+	if r := m.formatListItem(m.filtered[0], false); strings.Contains(r, "\033["+doneColour+"m●") {
+		t.Errorf("being looked at, it no longer shows unread: %q", r)
+	}
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = nm.(model)
 	if _, ok := m.marks.Seen["new"]; !ok {

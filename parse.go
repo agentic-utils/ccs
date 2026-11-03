@@ -53,6 +53,9 @@ type Conversation struct {
 	LastErrorTs    string     `json:"last_error_ts"`
 	Usage          tokenUsage `json:"usage"`               // summed over replies (main transcript, not subagents)
 	Kind           string     `json:"kind,omitempty"`      // "codex" for a Codex session; empty for Claude's
+	Reasoning      int64      `json:"reasoning,omitempty"` // Codex: reasoning tokens, part of Usage.Output
+	Cost           float64    `json:"cost,omitempty"`      // Codex: USD at OpenAI's prices (openAIPrices); 0 when a model isn't in the table
+	Unpriced       bool       `json:"unpriced,omitempty"`  // Codex: some usage came from a model openAIPrices doesn't have
 	ParentID       string     `json:"parent_id,omitempty"` // a Codex subagent's parent thread
 	Window         int        `json:"-"`                   // the context window the transcript states (Codex does); 0: inferred from the model
 	codexBusy      bool       // a Codex session's last turn hasn't finished
@@ -149,6 +152,35 @@ func (u tokenUsage) effective() float64 {
 // pricePerMTok converts effective tokens to an estimated cost: the base input
 // price, $5/MTok (Opus-class; claude-dashboard's default).
 const pricePerMTok = 5.0
+
+// openAIPrice is USD per 1M tokens: uncached input, cached input, cache
+// write (30 minutes) and output (reasoning included).
+type openAIPrice struct{ in, cached, write, out float64 }
+
+// openAIPrices is OpenAI's standard tier for the models Codex sessions use,
+// from https://developers.openai.com/api/docs/pricing (read 2026-11-03). A
+// request whose input is over longAbove tokens is priced at long. A model
+// not here shows its tokens with no cost; never guess one.
+var openAIPrices = map[string]struct {
+	std, long openAIPrice
+	longAbove int64
+}{
+	"gpt-6.1-sol": {openAIPrice{2, 0.10, 2.50, 10}, openAIPrice{4, 0.20, 5, 15}, 272_000},
+}
+
+// openAICost is one request's cost and whether model has a price.
+func openAICost(model string, input, cached, write, output int64) (float64, bool) {
+	p, ok := openAIPrices[model]
+	if !ok {
+		return 0, false
+	}
+	r := p.std
+	if p.longAbove > 0 && input > p.longAbove {
+		r = p.long
+	}
+	fresh := max(input-cached-write, 0)
+	return (float64(fresh)*r.in + float64(cached)*r.cached + float64(write)*r.write + float64(output)*r.out) / 1e6, true
+}
 
 // contextWindow is the context a model can hold. The 1M window is a per-request
 // option not recorded in transcripts, so grade against capability: Haiku caps

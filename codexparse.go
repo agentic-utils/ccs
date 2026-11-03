@@ -66,7 +66,11 @@ type codexPayload struct {
 			Output int64 `json:"output_tokens"`
 		} `json:"total_token_usage"`
 		Last struct {
-			Input int `json:"input_tokens"`
+			Input     int   `json:"input_tokens"`
+			Cached    int64 `json:"cached_input_tokens"`
+			Write     int64 `json:"cache_write_input_tokens"`
+			Output    int64 `json:"output_tokens"`
+			Reasoning int64 `json:"reasoning_output_tokens"`
 		} `json:"last_token_usage"`
 		Window int `json:"model_context_window"`
 	} `json:"info"`
@@ -186,6 +190,20 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 		case rec.Type == "event_msg" && p.Type == "token_count" && p.Info != nil:
 			conv.ContextTokens = p.Info.Last.Input
 			conv.PeakContext = max(conv.PeakContext, conv.ContextTokens)
+			// Each event is one request (they sum to the running total), so
+			// each is priced on its own tier.
+			l := p.Info.Last
+			in := int64(l.Input)
+			conv.Usage.Input += max(in-l.Cached-l.Write, 0)
+			conv.Usage.CacheRead += l.Cached
+			conv.Usage.Cache5m += l.Write
+			conv.Usage.Output += l.Output
+			conv.Reasoning += l.Reasoning
+			if c, ok := openAICost(conv.ActiveModel, in, l.Cached, l.Write, l.Output); ok {
+				conv.Cost += c
+			} else if in+l.Output > 0 {
+				conv.Unpriced = true
+			}
 			if p.Info.Window > 0 {
 				conv.Window = p.Info.Window
 			}

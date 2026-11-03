@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -242,5 +244,40 @@ func TestCodexResumeAndSend(t *testing.T) {
 	}
 	if h := mcpHeader(Conversation{SessionID: cxA, Kind: kindCodex, Cwd: "/w"}); !strings.Contains(h, "kind codex") || !strings.Contains(h, "codex resume "+cxA) {
 		t.Errorf("MCP says it's Codex and how to resume it:\n%s", h)
+	}
+}
+
+func TestCodexUsageIsPricedPerRequest(t *testing.T) {
+	tc := func(in, cached, write, out, reasoning int) string {
+		return fmt.Sprintf(`{"timestamp":"2026-11-03T10:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":%d,"cached_input_tokens":%d,"cache_write_input_tokens":%d,"output_tokens":%d,"reasoning_output_tokens":%d},"model_context_window":475000}}}`, in, cached, write, out, reasoning)
+	}
+	// The fixture's own event: 42000 input, nothing cached, no output.
+	path := codexFixture(t, cxA, "/w", "cli",
+		tc(100_000, 80_000, 10_000, 2_000, 500), // standard tier
+		tc(300_000, 200_000, 0, 1_000, 0),       // over 272K: the long-context tier
+		`{"timestamp":"2026-11-03T10:00:07.000Z","type":"turn_context","payload":{"model":"gpt-unknown","cwd":"/w"}}`,
+		tc(1_000, 0, 0, 10, 0), // a model with no price: tokens, no cost
+	)
+	c, err := parseCodexFile(path, time.Time{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := (42_000*2.0)/1e6 + // fixture: fresh input at $2
+		(10_000*2.0+80_000*0.10+10_000*2.50+2_000*10.0)/1e6 + // standard
+		(100_000*4.0+200_000*0.20+1_000*15.0)/1e6 // long context
+	if math.Abs(c.Cost-want) > 1e-9 || !c.Unpriced {
+		t.Errorf("cost %.6f, want %.6f; unpriced %v", c.Cost, want, c.Unpriced)
+	}
+	u := c.Usage
+	if u.Input != 42_000+10_000+100_000+1_000 || u.CacheRead != 280_000 || u.Cache5m != 10_000 || u.Output != 3_010 || c.Reasoning != 500 {
+		t.Errorf("usage summed over requests: %+v reasoning %d", u, c.Reasoning)
+	}
+	line := strings.Join(sessionStats(*c), "\n")
+	if !strings.Contains(strip2(line), "out 3k (reasoning 500)") || !strings.Contains(line, "some usage on a model with no price") {
+		t.Errorf("Tokens line: %q", strip2(line))
+	}
+	c.Cost, c.ActiveModel = 0, "gpt-unknown"
+	if line := strip2(strings.Join(sessionStats(*c), "\n")); !strings.Contains(line, "no price for gpt-unknown") || strings.Contains(line, "$") {
+		t.Errorf("no cost guessed: %q", line)
 	}
 }

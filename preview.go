@@ -827,14 +827,28 @@ func sessionStats(conv Conversation) []string {
 		lines = append(lines, fmt.Sprintf("\033[1;33mModel:\033[0m   %s · context \033[%sm%s\033[0m of %s (%d%%)",
 			model, code, formatTokens(conv.ContextTokens), formatTokens(window), conv.ContextTokens*100/window))
 	}
-	if u := conv.Usage; u != (tokenUsage{}) {
-		eff := u.effective()
-		tok := func(n int64) string { // formatTokens leaves 0 blank, for the list
-			if n <= 0 {
-				return "0"
-			}
-			return formatTokens(int(n))
+	tok := func(n int64) string { // formatTokens leaves 0 blank, for the list
+		if n <= 0 {
+			return "0"
 		}
+		return formatTokens(int(n))
+	}
+	if u := conv.Usage; u != (tokenUsage{}) && conv.Kind == kindCodex {
+		out := tok(u.Output)
+		if conv.Reasoning > 0 {
+			out += " (reasoning " + tok(conv.Reasoning) + ")"
+		}
+		cost := fmt.Sprintf(" · ~$%.2f at API prices", conv.Cost)
+		switch {
+		case conv.Unpriced && conv.Cost > 0:
+			cost += " (some usage on a model with no price)"
+		case conv.Unpriced:
+			cost = " · no price for " + conv.ActiveModel
+		}
+		lines = append(lines, fmt.Sprintf("\033[1;33mTokens:\033[0m  in %s · out %s · cache read %s · cache write %s%s",
+			tok(u.Input), out, tok(u.CacheRead), tok(u.Cache5m), cost))
+	} else if u != (tokenUsage{}) {
+		eff := u.effective()
 		lines = append(lines, fmt.Sprintf("\033[1;33mTokens:\033[0m  in %s · out %s · cache read %s · cache write %s · effective %s (~$%.2f at API prices)",
 			tok(u.Input), tok(u.Output), tok(u.CacheRead), tok(u.Cache5m+u.Cache1h), tok(int64(eff)), eff*pricePerMTok/1e6))
 	}

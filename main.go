@@ -48,8 +48,6 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs claim <PR URL>   Record that the session running it owns the PR (--release drops it)
                             (a Claude Code or Codex session)
        ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline, --claude-session-id / --codex-session-id <id>)
-       ccs review list | send <id> | drop <id>
-                            Review requests ccs watch --review drafted for you to confirm
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
 
@@ -141,7 +139,8 @@ func main() {
 		os.Exit(runClaim(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "review" {
-		os.Exit(runReview(args[1:], os.Stdout, os.Stderr))
+		fmt.Fprintln(os.Stderr, "ccs review is gone:", reviewMoved)
+		os.Exit(2)
 	}
 	if len(args) > 0 && args[0] == "prs" {
 		os.Exit(runPRs(args[1:], os.Stdout, os.Stderr))

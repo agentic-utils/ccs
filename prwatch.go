@@ -73,9 +73,13 @@ type prWatchState struct {
 	Version int                   `json:"version,omitempty"` // 2: Awaiting is kept
 }
 
-// reviewDeprecated is printed by ccs watch --review and its flags, and by
-// ccs review, for one release before they go.
-const reviewDeprecated = "ccs watch --review is deprecated and will be removed in the next release: review requests move to the two-slack plugin's consumer, which reads ccs watch's events"
+// reviewMoved answers ccs watch --review and its flags, and ccs review,
+// which are gone: ccs reports, something else posts.
+const reviewMoved = "review requests moved out of ccs: the two-slack plugin's review-requests consumer posts them, reading ccs watch's needs_review and review_not_needed events (or GitHub directly)"
+
+// reviewRecheck is a PR as GitHub has it now (prDetails), asked just before
+// needs_review is emitted. Stubbed in tests.
+var reviewRecheck = func(p watchedPR) (*watchedPR, error) { return prDetails(p) }
 
 // prWatchVersion is the state format: 2 added Awaiting.
 const prWatchVersion = 2
@@ -123,7 +127,7 @@ func notNeededReason(p *watchedPR, asked string) string {
 }
 
 // stillNeedsReview asks GitHub about p again just before needs_review is
-// emitted (prDetails, shared with review batching's recheck), so stale pass
+// emitted (prDetails, reviewRecheck), so stale pass
 // data never says a PR is waiting when it isn't. An error means not now.
 func stillNeedsReview(p *watchedPR) bool {
 	f, err := reviewRecheck(*p)
@@ -216,14 +220,16 @@ func runWatch(args []string) int {
 	once := fs.Bool("once", false, "make one pass and exit")
 	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unanswered review threads")
 	selfLogins := fs.String("self-logins", "", "comma-separated GitHub logins whose replies also answer a review thread (bots or co-authors acting for you), besides --author")
-	review := fs.Bool("review", false, "DEPRECATED, removed next release. also request reviews: batch PRs that are green and need review, post to --review-channel what the hook routes there, draft the rest (ccs review)")
-	dryRun := fs.Bool("dry-run", false, "DEPRECATED. with --review: print the plan for the PRs waiting now, from the last pass's state, and post nothing")
-	fs.StringVar(&reviewCfg.Channel, "review-channel", "", "DEPRECATED. with --review: the Slack channel id review requests are posted to")
-	fs.StringVar(&reviewCfg.Mention, "review-mention", "", "DEPRECATED. with --review: the mention that post must carry, e.g. <!subteam^S…>")
-	fs.StringVar(&reviewCfg.Hook, "review-hook", "", "DEPRECATED. with --review: the command that routes a batch (run with sh -c): the batch as JSON on its stdin, the plan as JSON on its stdout")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, threads_unanswered, merged, closed; with --review also\nreview_requested, review_dm_pending, review_held, review_plan_failed; unless --no-nudge,\nnudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). Only one ccs watch runs at a time.\n\n", prEventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, threads_unanswered, merged, closed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). Only one ccs watch runs at a time.\n\n", prEventsPath())
 		fs.PrintDefaults()
+	}
+	for _, a := range args {
+		name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if strings.HasPrefix(a, "-") && slices.Contains([]string{"review", "dry-run", "review-channel", "review-mention", "review-hook"}, name) {
+			fmt.Fprintf(os.Stderr, "ccs watch: --%s is gone: %s\n", name, reviewMoved)
+			return 2
+		}
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -236,37 +242,6 @@ func runWatch(args []string) int {
 		return 1
 	}
 	setThreadSelves(*author, *selfLogins)
-	deprecated := false
-	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "review", "dry-run", "review-channel", "review-mention", "review-hook":
-			deprecated = true
-		}
-	})
-	if deprecated {
-		fmt.Fprintln(os.Stderr, reviewDeprecated)
-	}
-	if *review {
-		if err := reviewCfg.check(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-	}
-	if *dryRun {
-		if !*review {
-			fmt.Fprintln(os.Stderr, "--dry-run needs --review")
-			return 2
-		}
-		if _, ok := loadPRWatchState(); !ok {
-			fmt.Fprintln(os.Stderr, "no watcher state yet: run ccs watch (or ccs watch --once) first")
-			return 1
-		}
-		if err := reviewTick(time.Now(), true, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, "ccs watch:", err)
-			return 1
-		}
-		return 0
-	}
 	lock, err := lockPRWatch()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -278,7 +253,7 @@ func runWatch(args []string) int {
 			fmt.Fprintln(os.Stderr, "ccs watch:", err)
 			logActivity("pr watch: %v", err)
 		} else {
-			afterPass(!*noNudge, *review)
+			afterPass(!*noNudge)
 		}
 		if *once {
 			return 0
@@ -287,18 +262,12 @@ func runWatch(args []string) int {
 	}
 }
 
-// afterPass runs what follows a successful pass: nudges, then review requests.
-func afterPass(nudge, review bool) {
+// afterPass runs what follows a successful pass: the nudges.
+func afterPass(nudge bool) {
 	if nudge {
 		if err := nudgeTick(time.Now()); err != nil {
 			fmt.Fprintln(os.Stderr, "ccs watch:", err)
 			logActivity("nudge: %v", err)
-		}
-	}
-	if review {
-		if err := reviewTick(time.Now(), false, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, "ccs watch:", err)
-			logActivity("review: %v", err)
 		}
 	}
 }

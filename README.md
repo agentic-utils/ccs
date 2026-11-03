@@ -24,7 +24,6 @@ Globally search and resume [Claude Code](https://claude.ai/claude-code) conversa
 - Start and close named sessions in iTerm tabs (`ccs launch`, `ccs close`, or `Ctrl+X N` / `Ctrl+X K` in the list)
 - Watch your open PRs and get one JSON line per change (`ccs watch`)
 - Record which session owns each PR, and list your open PRs with their owners (`ccs claim`, `ccs prs`)
-- Ask for reviews on green PRs in batches, routed by a headless Claude (`ccs watch --review`, `ccs review`)
 - Tell the session that claimed a PR when its checks fail, it conflicts or it gains unresolved threads (`ccs watch`)
 - Pass flags through to `claude` (e.g., `--plan`)
 - Usage screen (`Tab`): the last 12 hours of token usage across all sessions (including subagents) as three charts (cache-write disposition, context assembly, output), a summary with effective tokens, and your live 5-hour and weekly allowance. The allowance reads Claude Code's stored login read-only (macOS Keychain, else `~/.claude/.credentials.json`); ccs never refreshes or writes it, so if it has expired, open `claude` to refresh it
@@ -201,47 +200,7 @@ A consumer that asks people for reviews (the two-slack plugin's does) needs only
 
 Drop a queued PR when `review_not_needed`, `merged` or `closed` for it arrives before you post. Whether a PR awaits review is kept in `pr-watch.json`, so a restart neither misses nor repeats either event. `ccs prs --json` rows carry `head` and `needs_review` for a consumer's start-up sweep.
 
-`ccs watch --review` and `ccs review` below are deprecated and will be removed in the next release: review requests move to that consumer.
-
-## Asking for reviews
-
-`ccs watch --review` also asks for reviews, as you, on PRs that are green, not drafts and waiting for an approval, once per head commit (PRs already waiting when it starts included):
-
-- PRs are batched: the batch goes once no PR has joined it for 10 minutes (at most 30), and never between 22:00 and 07:00 London time, when it waits for one morning batch.
-- Your routing hook (`--review-hook`, any command) decides who reviews what: ccs runs it with `sh -c`, the batch as JSON on its stdin, and reads a plan as JSON from its stdout. ccs has no routing rules or prompt of its own; the hook can be a script, or run `claude -p` with your own routing instructions.
-- ccs checks the plan (every PR placed once, links only to the batch's own PRs, `--review-mention` present, one line per PR plus one) and posts the one message it sends on its own: the review request in `--review-channel`, through `SLACK_USER_TOKEN` (from the environment or `~/.claude.secret`), ending with `_✨ via ccs watch_`.
-- Everything else, such as a DM to a reviewer the channel doesn't reach, is a draft that waits for you. A PR whose prerequisite hasn't merged is held and planned again after an hour.
-
-```bash
-ccs watch --review --review-channel C0123ABCD --review-mention '<!subteam^S0123ABCD>' --review-hook ~/bin/route-reviews
-ccs watch --review ... --dry-run  # print the plan for the PRs waiting now; posts and records nothing
-ccs review list                   # drafts waiting for you
-ccs review send r3                # post draft r3 as you
-ccs review drop r3                # discard it
-```
-
-The hook's stdin (data only: nothing from the batch is ever on its command line):
-
-```json
-{"channel":"C0123ABCD","mention":"<!subteam^S0123ABCD>","prs":[{"url":"https://github.com/o/r/pull/7","title":"...","repo":"o/r","head":"0fc4f95...","status":"checks green, waiting for review","requested_reviewers":["alice","@o/platform"],"owner_sessions":["fix-the-thing"]}]}
-```
-
-Its stdout (anything around the one JSON object is ignored): `channel_post` (posted to the channel, or null), `drafts` (each to a Slack user or channel id, kept for `ccs review send`), `holds` (PRs to try again in an hour). A PR may be in both the post and a draft. ccs checks the plan and drops only what's wrong with it (a post or draft that links PRs it isn't about, a post without the mention or too long, a hold for a PR that's asked for anyway), saying why in a `review_plan_warning`; a PR placed nowhere stays queued. Just before posting, ccs asks GitHub about each PR again and drops any that was approved, got new commits or stopped passing in the meantime. A non-zero exit, no plan, or nothing usable in it is `review_plan_failed`; it has 5 minutes.
-
-```json
-{"channel_post":{"text":"<!subteam^S0123ABCD> could you review these?\n- https://github.com/o/r/pull/7 fix the thing","prs":["https://github.com/o/r/pull/7"]},
- "drafts":[{"to":"U0123ABCD","to_name":"Alice","text":"could you review https://github.com/o/r/pull/8?","prs":["https://github.com/o/r/pull/8"]}],
- "holds":[{"pr":"https://github.com/o/r/pull/9","reason":"waits for r#8"}]}
-```
-
-The smallest hook sends everything to the channel:
-
-```sh
-#!/bin/sh
-jq '{channel_post: {text: (.mention + " could you review these?\n" + ([.prs[] | "- " + .url + " " + .title] | join("\n"))), prs: [.prs[].url]}, drafts: [], holds: []}'
-```
-
-Events: `review_requested` (channel, PRs, permalink), `review_dm_pending` (id, recipient, text, PRs), `review_held` (PR, reason), `review_plan_warning` (PRs, reason), `review_plan_failed` (PRs, reason; the batch is tried again after the wait). What was asked for, per PR and head commit, is kept in `review.json` beside ccs's settings.
+ccs doesn't post review requests itself: the two-slack plugin's review-requests consumer does, from these events or from GitHub directly.
 
 ## Telling sessions about their PRs
 

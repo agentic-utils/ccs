@@ -558,3 +558,11 @@ func TestThreadsUnansweredByTheOperator(t *testing.T) {
 		t.Errorf("a new reviewer comment: %v", got)
 	}
 }
+
+func TestRemovedReviewFlagsSayWhereReviewsWent(t *testing.T) {
+	for _, args := range [][]string{{"--review"}, {"--once", "-review-channel=C1"}, {"--dry-run"}, {"--review-hook", "x"}} {
+		if got := runWatch(args); got != 2 {
+			t.Errorf("%v: exit %d, want 2 before anything runs", args, got)
+		}
+	}
+}

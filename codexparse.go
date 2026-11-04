@@ -57,7 +57,9 @@ type codexPayload struct {
 	Roots     []string        `json:"runtime_workspace_roots"`
 	Model     string          `json:"model"`
 	Role      string          `json:"role"`
-	Content   []struct {
+	// DurationMs is a task_complete's: how long the turn took.
+	DurationMs int64 `json:"duration_ms"`
+	Content    []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
@@ -220,6 +222,9 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 			}
 		case rec.Type == "event_msg" && (p.Type == "task_started" || p.Type == "task_complete" || p.Type == "turn_aborted"):
 			conv.codexBusy = p.Type == "task_started"
+			if p.Type == "task_complete" {
+				noteTurnEnd(conv, p.DurationMs, ts)
+			}
 		case rec.Type == "event_msg" && p.Type == "item_completed" && p.Item != nil:
 			if p.Item.Type == "CommandExecution" {
 				if cmd := codexCommand(p.Item.Command); ghPRCall(cmd) {

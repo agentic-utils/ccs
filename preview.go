@@ -78,6 +78,7 @@ type previewCache struct {
 }
 
 // previewStamp says the preview lines from line on happened at when ("2026-09-29 21:45").
+// renderPreview shows the top visible line's in the header.
 type previewStamp struct {
 	line int
 	when string
@@ -255,8 +256,8 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 		}
 	}
 
-	// stamp notes when the lines about to be added happened, for the pinned
-	// date, and adds a date row at each new day; true if it did.
+	// stamp notes when the lines about to be added happened, for the header,
+	// and adds a row naming each new day after the first; true at a new day.
 	var stamps []previewStamp
 	lastDay := ""
 	stamp := func(ts string) bool {
@@ -269,13 +270,15 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 		if day == "" || day == lastDay {
 			return false
 		}
+		if lastDay != "" {
+			msgLines = append(msgLines, "\033[90m  "+humanWhen(day, "Mon 2 Jan")+"\033[0m", "")
+		}
 		lastDay = day
-		msgLines = append(msgLines, dateRow(when), "")
 		return true
 	}
 
-	// Display messages with gaps. Tool calls sit between them, except in a
-	// search, which is the matches and their context.
+	// Display messages with gaps. Tool calls and turn ends sit between them,
+	// except in a search, which is the matches and their context.
 	lastShown := -1
 	lastRole := ""
 	nextTool := 0
@@ -283,8 +286,12 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 		for query == "" && nextTool < len(conv.tools) && conv.tools[nextTool].at <= upTo {
 			t := conv.tools[nextTool]
 			stamp(t.ts)
-			msgLines = append(msgLines, renderTool(t, width)...)
-			msgLines = append(msgLines, "")
+			if t.took > 0 {
+				msgLines = append(msgLines, turnEnd(conv, t), "")
+			} else {
+				msgLines = append(msgLines, renderTool(t, width)...)
+				msgLines = append(msgLines, "")
+			}
 			lastRole = ""
 			nextTool++
 		}
@@ -737,11 +744,53 @@ func cleanText(s string) string {
 	}, s)
 }
 
-// dateRow separates days in the preview, with the time of the day's first
-// message; renderPreview pins the top visible message's date and time.
-const dateRowPrefix = "\033[90m  ── "
+// humanWhen is a stamp's date ("2026-09-29 21:45", or the date alone) laid out
+// as format, with the year when it isn't this one.
+func humanWhen(when, format string) string {
+	layout := "2006-01-02 15:04"
+	if len(when) == len("2006-01-02") {
+		layout = "2006-01-02"
+	}
+	t, err := time.ParseInLocation(layout, when, time.Local)
+	if err != nil {
+		return when
+	}
+	if t.Year() != time.Now().Year() {
+		format = strings.Replace(format, "2 Jan", "2 Jan 2006", 1)
+	}
+	return t.Format(format)
+}
 
-func dateRow(when string) string { return dateRowPrefix + when + " ──\033[0m" }
+// turnEnd is the dim line after a finished turn: how long it took and when it
+// ended, as Claude Code's terminal says it worked for.
+func turnEnd(conv Conversation, t toolUse) string {
+	glyph, _ := agentGlyph(conv)
+	d := t.took.Round(time.Second)
+	took := fmt.Sprintf("%ds", max(int(d.Seconds()), 1))
+	if d >= time.Hour {
+		took = fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	} else if d >= time.Minute {
+		took = fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	if _, clock, ok := strings.Cut(formatTimestamp(t.ts), " "); ok {
+		took += " · " + clock
+	}
+	return "\033[90m  " + glyph + " " + took + "\033[0m"
+}
+
+// whenWidth is the room the header's date and time take, with their margin.
+const whenWidth = len("Wed 28 Oct 21:51") + 2
+
+// withWhen puts when at the right of a width-wide header line, cutting the line
+// if it must; a pane too narrow for both keeps the line.
+func withWhen(line, when string, width int) string {
+	room := width - ansi.StringWidth(when) - 2
+	if room < 30 {
+		return line
+	}
+	line = ansi.Truncate(line, room, "…") + "\033[0m"
+	return line + strings.Repeat(" ", width-ansi.StringWidth(line)-ansi.StringWidth(when)) + "\033[90m" + when + "\033[0m"
+}
 
 // markFirst puts mark in the two-column indent of a message's first line, as
 // Claude Code's terminal does, without the blank lines around it.
@@ -851,8 +900,7 @@ func (m model) previewHeader(conv Conversation, query string) []string {
 // it is, then what the full header would make you look for: an API error, its
 // model and context, its PRs, running tasks and subagents, and its size.
 func (m model) headerSummary(conv Conversation, query string) string {
-	// Capped, so a long name can't push the counts off the line.
-	parts := []string{highlight(truncate(getTopic(conv), 40), query), highlight(truncate(filepath.Base(conv.Cwd), 24), query)}
+	parts := []string{highlight(truncate(filepath.Base(conv.Cwd), 24), query)}
 	if conv.Kind == kindCodex {
 		glyph, colour := agentGlyph(conv)
 		parts = append(parts, "\033["+colour+"m"+glyph+"\033[0m codex")
@@ -878,7 +926,12 @@ func (m model) headerSummary(conv Conversation, query string) string {
 		parts = append(parts, fmt.Sprintf("\033[%sm◆%d\033[0m", subagentColour, n))
 	}
 	parts = append(parts, fmt.Sprintf("%s · %d msgs", formatBytes(conv.Size), len(conv.Messages)))
-	return ansi.Truncate("\033[90m▸\033[0m "+strings.Join(parts, " \033[90m·\033[0m ")+" \033[90m^X D\033[0m", max(m.paneWidth()-1, 20), "…") + "\033[0m"
+	// The topic gets what's left beside the facts and the time (whenWidth), so
+	// a long one or a narrow pane can't push the counts off the line.
+	const sep, hint, lead = " \033[90m·\033[0m ", " \033[90m^X D\033[0m", "\033[90m▸\033[0m "
+	rest := strings.Join(parts, sep)
+	topic := truncate(getTopic(conv), min(max(m.paneWidth()-1-whenWidth-ansi.StringWidth(lead+sep+rest+hint), 12), 40))
+	return ansi.Truncate(lead+highlight(topic, query)+sep+rest+hint, max(m.paneWidth()-1, 20), "…") + "\033[0m"
 }
 
 // toggleHeader switches the preview header between its full form and one line.
@@ -907,12 +960,9 @@ func (m model) renderPreview(item listItem, height int) string {
 	start, end := scrollWindow(len(msgLines), msgHeight, m.previewScroll)
 	visibleMsgLines := msgLines[start:end]
 
-	// The header's last (blank) line pins the date and time of the top visible
-	// message, unless its own date row is already at the top.
-	if len(visibleMsgLines) > 0 && !strings.HasPrefix(visibleMsgLines[0], dateRowPrefix) {
-		if when := m.preview.stampAt(start); when != "" {
-			header[len(header)-1] = dateRow(when)
-		}
+	// The header's first line says when the top visible message happened.
+	if when := m.preview.stampAt(start); when != "" && len(visibleMsgLines) > 0 {
+		header[0] = withWhen(header[0], humanWhen(when, "Mon 2 Jan 15:04"), m.paneWidth()-1)
 	}
 
 	// While searching, where the view is among this conversation's hits.

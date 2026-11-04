@@ -294,6 +294,7 @@ func TestCodexToolCallsInPreview(t *testing.T) {
 		`{"timestamp":"2026-11-03T10:00:05.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"web.search","query":"go wrap"}}}`,
 		`{"timestamp":"2026-11-03T10:00:06.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning"}}}`,
 		`{"timestamp":"2026-11-03T10:00:07.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
+		`{"timestamp":"2026-11-03T10:00:08.000Z","type":"event_msg","payload":{"type":"task_complete","duration_ms":48010}}`,
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -306,7 +307,7 @@ func TestCodexToolCallsInPreview(t *testing.T) {
 		t.Errorf("tool calls must stay out of Messages: %+v", conv.Messages)
 	}
 	plain := strip2(strings.Join(buildPreviewLines(*conv, "", 80), "\n"))
-	for _, want := range []string{"❯ go", "● Shell(pwd\n    git status)", "● ccs - list_prs (MCP)(mine)", "● Edit(/code/x/a.go)", "● WebSearch(go wrap)", "● done"} {
+	for _, want := range []string{"❯ go", "● Shell(pwd\n    git status)", "● ccs - list_prs (MCP)(mine)", "● Edit(/code/x/a.go)", "● WebSearch(go wrap)", "● done", "  ⬡ 48s · " + formatTimestamp("2026-11-03T10:00:08Z")[11:]} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("missing %q:\n%s", want, plain)
 		}

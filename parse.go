@@ -80,7 +80,7 @@ type Conversation struct {
 	ghCalls     []string       // gh pr create/merge calls awaiting their output
 	spawns      []spawnCmd     // claude -p commands it ran, to find the sessions they started
 	peers       []peerRef      // its messages to and from other sessions, to link the two ends
-	tools       []toolUse      // its tool calls, for the preview; not messages, so counts, times and search ignore them
+	tools       []toolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
 	peerNotes   map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
 	calls       []bgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
 	tasks       []bgTask       // its background tasks (tasks.go)
@@ -94,8 +94,12 @@ type Conversation struct {
 // RawMessage represents the JSON structure in conversation files
 type RawMessage struct {
 	Type    string `json:"type"`
-	Cwd     string `json:"cwd"`
-	Message struct {
+	Subtype string `json:"subtype"` // system lines: turn_duration
+	// DurationMs is a turn_duration line's: how long the turn took, the figure
+	// Claude Code's own "worked for" line shows.
+	DurationMs int64  `json:"durationMs"`
+	Cwd        string `json:"cwd"`
+	Message    struct {
 		ID      string          `json:"id"`
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
@@ -625,6 +629,10 @@ func parseLine(conv *Conversation, line []byte) bool {
 		conv.IsCustomTitle = raw.CustomTitle != ""
 	case "pr-link":
 		addPR(conv, raw.PrURL)
+	case "system":
+		if raw.Subtype == "turn_duration" {
+			noteTurnEnd(conv, raw.DurationMs, raw.Timestamp)
+		}
 	case "ai-title":
 		if conv.Title == "" {
 			conv.Title = raw.AiTitle
@@ -790,11 +798,21 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 	}
 }
 
-// toolUse is a tool call as the preview draws it, after message at-1.
+// toolUse is a tool call as the preview draws it, after message at-1; or, with
+// took set and no name, the end of a turn, in the same list to keep their order.
 type toolUse struct {
 	at        int
 	name, arg string
 	ts        string
+	took      time.Duration
+}
+
+// noteTurnEnd records a finished turn, from the duration the agent recorded:
+// first to last message would count the idle hours before a late notification.
+func noteTurnEnd(conv *Conversation, ms int64, ts string) {
+	if ms > 0 {
+		conv.tools = append(conv.tools, toolUse{at: len(conv.Messages), ts: ts, took: time.Duration(ms) * time.Millisecond})
+	}
 }
 
 // maxToolArg caps a tool call's one-line argument (a command keeps its lines
@@ -808,7 +826,7 @@ func noteTool(conv *Conversation, name, arg, ts string) {
 	if r := []rune(arg); len(r) > maxMessageRunes {
 		arg = string(r[:maxMessageRunes]) + fmt.Sprintf("\n… (%d more characters)", len(r)-maxMessageRunes)
 	}
-	conv.tools = append(conv.tools, toolUse{len(conv.Messages), name, arg, ts})
+	conv.tools = append(conv.tools, toolUse{at: len(conv.Messages), name: name, arg: arg, ts: ts})
 }
 
 // toolArgKeys are the inputs that say what a tool call is for, most telling

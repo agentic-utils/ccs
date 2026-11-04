@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -319,7 +320,7 @@ func TestPreviewReadable(t *testing.T) {
 	// A wrapped bullet's continuation lines line up with its text.
 	var bullet []string
 	for _, l := range strings.Split(plain, "\n") {
-		if strings.HasPrefix(l, "        - word") || (len(bullet) > 0 && strings.HasPrefix(l, "          word")) {
+		if strings.HasPrefix(l, "  - word") || (len(bullet) > 0 && strings.HasPrefix(l, "    word")) {
 			bullet = append(bullet, l)
 		}
 	}
@@ -365,7 +366,7 @@ func TestLinksAndCollapsedIndent(t *testing.T) {
 		{Role: "assistant", Text: "See [slack-bot#336](https://github.com/acme/slack-bot/pull/336) and [https://x.io/a](https://x.io/a)."},
 	}}
 	plain := strip2(strings.Join(buildPreviewLines(conv, "", 120), "\n"))
-	if !regexp.MustCompile(`(?m)^  \S.* ▸ task-notification · CI done$`).MatchString(plain) {
+	if !regexp.MustCompile(`(?m)^  ▸ task-notification · CI done$`).MatchString(plain) {
 		t.Errorf("collapsed line should keep its indent:\n%s", plain)
 	}
 	if !strings.Contains(plain, "slack-bot#336 (github.com/acme/slack-bot/pull/336)") || strings.Contains(plain, "](") {
@@ -376,32 +377,116 @@ func TestLinksAndCollapsedIndent(t *testing.T) {
 	}
 }
 
-func TestPreviewSpeakerRuns(t *testing.T) {
+func TestPreviewDrawnAsClaudeCode(t *testing.T) {
 	conv := Conversation{Messages: []Message{
 		{Role: "user", Text: "merge it", Ts: "2026-09-29T10:00:00Z"},
 		{Role: "assistant", Text: "Merged.", Ts: "2026-09-29T10:01:00Z"},
 		{Role: "assistant", Text: "The reply didn't post.", Ts: "2026-09-29T10:02:00Z"},
-		{Role: "assistant", Text: "Posted now.", Ts: "2026-09-29T10:03:00Z"},
 	}}
-	plain := strip2(strings.Join(buildPreviewLines(conv, "", 80), "\n"))
-	if n := strings.Count(plain, "── "+formatTimestamp("2026-09-29T10:02:00Z")[:10]+" ──"); n != 1 {
-		t.Errorf("the date should get one row of its own, got %d:\n%s", n, plain)
+	lines := buildPreviewLines(conv, "", 40)
+	plain := strip2(strings.Join(lines, "\n"))
+	when := formatTimestamp("2026-09-29T10:00:00Z")
+	if n := strings.Count(plain, "── "+when+" ──"); n != 1 {
+		t.Errorf("the date and first time should get one row of their own, got %d:\n%s", n, plain)
 	}
-	if n := strings.Count(plain, "Claude\n"); n != 1 {
-		t.Errorf("a run of Claude messages should share one header, got %d:\n%s", n, plain)
+	if strings.Contains(plain, "Claude\n") || strings.Contains(plain, "User\n") || strings.Contains(plain, when[11:]+" Merged") {
+		t.Errorf("no speaker headers or per-message times:\n%s", plain)
 	}
-	clock := formatTimestamp("2026-09-29T10:02:00Z")[11:]
-	if !strings.Contains(plain, "  "+clock+" The reply didn't post.") {
-		t.Errorf("each message should start with its time:\n%s", plain)
+	for _, want := range []string{"\n● Merged.\n", "\n● The reply didn't post.\n", "\n❯ merge it"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q:\n%s", want, plain)
+		}
 	}
-	// A search match gets its own marked header even mid-run.
-	plain = strip2(strings.Join(buildPreviewLines(conv, "reply", 80), "\n"))
-	if !strings.Contains(plain, "▶ Claude") {
-		t.Errorf("a match should be marked:\n%s", plain)
+	// The user's row is painted the full width, background to the last cell.
+	row := lines[slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "merge it") })]
+	if !strings.HasPrefix(row, userBg) || ansi.StringWidth(row) != 40 {
+		t.Errorf("user row should be painted 40 wide, got %d: %q", ansi.StringWidth(row), row)
+	}
+	// A search match is marked in place of its bullet, and stays findable.
+	found := buildPreviewLines(conv, "reply", 40)
+	if !strings.Contains(strip2(strings.Join(found, "\n")), "▶ The reply didn't post.") || len(hitLinesIn(found)) != 1 {
+		t.Errorf("a match should be marked:\n%s", strip2(strings.Join(found, "\n")))
+	}
+	// A match in the user's row: findable, and the background survives the highlight.
+	found = buildPreviewLines(conv, "merge it", 40)
+	if len(hitLinesIn(found)) != 1 {
+		t.Errorf("a user match should be a hit: %q", found)
+	}
+	if !strings.Contains(strings.Join(found, "\n"), "\033[49;39m"+userBg) {
+		t.Errorf("the highlight should hand back to the row's background: %q", found)
 	}
 }
 
-func TestHarnessNotesUseTimeGutter(t *testing.T) {
+func TestUserRowWrapsWithBackground(t *testing.T) {
+	conv := Conversation{Messages: []Message{{Role: "user", Text: strings.Repeat("word ", 30) + "\n\nsecond **bold** paragraph"}}}
+	lines := buildPreviewLines(conv, "", 40)
+	lines = lines[:len(lines)-1] // the blank after it
+	if len(lines) < 4 {
+		t.Fatalf("should wrap: %q", lines)
+	}
+	for i, l := range lines {
+		if !strings.HasPrefix(l, userBg) || ansi.StringWidth(l) != 40 {
+			t.Errorf("line %d should be painted full width (%d): %q", i, ansi.StringWidth(l), l)
+		}
+	}
+	if !strings.HasPrefix(strip2(lines[1]), "  word") {
+		t.Errorf("wrapped text should hang under the first line's: %q", strip2(lines[1]))
+	}
+}
+
+func TestToolCallsInPreview(t *testing.T) {
+	conv := &Conversation{}
+	line := func(content string) {
+		parseLine(conv, []byte(`{"type":"assistant","timestamp":"2026-09-29T10:00:00Z","message":{"content":`+content+`}}`))
+	}
+	line(`[{"type":"text","text":"Checking."}]`)
+	line(`[{"type":"tool_use","id":"1","name":"Bash","input":{"command":"cd /x && ls\n  indented **stars**\n\tcat y","description":"list"}}]`)
+	line(`[{"type":"tool_use","id":"2","name":"Write","input":{"file_path":"/a/b.go","content":"secret body"}}]`)
+	line(`[{"type":"tool_use","id":"3","name":"mcp__ccs__list_prs","input":{}}]`)
+	line(`[{"type":"tool_use","id":"4","name":"SendMessage","input":{"to":"uds:/tmp/9.sock","message":"hi there"}}]`)
+	if len(conv.Messages) != 2 { // the text and the SendMessage: tool calls are never messages
+		t.Fatalf("tool calls must stay out of Messages: %+v", conv.Messages)
+	}
+	plain := strip2(strings.Join(buildPreviewLines(*conv, "", 60), "\n"))
+	for _, want := range []string{
+		"● Checking.\n\n● Bash(cd /x && ls\n    indented **stars**\n      cat y)\n\n",
+		"● Write(/a/b.go)\n",
+		"● ccs - list_prs (MCP)\n",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "secret body") || strings.Count(plain, "hi there") != 1 {
+		t.Errorf("a file's content isn't shown, and a SendMessage only as its message:\n%s", plain)
+	}
+	// A long command wraps inside the width; a search shows matches and context only.
+	conv.tools = append(conv.tools, toolUse{at: 2, name: "Bash", arg: strings.Repeat("longword ", 30), ts: "2026-09-29T10:00:00Z"})
+	for i, l := range strings.Split(strip2(strings.Join(buildPreviewLines(*conv, "", 60), "\n")), "\n") {
+		if w := ansi.StringWidth(l); w > 60 {
+			t.Errorf("line %d is %d wide: %q", i, w, l)
+		}
+	}
+	if found := strip2(strings.Join(buildPreviewLines(*conv, "checking", 60), "\n")); strings.Contains(found, "Bash(") {
+		t.Errorf("tool calls aren't search context:\n%s", found)
+	}
+	// One arriving redraws the cached preview.
+	c := &previewCache{}
+	before := len(cachedPreview(c, *conv, "", 60))
+	noteTool(conv, "Read", "/z", "2026-09-29T10:00:00Z")
+	if len(cachedPreview(c, *conv, "", 60)) == before {
+		t.Error("a new tool call should redraw the preview")
+	}
+}
+
+func TestToolArgControlCodesCleaned(t *testing.T) {
+	lines := renderTool(toolUse{name: "Bash", arg: "echo \x1b[31mred\x1b[0m\rdone"}, 60)
+	if strings.Contains(strings.Join(lines, ""), "\x1b[31m") || strings.Contains(strings.Join(lines, ""), "\r") {
+		t.Errorf("a transcript's control codes must not reach the terminal: %q", lines)
+	}
+}
+
+func TestHarnessNotesStack(t *testing.T) {
 	note := "<task-notification>\n<summary>Monitor event: CI</summary>\n</task-notification>"
 	conv := Conversation{Messages: []Message{
 		{Role: "assistant", Text: "watching", Ts: "2026-09-11T17:02:00Z"},
@@ -414,10 +499,75 @@ func TestHarnessNotesUseTimeGutter(t *testing.T) {
 	if strings.Count(plain, day) != 1 {
 		t.Errorf("the date should appear only on its own row:\n%s", plain)
 	}
-	clock := formatTimestamp("2026-09-11T17:03:00Z")[11:]
-	want := "  " + clock + " ▸ task-notification · Monitor event: CI\n  "
-	if !strings.Contains(plain, want) {
-		t.Errorf("notes should sit in the time gutter and stack without a blank line:\n%s", plain)
+	if want := "  ▸ task-notification · Monitor event: CI\n  ▸ task-notification"; !strings.Contains(plain, want) {
+		t.Errorf("notes should stack without a blank line:\n%s", plain)
+	}
+}
+
+func TestHeaderCollapses(t *testing.T) {
+	conv := Conversation{SessionID: "abc", Title: "fix login", Cwd: "/code/api", ActiveModel: "claude-opus-5-5", ContextTokens: 350000, Model1M: true, PeakContext: 350000, Size: 2048,
+		Messages: []Message{{Role: "assistant", Text: "hello", Ts: "2026-09-11T10:00:00Z"}}}
+	item := listItem{conv: conv}
+	m := initialModel([]listItem{item}, "", nil)
+	m.width, m.height = 140, 30
+	full := len(m.previewHeader(conv, ""))
+
+	// ^X D folds it to one line that still has the key facts, and more rows for messages.
+	rows := m.previewMessageRows(conv)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	if !m.headerCollapsed {
+		t.Fatal("^X D should fold the header")
+	}
+	if loadSettings().HeaderOpen {
+		t.Error("the choice should be saved")
+	}
+	head := m.previewHeader(conv, "")
+	if len(head) != 2 || full <= 2 || m.previewMessageRows(conv) <= rows {
+		t.Errorf("should be one line and a date row, got %d of %d", len(head), full)
+	}
+	s := strip2(head[0])
+	for _, want := range []string{"fix login", "api", "35% ctx", "^X D"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("summary should say %q: %q", want, s)
+		}
+	}
+	if strings.Contains(strip2(m.renderPreview(item, 20)), "Session:") {
+		t.Error("the full header shouldn't show when folded")
+	}
+
+	// A click on it unfolds, and again folds; clicks on messages do neither.
+	_, _, top := m.listLayout()
+	x := m.width - 5
+	m = m.handleMouse(tea.MouseMsg{X: x, Y: top, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.headerCollapsed {
+		t.Error("a click on the line should unfold it")
+	}
+	m = m.handleMouse(tea.MouseMsg{X: x, Y: top + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if !m.headerCollapsed {
+		t.Error("a click on the full header should fold it")
+	}
+	m = m.handleMouse(tea.MouseMsg{X: x, Y: top + 3, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if !m.headerCollapsed {
+		t.Error("a click below the header shouldn't toggle it")
+	}
+	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^X D" }) {
+		t.Error("^X D should be in the help popup")
+	}
+}
+
+func TestHeaderSummaryFitsAndCounts(t *testing.T) {
+	conv := Conversation{SessionID: "abc", Cwd: "/code/" + strings.Repeat("long", 40), Size: 1, LastError: "529 overloaded",
+		Messages: []Message{{Role: "assistant", Text: "x"}}}
+	m := initialModel([]listItem{{conv: conv}}, "", nil)
+	m.width, m.height = 60, 20
+	m.headerCollapsed = true
+	if w := ansi.StringWidth(m.headerSummary(conv, "")); w > m.paneWidth()-1 {
+		t.Errorf("summary is %d wide in a pane of %d", w, m.paneWidth())
+	}
+	m.width = 200
+	if !strings.Contains(strip2(m.headerSummary(conv, "")), "! 529 overloaded") {
+		t.Errorf("an API error should show: %q", strip2(m.headerSummary(conv, "")))
 	}
 }
 
@@ -430,10 +580,14 @@ func TestPinnedDate(t *testing.T) {
 	item := listItem{conv: conv}
 	m := initialModel([]listItem{item}, "", nil)
 	m.width, m.height = 100, 40
-	day := dateRow(formatTimestamp(msgs[0].Ts)[:10])
-	// At the bottom, the day's own row has scrolled away, so it's pinned.
-	if lines := strings.Split(m.renderPreview(item, 12), "\n"); !slices.Contains(lines[:len(m.previewHeader(conv, ""))], day) {
-		t.Errorf("date should be pinned above the messages:\n%s", strings.Join(lines, "\n"))
+	day := dateRow(formatTimestamp(msgs[0].Ts))
+	// At the bottom, the day's own row has scrolled away, so the top visible
+	// message's date and time are pinned.
+	lines := strings.Split(m.renderPreview(item, 12), "\n")
+	top := strip2(lines[len(m.previewHeader(conv, ""))])
+	n, _ := strconv.Atoi(strings.Fields(top)[2]) // "● reply 16 │"
+	if pinned := lines[len(m.previewHeader(conv, ""))-1]; pinned != dateRow(formatTimestamp(msgs[n].Ts)) {
+		t.Errorf("the top message's (%q) date and time should be pinned, got %q", top, strip2(pinned))
 	}
 	// At the top, the date row itself is shown, not pinned twice.
 	m.previewScroll = 1000
@@ -574,9 +728,9 @@ func TestControlCodesStripped(t *testing.T) {
 func TestJumpBetweenSearchHits(t *testing.T) {
 	var msgs []Message
 	for i := range 40 {
-		text := fmt.Sprintf("filler %d", i)
+		text := fmt.Sprintf("filler %d\nmore", i)
 		if i == 5 || i == 20 || i == 38 {
-			text = fmt.Sprintf("needle %d", i)
+			text = fmt.Sprintf("needle %d\nmore", i)
 		}
 		msgs = append(msgs, Message{Role: []string{"user", "assistant"}[i%2], Text: text, Ts: "2026-09-30T10:00:00Z"})
 	}
@@ -655,7 +809,7 @@ func TestLinksPopup(t *testing.T) {
 	for _, r := range "wraps" {
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	if v := strip2(m.View()); strings.Contains(v, "release notes") || !strings.Contains(v, "› link text") {
+	if v := strip2(m.View()); strings.Contains(v, "› See the release notes") || !strings.Contains(v, "links in view 1/1") || !strings.Contains(v, "› link text") {
 		t.Errorf("typing filters the links, cursor on the first match:\n%s", v)
 	}
 	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})

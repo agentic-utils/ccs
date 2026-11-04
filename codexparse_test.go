@@ -281,3 +281,37 @@ func TestCodexUsageIsPricedPerRequest(t *testing.T) {
 		t.Errorf("no cost guessed: %q", line)
 	}
 }
+
+func TestCodexToolCallsInPreview(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout-2026-11-03T10-00-00-tools.jsonl")
+	lines := []string{
+		`{"timestamp":"2026-11-03T10:00:00.000Z","type":"session_meta","payload":{"id":"tools","cwd":"/code/x","source":"cli"}}`,
+		`{"timestamp":"2026-11-03T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}}`,
+		`{"timestamp":"2026-11-03T10:00:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":["/bin/zsh","-lc","pwd\n  git status"],"aggregated_output":"/code/x\n"}}}`,
+		`{"timestamp":"2026-11-03T10:00:03.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","server":"ccs","tool":"list_prs","arguments":{"query":"mine"}}}}`,
+		`{"timestamp":"2026-11-03T10:00:04.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"FileChange","changes":{"/code/x/a.go":{"type":"add","content":"secret body"}}}}}`,
+		`{"timestamp":"2026-11-03T10:00:05.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"web.search","query":"go wrap"}}}`,
+		`{"timestamp":"2026-11-03T10:00:06.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning"}}}`,
+		`{"timestamp":"2026-11-03T10:00:07.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := parseCodexFile(path, time.Time{}, 0)
+	if err != nil || conv == nil {
+		t.Fatalf("parse: %v %v", conv, err)
+	}
+	if len(conv.Messages) != 2 {
+		t.Errorf("tool calls must stay out of Messages: %+v", conv.Messages)
+	}
+	plain := strip2(strings.Join(buildPreviewLines(*conv, "", 80), "\n"))
+	for _, want := range []string{"❯ go", "● Shell(pwd\n    git status)", "● ccs - list_prs (MCP)(mine)", "● Edit(/code/x/a.go)", "● WebSearch(go wrap)", "● done"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "secret body") || strings.Contains(plain, "Reasoning") {
+		t.Errorf("only the path of a file change, and no non-tool items:\n%s", plain)
+	}
+}

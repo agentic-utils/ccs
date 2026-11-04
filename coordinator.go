@@ -68,7 +68,8 @@ const coordinatorSettings = `{
 type coordinatorRecord struct {
 	SessionID string `json:"session_id,omitempty"`
 	Name      string `json:"name,omitempty"`
-	Offered   bool   `json:"offered,omitempty"` // the one-time popup was answered
+	Offered   bool   `json:"offered,omitempty"`  // the one-time popup was answered
+	Released  bool   `json:"released,omitempty"` // --release: no looking for one by its name
 }
 
 func coordinatorPath() string { return filepath.Join(filepath.Dir(settingsPath), "coordinator.json") }
@@ -191,6 +192,9 @@ type coordinatorState struct {
 // predate the record). A session found another way becomes the record.
 func findCoordinator() coordinatorState {
 	rec := loadCoordinator()
+	if rec.Released {
+		return coordinatorState{kind: coordNone, rec: rec}
+	}
 	live := scanSessions(nil)
 	if rec.SessionID != "" {
 		if s, ok := live[rec.SessionID]; ok {
@@ -446,6 +450,11 @@ func createCoordinator(p coordinatorPlan, inPlace bool) (string, error) {
 	if err := checkLaunchShell(); err != nil {
 		return "", err
 	}
+	// Only a released one can still be running here: findCoordinator would have
+	// found any other. Before anything changes, and it'd be taken for the new one.
+	if pids, err := sessionsNamed(coordinatorName); err == nil && len(pids) > 0 {
+		return "", fmt.Errorf("a session named %s is still running (pid %d): close or rename it first (ccs close %s)", coordinatorName, pids[0], coordinatorName)
+	}
 	done, errs := applyMCP(p.fixes)
 	if err := writeCoordinatorFolder(); err != nil {
 		return "", err
@@ -455,7 +464,7 @@ func createCoordinator(p coordinatorPlan, inPlace bool) (string, error) {
 		return "", err
 	}
 	rec := loadCoordinator()
-	rec.SessionID, rec.Name, rec.Offered = id, "", true
+	rec.SessionID, rec.Name, rec.Offered, rec.Released = id, "", true, false
 	if err := rec.save(); err != nil {
 		return "", err
 	}
@@ -529,7 +538,7 @@ func adoptCoordinator(who string) (string, error) {
 		return "", fmt.Errorf("ccs couldn't reopen a session named %q: rename it with letters, digits, '.', '_' and '-' first (/rename there, or Ctrl+X E in the list)", name)
 	}
 	replaced := rec.SessionID != "" && rec.SessionID != id
-	rec.SessionID, rec.Offered = id, true
+	rec.SessionID, rec.Offered, rec.Released = id, true, false
 	rec.Name = ""
 	if name != "" && name != coordinatorName {
 		rec.Name = name
@@ -544,6 +553,29 @@ func adoptCoordinator(who string) (string, error) {
 	return msg, nil
 }
 
+// releaseCoordinator makes the coordinator an ordinary session again: its
+// conversation, name and folder stay, nothing is closed, and ccs stops looking
+// for one until asked to set one up or adopt one.
+func releaseCoordinator() (string, error) {
+	release, s, err := coordinatorTurn()
+	defer release()
+	if err != nil {
+		return "", err
+	}
+	if s.kind == coordNone {
+		return "There's no coordinator to release.", nil
+	}
+	rec := coordinatorRecord{Offered: true, Released: true}
+	if err := rec.save(); err != nil {
+		return "", err
+	}
+	msg := fmt.Sprintf("%s (%s) is an ordinary session now.\n^X O or ccs coordinator sets one up again.", s.rec.name(), s.rec.SessionID)
+	if s.kind == coordLive || s.kind == coordStarting {
+		msg += fmt.Sprintf("\nIt's still running: ccs close %s stops it.", s.rec.name())
+	}
+	return msg, nil
+}
+
 // runCoordinator is `ccs coordinator`.
 func runCoordinator(args []string, stdin io.Reader, stdout, stderr io.Writer, isTerminal bool) int {
 	fs := flag.NewFlagSet(coordinatorName, flag.ContinueOnError)
@@ -551,8 +583,9 @@ func runCoordinator(args []string, stdin io.Reader, stdout, stderr io.Writer, is
 	yes := fs.Bool("yes", false, "set it up without asking")
 	noMCP := fs.Bool("no-mcp", false, "don't install the ccs MCP server")
 	adopt := fs.String("adopt", "", "make this existing session (a name or id) the coordinator")
+	releaseIt := fs.Bool("release", false, "make the coordinator an ordinary session again; it keeps running")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: ccs coordinator [--yes] [--no-mcp] [--adopt <session>]\n\nOpen the coordinator: its tab if it's running, resumed if not, set up if there is none.")
+		fmt.Fprintln(stderr, "usage: ccs coordinator [--yes] [--no-mcp] [--adopt <session> | --release]\n\nOpen the coordinator: its tab if it's running, resumed if not, set up if there is none.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -561,6 +594,19 @@ func runCoordinator(args []string, stdin io.Reader, stdout, stderr io.Writer, is
 	if fs.NArg() > 0 {
 		fs.Usage()
 		return 2
+	}
+	if *releaseIt && *adopt != "" {
+		fs.Usage()
+		return 2
+	}
+	if *releaseIt {
+		msg, err := releaseCoordinator()
+		if err != nil {
+			fmt.Fprintln(stderr, "ccs coordinator:", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, msg)
+		return 0
 	}
 	if *adopt != "" {
 		msg, err := adoptCoordinator(*adopt)

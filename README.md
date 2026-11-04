@@ -61,6 +61,7 @@ The coordinator is one Claude Code session that keeps your other sessions moving
 ```bash
 ccs coordinator                  # open it: its tab if it's running, resumed if not, set up if there is none
 ccs coordinator --adopt my-hub   # make an existing session the coordinator instead
+ccs coordinator --release        # make it an ordinary session again; it keeps running
 ```
 
 ccs offers it once, in a popup, in iTerm or tmux when you have none (Esc doesn't ask again; `Ctrl+X O` still opens the same offer). It waits until you aren't typing a search, a message or a prompt, and ignores keys for its first second, so nothing meant for the list answers it. Setting up asks once, shows exactly what will change, and needs none of your own config or plugins:
@@ -78,12 +79,13 @@ Its role closes sessions it started once their PRs have finished, asks before cl
 To remove it:
 
 ```bash
+ccs coordinator --release
 ccs close coordinator
 claude mcp remove ccs -s user        # and: codex mcp remove ccs
 rm -r "$HOME/Library/Application Support/ccs/coordinator"   # ~/.config/ccs/coordinator on Linux
 ```
 
-Then delete its session with `Ctrl+D`, or rename it with `Ctrl+X E`, since ccs finds a session by that name. `coordinator.json` beside the folder remembers the offer was answered: keep it, or ccs offers again.
+`--release` alone keeps the session, its conversation and its folder, and ccs stops treating it as the coordinator. The offer doesn't come back; `Ctrl+X O` or `ccs coordinator` sets a new one up, once a session still running under that name is closed or renamed. Removing the MCP server also removes it for anything else of yours that uses it.
 
 The coordinator is always Claude, since Codex sessions can't receive messages from other sessions; it can start Codex sessions to do the work. Outside iTerm and tmux, `ccs coordinator` runs it in place, but it can't open tabs for its sessions from there. `--yes` sets up without asking, for scripts; without it, a run with no terminal shows the plan and changes nothing.
 

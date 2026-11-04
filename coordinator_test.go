@@ -616,6 +616,103 @@ func TestCoordinatorBriefLimits(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRelease(t *testing.T) {
+	running := func() {
+		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"the-id","name":"coordinator"}`), 0o600)
+	}
+	t.Run("running: an ordinary session, not closed, not found again by name", func(t *testing.T) {
+		coordinatorFixture(t)
+		coordinatorRecord{SessionID: "the-id", Offered: true}.save()
+		running()
+		out, code := runCoord("--release")
+		if code != 0 || !strings.Contains(out, "ordinary session") || !strings.Contains(out, "ccs close coordinator") {
+			t.Fatalf("%d %s", code, out)
+		}
+		rec := loadCoordinator()
+		if rec.SessionID != "" || !rec.Offered || !rec.Released {
+			t.Errorf("%+v", rec)
+		}
+		if s := findCoordinator(); s.kind != coordNone {
+			t.Errorf("found again: %+v", s)
+		}
+		if coordinatorOfferable() {
+			t.Error("the offer came back")
+		}
+		m := initialModel(buildItems([]Conversation{{SessionID: "the-id", Title: "coordinator"}}), "", nil)
+		m.coordID = "the-id"
+		res, _ := m.Update(liveMsg{pids: map[string]int{"the-id": 7}, scan: map[string]liveSession{"the-id": {pid: 7, stat: sessionStat{name: "coordinator"}}}})
+		if m = res.(model); m.coordID != "" || sectionOf(m.filtered[0].familyState) == coordinatorSec {
+			t.Errorf("still on top: %q", m.coordID)
+		}
+	})
+	t.Run("closed: its transcript isn't found by name either", func(t *testing.T) {
+		coordinatorFixture(t)
+		old := namedTranscript
+		namedTranscript = func(string) string { return "the-id" }
+		defer func() { namedTranscript = old }()
+		if out, code := runCoord("--release"); code != 0 || strings.Contains(out, "still running") {
+			t.Errorf("%d %s", code, out)
+		}
+		if s := findCoordinator(); s.kind != coordNone {
+			t.Errorf("%+v", s)
+		}
+	})
+	t.Run("none: says so, changes nothing", func(t *testing.T) {
+		coordinatorFixture(t)
+		if out, code := runCoord("--release"); code != 0 || !strings.Contains(out, "no coordinator") || loadCoordinator().Released {
+			t.Errorf("%d %s", code, out)
+		}
+	})
+	t.Run("a new one waits for the old name to be free, changing nothing", func(t *testing.T) {
+		ran := coordinatorFixture(t)
+		scripts := startsAs(t, coordinatorName)
+		coordinatorRecord{SessionID: "the-id"}.save()
+		running()
+		runCoord("--release")
+		out, code := runCoord("--yes")
+		if code != 1 || !strings.Contains(out, "still running") || len(*scripts) > 0 {
+			t.Errorf("%d %s %v", code, out, *scripts)
+		}
+		if slices.ContainsFunc(*ran, func(c string) bool { return strings.Contains(c, "mcp add") }) {
+			t.Errorf("changed config: %v", *ran)
+		}
+		if rec := loadCoordinator(); !rec.Released || rec.SessionID != "" {
+			t.Errorf("%+v", rec)
+		}
+	})
+	t.Run("setting up again clears it", func(t *testing.T) {
+		coordinatorFixture(t)
+		startsAs(t, coordinatorName)
+		coordinatorRecord{Offered: true, Released: true}.save()
+		if out, code := runCoord("--yes"); code != 0 {
+			t.Fatalf("%d %s", code, out)
+		}
+		if rec := loadCoordinator(); rec.Released || rec.SessionID == "" {
+			t.Errorf("%+v", rec)
+		}
+	})
+	t.Run("adopting clears it", func(t *testing.T) {
+		coordinatorFixture(t)
+		coordinatorRecord{Offered: true, Released: true}.save()
+		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"their-id","name":"hub"}`), 0o600)
+		if out, code := runCoord("--adopt", "hub"); code != 0 {
+			t.Fatalf("%d %s", code, out)
+		}
+		if rec := loadCoordinator(); rec.Released || rec.SessionID != "their-id" {
+			t.Errorf("%+v", rec)
+		}
+		if s := findCoordinator(); s.kind != coordLive {
+			t.Errorf("%+v", s)
+		}
+	})
+	t.Run("not with --adopt", func(t *testing.T) {
+		coordinatorFixture(t)
+		if _, code := runCoord("--release", "--adopt", "hub"); code != 2 {
+			t.Errorf("code %d", code)
+		}
+	})
+}
+
 func TestCoordinatorInPlaceOutsideTabs(t *testing.T) {
 	coordinatorFixture(t)
 	t.Setenv("ITERM_SESSION_ID", "")

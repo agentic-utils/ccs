@@ -761,17 +761,23 @@ func humanWhen(when, format string) string {
 	return t.Format(format)
 }
 
+// formatTook is a length of time as Claude Code's terminal says it: 42s, 1m 4s, 1h 5m.
+func formatTook(d time.Duration) string {
+	d = d.Round(time.Second)
+	switch {
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%ds", max(int(d.Seconds()), 1))
+}
+
 // turnEnd is the dim line after a finished turn: how long it took and when it
 // ended, as Claude Code's terminal says it worked for.
 func turnEnd(conv Conversation, t toolUse) string {
 	glyph, _ := agentGlyph(conv)
-	d := t.took.Round(time.Second)
-	took := fmt.Sprintf("%ds", max(int(d.Seconds()), 1))
-	if d >= time.Hour {
-		took = fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
-	} else if d >= time.Minute {
-		took = fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
-	}
+	took := formatTook(t.took)
 	if _, clock, ok := strings.Cut(formatTimestamp(t.ts), " "); ok {
 		took += " · " + clock
 	}

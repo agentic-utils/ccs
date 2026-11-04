@@ -80,6 +80,7 @@ type Conversation struct {
 	ghCalls     []string       // gh pr create/merge calls awaiting their output
 	spawns      []spawnCmd     // claude -p commands it ran, to find the sessions they started
 	peers       []peerRef      // its messages to and from other sessions, to link the two ends
+	outputs     []replyOutput  // each reply's output tokens, for the working line's count this turn
 	tools       []toolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
 	peerNotes   map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
 	calls       []bgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
@@ -533,6 +534,7 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 	c := *prev
 	c.Messages = slices.Clip(prev.Messages) // appends must not write into prev's array
 	c.tools = slices.Clip(prev.tools)
+	c.outputs = slices.Clip(prev.outputs)
 	if c.Cwd == "unknown" {
 		c.Cwd = ""
 	}
@@ -718,6 +720,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 				conv.Usage.Cache1h += int64(c1)
 				conv.Usage.CacheRead += int64(u.CacheReadInputTokens)
 				conv.Usage.Output += int64(u.OutputTokens)
+				noteOutput(conv, raw.Timestamp, int64(u.OutputTokens))
 			}
 		}
 		if text := extractText(raw.Message.Content); strings.TrimSpace(text) != "" {
@@ -796,6 +799,29 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 			conv.pending = nil
 		}
 	}
+}
+
+// replyOutput is one reply's output tokens and when it was written.
+type replyOutput struct {
+	at     time.Time
+	tokens int64
+}
+
+func noteOutput(conv *Conversation, ts string, tokens int64) {
+	if at, err := time.Parse(time.RFC3339Nano, ts); err == nil && tokens > 0 {
+		conv.outputs = append(conv.outputs, replyOutput{at, tokens})
+	}
+}
+
+// outputSince sums the output tokens of replies written from since on. A reply
+// still being written isn't in the transcript, so this runs behind Claude Code's
+// own count until it's finished.
+func (c Conversation) outputSince(since time.Time) int64 {
+	var n int64
+	for i := len(c.outputs) - 1; i >= 0 && !c.outputs[i].at.Before(since); i-- {
+		n += c.outputs[i].tokens
+	}
+	return n
 }
 
 // toolUse is a tool call as the preview draws it, after message at-1; or, with

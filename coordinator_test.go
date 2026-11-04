@@ -272,6 +272,106 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 			t.Errorf("%d %s pid=%d %v", code, out, pid, *scripts)
 		}
 	})
+	t.Run("being resumed, no session file yet", func(t *testing.T) {
+		coordinatorFixture(t)
+		scripts := startsAs(t, coordinatorName)
+		coordinatorRecord{SessionID: "the-id"}.save()
+		proj := filepath.Join(getProjectsDir(), "-w")
+		os.MkdirAll(proj, 0o700)
+		os.WriteFile(filepath.Join(proj, "the-id.jsonl"), []byte(`{"type":"user","cwd":"/tmp","sessionId":"the-id","message":{"role":"user","content":"hi"}}`+"\n"), 0o600)
+		oldPs, oldFocus := psAll, focusPID
+		psAll = func() (string, error) {
+			return "4242 ttys1 /bin/claude --resume the-id --name coordinator\n", nil
+		}
+		var pid int
+		focusPID = func(p int, _ bool) bool { pid = p; return true }
+		defer func() { psAll, focusPID = oldPs, oldFocus }()
+		if out, code := runCoord("--yes"); code != 0 || pid != 4242 || len(*scripts) > 0 {
+			t.Errorf("%d %s pid=%d %v", code, out, pid, *scripts)
+		}
+	})
+	t.Run("a ccs command naming the id is no claude", func(t *testing.T) {
+		coordinatorFixture(t)
+		old := psAll
+		psAll = func() (string, error) {
+			return "4242 ttys1 /opt/homebrew/bin/ccs launch --name x --resume the-id\n", nil
+		}
+		defer func() { psAll = old }()
+		if pid := startingProcess("the-id"); pid != 0 {
+			t.Errorf("pid %d", pid)
+		}
+	})
+	t.Run("cleared: its arguments still name the old id, as claude's do", func(t *testing.T) {
+		coordinatorFixture(t)
+		scripts := startsAs(t, coordinatorName)
+		coordinatorRecord{SessionID: "before-clear"}.save()
+		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"coordinator"}`), 0o600)
+		oldPs, oldFocus := psAll, focusPID
+		psAll = func() (string, error) {
+			return itoa(os.Getpid()) + " ttys1 /bin/claude hello --session-id before-clear --name coordinator\n", nil
+		}
+		focusPID = func(int, bool) bool { return true }
+		defer func() { psAll, focusPID = oldPs, oldFocus }()
+		out, code := runCoord("--yes")
+		if code != 0 || strings.Contains(out, "trust") || len(*scripts) > 0 || loadCoordinator().SessionID != "after-clear" {
+			t.Errorf("%d %s %v %s", code, out, *scripts, loadCoordinator().SessionID)
+		}
+	})
+	t.Run("cleared and renamed: the process says which it is", func(t *testing.T) {
+		coordinatorFixture(t)
+		coordinatorRecord{SessionID: "before-clear"}.save()
+		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"hub"}`), 0o600)
+		old := psAll
+		psAll = func() (string, error) {
+			return itoa(os.Getpid()) + " ttys1 /bin/claude hello --session-id before-clear --name coordinator\n", nil
+		}
+		defer func() { psAll = old }()
+		if s := findCoordinator(); s.kind != coordLive || s.rec.SessionID != "after-clear" {
+			t.Errorf("%+v", s)
+		}
+	})
+	t.Run("an offer left open opens the one started since", func(t *testing.T) {
+		coordinatorFixture(t)
+		scripts := startsAs(t, coordinatorName)
+		p := planCoordinator(false) // both ccs windows made their offers here
+		coordinatorRecord{SessionID: "the-id"}.save()
+		oldPs, oldFocus := psAll, focusPID
+		psAll = func() (string, error) {
+			return "4242 ttys1 /bin/claude hello --session-id the-id --name coordinator\n", nil
+		}
+		var pid int
+		focusPID = func(p int, _ bool) bool { pid = p; return true }
+		defer func() { psAll, focusPID = oldPs, oldFocus }()
+		msg := coordinatorSetupCmd(p)().(coordinatorDoneMsg)
+		if msg.err != nil || pid != 4242 || len(*scripts) > 0 || loadCoordinator().SessionID != "the-id" {
+			t.Errorf("%+v pid=%d %v %s", msg, pid, *scripts, loadCoordinator().SessionID)
+		}
+	})
+	t.Run("another ccs has the turn", func(t *testing.T) {
+		coordinatorFixture(t)
+		scripts := startsAs(t, coordinatorName)
+		release, _, err := coordinatorTurn()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
+		out, code := runCoord("--yes")
+		if code != 1 || !strings.Contains(out, "another ccs") || len(*scripts) > 0 {
+			t.Errorf("%d %s %v", code, out, *scripts)
+		}
+		if _, err := setupCoordinator(coordinatorPlan{}, false); !errors.Is(err, errCoordinatorBusy) || len(*scripts) > 0 {
+			t.Errorf("%v %v", err, *scripts)
+		}
+		// One that's already up can still be switched to.
+		coordinatorRecord{SessionID: "the-id"}.save()
+		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"the-id","name":"coordinator"}`), 0o600)
+		old := focusPID
+		focusPID = func(int, bool) bool { return true }
+		defer func() { focusPID = old }()
+		if out, code := runCoord("--yes"); code != 0 || !strings.Contains(out, "Switched") {
+			t.Errorf("%d %s", code, out)
+		}
+	})
 	t.Run("named transcript, not running", func(t *testing.T) {
 		coordinatorFixture(t)
 		scripts := startsAs(t, coordinatorName)
@@ -295,6 +395,40 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 			t.Errorf("a resume, no brief, no new id:\n%s", script)
 		}
 	})
+}
+
+func TestCoordinatorListFollowsClear(t *testing.T) {
+	coordinatorFixture(t)
+	coordinatorRecord{SessionID: "before-clear", Offered: true}.save()
+	m := initialModel(buildItems([]Conversation{{SessionID: "before-clear", Title: "coordinator"}, {SessionID: "after-clear", Title: "coordinator"}}), "", nil)
+	m.coordID = "before-clear"
+	res, _ := m.Update(liveMsg{pids: map[string]int{"after-clear": 7}, scan: map[string]liveSession{"after-clear": {pid: 7, stat: sessionStat{name: "coordinator"}}}})
+	m = res.(model)
+	if m.coordID != "after-clear" {
+		t.Errorf("the list follows the session: %s", m.coordID)
+	}
+	if rec := loadCoordinator(); rec.SessionID != "after-clear" || !rec.Offered {
+		t.Errorf("record: %+v", rec)
+	}
+	// Two with its name: never guess, and a closed coordinator stays recorded.
+	coordinatorRecord{SessionID: "before-clear"}.save()
+	two := map[string]liveSession{"x": {pid: 7, stat: sessionStat{name: "coordinator"}}, "y": {pid: 8, stat: sessionStat{name: "coordinator"}}}
+	rec := loadCoordinator()
+	if followLive(&rec, two) || followLive(&rec, map[string]liveSession{}) || rec.SessionID != "before-clear" {
+		t.Errorf("%+v", rec)
+	}
+}
+
+func TestCoordinatorRecordSavesLeaveNoTempFiles(t *testing.T) {
+	coordinatorFixture(t)
+	for range 3 {
+		if err := (coordinatorRecord{SessionID: "x"}).save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(coordinatorPath()), "*.tmp")); len(left) != 0 {
+		t.Error(left)
+	}
 }
 
 func TestCoordinatorComesBackInItsOwnFolder(t *testing.T) {

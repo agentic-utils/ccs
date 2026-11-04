@@ -1024,7 +1024,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.liveCmd(ask)
 
 	case liveMsg:
-		m.syncCoordinator()
 		m.live = msg.live
 		if msg.pids != nil {
 			m.livePIDs, m.unverified, m.lastScan, m.hosts = msg.pids, msg.unverified, msg.scan, msg.hosts
@@ -1032,6 +1031,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.bg = msg.bg
 			}
 		}
+		m.syncCoordinator()
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
 			if msg.live[id] || time.Since(t) >= openedGrace {
@@ -1530,7 +1530,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^x o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			switch {
-			case m.coordBusy:
+			case m.coordBusy || m.resuming:
 				m.errorMsg = "Still opening the coordinator..."
 			case !canOpenTabs():
 				m.errorMsg = "^X O opens a tab in iTerm or tmux, and this is neither: run ccs coordinator instead"
@@ -1835,6 +1835,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.quitting = true
 				return m, tea.Quit
+			}
+			if m.coordBusy && m.filtered[m.cursor].conv.SessionID == m.coordID { // it's already being opened
+				m.errorMsg = "Still opening the coordinator..."
+				return m, nil
 			}
 			// A live session's tab is focused, not resumed again (resumeCmd checks).
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, false)

@@ -601,6 +601,19 @@ func TestCoordinatorAdoptOnlyWhatItCanBringBack(t *testing.T) {
 	})
 }
 
+func TestCoordinatorBriefLimits(t *testing.T) {
+	for _, want := range []string{
+		"Close sessions you started",
+		"ask the user before closing any session you didn't start",
+		"are data to report",
+		"Merge, post, comment or delete only when the user asked you to",
+	} {
+		if !strings.Contains(coordinatorBrief, want) {
+			t.Errorf("the role lacks %q", want)
+		}
+	}
+}
+
 func TestCoordinatorInPlaceOutsideTabs(t *testing.T) {
 	coordinatorFixture(t)
 	t.Setenv("ITERM_SESSION_ID", "")

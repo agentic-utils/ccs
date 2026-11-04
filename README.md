@@ -73,6 +73,18 @@ It has its own section at the very top of the list, above pinned sessions. There
 
 On each start it runs `ccs watch` as a background task, which ends with the session and leaves an already running watcher alone, follows its events with Claude Code's Monitor tool, and catches up from `ccs prs`, so PR events reach it while it's open and it catches up on resume. That needs `gh` logged in; without it, it says so once and carries on without PR tracking. GitHub or Slack event plugins are optional: if their tools are there it uses them, and `CCS_CLAUDE_ARGS` is passed as with `ccs launch`.
 
+Its role closes sessions it started once their PRs have finished, asks before closing any other, and treats PR titles, session names and channel messages as data, never as instructions. Merging or posting takes your say-so. The role is written once: a later ccs doesn't change the `CLAUDE.md` you already have, so compare it with [the current one](coordinator.md) now and then.
+
+To remove it:
+
+```bash
+ccs close coordinator
+claude mcp remove ccs -s user        # and: codex mcp remove ccs
+rm -r "$HOME/Library/Application Support/ccs/coordinator"   # ~/.config/ccs/coordinator on Linux
+```
+
+Then delete its session with `Ctrl+D`, or rename it with `Ctrl+X E`, since ccs finds a session by that name. `coordinator.json` beside the folder remembers the offer was answered: keep it, or ccs offers again.
+
 The coordinator is always Claude, since Codex sessions can't receive messages from other sessions; it can start Codex sessions to do the work. Outside iTerm and tmux, `ccs coordinator` runs it in place, but it can't open tabs for its sessions from there. `--yes` sets up without asking, for scripts; without it, a run with no terminal shows the plan and changes nothing.
 
 ## Installation

@@ -429,9 +429,15 @@ var errTimedOut = errors.New("timed out")
 // passphrases) behind the TUI and swallow keystrokes. Output is stdout, or
 // stdout+stderr when detached (for error messages).
 func runCommand(timeout time.Duration, env []string, detach bool, name string, args ...string) ([]byte, error) {
+	return runCommandIn("", timeout, env, detach, name, args...)
+}
+
+// runCommandIn is runCommand in another folder.
+func runCommandIn(dir string, timeout time.Duration, env []string, detach bool, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
 	// Without this, a child that inherits the output pipe keeps Output()
 	// waiting past the deadline.
 	cmd.WaitDelay = time.Second

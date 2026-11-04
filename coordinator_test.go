@@ -173,6 +173,51 @@ func TestCoordinatorMCPAlreadyInstalledIsLeftAlone(t *testing.T) {
 	}
 }
 
+func TestCoordinatorMCPBrokenIsSaidAndLeftAlone(t *testing.T) {
+	ran := coordinatorFixture(t)
+	old := mcpRun
+	mcpRun = func(bin string, args ...string) ([]byte, error) {
+		*ran = append(*ran, strings.Join(args, " "))
+		return []byte("ccs:\n  Scope: User config\n  Status: ✘ Failed to connect\n"), nil
+	}
+	defer func() { mcpRun = old }()
+	p := planCoordinator(false)
+	if len(p.fixes) != 0 || len(p.notes) != 1 || !strings.Contains(p.notes[0], "isn't connected") {
+		t.Errorf("%+v", p)
+	}
+}
+
+func TestCoordinatorMCPAddedMeanwhileIsNoFailure(t *testing.T) {
+	coordinatorFixture(t)
+	old := mcpRun
+	mcpRun = func(bin string, args ...string) ([]byte, error) {
+		if args[1] == "add" {
+			return []byte("MCP server ccs already exists in user config"), errors.New("exit status 1")
+		}
+		return []byte("Status: ✔ Connected"), nil
+	}
+	defer func() { mcpRun = old }()
+	done, errs := applyMCP([]mcpFix{{"claude", []string{"mcp", "add", "ccs"}}})
+	if len(errs) != 0 || len(done) != 1 {
+		t.Errorf("%v %v", done, errs)
+	}
+}
+
+func TestMCPCommandsRunFromHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	old := mcpRun
+	mcpRun = realMCPRun
+	defer func() { mcpRun = old }()
+	bin := filepath.Join(t.TempDir(), "fake")
+	os.WriteFile(bin, []byte("#!/bin/sh\npwd -P\n"), 0o700)
+	out, err := mcpRun(bin)
+	want, _ := filepath.EvalSymlinks(home)
+	if err != nil || strings.TrimSpace(string(out)) != want {
+		t.Errorf("%v %q want %q", err, out, want)
+	}
+}
+
 func TestCoordinatorMCPCodexMissingOnly(t *testing.T) {
 	coordinatorFixture(t)
 	oldBin, oldRun := lookBin, mcpRun

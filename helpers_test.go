@@ -122,6 +122,7 @@ func TestMain(m *testing.M) {
 	launchDir = func() string { return filepath.Join(dir, "launch") }
 	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
 	retypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
+	checkLaunchShell = func() error { return nil }
 	closeTab = func(string) bool { return false }
 	focusTTY = func(string, bool) bool { return false }
 	focusPID = func(int, bool) bool { return false }

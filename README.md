@@ -21,7 +21,8 @@ Launch, watch, search and resume your coding CLI sessions: [Claude Code](https:/
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Codex sessions: read from `$CODEX_HOME/sessions` (default `~/.codex`), with their model and context, PRs their `gh pr create`/`merge` printed, and a live `●` (green idle, amber busy) while a `codex` tab has the thread open. Enter switches to that tab, else opens `codex resume <id>` in a new tab with `ccs launch --codex`'s sandbox (network on, your approval mode); `Ctrl+F` runs `codex fork <id>`; the message box sends with `codex queue`. A headless `codex exec` run sits `└` under the Claude session that ran it (when its prompt is on the command line), and a Codex subagent under its parent thread. ccs never renames, deletes or prunes a Codex session's files Their preview shows tokens and an estimated cost at OpenAI's published per-token prices (requests over the long-context threshold at its rate; a model ccs has no price for shows tokens only).
-- Start and close named sessions in iTerm tabs (`ccs launch`, `ccs close`, or `Ctrl+X N` / `Ctrl+X K` in the list)
+- A coordinator session at the top of the list that starts one named session per task, tracks their PRs and merge order, and closes them when they finish (`ccs coordinator`, or `Ctrl+X O` in the list)
+- Start and close named sessions in iTerm tabs or tmux windows (`ccs launch`, `ccs close`, or `Ctrl+X N` / `Ctrl+X K` in the list)
 - Watch your open PRs and get one JSON line per change (`ccs watch`)
 - Record which session owns each PR, and list your open PRs with their owners (`ccs claim`, `ccs prs`)
 - Tell the session that claimed a PR when its checks fail, it conflicts or it gains unresolved threads (`ccs watch`)
@@ -49,9 +50,30 @@ ccs launch --name tests --brief brief.md --codex                # codex instead
 ccs close fix-login
 ```
 
-`ccs launch` opens an iTerm tab (at the end of the tab strip if iTerm's "new tabs at the end" setting is on, focus staying where it was), clears the prompt and runs a launcher kept in `~/Library/Caches/ccs/launch/<name>/`: a login zsh that sources `~/.claude.secret` when there is one and runs `claude "<brief>" --name <name> $CCS_CLAUDE_ARGS`, the brief first since `--channels` takes every word after it. It then waits up to 20 seconds for a session with that name to start, printing its pid and tty, and fails if none does. A name already running is refused. With `--codex` it runs `codex -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir <that folder> --add-dir <ccs's settings folder>`: your usual approval mode, network on (Codex's sandbox has none by default, so git and gh would fail), the launch folder (how ccs finds the session again) and ccs's settings folder (so `ccs claim` can write) writable. It also waits for Codex's transcript of the session and prints its thread id, which nudges need; a Codex session that writes none in time fails the launch.
+`ccs launch` opens a background tmux window when run inside tmux, otherwise an iTerm tab (at the end of the tab strip if iTerm's "new tabs at the end" setting is on, focus staying where it was), clears the prompt and runs a launcher kept in `~/Library/Caches/ccs/launch/<name>/`: a login zsh that sources `~/.claude.secret` when there is one and runs `claude "<brief>" --name <name> $CCS_CLAUDE_ARGS`, the brief first since `--channels` takes every word after it. It then waits up to 20 seconds for a session with that name to start, printing its pid and tty, and fails if none does. A name already running is refused. With `--codex` it runs `codex -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir <that folder> --add-dir <ccs's settings folder>`: your usual approval mode, network on (Codex's sandbox has none by default, so git and gh would fail), the launch folder (how ccs finds the session again) and ccs's settings folder (so `ccs claim` can write) writable. It also waits for Codex's transcript of the session and prints its thread id, which nudges need; a Codex session that writes none in time fails the launch.
 
 `ccs close <name>` finds the one running session with that name (two with the same name are left alone), stops it, confirms its process has exited, then closes its iTerm tab (or tmux pane). A session with no terminal (an app's, or `claude --bg`) is refused.
+
+## The coordinator
+
+The coordinator is one Claude Code session that keeps your other sessions moving and never does the work itself. Tell it what you want done; it starts a named session for each ask, tracks who owns which PR and what order they must merge in, tells you what needs you, and closes sessions when they finish.
+
+```bash
+ccs coordinator                  # open it: its tab if it's running, resumed if not, set up if there is none
+ccs coordinator --adopt my-hub   # make an existing session the coordinator instead
+```
+
+ccs offers it once, in a popup, in iTerm or tmux when you have none (Esc doesn't ask again; `Ctrl+X O` still opens the same offer). Setting up asks once, shows exactly what will change, and needs none of your own config or plugins:
+
+- **Its folder**, `coordinator` beside ccs's settings (`~/Library/Application Support/ccs/` on macOS, `~/.config/ccs/` on Linux). `CLAUDE.md` is its role and `.claude/settings.json` allows the `ccs` commands it needs, in that folder only. Both are yours to edit, and ccs never overwrites them. Because Claude Code reloads them on every start and after compaction, every way of resuming it keeps its role.
+- **The ccs MCP server**, if it's missing: `claude mcp add --scope user ccs -- ccs mcp`, and the same for Codex if you have it. ccs then checks that Claude Code reports it connected, and says so if it doesn't. If it's there already, nothing is asked or changed. `--no-mcp` skips this.
+- **The session**, named `coordinator`, in a new tab brought to the front: Claude Code asks once whether to trust the folder. Choose "Yes, I trust this folder": the highlighted answer isn't that one.
+
+It has its own section at the very top of the list, above pinned sessions. There is never a second one: ccs looks for the recorded session, including one still on its trust question, then for a session with the name. After a restart, the reopen popup, `Enter` on its row, `Ctrl+X O` and `ccs coordinator` all resume the same conversation.
+
+On each start it runs `ccs watch` as a background task, which ends with the session and leaves an already running watcher alone, follows its events with Claude Code's Monitor tool, and catches up from `ccs prs`, so PR events reach it while it's open and it catches up on resume. That needs `gh` logged in; without it, it says so once and carries on without PR tracking. GitHub or Slack event plugins are optional: if their tools are there it uses them, and `CCS_CLAUDE_ARGS` is passed as with `ccs launch`.
+
+The coordinator is always Claude, since Codex sessions can't receive messages from other sessions; it can start Codex sessions to do the work. Outside iTerm and tmux, `ccs coordinator` runs it in place, but it can't open tabs for its sessions from there. `--yes` sets up without asking, for scripts; without it, a run with no terminal shows the plan and changes nothing.
 
 ## Installation
 
@@ -138,7 +160,8 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Enter` - Resume it in claude, in a new tab in tmux or iTerm. On one already open in `claude` (`●`), go to its iTerm tab / tmux pane instead
 - `Ctrl+F` - Fork it: a new session with the same history, in a new tab (`claude --resume <id> --fork-session`); the original is left as it was
 - `Ctrl+D` - Delete its transcript file; asks first, can't be undone (the file is removed, not moved to the bin)
-- `Ctrl+X N` - Start a new session in an iTerm tab, in the selected session's folder: type its name, Enter, then its brief, Enter (`ccs launch`)
+- `Ctrl+X N` - Start a new session in an iTerm tab or tmux window, in the selected session's folder: type its name, Enter, then its brief, Enter (`ccs launch`)
+- `Ctrl+X O` - Open the coordinator, resuming it if it isn't running, or offer to set one up if there is none (see [The coordinator](#the-coordinator))
 - `Ctrl+X E` - Edit its name, as `/rename` does (not while it's open in `claude`; use `/rename` there)
 - `Ctrl+R` - Refresh sessions, PRs and allowance now; check for an update
 - `Ctrl+X X` - Shrink its file, keeping the dialogue; loses rewind history. It drops the copies of tool output Claude Code stores twice and the rewind checkpoints, so the conversation still resumes in full but `/rewind` has nothing to go back to. Asks first, can't be undone, not while it's open in `claude` (see [Pruning](#pruning))

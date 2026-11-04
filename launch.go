@@ -28,6 +28,10 @@ import (
 type launchOpts struct {
 	name, brief, resume, cwd string
 	codex                    bool
+	sessionID                string        // claude's id for a new session, known before it starts
+	focus                    bool          // bring its tab to the front: it needs an answer there
+	wait                     time.Duration // how long it may take to start; launchWait if zero
+	inPlace                  bool          // no tab: replace this process with it
 }
 
 // sessionName is what a launched session may be called: it goes into a
@@ -90,6 +94,9 @@ func launchScript(o launchOpts, bin, dir string) string {
 	if o.resume != "" {
 		args = append(args, "--resume", shellQuote(o.resume))
 	}
+	if o.sessionID != "" {
+		args = append(args, "--session-id", shellQuote(o.sessionID))
+	}
 	if o.brief != "" {
 		args = append(args, brief)
 	}
@@ -149,8 +156,8 @@ func launchSession(o launchOpts) (launched, error) {
 	if !shellSafe(o.cwd) {
 		return launched{}, fmt.Errorf("folder %q can't go into a shell command", o.cwd)
 	}
-	if !inITerm() {
-		return launched{}, errors.New("not in iTerm: launch opens an iTerm tab")
+	if !canOpenTabs() && !o.inPlace {
+		return launched{}, errors.New("not in iTerm or tmux: launch opens a tab there")
 	}
 	if pids, err := sessionsNamed(o.name); err != nil {
 		return launched{}, err
@@ -176,11 +183,21 @@ func launchSession(o launchOpts) (launched, error) {
 	if err := os.WriteFile(script, []byte(launchScript(o, bin, dir)), 0o700); err != nil {
 		return launched{}, err
 	}
+	if o.inPlace {
+		return launched{}, execScript(script)
+	}
 	tty, err := openLaunchTab(script)
 	if err != nil {
-		return launched{}, fmt.Errorf("couldn't open an iTerm tab: %v", err)
+		return launched{}, fmt.Errorf("couldn't open a tab: %v", err)
 	}
-	deadline := time.Now().Add(launchWait)
+	if o.focus {
+		focusTTY(tty, true)
+	}
+	wait := launchWait
+	if o.wait > 0 {
+		wait = o.wait
+	}
+	deadline := time.Now().Add(wait)
 	retypeAt := time.Now().Add(launchRetype)
 	for {
 		if !retypeAt.IsZero() && time.Now().After(retypeAt) {
@@ -205,9 +222,9 @@ func launchSession(o launchOpts) (launched, error) {
 		}
 		if time.Now().After(deadline) {
 			if len(pids) > 0 {
-				return launched{pids[0], tty, ""}, fmt.Errorf("%s started (pid %d) but Codex wrote no transcript for it within %s, so it can't be messaged: see the tab on %s", o.name, pids[0], launchWait, tty)
+				return launched{pids[0], tty, ""}, fmt.Errorf("%s started (pid %d) but Codex wrote no transcript for it within %s, so it can't be messaged: see the tab on %s", o.name, pids[0], wait, tty)
 			}
-			return launched{tty: tty}, fmt.Errorf("%s didn't start within %s: see the tab on %s (launcher %s)", o.name, launchWait, tty, script)
+			return launched{tty: tty}, fmt.Errorf("%s didn't start within %s: see the tab on %s, where a folder-trust question may be waiting (launcher %s)", o.name, wait, tty, script)
 		}
 		sleep(250 * time.Millisecond)
 	}
@@ -262,11 +279,28 @@ end tell`, tty, shellQuote(script))
 // sleep is time.Sleep, stubbed in tests.
 var sleep = time.Sleep
 
-// openLaunchTab opens an iTerm tab (at the end of the strip if iTerm's
-// "new tabs at the end" is on), waits for its shell to draw something, then
-// types ctrl-U (any stray input gone) and the launcher. The tab that had
-// focus keeps it. Returns the new tab's tty.
+// canOpenTabs: launch has somewhere to open a tab.
+func canOpenTabs() bool { return os.Getenv("TMUX") != "" || inITerm() }
+
+// execScript replaces this process with a launcher. Stubbed in tests.
+var execScript = func(script string) error {
+	return syscall.Exec(script, []string{script}, os.Environ())
+}
+
+// openLaunchTab opens a background tmux window running the launcher or, outside
+// tmux (an iTerm tab there would land outside the session), an iTerm tab (at
+// the end of the strip if iTerm's "new tabs at the end" is on), waits for its
+// shell to draw something, then types ctrl-U (any stray input gone) and the
+// launcher. The tab that had focus keeps it. Returns the new tab's tty.
 var openLaunchTab = func(script string) (string, error) {
+	if os.Getenv("TMUX") != "" {
+		out, err := runBounded(5*time.Second, nil, "tmux", "new-window", "-d", "-P", "-F", "#{pane_tty}", script)
+		tty := strings.TrimSpace(string(out))
+		if err == nil && tty == "" {
+			err = errors.New("tmux returned no tty")
+		}
+		return tty, err
+	}
 	as := fmt.Sprintf(`tell application "iTerm2"
 	if (count of windows) = 0 then
 		create window with default profile
@@ -397,12 +431,18 @@ func closeSession(name string, pid int) (string, error) {
 }
 
 // closeTab closes the tmux pane or iTerm session on tty.
-var closeTab = func(tty string) bool {
+var closeTab = realCloseTab
+
+func realCloseTab(tty string) bool {
 	if os.Getenv("TMUX") != "" {
 		panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
 		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
 			_, err := runBounded(5*time.Second, nil, "tmux", "kill-pane", "-t", target)
 			return err == nil
+		}
+		// A window launch opened runs the launcher itself, so it went with the session.
+		if err == nil && !inITerm() {
+			return true
 		}
 	}
 	as := fmt.Sprintf(`tell application "iTerm2"

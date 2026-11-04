@@ -511,7 +511,11 @@ func focusSession(pid int, activate bool) bool {
 	if err != nil || tty == "" || tty == "??" {
 		return false
 	}
-	tty = "/dev/" + tty
+	return focusTTY("/dev/"+tty, activate)
+}
+
+// focusTTY selects the tmux pane or iTerm tab on tty. Stubbed in tests.
+var focusTTY = func(tty string, activate bool) bool {
 	if os.Getenv("TMUX") != "" {
 		panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
 		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
@@ -541,7 +545,7 @@ func focusSession(pid int, activate bool) bool {
 		end repeat
 	end repeat
 end tell`, tty, front)
-	out, err = runBounded(5*time.Second, nil, "osascript", "-e", script)
+	out, err := runBounded(5*time.Second, nil, "osascript", "-e", script)
 	return err == nil && strings.TrimSpace(string(out)) == "found"
 }
 

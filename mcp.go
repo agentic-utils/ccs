@@ -74,7 +74,7 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 			"instructions": "Search and read the user's earlier Claude Code sessions (from ~/.claude/projects). " +
 				"Use search_sessions to find a past conversation by what was said in it, list_sessions for recent ones, " +
 				"and read_session to read one. Sessions are the user's private history; quote only what's relevant. " +
-				"launch_session starts a named session in a new iTerm tab and close_session stops one and closes its tab. " +
+				"launch_session starts a named session in a new iTerm tab or tmux window and close_session stops one and closes its tab. " +
 				"list_prs lists the user's open PRs with the session that owns each.",
 		}, nil
 	case "ping":
@@ -141,7 +141,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "launch_session",
-		"description": "Start a new named Claude Code (or codex) session in a new iTerm tab, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty.",
+		"description": "Start a new named Claude Code (or codex) session in a new iTerm tab or tmux window, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -156,7 +156,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "close_session",
-		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab.",
+		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab or tmux pane.",
 		"inputSchema": map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"name": map[string]any{"type": "string", "description": "the session's name"}},

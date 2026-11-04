@@ -40,8 +40,11 @@ Search and resume Claude Code conversations, and Codex sessions beside them.
 
 Usage: ccs [filter] [-- claude-flags...]
        ccs prune [flags]    Shrink large conversations (see ccs prune --help)
+       ccs coordinator [--yes] [--no-mcp] [--adopt <session>]
+                            Open the session that runs your other sessions: its tab, resumed
+                            if it isn't running, set up (with the ccs MCP server) if there is none
        ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>]
-                            Start a named claude (or codex) session in a new iTerm tab
+                            Start a named claude (or codex) session in a new iTerm tab or tmux window
        ccs close <name>     Stop the named session and close its tab
        ccs watch [flags]    Report changes to your open PRs as JSON lines, and tell the sessions
                             that claimed them what's failing (see ccs watch --help)
@@ -108,7 +111,8 @@ Key bindings:
 
  Ctrl+X then a letter: view and tools
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
-  Ctrl+X N        Start a new session in an iTerm tab, in this one's folder
+  Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder
+  Ctrl+X O        Open the coordinator, setting one up if there is none
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X T        The full table, every column, instead of the sidebar
   Ctrl+X D        A session's full details, or one line (clicking does too)
@@ -148,6 +152,9 @@ func main() {
 	}
 	if len(args) > 0 && args[0] == "launch" {
 		os.Exit(runLaunch(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == coordinatorName {
+		os.Exit(runCoordinator(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal()))
 	}
 	if len(args) > 0 && args[0] == "close" {
 		os.Exit(runClose(args[1:], os.Stdout, os.Stderr))
@@ -251,28 +258,22 @@ func main() {
 	claudeFlags = withEnvClaudeArgs(os.Getenv("CCS_CLAUDE_ARGS"), claudeFlags)
 
 	projectsDir := getProjectsDir()
-	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Projects directory not found: %s\n", projectsDir)
-		fmt.Fprintf(os.Stderr, "Make sure Claude Code is installed and has been used at least once.\n")
-		os.Exit(1)
-	}
-
-	fmt.Fprint(os.Stderr, "Loading conversations...")
-	conversations, err := getConversations(cutoff, maxSize, excludeDirs)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\rError loading conversations: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Fprint(os.Stderr, "\r                         \r")
-
-	if len(conversations) == 0 {
-		fmt.Fprintf(os.Stderr, "No conversations found\n")
-		os.Exit(1)
+	var conversations []Conversation
+	if _, err := os.Stat(projectsDir); !os.IsNotExist(err) {
+		fmt.Fprint(os.Stderr, "Loading conversations...")
+		conversations, err = getConversations(cutoff, maxSize, excludeDirs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\rError loading conversations: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprint(os.Stderr, "\r                         \r")
 	}
 
 	items := buildItems(conversations)
-	if len(items) == 0 {
-		fmt.Fprintf(os.Stderr, "No searchable messages found\n")
+	// Nothing to list: open only if there's a coordinator to offer.
+	if len(items) == 0 && !coordinatorOfferable() {
+		fmt.Fprintf(os.Stderr, "No conversations found in %s\n", projectsDir)
+		fmt.Fprintf(os.Stderr, "Start one with claude, or set up a coordinator with ccs coordinator.\n")
 		os.Exit(1)
 	}
 
@@ -292,6 +293,7 @@ func main() {
 		m.updatedFrom, m.updatedOpen = from, true
 	}
 	m.marks = loadMarks()                     // when each session was last looked at
+	m.coordID = loadCoordinator().SessionID   // listed above everything
 	if handled, ok := loadFocusRecord(); ok { // waits it switched to before a restart aren't switched to again
 		m.focusHandled, m.focusNoted = handled, map[string]bool{}
 	}

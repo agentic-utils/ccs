@@ -930,6 +930,33 @@ func TestLinksPopupEmpty(t *testing.T) {
 	}
 }
 
+func TestBoldAndCodeBesideLinks(t *testing.T) {
+	for in, want := range map[string]string{
+		"**[the PR #5](https://github.com/o/r/pull/5)** is approved": "the PR #5 (github.com/o/r/pull/5) is approved",
+		"**Approved** see [x](https://a.io/b)":                       "Approved see x (a.io/b)",
+		"`code` and [x](https://a.io/b)":                             "code and x (a.io/b)",
+		"**see [x](https://a.io/b) now** ok":                         "see x (a.io/b) now ok",
+		"[**bold**](https://a.io/b) y":                               "bold (a.io/b) y",
+		"`[x](https://a.io/b)` z":                                    "x (a.io/b) z",
+		"[x](https://a.io/b) and **b** and [y](https://a.io/c)":      "x (a.io/b) and b and y (a.io/c)",
+		"[plain] then **b** [y](https://a.io/c)":                     "[plain] then b y (a.io/c)",
+		"[a](https://a.io/1)[b](https://a.io/2)":                     "a (a.io/1)b (a.io/2)",
+		"**bold** and `code`":                                        "bold and code",
+	} {
+		out := inlineMarkdown(in)
+		if got := ansi.Strip(out); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+		if strings.Contains(out, "\x02") || regexp.MustCompile(`\x1b[^\[\]\\]`).MatchString(out) {
+			t.Errorf("%q: a broken escape in %q", in, out)
+		}
+	}
+	// The link's own text is what ^O lists: nothing from before it.
+	if out := inlineMarkdown("**Approved** see [x](https://a.io/b)"); strings.Contains(out, "\033]8;;https://a.io/b\033\\\033") || !strings.Contains(out, "\033[1mApproved\033[22m see ") {
+		t.Errorf("%q", out)
+	}
+}
+
 func TestLinksNeverCarryStyleCodes(t *testing.T) {
 	osc := regexp.MustCompile(`\x1b\]8;;([^\x1b]*)(\x1b.)`)
 	for _, in := range []string{

@@ -415,6 +415,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 		mark := "●"
 		if msg.Role == "user" {
 			mark = "❯"
+			msg.Text = stripImageNote(msg.Text)
 		}
 		if matchSet[i] {
 			mark = "\033[1m▶\033[22m"

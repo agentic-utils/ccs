@@ -364,6 +364,10 @@ func (m *model) sendTo(conv Conversation, overlay bool) tea.Cmd {
 		return nil
 	}
 	id, name, pid, verified, kind := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID], !m.unverified[conv.SessionID], conv.Kind
+	wire := text
+	if box := m.pasted[id]; box != nil {
+		wire = withImages(text, box.images)
+	}
 	if m.pending == nil {
 		m.pending = make(map[string]string)
 	}
@@ -382,7 +386,7 @@ func (m *model) sendTo(conv Conversation, overlay bool) tea.Cmd {
 		if kind == kindCodex {
 			deliver = func(_ int, id, name, text string, _ bool) (string, error) { return deliverCodex(id, name, text) }
 		}
-		note, err := deliver(pid, id, name, text, verified)
+		note, err := deliver(pid, id, name, wire, verified)
 		return sendDoneMsg{id: id, note: note, err: err, text: text, overlay: overlay}
 	}
 }
@@ -703,7 +707,7 @@ func (m *model) checkDelivered(id string) {
 			if _, b, ok := peerParts(body); ok {
 				body = b
 			}
-			if msgs[i].Role == "user" && strings.TrimSpace(body) == text {
+			if msgs[i].Role == "user" && strings.TrimSpace(stripImageNote(body)) == text {
 				delete(m.pending, id)
 				delete(m.sentAt, id)
 				delete(m.held, id)
@@ -792,7 +796,7 @@ func peerParts(text string) (from, body string, ok bool) {
 	if f := peerFrom.FindStringSubmatch(m[1]); f != nil {
 		from = f[1]
 	}
-	return from, strings.TrimPrefix(m[2], ccsNote), true
+	return from, stripImageNote(strings.TrimPrefix(m[2], ccsNote)), true
 }
 
 func newUUID() string {

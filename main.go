@@ -90,6 +90,7 @@ Key bindings:
   Enter           Resume it in claude, in a new tab in tmux or iTerm; on one
                   open in claude, go to its tab
   Ctrl+S          Message it: type into a box, sent into its conversation
+  Ctrl+V          Paste a screenshot from the clipboard into a message to it
   Ctrl+F          Fork it: a new session with the same history, in a new tab
   Ctrl+O          Open a link in view or one of its PRs
   Ctrl+D          Delete its transcript file; asks first, can't be undone

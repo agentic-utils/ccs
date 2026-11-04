@@ -407,6 +407,15 @@ func mcpRead(convs []Conversation, id, query string, offset, limit int) (string,
 		if m.Role == "sent" {
 			who = "Claude, to " + shortAddr(m.To)
 		}
+		if ev, ok := channelParts(text); ok && m.Role == "channel" {
+			who, text = "Note", ev.line()
+			if ev.link != "" {
+				text += "\n" + ev.link
+			}
+			if ev.detail != "" {
+				text += "\n" + ev.detail
+			}
+		}
 		if m.Role == "user" {
 			who = "User"
 			if from, body, ok := peerParts(text); ok {

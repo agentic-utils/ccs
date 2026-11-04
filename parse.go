@@ -665,6 +665,10 @@ func parseLine(conv *Conversation, line []byte) bool {
 			name := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(m[1], "`", ""), "(default)", ""))
 			conv.ActiveModel, conv.Model1M = name, strings.Contains(name, "1M")
 		}
+		if isChannelEvent(text) {
+			conv.Messages = append(conv.Messages, Message{Role: "channel", Text: text, Ts: raw.Timestamp})
+			break
+		}
 		// Messages from other sessions (and from ccs) are harness-marked but
 		// are real conversation turns, so keep them.
 		if (!raw.IsMeta || peerMessage.MatchString(text)) && strings.TrimSpace(text) != "" {
@@ -680,6 +684,10 @@ func parseLine(conv *Conversation, line []byte) bool {
 			break
 		}
 		text := extractText(a.Prompt)
+		if isChannelEvent(text) {
+			conv.Messages = append(conv.Messages, Message{Role: "channel", Text: text, Ts: raw.Timestamp})
+			break
+		}
 		if (!a.IsMeta || peerMessage.MatchString(text)) && strings.TrimSpace(text) != "" {
 			conv.Messages = append(conv.Messages, Message{Role: "user", Text: text, Ts: raw.Timestamp})
 			noteReceived(conv, text)
@@ -940,6 +948,14 @@ func (c Conversation) headless() bool {
 func finishParse(conv *Conversation) {
 	if len(conv.Messages) > 0 {
 		conv.LastTimestamp = conv.Messages[len(conv.Messages)-1].Ts
+		// An event arriving isn't the session saying anything: it doesn't make
+		// a session newer, unread or awake.
+		for i := len(conv.Messages) - 1; i >= 0; i-- {
+			if conv.Messages[i].Role != "channel" {
+				conv.LastTimestamp = conv.Messages[i].Ts
+				break
+			}
+		}
 	}
 	if conv.Cwd == "" {
 		conv.Cwd = "unknown"

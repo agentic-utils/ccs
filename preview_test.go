@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -1004,5 +1007,92 @@ func TestLinksPopupFiltersPRsByStatus(t *testing.T) {
 	m.prs[prs[24]] = prInfo{State: "MERGED", Title: "go"}
 	if v := strip2(m.View()); !strings.Contains(v, "no links match") {
 		t.Errorf("rows follow the latest status:\n%s", v)
+	}
+}
+
+const (
+	channelPR    = "<channel source=\"plugin:agentic-utils-github:pr-events\" event=\"pull_request\" repo=\"two-inc/twoctl-cli\" pr=\"14\">\ntwo-inc/twoctl-cli#14: PR merged by brtkwr\nhttps://github.com/two-inc/twoctl-cli/pull/14\n(still watching for late comments)\n</channel>"
+	channelSlack = "<channel source=\"plugin:agentic-utils-slack-inbox:slack-events\" event=\"message\" via=\"inbox\" trigger=\"dm\" channel=\"D02\" ts=\"1.2\">\ndm from jk (U01) in D02: limits api, thanks\nhttps://two-inc.slack.com/archives/D02/p12\n</channel>"
+)
+
+func TestChannelParts(t *testing.T) {
+	ev, ok := channelParts(channelPR)
+	if !ok || ev.line() != "← pr-events: two-inc/twoctl-cli#14: PR merged by brtkwr" ||
+		ev.link != "https://github.com/two-inc/twoctl-cli/pull/14" || ev.detail != "(still watching for late comments)" {
+		t.Errorf("got %+v, %v", ev, ok)
+	}
+	// the plugin's own name at the start of its text isn't said twice
+	ev, _ = channelParts("<channel source=\"plugin:x:pr-events\" event=\"polling\">\npr-events: polling a/b#1 every 60s\n</channel>")
+	if ev.line() != "← pr-events: polling a/b#1 every 60s" || ev.link != "" {
+		t.Errorf("got %+v", ev)
+	}
+	// nothing but the event's name
+	ev, _ = channelParts("<channel source=\"plugin:x:y\" event=\"ping\"></channel>")
+	if ev.line() != "← y: ping" {
+		t.Errorf("got %q", ev.line())
+	}
+	if _, ok := channelParts("<system-reminder>hello</system-reminder>"); ok {
+		t.Error("only a channel tag is a channel event")
+	}
+}
+
+// A meta channel line, or one queued mid-turn, is kept as an event; other meta
+// lines stay dropped; neither end of the session's clock moves for one.
+func TestParseKeepsChannelEvents(t *testing.T) {
+	line := func(v map[string]any) string { b, _ := json.Marshal(v); return string(b) + "\n" }
+	body := line(map[string]any{"type": "user", "timestamp": "2026-11-03T10:00:00Z", "message": map[string]any{"role": "user", "content": "hello"}}) +
+		line(map[string]any{"type": "assistant", "timestamp": "2026-11-03T10:01:00Z", "message": map[string]any{"role": "assistant", "content": []map[string]any{{"type": "text", "text": "shall i merge?"}}}}) +
+		line(map[string]any{"type": "user", "isMeta": true, "timestamp": "2026-11-03T10:02:00Z", "message": map[string]any{"role": "user", "content": "<system-reminder>not shown</system-reminder>"}}) +
+		line(map[string]any{"type": "user", "isMeta": true, "timestamp": "2026-11-03T10:03:00Z", "message": map[string]any{"role": "user", "content": channelPR}}) +
+		line(map[string]any{"type": "attachment", "timestamp": "2026-11-03T10:04:00Z", "attachment": map[string]any{"type": "queued_command", "commandMode": "prompt", "isMeta": true, "prompt": channelSlack}})
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := parseConversationFile(path, time.Time{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roles []string
+	for _, m := range conv.Messages {
+		roles = append(roles, m.Role)
+	}
+	if got := strings.Join(roles, " "); got != "user assistant channel channel" {
+		t.Fatalf("roles: %s", got)
+	}
+	if conv.LastTimestamp != "2026-11-03T10:01:00Z" {
+		t.Errorf("an event moved the session's last message time: %s", conv.LastTimestamp)
+	}
+	if n := lastSaid(conv.Messages); n != 1 {
+		t.Errorf("an event hid the question it asked: lastSaid %d", n)
+	}
+	if !strings.Contains(searchTextOf(*conv), "merged by brtkwr") {
+		t.Error("events should be searchable")
+	}
+}
+
+func TestChannelEventDrawnDim(t *testing.T) {
+	conv := Conversation{Messages: []Message{
+		{Role: "user", Text: "hello", Ts: "2026-11-03T10:00:00Z"},
+		{Role: "channel", Text: channelPR, Ts: "2026-11-03T10:01:00Z"},
+		{Role: "channel", Text: channelSlack, Ts: "2026-11-03T10:02:00Z"},
+		{Role: "assistant", Text: "noted", Ts: "2026-11-03T10:03:00Z"},
+	}}
+	raw := strings.Join(buildPreviewLines(conv, "", 80), "\n")
+	plain := strip2(raw)
+	want := "  ← pr-events: two-inc/twoctl-cli#14: PR merged by brtkwr\n  ← slack-events: dm from jk (U01) in D02: limits api, thanks"
+	if !strings.Contains(plain, want) {
+		t.Errorf("want two stacked one-line events:\n%s", plain)
+	}
+	if strings.Contains(plain, "still watching") || strings.Contains(plain, "<channel") {
+		t.Errorf("the body stays folded:\n%s", plain)
+	}
+	if !strings.Contains(raw, "\033[90m  \033]8;;https://github.com/two-inc/twoctl-cli/pull/14\033\\←") {
+		t.Errorf("should be dim and link to the PR:\n%q", raw)
+	}
+	// A search that hits the body unfolds it, and the line is a hit to jump to.
+	hit := buildPreviewLines(conv, "watching", 80)
+	if !strings.Contains(strip2(strings.Join(hit, "\n")), "still watching") || len(hitLinesIn(hit)) != 1 {
+		t.Errorf("a search hit should unfold it:\n%s", strip2(strings.Join(hit, "\n")))
 	}
 }

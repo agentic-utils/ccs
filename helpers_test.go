@@ -123,6 +123,12 @@ func TestMain(m *testing.M) {
 	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
 	retypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
 	closeTab = func(string) bool { return false }
+	focusTTY = func(string, bool) bool { return false }
+	focusPID = func(int, bool) bool { return false }
+	execScript = func(string) error { return errors.New("tests exec nothing") }
+	mcpRun = func(string, ...string) ([]byte, error) { return nil, errors.New("tests run no claude or codex") }
+	namedTranscript = func(string) string { return "" }
+	coordinatorProbe = func() tea.Msg { return nil }
 	psAll = func() (string, error) { return "", nil }
 	psTree = func() (string, error) { return "", nil } // never the machine's own processes
 	// never the real Codex: its data folder is a temp one, and nothing is queued.

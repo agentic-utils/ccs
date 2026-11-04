@@ -187,6 +187,10 @@ type model struct {
 
 	reopen        []Conversation // sessions open before a restart, offered for reopening
 	reopenChecked bool           // the last boot's record has been read, so it may be overwritten
+
+	coordOffer *coordinatorPlan // the set-up popup is open, with what it will change
+	coordBusy  bool             // opening or setting it up: never twice at once
+	coordID    string           // the coordinator session, listed in its own section
 	// Each session's PRs (prs.go): what GitHub said, by address.
 	prs        map[string]prInfo
 	prNext     time.Time       // when the next round is due
@@ -264,7 +268,7 @@ func (m model) paneWidth() int {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 {
+	if m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 || m.coordOffer != nil {
 		return m // keyboard only while it's open
 	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
@@ -632,6 +636,9 @@ func (m *model) nestFamilies() {
 		if pin := m.familyPin(out[start:end]); pin >= 0 { // above every state, in pin order
 			state = pin - len(m.marks.Pinned)
 		}
+		if m.coordID != "" && slices.ContainsFunc(out[start:end], func(it listItem) bool { return it.conv.SessionID == m.coordID }) {
+			state = coordFamily // above the pins too
+		}
 		for i := start; i < end; i++ {
 			out[i].familyState, out[i].sectioned = state, true
 		}
@@ -666,9 +673,21 @@ type group struct {
 	folder string
 }
 
+// coordFamily is the coordinator's familyState and coordinatorSec its
+// section, above the pinned ones.
+const (
+	coordFamily    = -1 << 30
+	coordinatorSec = -2
+)
+
 // sectionOf is the state section a familyState is listed in: pinned ones
-// (negative, in pin order) share one.
-func sectionOf(state int) int { return max(state, -1) }
+// (negative, in pin order) share one, and the coordinator has its own.
+func sectionOf(state int) int {
+	if state == coordFamily {
+		return coordinatorSec
+	}
+	return max(state, -1)
+}
 
 // doneColour marks a session that finished since you last looked;
 // waitColour one waiting on a menu or prompt, askedColour one whose last
@@ -681,6 +700,9 @@ const (
 
 // pinnedSection heads the pinned sessions, above every state.
 var pinnedSection = struct{ name, colour string }{"pinned", "1;37"}
+
+// coordinatorSection heads the coordinator, above the pinned ones.
+var coordinatorSection = struct{ name, colour string }{coordinatorName, "1;37"}
 
 // stateSections name liveGroup's values, the list's sections, and colour them.
 var stateSections = [...]struct{ name, colour string }{
@@ -759,7 +781,7 @@ func findSpawnParent(c Conversation, items []listItem) string {
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.reload != nil {
-		cmds = append(cmds, refreshTick(), liveTick(), waitReceipt, reopenCheckCmd)
+		cmds = append(cmds, refreshTick(), liveTick(), waitReceipt, reopenCheckCmd, coordinatorProbe)
 	}
 	if m.checkLatest != nil {
 		cmds = append(cmds, m.checkUpdateCmd())
@@ -917,6 +939,24 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case coordinatorOfferMsg:
+		m.coordBusy = false
+		m.coordOffer = &msg.plan
+		return m, nil
+
+	case coordinatorDoneMsg:
+		m.coordBusy = false
+		m.syncCoordinator()
+		if msg.err != nil {
+			m.errorMsg = msg.err.Error()
+			return m, nil
+		}
+		m.note(msg.text)
+		if slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == msg.id }) {
+			m.selectSession(msg.id)
+		}
+		return m, nil
+
 	case reopenMsg:
 		m.reopenChecked = true
 		for _, id := range msg.ids {
@@ -984,6 +1024,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.liveCmd(ask)
 
 	case liveMsg:
+		m.syncCoordinator()
 		m.live = msg.live
 		if msg.pids != nil {
 			m.livePIDs, m.unverified, m.lastScan, m.hosts = msg.pids, msg.unverified, msg.scan, msg.hosts
@@ -1355,6 +1396,23 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.coordOffer != nil { // owns the keyboard until answered
+			switch msg.String() {
+			case "enter":
+				p := *m.coordOffer
+				m.coordOffer, m.coordBusy = nil, true
+				markCoordinatorAnswered()
+				m.note("Setting up the coordinator: " + trustNote)
+				return m, coordinatorSetupCmd(p)
+			case "esc":
+				m.coordOffer = nil
+				markCoordinatorAnswered()
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if m.notesOpen { // owns the keyboard until closed
 			switch msg.String() {
 			case "ctrl+l", "esc":
@@ -1469,10 +1527,23 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if k == "^x o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			switch {
+			case m.coordBusy:
+				m.errorMsg = "Still opening the coordinator..."
+			case !canOpenTabs():
+				m.errorMsg = "^X O opens a tab in iTerm or tmux, and this is neither: run ccs coordinator instead"
+			default:
+				m.coordBusy, m.errorMsg = true, ""
+				return m, coordinatorKeyCmd
+			}
+			return m, nil
+		}
 		if k == "^x n" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
-			if !inITerm() {
-				m.errorMsg = "^X N opens the new session in an iTerm tab, and this isn't iTerm"
+			if !canOpenTabs() {
+				m.errorMsg = "^X N opens the new session in an iTerm tab or tmux window, and this is neither"
 				return m, nil
 			}
 			m.launchCwd, _ = os.Getwd()
@@ -1759,6 +1830,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter":
 			if len(m.filtered) == 0 {
+				if m.coordBusy { // quitting would kill the set-up halfway
+					return m, nil
+				}
 				m.quitting = true
 				return m, tea.Quit
 			}
@@ -1939,6 +2013,7 @@ func (m model) overPopups() []popup {
 		{m.linksOpen, model.linksPopup},
 		{m.snoozeOpen, model.snoozePopup},
 		{len(m.reopen) > 0, model.reopenPopup},
+		{m.coordOffer != nil && len(m.reopen) == 0, model.coordinatorPopup},
 	}
 }
 
@@ -2028,7 +2103,8 @@ func (m model) shortcuts() [][2]string {
 
 	group("^X then a letter: view and tools")
 	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you: answer, open or snooze them")
-	add(inITerm(), "^X N", "start a new session in an iTerm tab, in this one's folder")
+	add(canOpenTabs(), "^X N", "start a new session in an iTerm tab or tmux window, in this one's folder")
+	add(canOpenTabs(), "^X O", "open the coordinator, setting one up if there is none")
 	add(!m.grouped, "^X G", "group the list by folder")
 	add(m.grouped, "^X G", "stop grouping by folder")
 	add(!m.table, "^X T", "the full table, every column")
@@ -2560,7 +2636,10 @@ func (m model) listRows() []listRow {
 		it := &m.filtered[i]
 		if s := sectionOf(it.familyState); i == 0 || s != sectionOf(m.filtered[i-1].familyState) {
 			sec := pinnedSection
-			if s >= 0 {
+			switch {
+			case s == coordinatorSec:
+				sec = coordinatorSection
+			case s >= 0:
 				sec = stateSections[min(s, len(stateSections)-1)]
 			}
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})

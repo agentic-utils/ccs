@@ -1318,10 +1318,13 @@ func sum(xs []int) int {
 // inlineMarkdown renders [links](url), **bold** and `code` spans. Links go
 // last: bold or code markers matched across a link would put their codes
 // inside its OSC 8 sequence, which terminals read differently (iTerm can show
-// the address as text, so the row wraps and the screen scrolls).
+// the address as text, so the row wraps and the screen scrolls). Until then the
+// codes' own [ is hidden (styleOpen), or a link would start at it and take the
+// text since then as its own.
 func inlineMarkdown(s string) string {
-	s = mdCode.ReplaceAllString(s, "\033[36m$1\033[39m")
-	s = mdBold.ReplaceAllString(s, "\033[1m$1\033[22m")
+	const styleOpen = "\033\x02"
+	s = mdCode.ReplaceAllString(s, styleOpen+"36m$1"+styleOpen+"39m")
+	s = mdBold.ReplaceAllString(s, styleOpen+"1m$1"+styleOpen+"22m")
 	// [text](url) -> underlined text, then the address in grey without
 	// https://; bare addresses shortened the same way. All clickable.
 	s = anyLink.ReplaceAllStringFunc(s, func(link string) string {
@@ -1336,7 +1339,7 @@ func inlineMarkdown(s string) string {
 		}
 		return "\033[4m" + hyperlink(target, text) + "\033[24m \033[90m(" + hyperlink(target, url) + ")\033[39m"
 	})
-	return s
+	return strings.ReplaceAll(s, styleOpen, "\033[")
 }
 
 // hyperlink makes text a terminal link to url (OSC 8: iTerm2, kitty, WezTerm,

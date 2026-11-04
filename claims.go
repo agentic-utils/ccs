@@ -35,6 +35,9 @@ type prClaim struct {
 // claimsFile is claimsPath: each PR's claims, in the order they were made.
 type claimsFile struct {
 	Claims map[string][]prClaim `json:"claims"`
+	// Checked is when each claimed PR outside the watcher's state was last
+	// asked about, so every session's status line shares one check.
+	Checked map[string]time.Time `json:"checked,omitempty"`
 }
 
 func claimsPath() string     { return filepath.Join(filepath.Dir(settingsPath), "claims.json") }
@@ -42,6 +45,31 @@ func claimsLockPath() string { return filepath.Join(filepath.Dir(settingsPath), 
 
 // prsFresh is how old the watcher's state may be before ccs prs asks GitHub itself.
 const prsFresh = 10 * time.Minute
+
+// endCheckEvery is how often a claimed PR outside the watcher's state is asked
+// about, across all sessions: ccs prs runs per session, about once a minute.
+const endCheckEvery = 10 * time.Minute
+
+// dueEndChecks stamps and returns the claimed PRs in urls not asked about
+// within endCheckEvery. Stamping under the lock makes one caller do each check,
+// and a failed check waits too, so a refused request isn't retried every run.
+func dueEndChecks(urls []string, now time.Time) ([]string, error) {
+	var due []string
+	err := withClaims(func(c *claimsFile) bool {
+		for _, u := range urls {
+			if _, claimed := c.Claims[u]; !claimed || now.Sub(c.Checked[u]) < endCheckEvery {
+				continue
+			}
+			if c.Checked == nil {
+				c.Checked = map[string]time.Time{}
+			}
+			c.Checked[u] = now
+			due = append(due, u)
+		}
+		return len(due) > 0
+	})
+	return due, err
+}
 
 // withClaims runs f on the claims under an exclusive lock and saves them if
 // f says they changed (a unique temp file, then a rename), so sessions
@@ -364,13 +392,21 @@ func prsList(author, owner string, offline bool, now time.Time) (prsReport, erro
 	live := liveByPID()
 	claims := loadClaims()
 	// A claimed PR not open in the list has ended, or isn't the author's:
-	// ask once (online only) so ended ones are dropped.
+	// ask, at most every endCheckEvery (online only), so ended ones are dropped.
 	if !offline {
+		var unknown []string
 		for u := range claims.Claims {
 			if open[u] == nil && !ended[u] {
-				if s, err := endState(u); err == nil && s != "open" {
-					ended[u] = true
-				}
+				unknown = append(unknown, u)
+			}
+		}
+		due, err := dueEndChecks(unknown, now)
+		if err != nil {
+			logActivity("ccs prs: couldn't record PR checks: %v", err)
+		}
+		for _, u := range due {
+			if s, err := endState(u); err == nil && s != "open" {
+				ended[u] = true
 			}
 		}
 	}
@@ -386,6 +422,7 @@ func prsList(author, owner string, offline bool, now time.Time) (prsReport, erro
 			}
 			if ended[u] || len(kept) == 0 {
 				delete(c.Claims, u)
+				delete(c.Checked, u)
 				changed = true
 			} else if changed || len(kept) != len(cs) {
 				c.Claims[u] = kept

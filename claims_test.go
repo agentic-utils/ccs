@@ -346,3 +346,71 @@ func TestPRsCLIAndMCP(t *testing.T) {
 		t.Errorf("--statusline with nothing saved prints nothing and asks nothing: %d %q", code, out.String())
 	}
 }
+
+func TestPrsListAsksAboutUnknownClaimsAtMostEveryInterval(t *testing.T) {
+	claimEnv(t)
+	now := time.Now()
+	if _, err := claim(claimA, false, now); err != nil {
+		t.Fatal(err)
+	}
+	fetchOpenPRs = func(string, string) (map[string]*watchedPR, error) { return map[string]*watchedPR{}, nil }
+	asked := 0
+	endState = func(string) (string, error) { asked++; return "open", nil }
+	list := func(at time.Time) {
+		t.Helper()
+		if _, err := prsList("a", "o", false, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list(now)
+	list(now.Add(time.Minute)) // another session's status line, a minute on
+	if asked != 1 {
+		t.Errorf("asked %d times within the interval, want 1", asked)
+	}
+	list(now.Add(endCheckEvery))
+	if asked != 2 {
+		t.Errorf("asked %d times once the interval passed, want 2", asked)
+	}
+}
+
+func TestPrsListWaitsAfterAFailedEndCheck(t *testing.T) {
+	claimEnv(t)
+	now := time.Now()
+	if _, err := claim(claimA, false, now); err != nil {
+		t.Fatal(err)
+	}
+	fetchOpenPRs = func(string, string) (map[string]*watchedPR, error) { return map[string]*watchedPR{}, nil }
+	asked := 0
+	endState = func(string) (string, error) { asked++; return "", errors.New("rate limited") }
+	for _, at := range []time.Time{now, now.Add(time.Minute)} {
+		if _, err := prsList("a", "o", false, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if asked != 1 {
+		t.Errorf("asked %d times after a failure, want 1", asked)
+	}
+	if got := loadClaims().Claims[claimA]; len(got) != 1 {
+		t.Errorf("a failed check must keep the claim, got %+v", got)
+	}
+}
+
+func TestPrsListDropsAnEndedClaimAndItsCheck(t *testing.T) {
+	claimEnv(t)
+	now := time.Now()
+	if _, err := claim(claimA, false, now); err != nil {
+		t.Fatal(err)
+	}
+	fetchOpenPRs = func(string, string) (map[string]*watchedPR, error) { return map[string]*watchedPR{}, nil }
+	endState = func(string) (string, error) { return "merged", nil }
+	if _, err := prsList("a", "o", false, now); err != nil {
+		t.Fatal(err)
+	}
+	c := loadClaims()
+	if _, ok := c.Claims[claimA]; ok {
+		t.Errorf("merged PR's claim kept: %+v", c.Claims)
+	}
+	if _, ok := c.Checked[claimA]; ok {
+		t.Errorf("merged PR's check kept: %+v", c.Checked)
+	}
+}

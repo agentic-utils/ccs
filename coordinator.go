@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -90,11 +91,60 @@ func (r coordinatorRecord) save() error {
 	if err := os.MkdirAll(filepath.Dir(coordinatorPath()), 0o700); err != nil {
 		return err
 	}
-	tmp := coordinatorPath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(coordinatorPath()), "coordinator-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, coordinatorPath())
+	defer os.Remove(tmp.Name())
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), coordinatorPath())
+}
+
+// errCoordinatorBusy: another ccs is setting it up or resuming it right now.
+var errCoordinatorBusy = errors.New("another ccs is opening the coordinator right now: look for its tab, or try again in a moment")
+
+// coordinatorTurn is one ccs's turn to decide and start: looking and launching
+// are one step, under a lock, since a starting session is invisible until its
+// process is up. Held until release (exec and exit let go too). When another
+// ccs has the turn, a coordinator that's already up can still be switched to;
+// anything else is errCoordinatorBusy.
+func coordinatorTurn() (release func(), s coordinatorState, err error) {
+	release = func() {}
+	if err := os.MkdirAll(filepath.Dir(coordinatorPath()), 0o700); err != nil {
+		return release, s, err
+	}
+	f, err := os.OpenFile(coordinatorPath()+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return release, s, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if s = findCoordinator(); s.kind == coordLive || s.kind == coordStarting {
+			return release, s, nil
+		}
+		return release, s, errCoordinatorBusy
+	}
+	return func() { f.Close() }, findCoordinator(), nil
+}
+
+// setupCoordinator carries out an accepted plan, unless a coordinator has
+// appeared since it was offered: then that one is opened instead.
+func setupCoordinator(p coordinatorPlan, inPlace bool) (string, error) {
+	release, s, err := coordinatorTurn()
+	defer release()
+	if err != nil {
+		return "", err
+	}
+	if s.kind != coordNone {
+		return openCoordinator(s, inPlace)
+	}
+	return createCoordinator(p, inPlace)
 }
 
 // writeCoordinatorFolder creates its folder. What's there already is the
@@ -135,9 +185,9 @@ type coordinatorState struct {
 	pid  int
 }
 
-// findCoordinator looks for one: the recorded session, running or not, then a
-// session with its name (a /clear changes a session's id, and one may predate
-// the record). A session found by name becomes the record.
+// findCoordinator looks for one: the recorded session, running or starting,
+// then a session with its name (a /clear changes a session's id, and one may
+// predate the record). A session found another way becomes the record.
 func findCoordinator() coordinatorState {
 	rec := loadCoordinator()
 	live := scanSessions(nil)
@@ -145,15 +195,23 @@ func findCoordinator() coordinatorState {
 		if s, ok := live[rec.SessionID]; ok {
 			return coordinatorState{coordLive, rec, s.pid}
 		}
-		if pid := startingProcess(rec.SessionID); pid != 0 {
-			return coordinatorState{coordStarting, rec, pid}
-		}
 	}
-	for id, s := range live {
-		if s.stat.name == rec.name() && !s.codex {
-			rec.SessionID = id
-			rec.save()
-			return coordinatorState{coordLive, rec, s.pid}
+	if followLive(&rec, live) {
+		rec.save()
+		return coordinatorState{coordLive, rec, live[rec.SessionID].pid}
+	}
+	if rec.SessionID != "" {
+		if pid := startingProcess(rec.SessionID); pid != 0 {
+			// Its arguments keep the id it started with, so after /clear (with a
+			// new name too) it's this process that says which session it is now.
+			for id, s := range live {
+				if s.pid == pid {
+					rec.SessionID = id
+					rec.save()
+					return coordinatorState{coordLive, rec, pid}
+				}
+			}
+			return coordinatorState{coordStarting, rec, pid}
 		}
 	}
 	if rec.SessionID != "" && resumable(rec.SessionID, false) {
@@ -167,8 +225,31 @@ func findCoordinator() coordinatorState {
 	return coordinatorState{kind: coordNone, rec: rec}
 }
 
-// startingProcess is the pid of a claude started with this --session-id: until
-// its trust question is answered it has no session file to find it by.
+// followLive points rec at the one running session with its name, when the
+// recorded id isn't running: /clear gives a session a new id and keeps its name.
+func followLive(rec *coordinatorRecord, live map[string]liveSession) bool {
+	if _, ok := live[rec.SessionID]; ok && rec.SessionID != "" {
+		return false
+	}
+	found := ""
+	for id, s := range live {
+		if s.stat.name == rec.name() && !s.codex {
+			if found != "" {
+				return false
+			}
+			found = id
+		}
+	}
+	if found == "" {
+		return false
+	}
+	rec.SessionID = found
+	return true
+}
+
+// startingProcess is the pid of a claude started with this --session-id or
+// --resume: until any question it opens with is answered, it has no session
+// file to find it by.
 func startingProcess(id string) int {
 	out, err := psAll()
 	if err != nil {
@@ -176,7 +257,7 @@ func startingProcess(id string) int {
 	}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) < 3 || !strings.Contains(line, "--session-id "+id) {
+		if len(f) < 3 || filepath.Base(f[2]) == "ccs" || !strings.Contains(line, "--session-id "+id) && !strings.Contains(line, "--resume "+id) {
 			continue
 		}
 		if pid, err := strconv.Atoi(f[0]); err == nil {
@@ -370,13 +451,13 @@ func openCoordinator(s coordinatorState, inPlace bool) (string, error) {
 	case coordLive, coordStarting:
 		if focusPID(s.pid, true) {
 			if s.kind == coordStarting {
-				return "Switched to " + name + ", waiting on its trust question", nil
+				return "Switched to " + name + ", which is still starting: it may be asking whether to trust its folder", nil
 			}
 			return "Switched to " + name, nil
 		}
 		return "", fmt.Errorf("%s is running (pid %d), but ccs can't switch to its tab from here", name, s.pid)
 	case coordResumable:
-		o := launchOpts{name: name, resume: s.rec.SessionID, cwd: sessionCwd(s.rec.SessionID), focus: true, inPlace: inPlace}
+		o := launchOpts{name: name, resume: s.rec.SessionID, cwd: sessionCwd(s.rec.SessionID), focus: true, wait: coordinatorWait, inPlace: inPlace}
 		if _, err := launchSession(o); err != nil {
 			return "", err
 		}
@@ -391,6 +472,11 @@ var focusPID = focusSession
 // adoptCoordinator makes an existing session the coordinator, by its name or
 // id. Its folder and role stay its own.
 func adoptCoordinator(who string) (string, error) {
+	release, _, err := coordinatorTurn()
+	defer release()
+	if err != nil {
+		return "", err
+	}
 	rec := loadCoordinator()
 	id, name := "", ""
 	for sid, s := range scanSessions(nil) {
@@ -447,7 +533,12 @@ func runCoordinator(args []string, stdin io.Reader, stdout, stderr io.Writer, is
 		return 0
 	}
 	inPlace := !canOpenTabs()
-	s := findCoordinator()
+	release, s, err := coordinatorTurn()
+	defer release()
+	if err != nil {
+		fmt.Fprintln(stderr, "ccs coordinator:", err)
+		return 1
+	}
 	if s.kind != coordNone {
 		msg, err := openCoordinator(s, inPlace)
 		if err != nil {
@@ -457,6 +548,7 @@ func runCoordinator(args []string, stdin io.Reader, stdout, stderr io.Writer, is
 		fmt.Fprintln(stdout, msg)
 		return 0
 	}
+	release() // not across the question: setupCoordinator looks again
 	p := planCoordinator(*noMCP)
 	fmt.Fprintln(stdout, "Set up a coordinator: a session at the top of the list that starts one named session per task, tracks their PRs and merge order, and closes them when they finish.\n\nThis will:")
 	for _, l := range p.lines() {
@@ -478,7 +570,7 @@ func runCoordinator(args []string, stdin io.Reader, stdout, stderr io.Writer, is
 		}
 	}
 	fmt.Fprintln(stdout, "\n"+trustNote)
-	msg, err := createCoordinator(p, inPlace)
+	msg, err := setupCoordinator(p, inPlace)
 	if msg != "" {
 		fmt.Fprintln(stdout, msg)
 	}
@@ -534,7 +626,11 @@ func coordinatorOfferable() bool {
 // coordinatorKeyCmd is ^X O, off the UI goroutine: open it, or offer to set
 // one up.
 func coordinatorKeyCmd() tea.Msg {
-	s := findCoordinator()
+	release, s, err := coordinatorTurn()
+	defer release()
+	if err != nil {
+		return coordinatorDoneMsg{err: err}
+	}
 	if s.kind == coordNone {
 		return coordinatorOfferMsg{plan: planCoordinator(false), opened: true}
 	}
@@ -545,7 +641,7 @@ func coordinatorKeyCmd() tea.Msg {
 // coordinatorSetupCmd is the popup's Enter.
 func coordinatorSetupCmd(p coordinatorPlan) tea.Cmd {
 	return func() tea.Msg {
-		text, err := createCoordinator(p, false)
+		text, err := setupCoordinator(p, false)
 		return coordinatorDoneMsg{text, err, loadCoordinator().SessionID}
 	}
 }
@@ -559,10 +655,15 @@ func markCoordinatorAnswered() {
 }
 
 // syncCoordinator follows the record, which `ccs coordinator` may change while
-// the list is open: that session gets the section above all others.
+// the list is open, and the session itself, whose id /clear changes: that
+// session gets the section above all others.
 func (m *model) syncCoordinator() {
-	if id := loadCoordinator().SessionID; id != m.coordID {
-		m.coordID = id
+	rec := loadCoordinator()
+	if rec.SessionID != "" && followLive(&rec, m.lastScan) {
+		rec.save()
+	}
+	if rec.SessionID != m.coordID {
+		m.coordID = rec.SessionID
 		m.sortList()
 	}
 }

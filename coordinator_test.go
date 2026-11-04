@@ -876,6 +876,18 @@ func TestCoordinatorPopupOverAnEmptyList(t *testing.T) {
 	}
 }
 
+func TestNoAutomaticRestartDuringCoordinatorSetUp(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.blurred = true
+	if !m.awayForUpdate() {
+		t.Fatal("away, nothing going on")
+	}
+	m.coordBusy = true
+	if m.awayForUpdate() {
+		t.Error("restarting now loses what the set-up says when it's done")
+	}
+}
+
 func TestEnterOnAnEmptyListWaitsForTheSetUp(t *testing.T) {
 	coordinatorFixture(t)
 	m := initialModel(nil, "", nil)

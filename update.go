@@ -1013,12 +1013,12 @@ const updatedEnv = "CCS_UPDATED_FROM"
 // awayForUpdate: an automatic update may restart ccs now. You're away (ccs
 // isn't focused, or no key for autoUpdateIdle) and nothing would be lost or
 // cut short: no prompt or popup open, no unsent text in any message box, no
-// session opening. The restart keeps the screen, search and selection.
+// session or coordinator opening. The restart keeps the screen, search and selection.
 func (m model) awayForUpdate() bool {
 	if !m.blurred && time.Since(m.lastKeyAt) < autoUpdateIdle {
 		return false
 	}
-	if m.prompting() || m.resuming || m.waitOpen || m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 ||
+	if m.prompting() || m.resuming || m.coordBusy || m.waitOpen || m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return false
 	}

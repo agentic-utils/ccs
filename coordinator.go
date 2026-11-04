@@ -294,9 +294,14 @@ func sessionCwd(id string) string {
 }
 
 // mcpRun runs claude's or codex's mcp commands, detached so it can't prompt
-// and with stderr, where claude says a server is missing. Stubbed in tests.
-var mcpRun = func(bin string, args ...string) ([]byte, error) {
-	return runCommand(30*time.Second, nil, true, bin, args...)
+// and with stderr, where claude says a server is missing. From the home folder,
+// not wherever ccs was started: a repo's own ccs server is no use to the
+// coordinator, whose folder is elsewhere. Stubbed in tests.
+var mcpRun = realMCPRun
+
+func realMCPRun(bin string, args ...string) ([]byte, error) {
+	dir, _ := os.UserHomeDir()
+	return runCommandIn(dir, 30*time.Second, nil, true, bin, args...)
 }
 
 // mcpFix is one CLI's missing ccs MCP server: the command that adds it.
@@ -325,6 +330,9 @@ func missingMCP() (fixes []mcpFix, notes []string) {
 		out, err := mcpRun("claude", "mcp", "get", "ccs")
 		switch {
 		case err == nil:
+			if !strings.Contains(string(out), "Connected") {
+				notes = append(notes, "Claude Code has a ccs MCP server that isn't connected, left as it is; the coordinator can use the ccs commands instead (claude mcp get ccs says why)")
+			}
 		case strings.Contains(string(out), "No MCP server"):
 			fixes = append(fixes, mcpFix{"claude", []string{"mcp", "add", "--scope", "user", "ccs", "--", ccsCommand(), "mcp"}})
 		default:
@@ -356,7 +364,8 @@ func missingMCP() (fixes []mcpFix, notes []string) {
 // connected, Codex (which doesn't test servers) must list it.
 func applyMCP(fixes []mcpFix) (done []string, errs []string) {
 	for _, f := range fixes {
-		if out, err := mcpRun(f.bin, f.args...); err != nil {
+		// Already there means another ccs got there since the plan: check it as any other.
+		if out, err := mcpRun(f.bin, f.args...); err != nil && !strings.Contains(string(out), "already exists") {
 			errs = append(errs, fmt.Sprintf("%s failed: %v: %s", f, err, strings.TrimSpace(string(out))))
 			continue
 		}

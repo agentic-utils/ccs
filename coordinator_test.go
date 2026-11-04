@@ -493,6 +493,69 @@ func TestCoordinatorAdopt(t *testing.T) {
 	}
 }
 
+func TestCoordinatorAdoptOnlyWhatItCanBringBack(t *testing.T) {
+	session := func(t *testing.T, id, title string) {
+		t.Helper()
+		proj := filepath.Join(getProjectsDir(), "-w")
+		os.MkdirAll(proj, 0o700)
+		os.WriteFile(filepath.Join(proj, id+".jsonl"), []byte(`{"type":"user","cwd":"/tmp","sessionId":"`+id+`","timestamp":"2026-11-04T10:00:00Z","message":{"role":"user","content":"hi"}}`+"\n"+`{"type":"custom-title","customTitle":"`+title+`","sessionId":"`+id+`"}`+"\n"), 0o600)
+	}
+	t.Run("two running with the name: never a guess", func(t *testing.T) {
+		coordinatorFixture(t)
+		for i, id := range []string{"one", "two"} {
+			os.WriteFile(filepath.Join(getSessionsDir(), itoa(i)+".json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"`+id+`","name":"hub"}`), 0o600)
+		}
+		out, code := runCoord("--adopt", "hub")
+		if code != 1 || !strings.Contains(out, "2 running sessions") || loadCoordinator().SessionID != "" {
+			t.Errorf("%d %s %+v", code, out, loadCoordinator())
+		}
+		if out, code := runCoord("--adopt", "two"); code != 0 || loadCoordinator().SessionID != "two" {
+			t.Errorf("by id: %d %s", code, out)
+		}
+	})
+	t.Run("a name launch can't take is refused now, not when reopening", func(t *testing.T) {
+		coordinatorFixture(t)
+		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"their-id","name":"my hub"}`), 0o600)
+		out, code := runCoord("--adopt", "my hub")
+		if code != 1 || !strings.Contains(out, "rename it") || loadCoordinator().SessionID != "" {
+			t.Errorf("%d %s %+v", code, out, loadCoordinator())
+		}
+	})
+	t.Run("by id, closed: it keeps its name", func(t *testing.T) {
+		coordinatorFixture(t)
+		scripts := startsAs(t, "hub")
+		session(t, "their-id", "hub")
+		if out, code := runCoord("--adopt", "their-id"); code != 0 || !strings.Contains(out, "hub (their-id)") {
+			t.Fatalf("%d %s", code, out)
+		}
+		if r := loadCoordinator(); r.Name != "hub" {
+			t.Errorf("%+v", r)
+		}
+		if out, code := runCoord(); code != 0 || !strings.Contains(out, "Resumed hub") {
+			t.Fatalf("%d %s", code, out)
+		}
+		script, _ := os.ReadFile((*scripts)[0])
+		if !strings.Contains(string(script), "--name 'hub'") {
+			t.Errorf("renamed it:\n%s", script)
+		}
+	})
+	t.Run("by id, closed, with a name launch can't take", func(t *testing.T) {
+		coordinatorFixture(t)
+		session(t, "their-id", "my hub")
+		if out, code := runCoord("--adopt", "their-id"); code != 1 || !strings.Contains(out, "rename it") {
+			t.Errorf("%d %s", code, out)
+		}
+	})
+	t.Run("says when it replaces one", func(t *testing.T) {
+		coordinatorFixture(t)
+		coordinatorRecord{SessionID: "old"}.save()
+		session(t, "their-id", "hub")
+		if out, _ := runCoord("--adopt", "their-id"); !strings.Contains(out, "stays as an ordinary session") {
+			t.Error(out)
+		}
+	})
+}
+
 func TestCoordinatorInPlaceOutsideTabs(t *testing.T) {
 	coordinatorFixture(t)
 	t.Setenv("ITERM_SESSION_ID", "")

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -1096,7 +1097,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshMsg:
 		m.refreshStarted = time.Time{}
-		m.refreshFailed = msg.err != nil
+		// No projects folder yet on a first run is an empty list, not a failure.
+		m.refreshFailed = msg.err != nil && !(errors.Is(msg.err, fs.ErrNotExist) && len(m.items) == 0)
 		m.live = msg.live // liveness is independent of the list, never stale-dropped
 		// Delete/prune/rename prompts hold an index into m.filtered, so don't
 		// reshuffle it under them; and a scan that started before a delete,

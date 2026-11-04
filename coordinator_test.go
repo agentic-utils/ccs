@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -898,6 +900,23 @@ func TestNoAutomaticRestartDuringCoordinatorSetUp(t *testing.T) {
 	m.coordBusy = true
 	if m.awayForUpdate() {
 		t.Error("restarting now loses what the set-up says when it's done")
+	}
+}
+
+func TestFirstRunRefreshIsNoFailure(t *testing.T) {
+	coordinatorFixture(t)
+	m := initialModel(nil, "", nil)
+	res, _ := m.Update(refreshMsg{err: fmt.Errorf("scan: %w", fs.ErrNotExist)})
+	if res.(model).refreshFailed {
+		t.Error("no folder yet, nothing to list: not a failure")
+	}
+	m = initialModel(buildItems([]Conversation{{SessionID: "a", Title: "x"}}), "", nil)
+	if res, _ := m.Update(refreshMsg{err: fmt.Errorf("scan: %w", fs.ErrNotExist)}); !res.(model).refreshFailed {
+		t.Error("a folder that vanished under a list still is")
+	}
+	m = initialModel(nil, "", nil)
+	if res, _ := m.Update(refreshMsg{err: errors.New("disk on fire")}); !res.(model).refreshFailed {
+		t.Error("any other error still is")
 	}
 }
 

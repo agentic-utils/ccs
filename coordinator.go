@@ -293,6 +293,19 @@ func sessionCwd(id string) string {
 	return c.Cwd
 }
 
+// sessionTitle is the name a session was given, "" if none.
+func sessionTitle(id string) string {
+	paths, _ := filepath.Glob(filepath.Join(getProjectsDir(), "*", id+".jsonl"))
+	if len(paths) == 0 {
+		return ""
+	}
+	c, err := parseConversationFile(paths[0], time.Time{}, 0)
+	if err != nil || c == nil || !c.IsCustomTitle {
+		return ""
+	}
+	return c.Title
+}
+
 // mcpRun runs claude's or codex's mcp commands, detached so it can't prompt
 // and with stderr, where claude says a server is missing. Stubbed in tests.
 var mcpRun = func(bin string, args ...string) ([]byte, error) {
@@ -479,14 +492,18 @@ func adoptCoordinator(who string) (string, error) {
 		return "", err
 	}
 	rec := loadCoordinator()
-	id, name := "", ""
+	id, name, matches := "", "", 0
 	for sid, s := range scanSessions(nil) {
 		if !s.codex && (s.stat.name == who || sid == who) {
 			id, name = sid, s.stat.name
+			matches++
 		}
 	}
+	if matches > 1 {
+		return "", fmt.Errorf("%d running sessions are named %q: give the id of the one you mean", matches, who)
+	}
 	if id == "" && resumable(who, false) {
-		id = who
+		id, name = who, sessionTitle(who)
 	}
 	if id == "" {
 		id = namedTranscript(who)
@@ -495,6 +512,11 @@ func adoptCoordinator(who string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("no Claude Code session named %q, and no session with that id", who)
 	}
+	// Coming back goes through launch, which takes only names like these.
+	if name != "" && !sessionName.MatchString(name) {
+		return "", fmt.Errorf("ccs couldn't reopen a session named %q: rename it with letters, digits, '.', '_' and '-' first (/rename there, or Ctrl+X E in the list)", name)
+	}
+	replaced := rec.SessionID != "" && rec.SessionID != id
 	rec.SessionID, rec.Offered = id, true
 	rec.Name = ""
 	if name != "" && name != coordinatorName {
@@ -503,7 +525,11 @@ func adoptCoordinator(who string) (string, error) {
 	if err := rec.save(); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s (%s) is now the coordinator", cmp.Or(name, id), id), nil
+	msg := fmt.Sprintf("%s (%s) is now the coordinator", cmp.Or(name, id), id)
+	if replaced {
+		msg += "; the one before it stays as an ordinary session"
+	}
+	return msg, nil
 }
 
 // runCoordinator is `ccs coordinator`.

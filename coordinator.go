@@ -20,6 +20,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 )
 
@@ -563,9 +564,11 @@ func runCoordinator(args []string, stdin io.Reader, stdout, stderr io.Writer, is
 			return 1
 		}
 		fmt.Fprint(stdout, "\nGo ahead? [Y/n] ")
-		line, _ := bufio.NewReader(stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "" && a != "y" && a != "yes" {
-			fmt.Fprintln(stdout, "Nothing changed.")
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		// Enter alone is yes; Ctrl+D is nobody saying so.
+		if a := strings.ToLower(strings.TrimSpace(line)); err != nil || a != "" && a != "y" && a != "yes" {
+			markCoordinatorAnswered()
+			fmt.Fprintln(stdout, "\nNothing changed.")
 			return 1
 		}
 	}
@@ -591,7 +594,17 @@ func isTerminal(f *os.File) bool { return term.IsTerminal(f.Fd()) }
 
 type coordinatorOfferMsg struct {
 	plan   coordinatorPlan
-	opened bool // asked for with ^X O, so it opens whatever was answered before
+	opened bool // asked for with ^X O, so it opens whatever was answered before and at once
+}
+
+// offerShown: the offer is on screen and takes keys. One nobody asked for waits
+// behind anything being typed (the search, the message box, a prompt), so what
+// was meant for those can't answer it.
+func (m model) offerShown() bool {
+	if m.coordOffer == nil || len(m.reopen) > 0 || m.prompting() {
+		return false
+	}
+	return m.coordAsked || !m.chatFocus && m.textInput.Value() == ""
 }
 
 type coordinatorDoneMsg struct {
@@ -669,22 +682,39 @@ func (m *model) syncCoordinator() {
 }
 
 // coordinatorPopup offers to set one up, with everything it will change.
+//
+// What it changes and its keys always show: on a small screen the lines wrap
+// and the rest goes (the trust question is explained again on accepting).
 func (m model) coordinatorPopup() string {
+	compact := m.width > 0 && m.width < 70 || m.height > 0 && m.height < 24
+	wrap := func(s string) string {
+		if m.width > 0 {
+			return ansi.Wrap(s, max(m.width-8, 20), " ")
+		}
+		return s
+	}
 	var b strings.Builder
-	b.WriteString("\033[1mSet up a coordinator?\033[0m\n\n")
-	b.WriteString("A session at the top of the list that starts one\nnamed session per task, tracks their PRs and merge order,\nand closes them when they finish.\n\n")
+	b.WriteString("\033[1mSet up a coordinator?\033[0m\n")
+	if !compact {
+		b.WriteString("\nA session at the top of the list that starts one\nnamed session per task, tracks their PRs and merge order,\nand closes them when they finish.\n\n")
+	}
 	b.WriteString("This will:\n")
 	for _, l := range m.coordOffer.lines() {
-		b.WriteString("  " + l + "\n")
+		b.WriteString(wrap("  "+l) + "\n")
 	}
 	for _, n := range m.coordOffer.notes {
-		b.WriteString("\033[90m  " + n + "\033[0m\n")
+		b.WriteString("\033[90m" + wrap("  "+n) + "\033[0m\n")
 	}
-	b.WriteString("\n\033[90mClaude asks once whether to trust the folder:\033[0m\n\033[90mchoose \"Yes, I trust this folder\".\033[0m\n")
-	b.WriteString("\n\033[90m" + hints(keyEnter, "set up", keyEsc, "not now, ^X O later") + "\033[0m")
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("39")).
-		Padding(1, 3).
-		Render(b.String())
+	if !compact {
+		b.WriteString("\n\033[90mClaude asks once whether to trust the folder:\033[0m\n\033[90mchoose \"Yes, I trust this folder\".\033[0m\n")
+	}
+	if !compact {
+		b.WriteString("\n")
+	}
+	b.WriteString("\033[90m" + wrap(hints(keyEnter, "set up", keyEsc, "not now, ^X O later")) + "\033[0m")
+	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("39")).Padding(1, 3)
+	if compact {
+		style = style.Padding(0, 3)
+	}
+	return style.Render(b.String())
 }

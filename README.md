@@ -63,7 +63,7 @@ ccs coordinator                  # open it: its tab if it's running, resumed if 
 ccs coordinator --adopt my-hub   # make an existing session the coordinator instead
 ```
 
-ccs offers it once, in a popup, in iTerm or tmux when you have none (Esc doesn't ask again; `Ctrl+X O` still opens the same offer). Setting up asks once, shows exactly what will change, and needs none of your own config or plugins:
+ccs offers it once, in a popup, in iTerm or tmux when you have none (Esc doesn't ask again; `Ctrl+X O` still opens the same offer). It waits until you aren't typing a search, a message or a prompt, and ignores keys for its first second, so nothing meant for the list answers it. Setting up asks once, shows exactly what will change, and needs none of your own config or plugins:
 
 - **Its folder**, `coordinator` beside ccs's settings (`~/Library/Application Support/ccs/` on macOS, `~/.config/ccs/` on Linux). `CLAUDE.md` is its role and `.claude/settings.json` allows the `ccs` commands it needs, in that folder only. Both are yours to edit, and ccs never overwrites them. Because Claude Code reloads them on every start and after compaction, every way of resuming it keeps its role.
 - **The ccs MCP server**, if it's missing: `claude mcp add --scope user ccs -- ccs mcp`, and the same for Codex if you have it. ccs then checks that Claude Code reports it connected, and says so if it doesn't. If it's there already, nothing is asked or changed. `--no-mcp` skips this.

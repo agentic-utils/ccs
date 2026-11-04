@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // coordinatorFixture is a clean state: no record, no folder, no sessions, tabs
@@ -540,6 +541,136 @@ func TestCoordinatorHasItsOwnSectionAbovePinned(t *testing.T) {
 	}
 }
 
+func TestCoordinatorOfferNeedsADeliberateAnswer(t *testing.T) {
+	newList := func(t *testing.T) model {
+		coordinatorFixture(t)
+		startsAs(t, coordinatorName)
+		m := initialModel(buildItems([]Conversation{{SessionID: "a", Title: "other", LastTimestamp: time.Now().UTC().Format(time.RFC3339)}}), "", nil)
+		m.width, m.height = 140, 40
+		return m
+	}
+	offer := func(m model, opened bool) model {
+		res, _ := m.Update(coordinatorOfferMsg{opened: opened})
+		return res.(model)
+	}
+	t.Run("a key just as it appears answers nothing", func(t *testing.T) {
+		m := offer(newList(t), false)
+		for _, k := range []tea.KeyType{tea.KeyEnter, tea.KeyEsc} {
+			var cmd tea.Cmd
+			if m, cmd = key(m, tea.KeyMsg{Type: k}); m.coordOffer == nil || cmd != nil || loadCoordinator().Offered {
+				t.Errorf("%v answered it", k)
+			}
+		}
+		m.coordSince = time.Now().Add(-updateKeyGrace)
+		if m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter}); m.coordOffer != nil || cmd == nil {
+			t.Error("after the grace, enter sets up")
+		}
+	})
+	t.Run("ctrl+c still quits at once", func(t *testing.T) {
+		if _, cmd := key(offer(newList(t), false), tea.KeyMsg{Type: tea.KeyCtrlC}); cmd == nil {
+			t.Error("no quit")
+		}
+	})
+	t.Run("waits behind a rename, then gets a fresh grace", func(t *testing.T) {
+		m := newList(t)
+		m.renaming = true
+		m = offer(m, false)
+		if strings.Contains(strip2(m.View()), "Set up a coordinator?") {
+			t.Error("shown over the prompt")
+		}
+		m.coordSince = time.Now().Add(-updateKeyGrace)
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter}) // the prompt's Enter
+		if m.coordOffer == nil || loadCoordinator().Offered {
+			t.Fatal("enter meant for the prompt answered it")
+		}
+		m.renaming = false
+		if !strings.Contains(strip2(m.View()), "Set up a coordinator?") {
+			t.Error("shows once the prompt is done")
+		}
+		if m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter}); m.coordOffer == nil {
+			t.Error("the first key starts its grace")
+		}
+	})
+	t.Run("waits behind a typed search, unless asked for", func(t *testing.T) {
+		m := newList(t)
+		m.textInput.SetValue("abc")
+		m = offer(m, false)
+		if m.offerShown() || strings.Contains(strip2(m.View()), "Set up a coordinator?") {
+			t.Error("shown over the search")
+		}
+		if m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter}); m.coordOffer == nil || loadCoordinator().Offered {
+			t.Error("enter on the search answered it")
+		}
+		m.coordOffer = nil
+		if m = offer(m, true); !m.offerShown() {
+			t.Error("^X O shows it")
+		}
+	})
+	t.Run("a late check doesn't reopen what's answered", func(t *testing.T) {
+		m := newList(t)
+		markCoordinatorAnswered()
+		if m = offer(m, false); m.coordOffer != nil {
+			t.Error("offered again")
+		}
+		m = newList(t)
+		m.coordBusy = true
+		if m = offer(m, false); m.coordOffer != nil || !m.coordBusy {
+			t.Error("offered during set-up")
+		}
+	})
+	t.Run("small screens still show the plan and the keys", func(t *testing.T) {
+		m := offer(newList(t), false)
+		m.width, m.height = 44, 14
+		m.coordOffer.fixes = []mcpFix{{"claude", []string{"mcp", "add", "--scope", "user", "ccs", "--", "ccs", "mcp"}}}
+		v := strings.Join(strings.Fields(strip2(m.coordinatorPopup())), " ")
+		for _, want := range []string{"Set up a coordinator?", "--scope", "enter", "esc"} {
+			if !strings.Contains(v, want) {
+				t.Errorf("lacks %q: %s", want, v)
+			}
+		}
+		if lines := strings.Count(m.coordinatorPopup(), "\n") + 1; lines > 14 {
+			t.Errorf("%d lines in 14", lines)
+		}
+		for _, l := range strings.Split(strip2(m.coordinatorPopup()), "\n") {
+			if w := lipgloss.Width(l); w > 44 {
+				t.Errorf("%d wide: %q", w, l)
+			}
+		}
+	})
+	t.Run("what a failed set-up did stays on screen", func(t *testing.T) {
+		m := newList(t)
+		res, _ := m.Update(coordinatorDoneMsg{text: "ccs MCP server added to claude", err: errors.New("couldn't open a tab")})
+		if got := res.(model).errorMsg; !strings.Contains(got, "added to claude") || !strings.Contains(got, "open a tab") {
+			t.Error(got)
+		}
+	})
+}
+
+func TestCoordinatorPromptNoAndCtrlD(t *testing.T) {
+	for name, in := range map[string]string{"n": "n\n", "ctrl+d": ""} {
+		t.Run(name, func(t *testing.T) {
+			coordinatorFixture(t)
+			scripts := startsAs(t, coordinatorName)
+			var out bytes.Buffer
+			code := runCoordinator([]string{"--no-mcp"}, strings.NewReader(in), &out, &out, true)
+			if code != 1 || len(*scripts) > 0 || !strings.Contains(out.String(), "Nothing changed") {
+				t.Errorf("%d %s %v", code, out.String(), *scripts)
+			}
+			if rec := loadCoordinator(); !rec.Offered || rec.SessionID != "" {
+				t.Errorf("declined for good, nothing else: %+v", rec)
+			}
+		})
+	}
+	t.Run("enter alone is yes", func(t *testing.T) {
+		coordinatorFixture(t)
+		scripts := startsAs(t, coordinatorName)
+		var out bytes.Buffer
+		if code := runCoordinator([]string{"--no-mcp"}, strings.NewReader("\n"), &out, &out, true); code != 0 || len(*scripts) != 1 {
+			t.Errorf("%d %s %v", code, out.String(), *scripts)
+		}
+	})
+}
+
 func TestCoordinatorPopupAndKey(t *testing.T) {
 	coordinatorFixture(t)
 	startsAs(t, coordinatorName)
@@ -548,6 +679,7 @@ func TestCoordinatorPopupAndKey(t *testing.T) {
 
 	res, _ := m.Update(coordinatorOfferMsg{plan: coordinatorPlan{fixes: []mcpFix{{"claude", []string{"mcp", "add", "--scope", "user", "ccs", "--", "ccs", "mcp"}}}}})
 	m = res.(model)
+	m.coordSince = time.Now().Add(-updateKeyGrace)
 	v := strip2(m.View())
 	for _, want := range []string{"Set up a coordinator?", "claude mcp add --scope user ccs -- ccs mcp", "create ", "trust the folder"} {
 		if !strings.Contains(v, want) {
@@ -571,6 +703,7 @@ func TestCoordinatorPopupAndKey(t *testing.T) {
 	if m.coordOffer == nil {
 		t.Fatal("^X O with none offers, whatever was answered before")
 	}
+	m.coordSince = time.Now().Add(-updateKeyGrace)
 	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.coordOffer != nil || cmd == nil {
 		t.Fatal("enter sets up")
@@ -624,6 +757,7 @@ func TestCoordinatorPopupOverAnEmptyList(t *testing.T) {
 	if v := strip2(m.View()); !strings.Contains(v, "Set up a coordinator?") {
 		t.Errorf("a brand-new user sees the offer:\n%s", v)
 	}
+	m.coordSince = time.Now().Add(-updateKeyGrace)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	for _, k := range []tea.KeyMsg{{Type: tea.KeyDown}, {Type: tea.KeyEnter}, {Type: tea.KeyUp}, {Type: tea.KeyCtrlF}, {Type: tea.KeyCtrlD}, {Type: tea.KeyTab}} {
 		m, _ = key(m, k)

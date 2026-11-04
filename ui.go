@@ -190,6 +190,8 @@ type model struct {
 
 	coordOffer *coordinatorPlan // the set-up popup is open, with what it will change
 	coordBusy  bool             // opening or setting it up: never twice at once
+	coordAsked bool             // the open offer came from ^X O
+	coordSince time.Time        // when the offer last came on screen: keys wait for its grace
 	coordID    string           // the coordinator session, listed in its own section
 	// Each session's PRs (prs.go): what GitHub said, by address.
 	prs        map[string]prInfo
@@ -268,7 +270,7 @@ func (m model) paneWidth() int {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 || m.coordOffer != nil {
+	if m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 || m.offerShown() {
 		return m // keyboard only while it's open
 	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
@@ -940,8 +942,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case coordinatorOfferMsg:
+		if !msg.opened && (m.coordBusy || m.coordOffer != nil || loadCoordinator().Offered) {
+			return m, nil // answered, or ^X O got there, while the check ran
+		}
 		m.coordBusy = false
-		m.coordOffer = &msg.plan
+		m.coordOffer, m.coordAsked, m.coordSince = &msg.plan, msg.opened, time.Now()
 		return m, nil
 
 	case coordinatorDoneMsg:
@@ -949,6 +954,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncCoordinator()
 		if msg.err != nil {
 			m.errorMsg = msg.err.Error()
+			if msg.text != "" { // what the set-up did before it failed
+				m.errorMsg = msg.text + "; " + m.errorMsg
+			}
 			return m, nil
 		}
 		m.note(msg.text)
@@ -1396,7 +1404,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.coordOffer != nil { // owns the keyboard until answered
+		if m.coordOffer != nil && !m.offerShown() {
+			m.coordSince = time.Time{} // it comes on screen when this is done, with a fresh grace
+		} else if m.coordOffer != nil { // owns the keyboard until answered
+			if m.coordSince.IsZero() {
+				m.coordSince = time.Now()
+			}
+			if msg.String() != "ctrl+c" && time.Since(m.coordSince) < updateKeyGrace {
+				return m, nil
+			}
 			switch msg.String() {
 			case "enter":
 				p := *m.coordOffer
@@ -2017,7 +2033,7 @@ func (m model) overPopups() []popup {
 		{m.linksOpen, model.linksPopup},
 		{m.snoozeOpen, model.snoozePopup},
 		{len(m.reopen) > 0, model.reopenPopup},
-		{m.coordOffer != nil && len(m.reopen) == 0, model.coordinatorPopup},
+		{m.offerShown(), model.coordinatorPopup},
 	}
 }
 

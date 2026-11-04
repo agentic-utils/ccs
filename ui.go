@@ -103,14 +103,15 @@ type model struct {
 	// Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
 	chatInput  textinput.Model
-	chatFor    string                 // the session chatInput's draft belongs to
-	chatDrafts map[string]string      // the other sessions' drafts, so a draft never follows the selection
-	chatTickOn bool                   // the fast refresh for the selected live session is running
-	chatStatus map[string]sessionStat // every live session's last known status (set only by setStat; applyStats drops sessions that are gone)
-	pending    map[string]string      // text sent but not yet seen in the transcript, by SessionID
-	sendNote   map[string]string      // outcome of the last send, by SessionID
-	sentAt     map[string]time.Time   // when a socket send finished, by SessionID, until the session queues it
-	held       map[string]bool        // a receipt said the session is holding the message for approval
+	chatFor    string                    // the session chatInput's draft belongs to
+	chatDrafts map[string]string         // the other sessions' drafts, so a draft never follows the selection
+	pasted     map[string]*sessionImages // images behind the [Image #N] in each session's boxes
+	chatTickOn bool                      // the fast refresh for the selected live session is running
+	chatStatus map[string]sessionStat    // every live session's last known status (set only by setStat; applyStats drops sessions that are gone)
+	pending    map[string]string         // text sent but not yet seen in the transcript, by SessionID
+	sendNote   map[string]string         // outcome of the last send, by SessionID
+	sentAt     map[string]time.Time      // when a socket send finished, by SessionID, until the session queues it
+	held       map[string]bool           // a receipt said the session is holding the message for approval
 	sending    bool
 
 	// Input-prompt overlay (see wait*): live sessions waiting on the user.
@@ -1254,8 +1255,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyReceipt(msg)
 		return m, waitReceipt
 
+	case clipImageMsg:
+		switch {
+		case msg.err != nil:
+			m.errorMsg = "Couldn't read the clipboard: " + msg.err.Error()
+		case msg.path != "":
+			m.attachImage(msg.path)
+		default:
+			return m, textinput.Paste // no image there: the usual text paste
+		}
+		return m, nil
+
 	case sendDoneMsg:
 		m.sending = false
+		if !errors.Is(msg.err, errUnsent) {
+			m.dropSentImages(msg.id, msg.text)
+		}
 		if m.sendNote == nil {
 			m.sendNote = make(map[string]string)
 		}
@@ -1278,6 +1293,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastKeyAt = time.Now()
 		if msg.Type == tea.KeyRunes && (mouseLeak.MatchString(string(msg.Runes)) || m.mouseFragment(msg)) {
 			return m, nil // a fragmented mouse report, not typing
+		}
+		if m.takesImages() {
+			if msg.Type == tea.KeyRunes && (msg.Paste || len(msg.Runes) > 1) && m.pasteImages(string(msg.Runes)) {
+				return m, nil
+			}
+			if msg.Type == tea.KeyCtrlV {
+				return m, clipImageCmd
+			}
 		}
 		// ccs's own actions are ^X then a letter (^X ^W works as ^X W), Claude
 		// Code's pattern, so every other Ctrl letter edits text as in its
@@ -1960,9 +1983,11 @@ func (m model) shortcuts() [][2]string {
 	case m.chatFocus:
 		add(true, keyEnter, "send the message; on an empty box, go to its tab")
 		add(true, keyEsc, "leave the message box for the search")
+		add(true, "^V", "paste a screenshot from the clipboard into the message")
 	case live:
 		add(true, keyEnter, "go to its tab")
 		add(!m.boxHidden(), "^S", "message it: type into a box, sent into its conversation")
+		add(!m.boxHidden(), "^V", "paste a screenshot from the clipboard into a message to it")
 	default:
 		add(sel, keyEnter, "resume it in claude, in a new tab in tmux or iTerm")
 	}

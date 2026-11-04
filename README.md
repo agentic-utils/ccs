@@ -145,7 +145,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `PgUp`/`PgDn` - Scroll the conversation (the mouse wheel too)
 - Mouse wheel - scrolls whatever is under the pointer (the conversation or the list); click a session to select it, click a link in the conversation to open it. Hold `⌥ Option` while dragging to select text in iTerm
 - `Esc` - Clear the search and go back to the top
-- Message box - select an open (`●`) session and press `Ctrl+S` (or click the box) to type in the box under its conversation; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search
+- Message box - select an open (`●`) session and press `Ctrl+S` (or click the box) to type in the box under its conversation; `Enter` sends (through Claude Code's message socket, or typed into its iTerm tab / tmux pane if the socket isn't reachable), `Esc` returns to the search. A screenshot goes in with `Ctrl+V` from the clipboard (macOS), or by pasting or dropping its file anywhere in ccs: it shows as `[Image #1]`, and the session gets a copy to read
 - `Tab` - Token use of every session in the last 12h, and your allowance: charts over time, totals, cache mix and the 5-hour and weekly limits. `Tab` again to go back
 - `Ctrl+X U` - Switch Claude account (needs [cswap](https://github.com/realiti4/claude-swap), e.g. `uv tool install claude-swap`); clicking the account email does the same
 - `?` - Show the shortcuts that apply right now (the header lists only the common ones, in compact form: `^S` for Ctrl+S, and drops hints on narrow terminals rather than wrapping)

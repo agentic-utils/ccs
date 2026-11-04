@@ -80,6 +80,7 @@ type Conversation struct {
 	ghCalls     []string       // gh pr create/merge calls awaiting their output
 	spawns      []spawnCmd     // claude -p commands it ran, to find the sessions they started
 	peers       []peerRef      // its messages to and from other sessions, to link the two ends
+	tools       []toolUse      // its tool calls, for the preview; not messages, so counts, times and search ignore them
 	peerNotes   map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
 	calls       []bgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
 	tasks       []bgTask       // its background tasks (tasks.go)
@@ -527,6 +528,7 @@ func parseAppended(prev *Conversation) (*Conversation, error) {
 	}
 	c := *prev
 	c.Messages = slices.Clip(prev.Messages) // appends must not write into prev's array
+	c.tools = slices.Clip(prev.tools)
 	if c.Cwd == "unknown" {
 		c.Cwd = ""
 	}
@@ -767,7 +769,9 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 			conv.pending = &call
 			noteCall(conv, call, ts)
 			if call.Name == "SendMessage" {
-				noteSent(conv, call.Input, ts)
+				noteSent(conv, call.Input, ts) // drawn as a "To" message, not a tool call
+			} else {
+				noteTool(conv, call.Name, toolArg(call.Input), ts)
 			}
 			if call.Name == "Bash" {
 				var in struct {
@@ -784,6 +788,63 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 			conv.pending = nil
 		}
 	}
+}
+
+// toolUse is a tool call as the preview draws it, after message at-1.
+type toolUse struct {
+	at        int
+	name, arg string
+	ts        string
+}
+
+// maxToolArg caps a tool call's one-line argument (a command keeps its lines
+// and is capped at maxMessageRunes).
+const maxToolArg = 200
+
+func noteTool(conv *Conversation, name, arg, ts string) {
+	if server, tool, ok := strings.Cut(strings.TrimPrefix(name, "mcp__"), "__"); ok && strings.HasPrefix(name, "mcp__") {
+		name = server + " - " + tool + " (MCP)"
+	}
+	if r := []rune(arg); len(r) > maxMessageRunes {
+		arg = string(r[:maxMessageRunes]) + fmt.Sprintf("\n… (%d more characters)", len(r)-maxMessageRunes)
+	}
+	conv.tools = append(conv.tools, toolUse{len(conv.Messages), name, arg, ts})
+}
+
+// toolArgKeys are the inputs that say what a tool call is for, most telling
+// first; a Write's content or an Edit's strings never reach the preview.
+var toolArgKeys = []string{"command", "file_path", "notebook_path", "pattern", "query", "url", "description", "skill", "path", "subject", "name"}
+
+// toolArg is what a tool call shows in its brackets: a command verbatim, else
+// one line of its most telling input, else its input as compact JSON.
+func toolArg(input json.RawMessage) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(input, &fields) != nil {
+		return ""
+	}
+	for _, k := range toolArgKeys {
+		var s string
+		if json.Unmarshal(fields[k], &s) != nil || strings.TrimSpace(s) == "" {
+			continue
+		}
+		if k == "command" {
+			return strings.TrimSpace(s)
+		}
+		return oneLine(s)
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return oneLine(string(input))
+}
+
+// oneLine is s on a single line, cut to maxToolArg.
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > maxToolArg {
+		return string(r[:maxToolArg]) + "…"
+	}
+	return s
 }
 
 // spawnCmd is a claude -p command a session ran: when, and its text as

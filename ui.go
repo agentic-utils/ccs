@@ -54,6 +54,7 @@ type model struct {
 	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
 	grouped         bool              // ^X X G: sessions grouped by folder
 	chordX          bool              // ^X pressed: the next key picks a ccs action
+	headerCollapsed bool              // ^X D or a click: the preview's header is one line
 	selectedID      string            // the selected session, to see when it changes
 	selectedAt      time.Time         // when it was selected: its preview waits previewDebounce
 	marks           *sessionMarks     // when each session was last looked at (done)
@@ -324,6 +325,10 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			lines := strings.Split(m.renderPreview(m.filtered[m.cursor], m.previewRenderHeight()), "\n")
 			if row := msg.Y - previewTop; row >= 0 && row < len(lines) {
 				m.linkPending = linkAt(lines[row], msg.X-paneX)
+				// A click on the header that isn't on a link folds or unfolds it.
+				if m.linkPending == "" && row < len(m.previewHeader(m.filtered[m.cursor].conv, m.textInput.Value()))-1 {
+					m.toggleHeader()
+				}
 			}
 			return m
 		}
@@ -1388,6 +1393,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
+		if k == "^x d" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			m.toggleHeader()
+			return m, nil
+		}
 		if k == "^x a" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen, m.autoFocus = false, !m.autoFocus
 			m.focusHeld = ""
@@ -1988,6 +1998,8 @@ func (m model) shortcuts() [][2]string {
 		}
 	}
 	add(sel, "^X X", "shrink its file, keeping the dialogue; loses rewind history")
+	add(sel && m.headerCollapsed, "^X D", "show its full details above the conversation (or click the line)")
+	add(sel && !m.headerCollapsed, "^X D", "fold its details to one line (or click them)")
 
 	group("^X then a letter: view and tools")
 	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you: answer, open or snooze them")
@@ -2175,7 +2187,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "D", "details", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}
@@ -2782,6 +2794,8 @@ type settings struct {
 	Table     bool `json:"table,omitempty"`
 	Grouped   bool `json:"grouped,omitempty"`
 	AutoFocus bool `json:"auto_focus,omitempty"`
+	// HeaderOpen (^X D): the preview's full details, one line unless chosen.
+	HeaderOpen bool `json:"header_open,omitempty"`
 	// AutoUpdate (^X I) installs new versions once you're away instead of
 	// offering them. Off unless chosen; always written once known.
 	AutoUpdate *bool `json:"auto_update,omitempty"`
@@ -2802,7 +2816,7 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, AutoUpdate: &auto}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.

@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,6 +80,15 @@ type codexPayload struct {
 		Type    string          `json:"type"`
 		Command json.RawMessage `json:"command"`
 		Output  string          `json:"aggregated_output"`
+		// McpToolCall
+		Server    string          `json:"server"`
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
+		// FileChange: path to its change
+		Changes map[string]json.RawMessage `json:"changes"`
+		// Extension: kind web.search
+		Kind  string `json:"kind"`
+		Query string `json:"query"`
 	} `json:"item"`
 }
 
@@ -209,12 +220,15 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 			}
 		case rec.Type == "event_msg" && (p.Type == "task_started" || p.Type == "task_complete" || p.Type == "turn_aborted"):
 			conv.codexBusy = p.Type == "task_started"
-		case rec.Type == "event_msg" && p.Type == "item_completed" && p.Item != nil && p.Item.Type == "CommandExecution":
-			if cmd := codexCommand(p.Item.Command); ghPRCall(cmd) {
-				for _, u := range ghOutputPRs(p.Item.Output) {
-					addPR(conv, u)
+		case rec.Type == "event_msg" && p.Type == "item_completed" && p.Item != nil:
+			if p.Item.Type == "CommandExecution" {
+				if cmd := codexCommand(p.Item.Command); ghPRCall(cmd) {
+					for _, u := range ghOutputPRs(p.Item.Output) {
+						addPR(conv, u)
+					}
 				}
 			}
+			noteCodexTool(conv, p, ts)
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -233,6 +247,32 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 	conv.searchText = searchTextOf(*conv)
 	conv.searchLower = strings.ToLower(conv.searchText)
 	return conv, nil
+}
+
+// noteCodexTool records an item that is a tool call, named as Claude's are.
+func noteCodexTool(conv *Conversation, p codexPayload, ts string) {
+	switch it := p.Item; it.Type {
+	case "CommandExecution":
+		noteTool(conv, "Shell", strings.TrimSpace(codexShellText(it.Command)), ts)
+	case "McpToolCall":
+		noteTool(conv, "mcp__"+it.Server+"__"+it.Tool, toolArg(it.Arguments), ts)
+	case "FileChange":
+		noteTool(conv, "Edit", oneLine(strings.Join(slices.Sorted(maps.Keys(it.Changes)), " ")), ts)
+	case "Extension":
+		if it.Kind == "web.search" {
+			noteTool(conv, "WebSearch", oneLine(it.Query), ts)
+		}
+	}
+}
+
+// codexShellText is the script of a command run as [shell, -lc, script], else
+// the whole command line.
+func codexShellText(raw json.RawMessage) string {
+	var argv []string
+	if json.Unmarshal(raw, &argv) == nil && len(argv) >= 3 && (argv[len(argv)-2] == "-lc" || argv[len(argv)-2] == "-c") {
+		return argv[len(argv)-1]
+	}
+	return codexCommand(raw)
 }
 
 // codexCommand is a CommandExecution's command line: Codex records it as an

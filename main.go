@@ -110,6 +110,7 @@ Key bindings:
   Ctrl+X N        Start a new session in an iTerm tab, in this one's folder
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X T        The full table, every column, instead of the sidebar
+  Ctrl+X D        A session's full details, or one line (clicking does too)
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
   Ctrl+X A        Switch to a session's tab when it starts waiting on you
@@ -280,6 +281,7 @@ func main() {
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus = s.Table, s.Grouped, s.AutoFocus
+	m.headerCollapsed = !s.HeaderOpen
 	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
 	if s.AutoUpdate == nil && s.found {
 		saveSettings(m.settings()) // pin what an older install had

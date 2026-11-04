@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
@@ -71,8 +72,27 @@ func teammateBlocks(text string) []teammateBlock {
 // preview isn't rebuilt (scanning every message) on every frame. It lives behind
 // a pointer so it survives the value-receiver copies of model that View makes.
 type previewCache struct {
-	key   string
-	lines []string
+	key    string
+	lines  []string
+	stamps []previewStamp
+}
+
+// previewStamp says the preview lines from line on happened at when ("2026-09-29 21:45").
+type previewStamp struct {
+	line int
+	when string
+}
+
+// stampAt is when preview line happened, "" if nothing before it says.
+func (c *previewCache) stampAt(line int) string {
+	if c == nil {
+		return ""
+	}
+	i := sort.Search(len(c.stamps), func(i int) bool { return c.stamps[i].line > line })
+	if i == 0 {
+		return ""
+	}
+	return c.stamps[i-1].when
 }
 
 // hitCounter memoises HITS (messages containing the query) per conversation for
@@ -163,12 +183,12 @@ func cachedPreview(c *previewCache, conv Conversation, query string, width int) 
 	if c == nil {
 		return buildPreviewLines(conv, query, width)
 	}
-	// Preview lines depend only on the messages (so tool-only appends reuse
-	// them) and on the width they're wrapped to.
-	key := fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%v", conv.SessionID, len(conv.Messages), width, query, conv.peerNotes) // %v sorts map keys
+	// Preview lines depend only on the messages and tool calls, and on the
+	// width they're wrapped to.
+	key := fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%s\x00%v", conv.SessionID, len(conv.Messages), len(conv.tools), width, query, conv.peerNotes) // %v sorts map keys
 	if c.key != key {
 		c.key = key
-		c.lines = buildPreviewLines(conv, query, width)
+		c.lines, c.stamps = buildPreview(conv, query, width)
 	}
 	return c.lines
 }
@@ -186,6 +206,12 @@ func scrollWindow(n, rows, back int) (start, end int) {
 // maxPreviewScroll so the render and the scroll-clamp can never disagree on how
 // far the preview can scroll.
 func buildPreviewLines(conv Conversation, query string, width int) []string {
+	lines, _ := buildPreview(conv, query, width)
+	return lines
+}
+
+// buildPreview is buildPreviewLines with when each message's lines happened.
+func buildPreview(conv Conversation, query string, width int) ([]string, []previewStamp) {
 	var msgLines []string
 
 	// Find messages containing the query
@@ -229,10 +255,40 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		}
 	}
 
-	// Display messages with gaps. Consecutive messages from one speaker share
-	// a header (lastRole/lastDay); each message starts with its time.
+	// stamp notes when the lines about to be added happened, for the pinned
+	// date, and adds a date row at each new day; true if it did.
+	var stamps []previewStamp
+	lastDay := ""
+	stamp := func(ts string) bool {
+		when := formatTimestamp(ts)
+		if when == "" {
+			return false
+		}
+		stamps = append(stamps, previewStamp{len(msgLines), when})
+		day, _, _ := strings.Cut(when, " ")
+		if day == "" || day == lastDay {
+			return false
+		}
+		lastDay = day
+		msgLines = append(msgLines, dateRow(when), "")
+		return true
+	}
+
+	// Display messages with gaps. Tool calls sit between them, except in a
+	// search, which is the matches and their context.
 	lastShown := -1
-	lastRole, lastDay := "", ""
+	lastRole := ""
+	nextTool := 0
+	drawTools := func(upTo int) {
+		for query == "" && nextTool < len(conv.tools) && conv.tools[nextTool].at <= upTo {
+			t := conv.tools[nextTool]
+			stamp(t.ts)
+			msgLines = append(msgLines, renderTool(t, width)...)
+			msgLines = append(msgLines, "")
+			lastRole = ""
+			nextTool++
+		}
+	}
 	for i := 0; i < len(conv.Messages); i++ {
 		if !showSet[i] {
 			continue
@@ -250,26 +306,21 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 			msgLines = append(msgLines, "")
 		}
 
+		drawTools(i)
 		msg := conv.Messages[i]
 		msg.Text = cleanText(msg.Text)
-		ts := formatTimestamp(msg.Ts)
-		day, clock, _ := strings.Cut(ts, " ")
-		newDay := day != "" && day != lastDay
-		if newDay { // the date gets its own row, once per day
-			msgLines = append(msgLines, dateRow(day), "")
-			lastDay = day
+		newDay := stamp(msg.Ts)
+		marker := " " // ▶ marks a search match; hitLinesIn looks for it
+		if matchSet[i] {
+			marker = "▶"
 		}
 		if blocks := teammateBlocks(msg.Text); blocks != nil && msg.Role == "user" {
 			// Messages from teammate agents: each under its own "From" header,
 			// JSON status reports unpacked; bare status pings are one dim line.
-			marker := " "
-			if matchSet[i] {
-				marker = "▶"
-			}
 			for _, b := range blocks {
 				if b.body == "" {
-					line := truncate("▸ "+b.from+" · "+b.note, max(width-2-gutterExtra, 20))
-					msgLines = append(msgLines, "\033[90m"+marker+" "+fmt.Sprintf("%-5s", clock)+" "+highlight(line, query)+"\033[0m", "")
+					line := truncate("▸ "+b.from+" · "+b.note, max(width-2, 20))
+					msgLines = append(msgLines, "\033[90m"+marker+" "+highlight(line, query)+"\033[0m", "")
 					continue
 				}
 				head := fmt.Sprintf("\033[36m%s From %s\033[0m", marker, b.from)
@@ -277,7 +328,7 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 					head += " \033[90m· " + highlight(b.note, query) + "\033[0m"
 				}
 				msgLines = append(msgLines, head)
-				msgLines = append(msgLines, timeGutter(renderBody(b.body, query, max(width-gutterExtra, 0)), clock)...)
+				msgLines = append(msgLines, renderBody(b.body, query, width)...)
 				msgLines = append(msgLines, "")
 			}
 			lastShown, lastRole = i, ""
@@ -286,10 +337,6 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		if msg.Role == "sent" {
 			// A message this session sent another (SendMessage): to whom, and
 			// whether it shows in their transcript (peerLabels).
-			marker := " "
-			if matchSet[i] {
-				marker = "▶"
-			}
 			to := conv.peerNotes[i]
 			if to == "" {
 				to = shortAddr(msg.To)
@@ -299,22 +346,18 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 				head += " \033[90m· " + highlight(cleanText(msg.Note), query) + "\033[0m"
 			}
 			msgLines = append(msgLines, head)
-			msgLines = append(msgLines, timeGutter(renderBody(msg.Text, query, max(width-gutterExtra, 0)), clock)...)
+			msgLines = append(msgLines, renderBody(msg.Text, query, width)...)
 			msgLines = append(msgLines, "")
 			lastShown, lastRole = i, ""
 			continue
 		}
 		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
 			// A message sent from another session or ccs, not typed here.
-			marker := " "
-			if matchSet[i] {
-				marker = "▶"
-			}
 			if n := conv.peerNotes[i]; n != "" {
 				from = n // the sending session as listed, found by its copy
 			}
 			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s From %s\033[0m", marker, from))
-			msgLines = append(msgLines, timeGutter(renderBody(body, query, max(width-gutterExtra, 0)), clock)...)
+			msgLines = append(msgLines, renderBody(body, query, width)...)
 			msgLines = append(msgLines, "")
 			lastShown, lastRole = i, ""
 			continue
@@ -322,47 +365,48 @@ func buildPreviewLines(conv Conversation, query string, width int) []string {
 		if tag, summary, ok := harnessNote(msg.Text); ok && msg.Role == "user" {
 			// Injected by the harness (task notifications, reminders, command
 			// output): one dim line, so the real conversation stays readable.
-			marker := " "
-			if matchSet[i] {
-				marker = "▶"
-			}
 			line := "▸ " + tag
 			if summary != "" {
 				line += " · " + summary
 			}
 			if width > 0 {
-				line = truncate(line, width-2-gutterExtra) // truncate squeezes spaces, so add the gutter after
+				line = truncate(line, width-2) // truncate squeezes spaces, so add the indent after
 			}
 			if lastRole == "harness" && lastShown == i-1 {
 				msgLines = msgLines[:len(msgLines)-1] // consecutive notes stack without blank lines
+				if !newDay && len(stamps) > 0 && msg.Ts != "" {
+					stamps[len(stamps)-1].line--
+				}
 			}
-			msgLines = append(msgLines, "\033[90m"+marker+" "+fmt.Sprintf("%-5s", clock)+" "+highlight(line, query)+"\033[0m", "")
+			msgLines = append(msgLines, "\033[90m"+marker+" "+highlight(line, query)+"\033[0m", "")
 			lastShown, lastRole = i, "harness"
 			continue
 		}
-		if msg.Role != lastRole || newDay || matchSet[i] {
-			name, colour, marker := "Claude", "34", " "
-			if msg.Role == "user" {
-				name, colour = "User", "32"
-			}
-			if matchSet[i] {
-				colour, marker = "1;"+colour, "▶"
-			}
-			msgLines = append(msgLines, fmt.Sprintf("\033[%sm%s %s\033[0m", colour, marker, name))
+		mark := "●"
+		if msg.Role == "user" {
+			mark = "❯"
+		}
+		if matchSet[i] {
+			mark = "\033[1m▶\033[22m"
+		}
+		body := markFirst(renderBody(msg.Text, query, width), mark)
+		if msg.Role == "user" {
+			body = userRows(body, width)
 		}
 		lastRole = msg.Role
-		msgLines = append(msgLines, timeGutter(renderBody(msg.Text, query, max(width-gutterExtra, 0)), clock)...)
+		msgLines = append(msgLines, body...)
 		msgLines = append(msgLines, "")
 
 		lastShown = i
 	}
+	drawTools(len(conv.Messages))
 
 	if lastShown < len(conv.Messages)-1 {
 		remaining := len(conv.Messages) - lastShown - 1
 		msgLines = append(msgLines, fmt.Sprintf("\033[90m  ... %d more messages\033[0m", remaining))
 	}
 
-	return msgLines
+	return msgLines, stamps
 }
 
 // carryStyles makes each wrapped line self-contained: styles and a link still
@@ -693,30 +737,75 @@ func cleanText(s string) string {
 	}, s)
 }
 
-// dateRow separates days in the preview; renderPreview pins the current one.
+// dateRow separates days in the preview, with the time of the day's first
+// message; renderPreview pins the top visible message's date and time.
 const dateRowPrefix = "\033[90m  ── "
 
-func dateRow(day string) string { return dateRowPrefix + day + " ──\033[0m" }
+func dateRow(when string) string { return dateRowPrefix + when + " ──\033[0m" }
 
-// gutterExtra is how much further right message text sits to leave room for
-// the time before its first line.
-const gutterExtra = 6
-
-// timeGutter puts clock ("21:45") before a message's first line and shifts the
-// rest to line up after it.
-func timeGutter(lines []string, clock string) []string {
-	pad := strings.Repeat(" ", gutterExtra)
+// markFirst puts mark in the two-column indent of a message's first line, as
+// Claude Code's terminal does, without the blank lines around it.
+func markFirst(lines []string, mark string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
 	for i, l := range lines {
-		if clock != "" && strings.HasPrefix(l, "  ") {
-			lines[i] = "  \033[90m" + fmt.Sprintf("%-5s", clock) + "\033[0m " + l[2:]
-			clock = ""
-		} else if strings.TrimSpace(l) == "" {
+		if strings.TrimSpace(l) == "" {
 			lines[i] = ""
-		} else {
-			lines[i] = pad + l
 		}
 	}
+	if len(lines) > 0 {
+		lines[0] = mark + " " + strings.TrimPrefix(lines[0], "  ")
+	}
 	return lines
+}
+
+// userBg is the row behind what the user typed, dark grey as in Claude Code's
+// terminal. It sets the text colour too, so it reads on a light theme as well.
+const userBg = "\033[48;5;237;38;5;252m"
+
+// userRows paints the user's lines full width. Every code that ends a style
+// inside them ends the background too, so it's set again after each.
+func userRows(lines []string, width int) []string {
+	for i, l := range lines {
+		l = strings.ReplaceAll(l, "\033[0m", "\033[0m"+userBg)
+		l = strings.ReplaceAll(l, "\033[49;39m", "\033[49;39m"+userBg)
+		l = strings.ReplaceAll(l, "\033[39m", "\033[39m"+userBg)
+		pad := strings.Repeat(" ", max(width-ansi.StringWidth(l), 0))
+		lines[i] = userBg + l + pad + "\033[0m"
+	}
+	return lines
+}
+
+// renderTool draws a tool call as Claude Code's terminal does: "● Bash(cmd)",
+// a command's lines kept as they are and indented under it.
+func renderTool(t toolUse, width int) []string {
+	text := t.name
+	if arg := cleanText(t.arg); arg != "" {
+		text += "(" + strings.ReplaceAll(arg, "\t", "    ") + ")"
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if width <= 12 {
+			out = append(out, "  "+line)
+			continue
+		}
+		for j, w := range strings.Split(ansi.Wrap(line, width-3, ""), "\n") {
+			if j > 0 {
+				w = strings.TrimLeft(w, " ")
+			}
+			out = append(out, "  "+w)
+		}
+	}
+	if rest, ok := strings.CutPrefix(out[0], "  "+t.name); ok {
+		out[0] = "● \033[1m" + t.name + "\033[22m" + rest
+	} else { // a name too long for the line, wrapped
+		out[0] = "● " + strings.TrimPrefix(out[0], "  ")
+	}
+	return out
 }
 
 // maxPreviewScroll is the furthest the preview of the current selection can
@@ -740,7 +829,10 @@ func (m model) previewMessageRows(conv Conversation) int {
 // previewHeader is the preview's fixed header (always visible above the
 // scrolling messages).
 func (m model) previewHeader(conv Conversation, query string) []string {
-	header := []string{"\033[1;33mProject:\033[0m " + highlight(conv.Cwd, query)}
+	if m.headerCollapsed {
+		return []string{m.headerSummary(conv, query), ""}
+	}
+	header := []string{"\033[1;33mProject:\033[0m " + highlight(conv.Cwd, query) + " \033[90m▾ ^X D\033[0m"}
 	if conv.Title != "" {
 		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
 	}
@@ -753,6 +845,47 @@ func (m model) previewHeader(conv Conversation, query string) []string {
 	header = append(header, m.taskLines(conv, m.paneWidth())...)
 	header = append(header, m.subagentLines(conv, m.paneWidth())...)
 	return append(header, "")
+}
+
+// headerSummary is the header as one line (^X D): the session's name and where
+// it is, then what the full header would make you look for: an API error, its
+// model and context, its PRs, running tasks and subagents, and its size.
+func (m model) headerSummary(conv Conversation, query string) string {
+	// Capped, so a long name can't push the counts off the line.
+	parts := []string{highlight(truncate(getTopic(conv), 40), query), highlight(truncate(filepath.Base(conv.Cwd), 24), query)}
+	if conv.Kind == kindCodex {
+		glyph, colour := agentGlyph(conv)
+		parts = append(parts, "\033["+colour+"m"+glyph+"\033[0m codex")
+	}
+	if conv.LastError != "" {
+		parts = append(parts, "\033[1;31m! "+conv.LastError+"\033[0m")
+	}
+	if s := shortModel(conv); s != "" {
+		parts = append(parts, s)
+	}
+	if conv.ContextTokens > 0 {
+		window := conv.window()
+		code, _ := ctxColour(conv.ContextTokens, window)
+		parts = append(parts, fmt.Sprintf("\033[%sm%d%%\033[0m ctx", code, conv.ContextTokens*100/window))
+	}
+	if cell := strings.TrimSpace(m.prCell(conv, true)); ansi.Strip(cell) != "" {
+		parts = append(parts, "PRs "+cell)
+	}
+	if n := len(m.runningTasks(conv)); n > 0 {
+		parts = append(parts, fmt.Sprintf("\033[%sm⧗%d\033[0m", taskColour, n))
+	}
+	if n := m.runningSubagents(conv); n > 0 {
+		parts = append(parts, fmt.Sprintf("\033[%sm◆%d\033[0m", subagentColour, n))
+	}
+	parts = append(parts, fmt.Sprintf("%s · %d msgs", formatBytes(conv.Size), len(conv.Messages)))
+	return ansi.Truncate("\033[90m▸\033[0m "+strings.Join(parts, " \033[90m·\033[0m ")+" \033[90m^X D\033[0m", max(m.paneWidth()-1, 20), "…") + "\033[0m"
+}
+
+// toggleHeader switches the preview header between its full form and one line.
+func (m *model) toggleHeader() {
+	m.headerCollapsed = !m.headerCollapsed
+	saveSettings(m.settings())
+	m.previewScroll = max(0, min(m.previewScroll, m.maxPreviewScroll())) // more rows can mean less to scroll
 }
 
 func (m model) renderPreview(item listItem, height int) string {
@@ -774,14 +907,11 @@ func (m model) renderPreview(item listItem, height int) string {
 	start, end := scrollWindow(len(msgLines), msgHeight, m.previewScroll)
 	visibleMsgLines := msgLines[start:end]
 
-	// The header's last (blank) line pins the date of the top visible message,
-	// unless that message's own date row is already at the top.
+	// The header's last (blank) line pins the date and time of the top visible
+	// message, unless its own date row is already at the top.
 	if len(visibleMsgLines) > 0 && !strings.HasPrefix(visibleMsgLines[0], dateRowPrefix) {
-		for i := start; i >= 0; i-- {
-			if strings.HasPrefix(msgLines[i], dateRowPrefix) {
-				header[len(header)-1] = msgLines[i]
-				break
-			}
+		if when := m.preview.stampAt(start); when != "" {
+			header[len(header)-1] = dateRow(when)
 		}
 	}
 

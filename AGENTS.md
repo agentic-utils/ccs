@@ -99,7 +99,8 @@ One package, split by area (all `package main`, same directory):
 - `handleMouse()` / `listLayout()` / `mouseLeak` - mouse reporting is on: the wheel scrolls whatever is under the pointer (conversation preview vs session list, by row from `listLayout`, which must match `View`), a click selects a list row; a mouse report that arrives split and reads as typed text is dropped before the search box (`mouseLeak`, plus `mouseFragment`: alt+[ and `[<;0-9Mm` bits within 150ms of a mouse event). Transcript text goes through `cleanText` before rendering, so stored colour codes or carriage returns can't reach the terminal
 - `buildPreviewLines()` - with no search, the whole conversation; with a search, the first/last two messages plus matches with one message of context, gaps marked. `previewScroll` counts lines back from the newest message, so the preview opens (and any reset lands) at the latest message; `applyLive` shifts it by the lines added so a scrolled-back view stays still while new messages arrive
 - `renderBody()` / `harnessNote()` - preview readability: each message is wrapped to the preview width with a hanging indent (`ansi.Wrap`, ANSI-aware), markdown rendered (bold, inline code, headings, bullets, `[text](url)` and bare addresses as underlined text plus a short grey address, both clickable OSC 8 terminal links (`hyperlink`, one per word so a wrapped link never stays open), tables as aligned columns via `renderTable`, widest columns cut with … to fit), messages shown in full up to `maxMessageRunes`. Fenced code blocks over `maxCodeLines` collapse to `▸ lang · N lines` unless the search matches inside. Harness-injected user messages (`<task-notification>`, `<system-reminder>`, command output…) collapse to one dim `▸ tag · summary` line; messages from ccs/other sessions stay expanded
-- `timeGutter()` - consecutive messages from one speaker share a `User` / `Claude` header (a new one on a speaker change, after a gap or harness line, and for each search match, marked `▶`); the date is a dim `── 2026-09-29 ──` row (`dateRow`), once per day, and `renderPreview` pins the top visible message's date in the header's last line unless its own row is already at the top; harness notes and messages from other sessions use the same time gutter, and consecutive notes stack without blank lines; every message starts with its time (`21:45`) and the text lines up after it
+- `markFirst()` / `userRows()` / `renderTool()` - messages look as in Claude Code's terminal: `● ` before a reply, `❯ ` before what the user typed on a full-width grey row (`userBg`, set again after every code that ends a style inside it), a search match `▶` in place of either; `renderBody`'s two-column indent is the hanging indent. Tool calls (`conv.tools`, `toolUse`, kept beside the messages and placed by `at`, as `peers` are, so counts, WHEN, done, search and `ccs mcp` ignore them) draw between messages as `● Bash(command)`, a command's lines verbatim and everything else one line (`toolArg`, `toolArgKeys`: a Write's content never reaches the preview); no results. A search hides them. `trackTools` notes Claude's, except SendMessage (a `To` message); `noteCodexTool` notes Codex's `item_completed` items (`Shell`, MCP, `Edit`, `WebSearch`). Messages carry no time: `dateRow` is a dim `── 2026-09-29 21:45 ──`, once per day with that day's first time, and `renderPreview` pins the date and time of the top visible message in the header's last line (`stampAt`, from the `previewStamp`s `buildPreview` returns) unless a date row is already at the top; harness notes stack without blank lines
+- `headerSummary()` / `toggleHeader()` - ^X D or a click on the preview's header (a click on a link in it still opens the link) folds it to one line, `headerCollapsed`: topic, folder, agent if Codex, an API error, model, context %, PR counts, running tasks and subagents, size and messages, with the name capped so the counts stay on the line. One line by default (`settings.HeaderOpen` remembers otherwise); `initialModel` leaves it open and `main` applies the setting, so tests see the full header unless they fold it
 - `linkAt()` / `openURL` / `carryStyles()` - ccs holds the mouse, so the terminal never sees a click on a link: a left click in the preview finds the OSC 8 link under the pointer in the rendered line and opens it (`open`/`xdg-open`, http(s) only). Wrapped lines are self-contained (`carryStyles` closes open styles/links at each line end and reopens them on the next), so an underline never bleeds across the screen
 - `visibleLinks()` / `linksPopup()` - Ctrl+O, the keyboard way to open links: collects the OSC 8 targets in the preview as drawn (top to bottom, each once; a link split word by word or across lines is joined back into its text), listed in a popup that owns the keyboard (↑↓ ^P/N, enter opens and leaves it open, ^O/esc close; mouse ignored; typing goes to its filter box, `linksInput`, an `editKey` box like the others, and `linksShown` keeps the links whose text as shown or address matches by the search's word rule, so a PR's status is searchable; the list scrolls with the cursor when taller than the screen, with a scrollbar as the list and preview have). PR rows show their mark and status before the title, so a long title is what's cut, drawn from the status at each frame (`linkText`). No links in view says so in the header instead
 - `teammateBlocks()` - messages from teammate agents (`<teammate-message teammate_id=… summary=…>`, several per message, optionally after "Another Claude session sent a message:") show one `From <id> · <summary or status>` block each; a JSON status report is unpacked (its `result`/`message` rendered as markdown), and a status with nothing to read (idle, shutdown) is one dim `▸ id · status` line
@@ -174,17 +175,15 @@ The default, a sidebar (^X T switches to the table below it):
   ccs · coding cli sessions · v0.66.0 · refreshed just now · ^X W 1 waiting   ^X A auto-focus off  ^X I auto-update on   ? help  ^C quit
   > type to search...                                                                          (N/total)
 ───────────────────────────┬────────────────────────────────────────────────
-  ● fix login flow         ┃Project: /path/to/project
-    5m · 92k ctx · app     ┃Session: abc123...
-  ● refactor auth          │Size:    12MB · 28 messages · 3h ago
-    now · 281k ctx · api ✓1│PRs:     ✓ repo#12 add the thing · ready to merge
-    sidebar idea           │         4 merged · ^O all      (selected: highlighted, no marker)
-    3h · 40k ctx · ccs     │
-                           │  ── 2024-01-08 ──
-                           │  User
-                           │  12:00 message text here...                                  │
-                           │  Claude                                                      ┃
-                           │  12:01 response text here...                                 ┃
+  ● fix login flow         ┃▸ fix login flow · app · opus 5.5 · 9% ctx · PRs ✓1 ●4 · 12MB · 28 msgs ^X D
+    5m · 92k ctx · app     ┃  ── 2024-01-08 12:00 ──      (the top message's; the full header: ^X D)
+  ● refactor auth          │❯ message text here...                                        │  (a grey row)
+    now · 281k ctx · api ✓1│                                                              │
+    sidebar idea           │● response text here, wrapped                                 ┃
+    3h · 40k ctx · ccs     │  with a hanging indent                                       ┃
+                           │                                                              ┃
+                           │● Bash(cd /x && ls                                            ┃
+                           │  git status)                                                 │
 ```
 
 The table (^X T):
@@ -195,7 +194,7 @@ The table (^X T):
   2h ago    project-name          ● Refactor auth flow ✎  opus 5.5 1M   1.2GB  281k    42     3   ✓1 ✗1 ●4┃
   3h ago    selected              This one is selected     sonnet 5       12MB   92k    28     1        │
 ──────────────────────────────────────────────────────────────────────────────────────
-Project: /path/to/project
+▸ the header's summary line
 ...the conversation, as in the sidebar
 ```
 
@@ -209,7 +208,7 @@ Project: /path/to/project
 
 ## Conventions
 
-- Keys follow Claude Code's prompt: in a text box (the search, the message box, the overlay's box) every Ctrl letter edits text as it does there (^A/^E start/end, ^K/^U kill to end/start, ^W kill word, ^Y paste back, Alt+B/F words; `editKey` adds the ^Y the text box lacks). ccs's own actions are ^X chords, Claude Code's own pattern for app actions (`chordX`, `k = "^x <letter>"`; ^X ^W works as ^X W; an unknown chord does nothing, never edits text), with mnemonic letters: ^X A auto-focus, ^X E edit its name, ^X C collapse, ^X G group, ^X H headless, ^X I install updates automatically, ^X K kill (stop a background session, or a session in a terminal tab and close the tab), ^X N new session, ^X P pin, ^X R record a CPU profile, ^X S snooze, ^X T table, ^X U user account, ^X W waiting, ^X X prune. Single keys that edit nothing stay single: ^S send, ^R refresh, ^L changelog log, ^O open a link, ^D delete, ^F fork, ? help on an empty search, Tab usage, PgUp/PgDn scroll, Alt+↑/↓ move a pinned session. A new action is a chord whose letter starts its word; when the letter is taken, pick the action's next clear word. Update the header hints, `shortcuts()`, `--help`, the README and the tests together
+- Keys follow Claude Code's prompt: in a text box (the search, the message box, the overlay's box) every Ctrl letter edits text as it does there (^A/^E start/end, ^K/^U kill to end/start, ^W kill word, ^Y paste back, Alt+B/F words; `editKey` adds the ^Y the text box lacks). ccs's own actions are ^X chords, Claude Code's own pattern for app actions (`chordX`, `k = "^x <letter>"`; ^X ^W works as ^X W; an unknown chord does nothing, never edits text), with mnemonic letters: ^X A auto-focus, ^X D details, ^X E edit its name, ^X C collapse, ^X G group, ^X H headless, ^X I install updates automatically, ^X K kill (stop a background session, or a session in a terminal tab and close the tab), ^X N new session, ^X P pin, ^X R record a CPU profile, ^X S snooze, ^X T table, ^X U user account, ^X W waiting, ^X X prune. Single keys that edit nothing stay single: ^S send, ^R refresh, ^L changelog log, ^O open a link, ^D delete, ^F fork, ? help on an empty search, Tab usage, PgUp/PgDn scroll, Alt+↑/↓ move a pinned session. A new action is a chord whose letter starts its word; when the letter is taken, pick the action's next clear word. Update the header hints, `shortcuts()`, `--help`, the README and the tests together
 
 - Every interaction must be possible from the keyboard; the mouse (click, wheel) is only ever a shortcut for something a key already does
 

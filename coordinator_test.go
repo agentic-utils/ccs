@@ -816,6 +816,36 @@ func TestLaunchOpensTabsInTmuxToo(t *testing.T) {
 	}
 }
 
+func TestTmuxRunsTheLauncherDirectly(t *testing.T) {
+	args := tmuxWindowArgs("/home/a b/launch.sh")
+	// Everything after the options must be more than one word, or tmux hands it to a shell.
+	i := slices.Index(args, "#{pane_tty}") + 1
+	if got := args[i:]; len(got) < 2 || got[len(got)-1] != "/home/a b/launch.sh" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestNoZshChangesNothing(t *testing.T) {
+	ran := coordinatorFixture(t)
+	scripts := startsAs(t, coordinatorName)
+	old := checkLaunchShell
+	checkLaunchShell = func() error { return errors.New("sessions are started with zsh, and there's none") }
+	defer func() { checkLaunchShell = old }()
+	out, code := runCoord("--yes")
+	if code != 1 || !strings.Contains(out, "zsh") || len(*scripts) > 0 {
+		t.Errorf("%d %s %v", code, out, *scripts)
+	}
+	if slices.ContainsFunc(*ran, func(c string) bool { return strings.Contains(c, "mcp add") }) {
+		t.Errorf("changed config: %v", *ran)
+	}
+	if _, err := os.Stat(coordinatorDir()); err == nil {
+		t.Error("wrote its folder")
+	}
+	if loadCoordinator().SessionID != "" {
+		t.Error("recorded a session")
+	}
+}
+
 func TestCloseCountsAWindowGoneWithItsSessionAsClosed(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/s,1,0")
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID"} {

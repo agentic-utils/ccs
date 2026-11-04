@@ -159,6 +159,9 @@ func launchSession(o launchOpts) (launched, error) {
 	if !canOpenTabs() && !o.inPlace {
 		return launched{}, errors.New("not in iTerm or tmux: launch opens a tab there")
 	}
+	if err := checkLaunchShell(); err != nil {
+		return launched{}, err
+	}
 	if pids, err := sessionsNamed(o.name); err != nil {
 		return launched{}, err
 	} else if len(pids) > 0 {
@@ -279,6 +282,26 @@ end tell`, tty, shellQuote(script))
 // sleep is time.Sleep, stubbed in tests.
 var sleep = time.Sleep
 
+// launchShell runs every launcher: launchScript needs zsh's word splitting.
+const launchShell = "/bin/zsh"
+
+// checkLaunchShell says what's wrong before anything is changed or opened, since
+// a launcher that can't run only shows up as a session that never starts.
+// Stubbed in tests.
+var checkLaunchShell = func() error {
+	if _, err := os.Stat(launchShell); err != nil {
+		return fmt.Errorf("sessions are started with zsh, and there's none at %s", launchShell)
+	}
+	return nil
+}
+
+// tmuxWindowArgs opens a background window on the launcher. Several words, so
+// tmux runs them directly: one word would go through a shell, which splits a
+// path with a space in it.
+func tmuxWindowArgs(script string) []string {
+	return []string{"new-window", "-d", "-P", "-F", "#{pane_tty}", launchShell, "-l", script}
+}
+
 // canOpenTabs: launch has somewhere to open a tab.
 func canOpenTabs() bool { return os.Getenv("TMUX") != "" || inITerm() }
 
@@ -294,7 +317,7 @@ var execScript = func(script string) error {
 // launcher. The tab that had focus keeps it. Returns the new tab's tty.
 var openLaunchTab = func(script string) (string, error) {
 	if os.Getenv("TMUX") != "" {
-		out, err := runBounded(5*time.Second, nil, "tmux", "new-window", "-d", "-P", "-F", "#{pane_tty}", script)
+		out, err := runBounded(5*time.Second, nil, "tmux", tmuxWindowArgs(script)...)
 		tty := strings.TrimSpace(string(out))
 		if err == nil && tty == "" {
 			err = errors.New("tmux returned no tty")

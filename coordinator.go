@@ -421,6 +421,9 @@ func createCoordinator(p coordinatorPlan, inPlace bool) (string, error) {
 	if _, err := lookBin("claude"); err != nil {
 		return "", errors.New("the coordinator needs Claude Code, since Codex sessions can't receive messages from other sessions (they can still work under it): install claude first")
 	}
+	if err := checkLaunchShell(); err != nil {
+		return "", err
+	}
 	done, errs := applyMCP(p.fixes)
 	if err := writeCoordinatorFolder(); err != nil {
 		return "", err

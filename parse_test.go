@@ -792,7 +792,7 @@ func TestRefreshNote(t *testing.T) {
 	if m = res.(model); m.refreshNote() != " · refreshing…" {
 		t.Errorf("in-flight scan should say refreshing, got %q", m.refreshNote())
 	}
-	res, _ = m.Update(refreshMsg{err: os.ErrNotExist})
+	res, _ = m.Update(refreshMsg{err: os.ErrPermission})
 	if m = res.(model); !strings.HasPrefix(m.refreshNote(), " · refresh failed") {
 		t.Errorf("failed scan should say so, got %q", m.refreshNote())
 	}

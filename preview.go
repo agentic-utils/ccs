@@ -369,6 +369,36 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 			lastShown, lastRole = i, ""
 			continue
 		}
+		// note draws one dim line; consecutive notes stack without blank lines.
+		note := func(line string) {
+			if lastRole == "harness" && lastShown == i-1 {
+				msgLines = msgLines[:len(msgLines)-1]
+				if !newDay && len(stamps) > 0 && msg.Ts != "" {
+					stamps[len(stamps)-1].line--
+				}
+			}
+			msgLines = append(msgLines, "\033[90m"+marker+" "+line+"\033[0m", "")
+			lastShown, lastRole = i, "harness"
+		}
+		if ev, ok := channelParts(msg.Text); ok && msg.Role == "channel" {
+			// Pushed in by a channel plugin (PR events, Slack): one dim line
+			// as Claude Code draws it, its body shown only if a search hit it.
+			line := ev.line()
+			if width > 0 {
+				line = truncate(line, width-2)
+			}
+			line = highlight(line, query)
+			if ev.link != "" {
+				line = hyperlink(ev.link, line)
+			}
+			note(line)
+			if ev.detail != "" && containsFold(ev.detail, query) {
+				msgLines = append(msgLines[:len(msgLines)-1], renderBody(ev.detail, query, width)...)
+				msgLines = append(msgLines, "")
+				lastRole = ""
+			}
+			continue
+		}
 		if tag, summary, ok := harnessNote(msg.Text); ok && msg.Role == "user" {
 			// Injected by the harness (task notifications, reminders, command
 			// output): one dim line, so the real conversation stays readable.
@@ -379,14 +409,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 			if width > 0 {
 				line = truncate(line, width-2) // truncate squeezes spaces, so add the indent after
 			}
-			if lastRole == "harness" && lastShown == i-1 {
-				msgLines = msgLines[:len(msgLines)-1] // consecutive notes stack without blank lines
-				if !newDay && len(stamps) > 0 && msg.Ts != "" {
-					stamps[len(stamps)-1].line--
-				}
-			}
-			msgLines = append(msgLines, "\033[90m"+marker+" "+highlight(line, query)+"\033[0m", "")
-			lastShown, lastRole = i, "harness"
+			note(highlight(line, query))
 			continue
 		}
 		mark := "●"
@@ -1065,6 +1088,56 @@ func harnessNote(text string) (tag, summary string, ok bool) {
 		summary = anyTag.ReplaceAllString(text, " ")
 	}
 	return m[1], strings.Join(strings.Fields(summary), " "), true
+}
+
+// channelEvent is one event a channel plugin pushed into a session:
+// <channel source="plugin:name:server" event="…" …>, then a line saying what
+// happened, usually its address, then any body (a comment, a review).
+type channelEvent struct {
+	source, summary, link, detail string
+}
+
+var (
+	channelMessage = regexp.MustCompile(`(?s)^<channel\s([^>]*)>\n?(.*?)\n?</channel>\s*$`)
+	channelAttr    = regexp.MustCompile(`\b(source|event)="([^"]*)"`)
+	bareURL        = regexp.MustCompile(`^https?://\S+$`)
+)
+
+func isChannelEvent(text string) bool {
+	return strings.HasPrefix(text, "<channel ") && channelMessage.MatchString(text)
+}
+
+func channelParts(text string) (channelEvent, bool) {
+	m := channelMessage.FindStringSubmatch(text)
+	if m == nil {
+		return channelEvent{}, false
+	}
+	var ev channelEvent
+	event := ""
+	for _, a := range channelAttr.FindAllStringSubmatch(m[1], -1) {
+		if a[1] == "source" {
+			ev.source = a[2][strings.LastIndex(a[2], ":")+1:] // plugin:agentic-utils-github:pr-events
+		} else {
+			event = a[2]
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(m[2]), "\n")
+	ev.summary = strings.TrimPrefix(lines[0], ev.source+": ")
+	lines = lines[1:]
+	if len(lines) > 0 && bareURL.MatchString(strings.TrimSpace(lines[0])) {
+		ev.link = strings.TrimSpace(lines[0])
+		lines = lines[1:]
+	}
+	ev.detail = strings.TrimSpace(strings.Join(lines, "\n"))
+	if ev.summary == "" {
+		ev.summary = event
+	}
+	return ev, true
+}
+
+// line is the event as Claude Code's terminal shows it.
+func (ev channelEvent) line() string {
+	return "← " + ev.source + ": " + ev.summary
 }
 
 // maxCodeLines is the longest fenced code block (a diff, a log) shown inline;

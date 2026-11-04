@@ -790,10 +790,10 @@ func (m *model) saveFocusRecord() {
 }
 
 // lastSaid is the index of the last message said in the session itself, past
-// any it sent to other sessions; -1 if none.
+// any it sent to other sessions and any channel events; -1 if none.
 func lastSaid(msgs []Message) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != "sent" {
+		if msgs[i].Role != "sent" && msgs[i].Role != "channel" {
 			return i
 		}
 	}

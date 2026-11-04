@@ -252,9 +252,43 @@ func (m model) chatView() string {
 	return box
 }
 
+// spinnerFrames are the working line's glyph, out and back as Claude Code's is.
+var spinnerFrames = []string{"·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"}
+
+// workingLine is what a busy session is doing, drawn as Claude Code's terminal
+// does: its glyph and word in the agent's colour, then how long this turn has
+// run and its output tokens so far. Claude Code keeps its verb and tip to
+// itself, so the word is always the same and there's no tip.
+func workingLine(conv Conversation, st sessionStat, now time.Time) string {
+	_, colour := agentGlyph(conv)
+	frame := spinnerFrames[int(now.UnixMilli()/int64(chatFastRefresh/time.Millisecond))%len(spinnerFrames)]
+	var facts []string
+	if !st.since.IsZero() { // the status clock starts with the turn; steps don't reset it
+		facts = append(facts, formatTook(now.Sub(st.since)))
+		if n := conv.outputSince(st.since); n > 0 {
+			count := formatTokens(int(n))
+			if n >= 1000 && n < 10000 { // the 2.5k Claude Code would say, not 2k
+				count = fmt.Sprintf("%.1fk", float64(n)/1000)
+			}
+			facts = append(facts, "↓ "+count+" tokens")
+		}
+	}
+	line := "\033[" + colour + "m" + frame + " Working…\033[0m"
+	if len(facts) > 0 {
+		line += " \033[90m(" + strings.Join(facts, " · ") + ")\033[0m"
+	}
+	return line
+}
+
 // chatBox draws conv's status line and the message box in, width wide.
 func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width int) string {
 	id, name := conv.SessionID, m.sessionName(conv)
+	working := ""
+	if st := m.chatStatus[id]; st.status == "busy" {
+		working = workingLine(conv, st, time.Now())
+	}
+	full := width
+	width = max(width-lipgloss.Width(working), 0) // what's left for a note beside it
 	left := ""
 	switch {
 	case m.pending[id] != "" && m.sending:
@@ -268,7 +302,7 @@ func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width 
 		}
 		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], width-25-len(why)) + why + "\033[0m"
 	case m.pending[id] != "" && m.chatStatus[id].status == "busy":
-		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-66) + " · Claude sees it after its current step\033[0m"
+		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-48) + " · Claude sees it after its current step\033[0m"
 	case m.pending[id] != "":
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.sendNote[id] != "":
@@ -276,12 +310,9 @@ func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width 
 	case m.chatStatus[id].status == "waiting": // menus and prompts never reach the transcript
 		left = "\033[1;" + amber + "m  ? " + waitingLine(conv) + "\033[0m"
 	}
-	right := ""
-	if st := m.chatStatus[id]; st.status == "busy" {
-		right = fmt.Sprintf("\033[33m✻ working %ds\033[0m ", int(time.Since(st.since).Seconds()))
-	}
-	left = ansi.Truncate(left, max(width-lipgloss.Width(right)-1, 1), "…") + "\033[0m"
-	status := left + strings.Repeat(" ", max(width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
+	width = full
+	left = ansi.Truncate(working+left, max(width, 1), "…") + "\033[0m"
+	status := left + strings.Repeat(" ", max(width-lipgloss.Width(left), 0))
 
 	in.Placeholder = "message " + name + "…"
 	in.Width = chatInputWidth(width)

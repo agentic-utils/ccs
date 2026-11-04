@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestMessageBoxFocusRules(t *testing.T) {
@@ -185,7 +186,7 @@ func TestChatTickReadsStatusAndNewLines(t *testing.T) {
 	nm, _ := m.Update(res)
 	m = nm.(model)
 	v := strip2(m.View())
-	if !strings.Contains(v, "working 1") || !strings.Contains(v, "on it") || !strings.Contains(v, "message busy…") {
+	if !strings.Contains(v, " Working… (1") || !strings.Contains(v, "on it") || !strings.Contains(v, "message busy…") {
 		t.Errorf("view should show the reply, the working indicator and the box:\n%s", v)
 	}
 }
@@ -396,5 +397,80 @@ func TestSentMessageDoesNotHideAQuestion(t *testing.T) {
 	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
 	if m.waitSignal(c) != waitAsked {
 		t.Error("a message it sent after asking doesn't hide the question")
+	}
+}
+
+func TestWorkingLine(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	conv := &Conversation{}
+	noteOutput(conv, now.Add(-time.Hour).Format(time.RFC3339), 9000) // the turn before
+	noteOutput(conv, now.Add(-40*time.Second).Format(time.RFC3339), 2000)
+	noteOutput(conv, now.Add(-10*time.Second).Format(time.RFC3339Nano), 500)
+	noteOutput(conv, "not a time", 7)
+	line := workingLine(*conv, sessionStat{status: "busy", since: now.Add(-64 * time.Second)}, now)
+	if got := strip2(line); !strings.HasSuffix(got, " Working… (1m 4s · ↓ 2.5k tokens)") {
+		t.Errorf("got %q", got)
+	}
+	if !strings.Contains(line, "\033[38;5;173m") || !strings.Contains(line, "\033[90m(") {
+		t.Errorf("the word in Claude's colour, the facts dim: %q", line)
+	}
+	// No tokens yet: only the time. No clock: only the word, never a made-up time.
+	if got := strip2(workingLine(*conv, sessionStat{since: now}, now.Add(time.Second))); !strings.HasSuffix(got, " Working… (1s)") {
+		t.Errorf("got %q", got)
+	}
+	if got := strip2(workingLine(*conv, sessionStat{}, now)); !strings.HasSuffix(got, " Working…") {
+		t.Errorf("got %q", got)
+	}
+	// The glyph moves with each tick and comes back round.
+	seen := map[string]bool{}
+	for i := range spinnerFrames {
+		seen[strings.Fields(strip2(workingLine(*conv, sessionStat{}, now.Add(time.Duration(i)*chatFastRefresh))))[0]] = true
+	}
+	if len(seen) != 6 {
+		t.Errorf("frames seen: %v", seen)
+	}
+}
+
+func TestWorkingLineIsOnTheLeftBesideNotes(t *testing.T) {
+	m := chatModel(t)
+	conv := m.items[0].conv
+	m.chatStatus = map[string]sessionStat{conv.SessionID: {status: "busy", since: time.Now().Add(-5 * time.Second)}}
+	first := func() string {
+		status, _, _ := strings.Cut(m.chatBox(conv, m.chatInput, false, 80), "\n")
+		return status
+	}
+	got := strip2(first())
+	if !strings.Contains(got, "Working… (5s)") || strings.Fields(got)[1] != "Working…" || got[0] == ' ' {
+		t.Errorf("should start at the left edge, its glyph in the first column: %q", got)
+	}
+	if w := ansi.StringWidth(first()); w != 80 {
+		t.Errorf("the row should fill the width, got %d", w)
+	}
+	m.pending = map[string]string{conv.SessionID: "check docs"}
+	got = strip2(first())
+	if !strings.Contains(got, "Working… (5s)") || !strings.Contains(got, "sent: check docs") || strings.Index(got, "Working") > strings.Index(got, "sent:") {
+		t.Errorf("a note follows it: %q", got)
+	}
+	m.chatStatus = map[string]sessionStat{conv.SessionID: {status: "idle"}}
+	m.pending = nil
+	if got := strings.TrimSpace(strip2(first())); got != "" {
+		t.Errorf("idle says nothing: %q", got)
+	}
+}
+
+func TestReplyOutputsFromTranscripts(t *testing.T) {
+	conv := &Conversation{}
+	reply := func(id string, out int, ts string) {
+		parseLine(conv, []byte(fmt.Sprintf(`{"type":"assistant","timestamp":%q,"message":{"id":%q,"usage":{"input_tokens":5,"output_tokens":%d},"content":[]}}`, ts, id, out)))
+	}
+	reply("a", 300, "2026-11-04T12:00:00.000Z")
+	reply("a", 300, "2026-11-04T12:00:01.000Z") // one reply over two lines counts once
+	reply("b", 200, "2026-11-04T12:00:02.000Z")
+	since, _ := time.Parse(time.RFC3339, "2026-11-04T12:00:00Z")
+	if n := conv.outputSince(since); n != 500 {
+		t.Errorf("got %d", n)
+	}
+	if n := conv.outputSince(since.Add(2 * time.Second)); n != 200 {
+		t.Errorf("only replies since then, got %d", n)
 	}
 }

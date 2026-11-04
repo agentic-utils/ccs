@@ -211,6 +211,7 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 			conv.Usage.CacheRead += l.Cached
 			conv.Usage.Cache5m += l.Write
 			conv.Usage.Output += l.Output
+			noteOutput(conv, ts, l.Output)
 			conv.Reasoning += l.Reasoning
 			if c, ok := openAICost(conv.ActiveModel, in, l.Cached, l.Write, l.Output); ok {
 				conv.Cost += c

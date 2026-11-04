@@ -92,7 +92,7 @@ func TestOverlayFrameFitsTheTerminal(t *testing.T) {
 // Others there, like ✍, are emoji that some terminals draw two cells wide
 // while ansi.StringWidth counts one, so a full-width row soft-wraps and the
 // renderer repaints rows in the wrong place.
-var narrowSymbols = map[rune]bool{'⚙': true, '⚠': true, '✓': true, '✗': true, '✎': true, '✻': true, '⬡': true, '❯': true}
+var narrowSymbols = map[rune]bool{'⚙': true, '⚠': true, '✓': true, '✗': true, '✎': true, '✻': true, '⬡': true, '❯': true, '✢': true, '✳': true, '✶': true, '✽': true}
 
 func TestScreenUsesOnlySymbolsEveryTerminalDrawsNarrow(t *testing.T) {
 	m := richModel(t, 150, 50)

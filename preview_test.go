@@ -386,13 +386,10 @@ func TestPreviewDrawnAsClaudeCode(t *testing.T) {
 	lines := buildPreviewLines(conv, "", 40)
 	plain := strip2(strings.Join(lines, "\n"))
 	when := formatTimestamp("2026-09-29T10:00:00Z")
-	if n := strings.Count(plain, "── "+when+" ──"); n != 1 {
-		t.Errorf("the date and first time should get one row of their own, got %d:\n%s", n, plain)
+	if strings.Contains(plain, "Claude\n") || strings.Contains(plain, "User\n") || strings.Contains(plain, when[:10]) || strings.Contains(plain, when[11:]) {
+		t.Errorf("no speaker headers, and no date or time among the messages:\n%s", plain)
 	}
-	if strings.Contains(plain, "Claude\n") || strings.Contains(plain, "User\n") || strings.Contains(plain, when[11:]+" Merged") {
-		t.Errorf("no speaker headers or per-message times:\n%s", plain)
-	}
-	for _, want := range []string{"\n● Merged.\n", "\n● The reply didn't post.\n", "\n❯ merge it"} {
+	for _, want := range []string{"\n● Merged.\n", "\n● The reply didn't post.\n", "❯ merge it"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("missing %q:\n%s", want, plain)
 		}
@@ -495,10 +492,6 @@ func TestHarnessNotesStack(t *testing.T) {
 		{Role: "assistant", Text: "done", Ts: "2026-09-11T17:04:00Z"},
 	}}
 	plain := strip2(strings.Join(buildPreviewLines(conv, "", 100), "\n"))
-	day := formatTimestamp("2026-09-11T17:03:00Z")[:10]
-	if strings.Count(plain, day) != 1 {
-		t.Errorf("the date should appear only on its own row:\n%s", plain)
-	}
 	if want := "  ▸ task-notification · Monitor event: CI\n  ▸ task-notification"; !strings.Contains(plain, want) {
 		t.Errorf("notes should stack without a blank line:\n%s", plain)
 	}
@@ -524,7 +517,7 @@ func TestHeaderCollapses(t *testing.T) {
 	}
 	head := m.previewHeader(conv, "")
 	if len(head) != 2 || full <= 2 || m.previewMessageRows(conv) <= rows {
-		t.Errorf("should be one line and a date row, got %d of %d", len(head), full)
+		t.Errorf("should be one line and a blank row, got %d of %d", len(head), full)
 	}
 	s := strip2(head[0])
 	for _, want := range []string{"fix login", "api", "35% ctx", "^X D"} {
@@ -571,7 +564,7 @@ func TestHeaderSummaryFitsAndCounts(t *testing.T) {
 	}
 }
 
-func TestPinnedDate(t *testing.T) {
+func TestHeaderSaysWhenTheTopMessageHappened(t *testing.T) {
 	var msgs []Message
 	for i := range 20 {
 		msgs = append(msgs, Message{Role: "assistant", Text: fmt.Sprintf("reply %d", i), Ts: fmt.Sprintf("2026-09-11T10:%02d:00Z", i)})
@@ -580,19 +573,107 @@ func TestPinnedDate(t *testing.T) {
 	item := listItem{conv: conv}
 	m := initialModel([]listItem{item}, "", nil)
 	m.width, m.height = 100, 40
-	day := dateRow(formatTimestamp(msgs[0].Ts))
-	// At the bottom, the day's own row has scrolled away, so the top visible
-	// message's date and time are pinned.
-	lines := strings.Split(m.renderPreview(item, 12), "\n")
-	top := strip2(lines[len(m.previewHeader(conv, ""))])
-	n, _ := strconv.Atoi(strings.Fields(top)[2]) // "● reply 16 │"
-	if pinned := lines[len(m.previewHeader(conv, ""))-1]; pinned != dateRow(formatTimestamp(msgs[n].Ts)) {
-		t.Errorf("the top message's (%q) date and time should be pinned, got %q", top, strip2(pinned))
+	m.headerCollapsed = true
+	check := func() {
+		t.Helper()
+		lines := strings.Split(m.renderPreview(item, 12), "\n")
+		n := len(m.previewHeader(conv, ""))
+		i, _ := strconv.Atoi(strings.Fields(strip2(lines[n]))[2]) // "● reply 16 │"
+		want := humanWhen(formatTimestamp(msgs[i].Ts), "Mon 2 Jan 15:04")
+		if !strings.HasSuffix(strip2(lines[0]), " "+want) {
+			t.Errorf("the top message's date and time should end the first line, want %q: %q", want, strip2(lines[0]))
+		}
+		if w := ansi.StringWidth(lines[0]); w != m.paneWidth()-1 {
+			t.Errorf("the first line should reach the pane's edge, %d of %d: %q", w, m.paneWidth()-1, strip2(lines[0]))
+		}
 	}
-	// At the top, the date row itself is shown, not pinned twice.
-	m.previewScroll = 1000
-	if got := m.renderPreview(item, 12); strings.Count(got, day) != 1 {
-		t.Errorf("date should appear once at the top:\n%s", got)
+	check() // at the newest
+	m.previewScroll = 8
+	check() // it follows the scroll
+	m.headerCollapsed = false
+	if first := strip2(strings.Split(m.renderPreview(item, 30), "\n")[0]); !strings.HasPrefix(first, "Project:") || !strings.Contains(first, "Sep") {
+		t.Errorf("the full header carries it too: %q", first)
+	}
+}
+
+func TestSummaryKeepsItsFactsBesideTheTime(t *testing.T) {
+	conv := Conversation{SessionID: "s", Title: strings.Repeat("a long topic ", 8), Cwd: "/code/api", ActiveModel: "claude-opus-5-5", ContextTokens: 90000, Size: 2048,
+		Messages: []Message{{Role: "assistant", Text: "x", Ts: "2026-09-11T10:00:00Z"}}}
+	item := listItem{conv: conv}
+	m := initialModel([]listItem{item}, "", nil)
+	m.width, m.height, m.headerCollapsed = 100, 30, true
+	first := strip2(strings.Split(m.renderPreview(item, 20), "\n")[0])
+	for _, want := range []string{"a long", "9% ctx", humanWhen(formatTimestamp(conv.Messages[0].Ts), "Mon 2 Jan 15:04")} {
+		if !strings.Contains(first, want) {
+			t.Errorf("a %d-wide pane should keep %q: %q", m.paneWidth(), want, first)
+		}
+	}
+}
+
+func TestWithWhen(t *testing.T) {
+	if got := withWhen("short", "Wed 28 Oct 21:51", 60); ansi.StringWidth(got) != 60 || !strings.HasPrefix(strip2(got), "short ") {
+		t.Errorf("padded to the edge: %q", got)
+	}
+	long := strings.Repeat("x", 80)
+	if got := strip2(withWhen(long, "Wed 28 Oct 21:51", 60)); ansi.StringWidth(got) != 60 || !strings.Contains(got, "…") || !strings.HasSuffix(got, "21:51") {
+		t.Errorf("a long line is cut to fit: %q", got)
+	}
+	if got := withWhen(long, "Wed 28 Oct 21:51", 40); got != long {
+		t.Errorf("too narrow for both keeps the line: %q", got)
+	}
+}
+
+func TestHumanWhen(t *testing.T) {
+	this := time.Now().Year()
+	if got, want := humanWhen(fmt.Sprintf("%d-10-28 21:51", this), "Jan 2 15:04"), "Oct 28 21:51"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got := humanWhen("2020-10-28 21:51", "Mon 2 Jan 15:04"); got != "Wed 28 Oct 2020 21:51" {
+		t.Errorf("another year says so: %q", got)
+	}
+	if got := humanWhen("2020-10-28", "Mon 2 Jan"); got != "Wed 28 Oct 2020" {
+		t.Errorf("a date alone: %q", got)
+	}
+	if got := humanWhen("not a date", "Mon 2 Jan"); got != "not a date" {
+		t.Errorf("anything else is left as it is: %q", got)
+	}
+}
+
+func TestTurnEndsAndNewDays(t *testing.T) {
+	conv := &Conversation{}
+	parseLine(conv, []byte(`{"type":"user","timestamp":"2026-09-29T10:00:00Z","message":{"content":"go"}}`))
+	parseLine(conv, []byte(`{"type":"assistant","timestamp":"2026-09-29T10:01:00Z","message":{"content":[{"type":"text","text":"Done."}]}}`))
+	parseLine(conv, []byte(`{"type":"system","subtype":"turn_duration","durationMs":413185,"timestamp":"2026-09-29T10:07:00Z"}`))
+	parseLine(conv, []byte(`{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-09-29T10:07:01Z"}`))
+	parseLine(conv, []byte(`{"type":"system","subtype":"turn_duration","durationMs":0,"timestamp":"2026-09-29T10:07:02Z"}`))
+	parseLine(conv, []byte(`{"type":"user","timestamp":"2026-10-02T10:00:00Z","message":{"content":"again"}}`))
+	if len(conv.Messages) != 3 {
+		t.Fatalf("turn ends aren't messages: %+v", conv.Messages)
+	}
+	plain := strip2(strings.Join(buildPreviewLines(*conv, "", 60), "\n"))
+	clock := formatTimestamp("2026-09-29T10:07:00Z")[11:]
+	if want := "● Done.\n\n  ✻ 6m 53s · " + clock + "\n\n"; !strings.Contains(plain, want) {
+		t.Errorf("missing %q:\n%s", want, plain)
+	}
+	if strings.Count(plain, "✻") != 1 {
+		t.Errorf("only recorded, non-zero durations make a line:\n%s", plain)
+	}
+	if day := humanWhen(formatTimestamp("2026-10-02T10:00:00Z")[:10], "Mon 2 Jan"); !strings.Contains(plain, "  "+day+"\n\n") {
+		t.Errorf("a new day gets a row saying so (%q):\n%s", day, plain)
+	}
+	if first := humanWhen(formatTimestamp("2026-09-29T10:00:00Z")[:10], "Mon 2 Jan"); strings.Contains(plain, first) {
+		t.Errorf("the first day is the header's to say:\n%s", plain)
+	}
+	if found := strip2(strings.Join(buildPreviewLines(*conv, "done", 60), "\n")); strings.Contains(found, "✻") {
+		t.Errorf("a search shows matches and context, not turn ends:\n%s", found)
+	}
+}
+
+func TestTurnEndFormats(t *testing.T) {
+	for took, want := range map[time.Duration]string{400 * time.Millisecond: "1s", 42 * time.Second: "42s", 65 * time.Second: "1m 5s", 3900 * time.Second: "1h 5m"} {
+		if got := strip2(turnEnd(Conversation{}, toolUse{took: took})); got != "  ✻ "+want {
+			t.Errorf("%v: got %q", took, got)
+		}
 	}
 }
 

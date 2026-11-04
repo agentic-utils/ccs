@@ -40,7 +40,7 @@ Search and resume Claude Code conversations, and Codex sessions beside them.
 
 Usage: ccs [filter] [-- claude-flags...]
        ccs prune [flags]    Shrink large conversations (see ccs prune --help)
-       ccs coordinator [--yes] [--no-mcp] [--adopt <session>]
+       ccs coordinator [--yes] [--no-mcp] [--adopt <session> | --release]
                             Open the session that runs your other sessions: its tab, resumed
                             if it isn't running, set up (with the ccs MCP server) if there is none
        ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>]

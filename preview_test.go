@@ -1012,7 +1012,7 @@ func TestLinksPopupFiltersPRsByStatus(t *testing.T) {
 
 const (
 	channelPR    = "<channel source=\"plugin:agentic-utils-github:pr-events\" event=\"pull_request\" repo=\"two-inc/twoctl-cli\" pr=\"14\">\ntwo-inc/twoctl-cli#14: PR merged by brtkwr\nhttps://github.com/two-inc/twoctl-cli/pull/14\n(still watching for late comments)\n</channel>"
-	channelSlack = "<channel source=\"plugin:agentic-utils-slack-inbox:slack-events\" event=\"message\" via=\"inbox\" trigger=\"dm\" channel=\"D02\" ts=\"1.2\">\ndm from jk (U01) in D02: limits api, thanks\nhttps://two-inc.slack.com/archives/D02/p12\n</channel>"
+	channelSlack = "<channel source=\"plugin:agentic-utils-slack-inbox:slack-events\" event=\"message\" via=\"inbox\" trigger=\"dm\" channel=\"D02\" ts=\"1.2\">\ndm from sam (U01) in D02: limits api, thanks\nhttps://example.slack.com/archives/D02/p12\n</channel>"
 )
 
 func TestChannelParts(t *testing.T) {
@@ -1080,7 +1080,7 @@ func TestChannelEventDrawnDim(t *testing.T) {
 	}}
 	raw := strings.Join(buildPreviewLines(conv, "", 80), "\n")
 	plain := strip2(raw)
-	want := "  ← pr-events: two-inc/twoctl-cli#14: PR merged by brtkwr\n  ← slack-events: dm from jk (U01) in D02: limits api, thanks"
+	want := "  ← pr-events: two-inc/twoctl-cli#14: PR merged by brtkwr\n  ← slack-events: dm from sam (U01) in D02: limits api, thanks"
 	if !strings.Contains(plain, want) {
 		t.Errorf("want two stacked one-line events:\n%s", plain)
 	}

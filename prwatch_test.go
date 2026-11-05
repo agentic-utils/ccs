@@ -715,3 +715,23 @@ func TestWatchKeepsThreadCountsOfASkippedPR(t *testing.T) {
 		t.Errorf("a skip must not move FullAt: %v", p.FullAt)
 	}
 }
+
+func TestWatchSkipsAnUnchangedGreenDraft(t *testing.T) {
+	g := watchWorld(t)
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	a := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean", draft: true, updatedAt: "2026-11-03T08:00:00Z"}
+	green(a)
+	g.prs = []*fakePR{a}
+	passEvents(t, now)
+	reads := countDetailReads(t)
+	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || *reads != 0 {
+		t.Errorf("unchanged draft: events %v, %d reads", got, *reads)
+	}
+	a.draft, a.updatedAt = false, "2026-11-03T09:04:00Z" // marked ready: updatedAt moves
+	if passEvents(t, now.Add(6*time.Minute)); *reads == 0 {
+		t.Error("a draft marked ready must be read")
+	}
+	if p := func() *watchedPR { st, _ := loadPRWatchState(); return st.PRs[a.url()] }(); p.Draft || p.Threads == nil {
+		t.Errorf("after ready: draft %v threads %v", p.Draft, p.Threads)
+	}
+}

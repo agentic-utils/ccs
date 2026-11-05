@@ -851,7 +851,8 @@ func prSettled(old *watchedPR, p watchedPR, now time.Time) bool {
 	if old == nil || old.State != "open" || old.Head == "" || p.UpdatedAt == "" || p.UpdatedAt != old.UpdatedAt || now.Sub(old.FullAt) >= prFullEvery {
 		return false
 	}
-	return old.Checks == "failing" || (old.Checks == "success" && old.Threads != nil)
+	// a draft's threads are never counted, so it can't wait for them
+	return old.Checks == "failing" || (old.Checks == "success" && (old.Threads != nil || old.Draft))
 }
 
 // prDetailsPass is prDetailsAll for one pass, reading only the PRs that aren't

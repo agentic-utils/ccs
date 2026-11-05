@@ -42,6 +42,8 @@ type watchedPR struct {
 	AskedHead  string           `json:"asked_head,omitempty"` // the head needs_review was emitted for
 	Awaiting   bool             `json:"awaiting,omitempty"`   // needs_review emitted and no review_not_needed since
 	Ended      string           `json:"ended,omitempty"`      // when it merged or closed (RFC3339), to prune it later
+	UpdatedAt  string           `json:"updated_at,omitempty"` // GitHub's updatedAt from the search
+	FullAt     time.Time        `json:"full_at,omitzero"`     // when its details were last read
 
 	conflictsUnknown bool // GitHub hadn't worked out mergeability yet: keep the last answer
 	threadsUnknown   bool // not counted this pass (checks not green, or the query failed): keep the last count
@@ -332,7 +334,7 @@ func watchPass(author, owner string, now time.Time) error {
 	}
 
 	// Open PRs: details for each, in parallel, then diff.
-	details := prDetailsAll(open)
+	details := prDetailsPass(open, old.PRs, now)
 	openSet := map[string]bool{}
 	for i, p := range open {
 		openSet[p.URL] = true
@@ -523,7 +525,7 @@ func searchPRs(author, owner string, filters ...string) ([]watchedPR, error) {
 	if owner != "" { // else every owner's repos
 		args = append(args, "--owner", owner)
 	}
-	args = append(append(args, "--sort", "updated", "--limit", "200", "--json", "url,title,number,repository,isDraft"), filters...)
+	args = append(append(args, "--sort", "updated", "--limit", "200", "--json", "url,title,number,repository,isDraft,updatedAt"), filters...)
 	out, err := ghRun(args...)
 	if err != nil {
 		return nil, err
@@ -533,6 +535,7 @@ func searchPRs(author, owner string, filters ...string) ([]watchedPR, error) {
 		Title      string `json:"title"`
 		Number     int    `json:"number"`
 		IsDraft    bool   `json:"isDraft"`
+		UpdatedAt  string `json:"updatedAt"`
 		Repository struct {
 			NameWithOwner string `json:"nameWithOwner"`
 		} `json:"repository"`
@@ -550,7 +553,7 @@ func searchPRs(author, owner string, filters ...string) ([]watchedPR, error) {
 			p := prURL.FindStringSubmatch(r.URL)
 			repo = p[1] + "/" + p[2]
 		}
-		prs = append(prs, watchedPR{URL: r.URL, Repo: repo, Number: r.Number, Title: r.Title, Draft: r.IsDraft, State: "open"})
+		prs = append(prs, watchedPR{URL: r.URL, Repo: repo, Number: r.Number, Title: r.Title, Draft: r.IsDraft, UpdatedAt: r.UpdatedAt, State: "open"})
 	}
 	return prs, nil
 }
@@ -834,6 +837,45 @@ func prDetailsAll(open []watchedPR) []*watchedPR {
 		}()
 	}
 	wg.Wait()
+	return details
+}
+
+// prFullEvery is how long an unchanged PR with settled checks goes without its
+// details being read. A re-run check or a conflict from the base moving doesn't
+// change updatedAt, so those can be noticed this late.
+const prFullEvery = 15 * time.Minute
+
+// prSettled: what the search shows hasn't changed since old was read, and old
+// isn't waiting on anything a pass needs to see, so old can stand in for it.
+func prSettled(old *watchedPR, p watchedPR, now time.Time) bool {
+	if old == nil || old.State != "open" || old.Head == "" || p.UpdatedAt == "" || p.UpdatedAt != old.UpdatedAt || now.Sub(old.FullAt) >= prFullEvery {
+		return false
+	}
+	return old.Checks == "failing" || (old.Checks == "success" && old.Threads != nil)
+}
+
+// prDetailsPass is prDetailsAll for one pass, reading only the PRs that aren't
+// settled; the rest keep what old says, with the search's title.
+func prDetailsPass(open []watchedPR, old map[string]*watchedPR, now time.Time) []*watchedPR {
+	details := make([]*watchedPR, len(open))
+	var read []watchedPR
+	var at []int
+	for i, p := range open {
+		if o := old[p.URL]; prSettled(o, p, now) {
+			n := *o
+			n.Title, n.Draft = p.Title, p.Draft
+			n.conflictsUnknown, n.threadsUnknown = true, true // the last answers stand
+			details[i] = &n
+			continue
+		}
+		read, at = append(read, p), append(at, i)
+	}
+	for j, d := range prDetailsAll(read) {
+		if d != nil {
+			d.FullAt = now
+		}
+		details[at[j]] = d
+	}
 	return details
 }
 

@@ -467,8 +467,9 @@ type prDoneMsg struct {
 // prParallel is how many of a round's requests run at once.
 const prParallel = 4
 
-// prCmd asks GitHub about PRs. The selected session's PRs not looked up yet
-// go first, in a request of their own that never waits behind a round. Once a
+// prCmd asks GitHub about PRs. Landing on a session refreshes its open PRs, in
+// a request of their own that never waits behind a round, and any PR not looked
+// up yet is asked about the same way. Once a
 // minute (prNext, after the last round has finished) a round asks about every
 // PR not yet merged or closed of the sessions that are live, active within
 // prScope or selected, prBatch at a time, prParallel requests at once, each
@@ -510,9 +511,13 @@ func (m *model) prCmd() tea.Cmd {
 		}
 	}
 	if !m.prSelBusy && len(m.filtered) > 0 && m.previewSettled() { // not for each session scrolled past
+		conv := m.filtered[m.cursor].conv
+		landed := m.prSelected != conv.SessionID // just selected: its open PRs are refreshed once
+		m.prSelected = conv.SessionID
 		var urls []string
-		for _, u := range prsOf(m.filtered[m.cursor].conv) {
-			if _, have := m.prs[u]; !have && !m.prSelAsked[u] && len(urls) < prBatch {
+		for _, u := range prsOf(conv) {
+			p, have := m.prs[u]
+			if ((landed && !p.final()) || (!have && !m.prSelAsked[u])) && len(urls) < prBatch {
 				urls = append(urls, u)
 				m.prSelAsked[u] = true
 			}

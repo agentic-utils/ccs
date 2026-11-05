@@ -185,6 +185,55 @@ func TestPRFetchScope(t *testing.T) {
 	}
 }
 
+func TestSelectingASessionRefreshesItsOpenPRs(t *testing.T) {
+	var asked [][]string
+	now := time.Now().UTC().Format(time.RFC3339)
+	m := initialModel(buildItems([]Conversation{
+		{SessionID: "a", LastTimestamp: now, PRs: []string{prA, prB}},
+		{SessionID: "b", LastTimestamp: now, PRs: []string{prC}},
+	}), "", nil)
+	m.prs[prA] = prInfo{State: "OPEN"}
+	m.prs[prB] = prInfo{State: "MERGED"}
+	m.prs[prC] = prInfo{State: "OPEN"}
+	m.fetchPRs = func(urls []string) (map[string]prInfo, error) { asked = append(asked, urls); return nil, nil }
+	m.prNext = time.Now().Add(time.Hour) // no round in the way
+	run := func(id string) {
+		t.Helper()
+		asked = nil
+		m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+		cmd := m.prCmd()
+		if cmd == nil {
+			return
+		}
+		switch msg := cmd().(type) {
+		case tea.BatchMsg:
+			for _, c := range msg {
+				if c != nil {
+					m.applyPRs(c().(prDoneMsg))
+				}
+			}
+		case prDoneMsg:
+			m.applyPRs(msg)
+		}
+	}
+	run("a")
+	if len(asked) != 1 || !slices.Equal(asked[0], []string{prA}) {
+		t.Fatalf("landing refreshes its open PRs, not merged ones: %v", asked)
+	}
+	run("a")
+	if len(asked) != 0 {
+		t.Errorf("staying on it asks once: %v", asked)
+	}
+	run("b")
+	if len(asked) != 1 || !slices.Equal(asked[0], []string{prC}) {
+		t.Errorf("landing on another refreshes that one: %v", asked)
+	}
+	run("a")
+	if len(asked) != 1 || !slices.Equal(asked[0], []string{prA}) {
+		t.Errorf("coming back refreshes again: %v", asked)
+	}
+}
+
 // A fake gh answering one PR and failing another the way GitHub does: the
 // data for the rest, an error for that field, and a non-zero exit.
 func TestGhPRBatchReadsPartialAnswers(t *testing.T) {

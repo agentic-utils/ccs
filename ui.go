@@ -201,6 +201,7 @@ type model struct {
 	prRound    int             // the round's requests in flight
 	prSelBusy  bool            // the selected session's own request is in flight
 	prSelAsked map[string]bool // asked for the selected session since the last round
+	prSelected string          // the session whose PRs were last refreshed for being selected
 
 	revealed map[string]bool // headless sessions shown anyway: opened by selectSession
 	prErr    string

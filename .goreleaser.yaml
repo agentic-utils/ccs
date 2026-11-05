@@ -42,6 +42,10 @@ brews:
     homepage: "https://github.com/agentic-utils/ccs"
     description: "Coding CLI Sessions: launch, watch, search and resume Claude Code and Codex sessions"
     license: "MIT"
+    # post_install runs in Homebrew's sandbox, which can't write to ~/Applications.
+    caveats: |
+      On macOS, run this once so ccs://session/<name> links switch to that session's tab:
+        ccs link install
     test: |
       system "#{bin}/ccs", "--version"
 

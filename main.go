@@ -46,6 +46,8 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>]
                             Start a named claude (or codex) session in a new iTerm tab or tmux window
        ccs close <name>     Stop the named session and close its tab
+       ccs link install     Make ccs://session/<name> links switch to that session's tab (macOS);
+                            also: ccs link status, ccs link uninstall
        ccs watch [flags]    Report changes to your open PRs as JSON lines, and tell the sessions
                             that claimed them what's failing (see ccs watch --help)
        ccs claim <PR URL>   Record that the session running it owns the PR (--release drops it)
@@ -158,6 +160,9 @@ func main() {
 	}
 	if len(args) > 0 && args[0] == "close" {
 		os.Exit(runClose(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "link" {
+		os.Exit(runLink(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "watch" {
 		os.Exit(runWatch(args[1:]))
@@ -280,6 +285,7 @@ func main() {
 	// Run TUI with mouse reporting, so the wheel scrolls whatever is under the
 	// pointer (see listLayout). A report that arrives fragmented can reach
 	// Update as typed text; mouseLeak drops those before the search box.
+	go refreshLinkApp()
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus = s.Table, s.Grouped, s.AutoFocus

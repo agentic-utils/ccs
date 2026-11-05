@@ -29,6 +29,7 @@ type fakePR struct {
 	unresolved  int          // review threads not resolved, each last commented on by a reviewer
 	threadsFail bool         // the GraphQL thread count fails
 	threads     []fakeThread // when set, the unresolved threads instead of unresolved
+	updatedAt   string       // what the search says; empty leaves it out
 }
 
 // fakeThread is an unresolved review thread: its id, last comment id and who wrote it.
@@ -70,7 +71,7 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 					continue
 				}
 			}
-			rows = append(rows, map[string]any{"url": p.url(), "title": "t" + fmt.Sprint(p.number), "number": p.number, "isDraft": p.draft, "repository": map[string]string{"nameWithOwner": p.repo}})
+			rows = append(rows, map[string]any{"url": p.url(), "title": "t" + fmt.Sprint(p.number), "number": p.number, "isDraft": p.draft, "updatedAt": p.updatedAt, "repository": map[string]string{"nameWithOwner": p.repo}})
 		}
 		if filter[0] == "--merged-at" {
 			g.mergedSince = append(g.mergedSince, filter[1])
@@ -626,5 +627,91 @@ func TestPRDetailsReadsEveryPage(t *testing.T) {
 	}
 	if p := d(3); p.Threads == nil || *p.Threads != 121 || len(p.Unanswered) != 1 {
 		t.Errorf("threads on page 2 count: %v %v", p.Threads, p.Unanswered)
+	}
+}
+
+// countDetailReads counts the REST calls about PRs from here on.
+func countDetailReads(t *testing.T) *int {
+	t.Helper()
+	n, run := 0, ghRun
+	ghRun = func(a ...string) ([]byte, error) {
+		if a[0] == "api" && strings.HasPrefix(a[1], "repos/") {
+			n++
+		}
+		return run(a...)
+	}
+	return &n
+}
+
+func TestWatchSkipsAnUnchangedSettledPRUntilAFullRead(t *testing.T) {
+	g := watchWorld(t)
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	a := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean", updatedAt: "2026-11-03T08:00:00Z"}
+	green(a)
+	g.prs = []*fakePR{a}
+	passEvents(t, now)
+	reads := countDetailReads(t)
+	a.runs = [][3]string{{"test", "completed", "failure"}} // a re-run: updatedAt doesn't move
+
+	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || *reads != 0 {
+		t.Errorf("unchanged: events %v, %d reads", got, *reads)
+	}
+	if got := passEvents(t, now.Add(prFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || *reads == 0 {
+		t.Errorf("after prFullEvery: events %v, %d reads", got, *reads)
+	}
+}
+
+func TestWatchReadsAPRWhoseUpdatedAtMoved(t *testing.T) {
+	g := watchWorld(t)
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	a := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean", updatedAt: "2026-11-03T08:00:00Z"}
+	green(a)
+	g.prs = []*fakePR{a}
+	passEvents(t, now)
+	a.head, a.updatedAt = "h2", "2026-11-03T09:01:00Z"
+	a.runs = [][3]string{{"test", "completed", "failure"}}
+	if got := passEvents(t, now.Add(3*time.Minute)); !strings.Contains(strings.Join(got, " "), "checks_failing") {
+		t.Errorf("a moved PR is read: %v", got)
+	}
+}
+
+func TestWatchKeepsReadingPRsNotSettled(t *testing.T) {
+	g := watchWorld(t)
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	const at = "2026-11-03T08:00:00Z"
+	running := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean", updatedAt: at}
+	pending(running)
+	uncounted := &fakePR{repo: "o/a", number: 2, state: "open", head: "h2", mergeable: "clean", updatedAt: at, threadsFail: true}
+	green(uncounted)
+	noChecks := &fakePR{repo: "o/a", number: 3, state: "open", head: "h3", mergeable: "clean", updatedAt: at}
+	g.prs = []*fakePR{running, uncounted, noChecks}
+	passEvents(t, now)
+	reads := countDetailReads(t)
+	green(running)
+	if got := passEvents(t, now.Add(3*time.Minute)); !strings.Contains(strings.Join(got, " "), "checks_passed") {
+		t.Errorf("pending checks are read every pass: %v", got)
+	}
+	if *reads < 3 { // each of the three PRs at least once
+		t.Errorf("%d reads, want every PR read", *reads)
+	}
+}
+
+func TestWatchKeepsThreadCountsOfASkippedPR(t *testing.T) {
+	g := watchWorld(t)
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	a := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean", updatedAt: "2026-11-03T08:00:00Z", unresolved: 2}
+	green(a)
+	g.prs = []*fakePR{a}
+	passEvents(t, now)
+	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 {
+		t.Errorf("a skipped PR emits nothing: %v", got)
+	}
+	st, _ := loadPRWatchState()
+	p := st.PRs[a.url()]
+	if p.Threads == nil || *p.Threads != 2 || p.Head != "h1" {
+		t.Errorf("skipped PR's state kept: %+v", p)
+	}
+	if !p.FullAt.Equal(now) {
+		t.Errorf("a skip must not move FullAt: %v", p.FullAt)
 	}
 }

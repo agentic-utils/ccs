@@ -118,6 +118,12 @@ func TestMain(m *testing.M) {
 	t3Link = func(int) (string, error) { return "", errors.New("no T3 Code in tests") }
 	openApp = func(string) error { return errors.New("tests open nothing") }
 	releaseKey = testReleaseKey.Public().(ed25519.PublicKey)
+	// links never register a handler or drive the real iTerm unless a test stubs them.
+	linkAppPath = func() string { return filepath.Join(dir, "CCS Links.app") }
+	lsregister = "/bin/false"
+	focusLinkTTY = func(string) error { return errors.New("tests focus nothing") }
+	iTermRunning = func() bool { return false }
+	urlHandlerApp = func() string { return "" }
 	// launch and close never touch real tabs or processes unless a test stubs them.
 	launchDir = func() string { return filepath.Join(dir, "launch") }
 	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }

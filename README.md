@@ -54,6 +54,24 @@ ccs close fix-login
 
 `ccs close <name>` finds the one running session with that name (two with the same name are left alone), stops it, confirms its process has exited, then closes its iTerm tab (or tmux pane). A session with no terminal (an app's, or `claude --bg`) is refused.
 
+## Link to a session's tab
+
+On macOS, `ccs://session/<name>` switches to that running session's iTerm tab or tmux window, so a session can mention another one as something you can click:
+
+```bash
+ccs link install     # once: creates ~/Applications/CCS Links.app and registers it for ccs:// links
+ccs link status      # which app opens ccs:// links, and which ccs it runs
+ccs link uninstall   # removes the app
+```
+
+Opening a link only ever focuses. A session that isn't running, or a name two sessions share, shows a short alert saying so; nothing is started or resumed. Any web page or message can send you one of these links, so all it can do is bring one of your tabs to the front. The link has to be exactly `ccs://session/<name>`, with the name in the form `ccs launch` accepts (letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 64 characters). Anything else is refused, so a session named with spaces can't be linked. The name is only compared with the running sessions' names; it never reaches a shell or AppleScript.
+
+The first click asks you to let CCS Links control iTerm, which it needs to pick the tab. If you refuse, you can change it under Privacy & Security, Automation in System Settings. A session in tmux needs an attached tmux client; its iTerm tab is brought forward too, but tmux in another terminal only switches window, without bringing that terminal to the front. iTerm is never started: a session in any other terminal is refused.
+
+The app runs Homebrew's `bin/ccs` link, which stays put when `brew upgrade` or ccs's own update replaces the keg, so upgrades keep it working with nothing to redo. If a new ccs changes the handler or the ccs it points at has gone, ccs rebuilds an installed one when it next starts; it never installs one you didn't ask for. `brew uninstall ccs` leaves the app behind, so run `ccs link uninstall` first.
+
+Whether a link is clickable depends on the app showing it. Browsers ask before opening it. Apps that only linkify `http` addresses show it as plain text, where you can run `open ccs://session/<name>` instead.
+
 ## The coordinator
 
 The coordinator is one Claude Code session that keeps your other sessions moving and never does the work itself. Tell it what you want done; it starts a named session for each ask, tracks who owns which PR and what order they must merge in, tells you what needs you, and closes sessions when they finish.
@@ -95,6 +113,7 @@ The coordinator is always Claude, since Codex sessions can't receive messages fr
 
 ```bash
 brew install agentic-utils/tap/ccs
+ccs link install   # optional, macOS: make ccs://session/<name> links work
 ```
 
 ### From source

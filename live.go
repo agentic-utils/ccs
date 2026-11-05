@@ -526,7 +526,14 @@ var focusTTY = func(tty string, activate bool) bool {
 	if !inITerm() {
 		return false
 	}
-	front := "" // activate brings iTerm in front of other apps; auto-focus doesn't
+	out, err := iTermSelect(tty, activate)
+	return err == nil && strings.TrimSpace(string(out)) == "found"
+}
+
+// iTermSelect selects the iTerm session on tty, printing "found" when there is
+// one. activate brings iTerm in front of other apps; auto-focus doesn't.
+func iTermSelect(tty string, activate bool) ([]byte, error) {
+	front := ""
 	if activate {
 		front = "activate"
 	}
@@ -545,8 +552,7 @@ var focusTTY = func(tty string, activate bool) bool {
 		end repeat
 	end repeat
 end tell`, tty, front)
-	out, err := runBounded(5*time.Second, nil, "osascript", "-e", script)
-	return err == nil && strings.TrimSpace(string(out)) == "found"
+	return runBounded(5*time.Second, nil, "osascript", "-e", script)
 }
 
 // tmuxPaneForTTY picks the pane target whose tty matches from

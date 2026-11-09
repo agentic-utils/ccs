@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/state"
 )
 
@@ -35,11 +36,11 @@ func TestPRsCLIAndMCP(t *testing.T) {
 	if code := github.RunClaim(nil, &out, &errs); code != 2 {
 		t.Errorf("no URL: exit %d", code)
 	}
-	if res, err := mcpCall("list_prs", nil, nil); err != nil || !strings.Contains(fmt.Sprint(res), claimA) {
+	if res, err := mcp.McpCall("list_prs", nil, nil); err != nil || !strings.Contains(fmt.Sprint(res), claimA) {
 		t.Errorf("list_prs defaults to the running watcher's author and owner: %v %v", res, err)
 	}
 	os.Remove(github.PrWatchStatePath())
-	if _, err := mcpCall("list_prs", nil, nil); err == nil {
+	if _, err := mcp.McpCall("list_prs", nil, nil); err == nil {
 		t.Error("no watcher state and no gh user: list_prs should fail")
 	}
 	out.Reset()

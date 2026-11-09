@@ -1046,22 +1046,22 @@ const (
 )
 
 func TestChannelParts(t *testing.T) {
-	ev, ok := channelParts(channelPR)
-	if !ok || ev.line() != "← pr-events: two-inc/twoctl-cli#14: PR merged by brtkwr" ||
-		ev.link != "https://github.com/two-inc/twoctl-cli/pull/14" || ev.detail != "(still watching for late comments)" {
+	ev, ok := transcript.ChannelParts(channelPR)
+	if !ok || ev.Line() != "← pr-events: two-inc/twoctl-cli#14: PR merged by brtkwr" ||
+		ev.Link != "https://github.com/two-inc/twoctl-cli/pull/14" || ev.Detail != "(still watching for late comments)" {
 		t.Errorf("got %+v, %v", ev, ok)
 	}
 	// the plugin's own name at the start of its text isn't said twice
-	ev, _ = channelParts("<channel source=\"plugin:x:pr-events\" event=\"polling\">\npr-events: polling a/b#1 every 60s\n</channel>")
-	if ev.line() != "← pr-events: polling a/b#1 every 60s" || ev.link != "" {
+	ev, _ = transcript.ChannelParts("<channel source=\"plugin:x:pr-events\" event=\"polling\">\npr-events: polling a/b#1 every 60s\n</channel>")
+	if ev.Line() != "← pr-events: polling a/b#1 every 60s" || ev.Link != "" {
 		t.Errorf("got %+v", ev)
 	}
 	// nothing but the event's name
-	ev, _ = channelParts("<channel source=\"plugin:x:y\" event=\"ping\"></channel>")
-	if ev.line() != "← y: ping" {
-		t.Errorf("got %q", ev.line())
+	ev, _ = transcript.ChannelParts("<channel source=\"plugin:x:y\" event=\"ping\"></channel>")
+	if ev.Line() != "← y: ping" {
+		t.Errorf("got %q", ev.Line())
 	}
-	if _, ok := channelParts("<system-reminder>hello</system-reminder>"); ok {
+	if _, ok := transcript.ChannelParts("<system-reminder>hello</system-reminder>"); ok {
 		t.Error("only a channel tag is a channel event")
 	}
 }

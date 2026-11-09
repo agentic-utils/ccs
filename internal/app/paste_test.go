@@ -66,14 +66,14 @@ func TestWithImagesAndStrip(t *testing.T) {
 	if !strings.Contains(wire, "[Image #1] /p/a.png, [Image #2] /p/b.png]") || strings.Contains(wire, "deleted") {
 		t.Errorf("wire: %q", wire)
 	}
-	if got := stripImageNote(wire); got != text {
+	if got := transcript.StripImageNote(wire); got != text {
 		t.Errorf("strip: %q", got)
 	}
 	if got := withImages("no images", images); got != "no images" {
 		t.Errorf("got %q", got)
 	}
 	// through the socket's wrapper, as peerParts sees it
-	from, body, ok := peerParts("<cross-session-message from-name=\"" + ccsSender + "\">\n" + transcript.CcsNote + wire + "\n</cross-session-message>")
+	from, body, ok := transcript.PeerParts("<cross-session-message from-name=\"" + ccsSender + "\">\n" + transcript.CcsNote + wire + "\n</cross-session-message>")
 	if !ok || from != ccsSender || body != text {
 		t.Errorf("peerParts: %q %q %v", from, body, ok)
 	}

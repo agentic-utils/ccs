@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -225,7 +226,7 @@ func Main(v string) {
 	}
 
 	if len(args) > 0 && args[0] == "mcp" {
-		mcpMain(cutoff, maxSize, excludeDirs)
+		mcp.Main(cutoff, maxSize, excludeDirs)
 		return
 	}
 

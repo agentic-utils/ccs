@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -128,7 +129,7 @@ func TestMCPSkipsHeadless(t *testing.T) {
 	}
 	call := func(req string) string {
 		var out bytes.Buffer
-		if err := runMCP(strings.NewReader(req+"\n"), &out, func() ([]transcript.Conversation, error) { return slices.Clone(convs), nil }); err != nil {
+		if err := mcp.RunMCP(strings.NewReader(req+"\n"), &out, func() ([]transcript.Conversation, error) { return slices.Clone(convs), nil }); err != nil {
 			t.Fatal(err)
 		}
 		var r map[string]any
@@ -192,4 +193,15 @@ func TestHeadlessToggleSurvivesRestart(t *testing.T) {
 	if !showHeadless {
 		t.Error("state without the field leaves the flag's choice")
 	}
+}
+
+// toolText is a copy of internal/mcp's test helper: the text of a tools/call reply.
+func toolText(t *testing.T, r map[string]any) string {
+	t.Helper()
+	res, _ := r["result"].(map[string]any)
+	content, _ := res["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("no content in %v", r)
+	}
+	return content[0].(map[string]any)["text"].(string)
 }

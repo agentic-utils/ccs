@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -247,7 +248,7 @@ func TestCodexResumeAndSend(t *testing.T) {
 	if err != nil || !slices.Equal(got, []string{cxA, "carry on"}) || !strings.Contains(note, "codex queue") {
 		t.Errorf("the message box queues into the thread: %v %q %v", got, note, err)
 	}
-	if h := mcpHeader(transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, Cwd: "/w"}); !strings.Contains(h, "kind codex") || !strings.Contains(h, "codex resume "+cxA) {
+	if h := mcp.McpHeader(transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, Cwd: "/w"}); !strings.Contains(h, "kind codex") || !strings.Contains(h, "codex resume "+cxA) {
 		t.Errorf("MCP says it's Codex and how to resume it:\n%s", h)
 	}
 }

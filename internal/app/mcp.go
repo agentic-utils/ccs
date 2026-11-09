@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -203,7 +204,7 @@ func mcpCall(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	}
 	if name == "list_prs" {
 		var out, errs strings.Builder
-		if runPRs([]string{"--json"}, &out, &errs) != 0 {
+		if github.RunPRs([]string{"--json"}, &out, &errs) != 0 {
 			return "", errors.New(strings.TrimSpace(errs.String()))
 		}
 		return out.String(), nil

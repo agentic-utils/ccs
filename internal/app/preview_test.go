@@ -16,6 +16,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/transcript"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -1007,14 +1008,14 @@ func TestPreviewWaitsForTheSelectionToRest(t *testing.T) {
 
 func TestLinksPopupFiltersPRsByStatus(t *testing.T) {
 	m := initialModel(nil, "", nil)
-	m.prs = map[string]prInfo{}
+	m.prs = map[string]github.PrInfo{}
 	var prs []string
 	for i := 1; i <= 25; i++ {
 		u := fmt.Sprintf("https://github.com/o/r/pull/%d", i)
 		prs = append(prs, u)
-		m.prs[u] = prInfo{State: "MERGED", Title: strings.Repeat("a very long title ", 10)}
+		m.prs[u] = github.PrInfo{State: "MERGED", Title: strings.Repeat("a very long title ", 10)}
 	}
-	m.prs[prs[24]] = prInfo{State: "OPEN", MergeState: "CLEAN", Title: "go"}
+	m.prs[prs[24]] = github.PrInfo{State: "OPEN", MergeState: "CLEAN", Title: "go"}
 	conv := transcript.Conversation{SessionID: "s", Cwd: "/p", PRs: prs, Messages: []transcript.Message{{Role: "assistant", Text: "hi", Ts: "2026-09-30T10:00:00Z"}}}
 	m.items = []listItem{{conv: conv}}
 	m.filtered = m.items
@@ -1033,7 +1034,7 @@ func TestLinksPopupFiltersPRsByStatus(t *testing.T) {
 	if v := strip2(m.View()); !strings.Contains(v, "1/1") || strings.Contains(v, "r#1 merged") {
 		t.Errorf("the status is searchable too:\n%s", v)
 	}
-	m.prs[prs[24]] = prInfo{State: "MERGED", Title: "go"}
+	m.prs[prs[24]] = github.PrInfo{State: "MERGED", Title: "go"}
 	if v := strip2(m.View()); !strings.Contains(v, "no links match") {
 		t.Errorf("rows follow the latest status:\n%s", v)
 	}

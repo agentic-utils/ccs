@@ -1,23 +1,15 @@
 package app
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -28,249 +20,21 @@ import (
 // loop over repos) or for its subagents, so the PRs gh pr create and merge
 // print count too, in the session and its subagents (prsOf).
 
-// prsOf is conv's PRs and then its subagents' not among them.
-func prsOf(conv transcript.Conversation) []string {
-	sub := subagentPRs(conv)
-	if len(sub) == 0 {
-		return conv.PRs
-	}
-	urls := slices.Clone(conv.PRs)
-	for _, u := range sub {
-		if !slices.Contains(urls, u) {
-			urls = append(urls, u)
-		}
-	}
-	return urls
-}
-
-// subagentPRsTTL is how long subagentPRs trusts what it last read.
-const subagentPRsTTL = 10 * time.Second
-
-var subPRCache = struct {
-	sync.Mutex
-	dirs  map[string]subPRsRead
-	files map[string]*subPRFile
-}{dirs: map[string]subPRsRead{}, files: map[string]*subPRFile{}}
-
-type subPRsRead struct {
-	at  time.Time
-	prs []string
-}
-
-// subPRFile is how far one subagent transcript has been read: its complete
-// lines up to off, the gh calls still awaiting output, and the PRs found.
-type subPRFile struct {
-	off     int64
-	pending []string
-	prs     []string
-}
-
-// subagentPRs is the PRs conv's subagents opened or merged (ghPRCall),
-// reread at most every subagentPRsTTL and then only what each transcript
-// appended (the list asks on every frame).
-func subagentPRs(conv transcript.Conversation) []string {
-	dir := filepath.Join(strings.TrimSuffix(conv.FilePath, ".jsonl"), "subagents")
-	subPRCache.Lock()
-	defer subPRCache.Unlock()
-	if r, ok := subPRCache.dirs[dir]; ok && time.Since(r.at) < subagentPRsTTL {
-		return r.prs
-	}
-	paths, _ := filepath.Glob(filepath.Join(dir, "agent-*.jsonl"))
-	more, _ := filepath.Glob(filepath.Join(dir, "workflows", "*", "agent-*.jsonl"))
-	var prs []string
-	for _, path := range append(paths, more...) {
-		f := subPRCache.files[path]
-		if f == nil {
-			f = &subPRFile{}
-			subPRCache.files[path] = f
-		}
-		f.read(path)
-		for _, u := range f.prs {
-			if !slices.Contains(prs, u) {
-				prs = append(prs, u)
-			}
-		}
-	}
-	subPRCache.dirs[dir] = subPRsRead{time.Now(), prs}
-	return prs
-}
-
-// read takes in what path appended since the last read; a file that shrank
-// is read again from the start.
-func (f *subPRFile) read(path string) {
-	file, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-	if info, err := file.Stat(); err != nil || info.Size() == f.off {
-		return
-	} else if info.Size() < f.off {
-		*f = subPRFile{}
-	}
-	if _, err := file.Seek(f.off, io.SeekStart); err != nil {
-		return
-	}
-	r := bufio.NewReaderSize(file, 1<<16)
-	for {
-		line, err := r.ReadBytes('\n')
-		if err != nil { // an unfinished line waits for the next read
-			return
-		}
-		f.off += int64(len(line))
-		if bytes.Contains(line, []byte("gh pr ")) || len(f.pending) > 0 && bytes.Contains(line, []byte(`"tool_result"`)) {
-			f.line(line)
-		}
-	}
-}
-
-// line notes a line's gh calls and takes the PRs from their output.
-func (f *subPRFile) line(line []byte) {
-	var rec struct {
-		Message struct {
-			Content json.RawMessage `json:"content"`
-		} `json:"message"`
-	}
-	if json.Unmarshal(line, &rec) != nil || len(rec.Message.Content) == 0 || rec.Message.Content[0] != '[' {
-		return
-	}
-	var blocks []struct {
-		Type      string                   `json:"type"`
-		ID        string                   `json:"id"`
-		Name      string                   `json:"name"`
-		Input     struct{ Command string } `json:"input"`
-		ToolUseID string                   `json:"tool_use_id"`
-		Content   json.RawMessage          `json:"content"`
-	}
-	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
-		return
-	}
-	for _, b := range blocks {
-		switch {
-		case b.Type == "tool_use" && b.Name == "Bash" && transcript.GhPRCall(b.Input.Command):
-			f.pending = append(f.pending, b.ID)
-		case b.Type == "tool_result" && slices.Contains(f.pending, b.ToolUseID):
-			f.pending = slices.DeleteFunc(f.pending, func(id string) bool { return id == b.ToolUseID })
-			for _, u := range transcript.GhOutputPRs(transcript.ResultText(b.Content)) {
-				if transcript.PrURL.MatchString(u) && !slices.Contains(f.prs, u) {
-					f.prs = append(f.prs, u)
-				}
-			}
-		}
-	}
-}
-
-// prInfo is what GitHub says about a PR.
-type prInfo struct {
-	Number     int
-	Title      string
-	State      string // OPEN, MERGED, CLOSED
-	Draft      bool
-	MergeState string   // mergeStateStatus: CLEAN, UNSTABLE, BLOCKED, BEHIND, DIRTY, DRAFT, HAS_HOOKS, UNKNOWN
-	Review     string   // reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED or ""
-	Checks     string   // the head commit's check rollup: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED or ""
-	Failing    []string // the names of its failing checks, first seen first
-	Unresolved int      // its unresolved review threads (of the first 100)
-	// ThreadsUnread: more threads than the batch reads and none of those
-	// unresolved, so it can't be called clear (the watcher reads them all).
-	ThreadsUnread bool
-}
-
-// threadsText is "1 unresolved thread" or "N unresolved threads".
-func threadsText(n int) string {
-	if n == 1 {
-		return "1 unresolved thread"
-	}
-	return fmt.Sprintf("%d unresolved threads", n)
-}
-
-// failingNames is the failing checks for a status line: at most three, then +N.
-func (p prInfo) failingNames() string {
-	if len(p.Failing) == 0 {
-		return ""
-	}
-	names := p.Failing[:min(len(p.Failing), 3)]
-	s := ": " + strings.Join(names, ", ")
-	if more := len(p.Failing) - len(names); more > 0 {
-		s += fmt.Sprintf(" +%d", more)
-	}
-	return s
-}
-
-func (p prInfo) final() bool { return p.State == "MERGED" || p.State == "CLOSED" }
-
-// PR groups, in the order a session lists them: what you can act on first,
-// merged and closed last.
-const (
-	prReady   = iota // ready to merge
-	prFix            // needs you: failing checks, conflicts, changes requested, behind
-	prWaiting        // checks running, review required, draft, or not looked up yet
-	prMerged
-	prClosed
-)
-
-// status is p's group and what to say about it. GitHub's mergeStateStatus is
-// the verdict on "ready to merge" (branch protection, required checks and
-// reviews); the rest only explains why not.
-func (p prInfo) status() (int, string) {
-	switch {
-	case p.State == "MERGED":
-		return prMerged, "merged"
-	case p.State == "CLOSED":
-		return prClosed, "closed"
-	case p.State == "GONE":
-		return prClosed, "not found: deleted, or gh can't see it"
-	case p.State == "":
-		return prWaiting, "checking…"
-	case p.Draft:
-		return prWaiting, "draft"
-	case p.MergeState == "DIRTY":
-		return prFix, "conflicts"
-	case p.MergeState == "UNSTABLE" && len(p.Failing) > 0:
-		// Mergeable, but a failed check often skips what follows it (build, deploy).
-		return prFix, "optional checks failing" + p.failingNames()
-	case p.Checks == "FAILURE" || p.Checks == "ERROR":
-		return prFix, "checks failing" + p.failingNames()
-	case p.Unresolved > 0: // never ready while a review thread is open, even if GitHub would merge it
-		return prFix, threadsText(p.Unresolved)
-	case p.ThreadsUnread:
-		return prWaiting, "over 100 review threads: see them on GitHub"
-	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
-		return prReady, "ready to merge"
-	case p.MergeState == "UNSTABLE" && (p.Checks == "PENDING" || p.Checks == "EXPECTED"):
-		// UNSTABLE is any optional check not passed yet, running included.
-		return prReady, "ready to merge · optional checks running"
-	case p.MergeState == "UNSTABLE":
-		return prReady, "ready to merge"
-	case p.Review == "CHANGES_REQUESTED":
-		return prFix, "changes requested"
-	case p.MergeState == "BEHIND":
-		return prFix, "behind its base"
-	case p.Checks == "PENDING" || p.Checks == "EXPECTED":
-		return prWaiting, "checks running"
-	case p.Review == "REVIEW_REQUIRED":
-		return prWaiting, "review required"
-	case p.MergeState == "UNKNOWN":
-		return prWaiting, "github is checking it"
-	}
-	return prWaiting, "blocked"
-}
-
 // GitHub's colours: green ready, amber waiting, red to fix or closed, purple merged.
 const prPurple = "38;5;141"
 
 // prMark is a group's glyph and colour.
 func prMark(group int) (string, string) {
 	switch group {
-	case prReady:
+	case github.PrReady:
 		return "✓", "32"
-	case prFix:
+	case github.PrFix:
 		return "✗", "31"
-	case prWaiting:
+	case github.PrWaiting:
 		return "○", amber
-	case prMerged:
+	case github.PrMerged:
 		return "●", prPurple
-	case prClosed:
+	case github.PrClosed:
 		return "●", "31"
 	}
 	return " ", "90"
@@ -279,10 +43,10 @@ func prMark(group int) (string, string) {
 // sessionPRs is conv's PRs, ready first, merged and closed last, otherwise
 // in the order the session first touched them.
 func (m model) sessionPRs(conv transcript.Conversation) []string {
-	urls := slices.Clone(prsOf(conv))
+	urls := slices.Clone(github.PrsOf(conv))
 	slices.SortStableFunc(urls, func(a, b string) int {
-		ga, _ := m.prs[a].status()
-		gb, _ := m.prs[b].status()
+		ga, _ := m.prs[a].Status()
+		gb, _ := m.prs[b].Status()
 		return ga - gb
 	})
 	return urls
@@ -290,12 +54,12 @@ func (m model) sessionPRs(conv transcript.Conversation) []string {
 
 // prCounts is how many of conv's PRs are in each group (prReady…prClosed);
 // one GitHub can't find isn't counted.
-func (m model) prCounts(conv transcript.Conversation) (n [prClosed + 1]int) {
-	for _, u := range prsOf(conv) {
+func (m model) prCounts(conv transcript.Conversation) (n [github.PrClosed + 1]int) {
+	for _, u := range github.PrsOf(conv) {
 		if s := m.prs[u].State; s == "" || s == "GONE" { // not looked up yet, or not found
 			continue
 		}
-		g, _ := m.prs[u].status()
+		g, _ := m.prs[u].Status()
 		n[g]++
 	}
 	return
@@ -317,16 +81,13 @@ func (m model) prCell(conv transcript.Conversation, coloured bool) string {
 		}
 		parts = append(parts, s)
 	}
-	add(n[prReady], "✓", "32")
-	add(n[prFix], "✗", "31")
-	add(n[prWaiting], "", amber)
-	add(n[prMerged], "●", prPurple)
+	add(n[github.PrReady], "✓", "32")
+	add(n[github.PrFix], "✗", "31")
+	add(n[github.PrWaiting], "", amber)
+	add(n[github.PrMerged], "●", prPurple)
 	s := strings.Join(parts, " ")
 	return strings.Repeat(" ", max(colPRs-ansi.StringWidth(s), 0)) + s
 }
-
-// maxPRLines is how many PRs the preview header lists; ^O lists them all.
-const maxPRLines = 5
 
 // prLines is the preview header's PRs, width wide: one line, a link, for each
 // open PR (at most maxPRLines), then one line counting the merged and closed.
@@ -338,14 +99,14 @@ func (m model) prLines(conv transcript.Conversation, width int) []string {
 	var lines []string
 	merged, closed, gone := 0, 0, 0
 	for _, u := range urls {
-		switch g, _ := m.prs[u].status(); {
-		case g == prMerged:
+		switch g, _ := m.prs[u].Status(); {
+		case g == github.PrMerged:
 			merged++
 		case m.prs[u].State == "GONE":
 			gone++
-		case g == prClosed:
+		case g == github.PrClosed:
 			closed++
-		case len(lines) < maxPRLines:
+		case len(lines) < github.MaxPRLines:
 			lines = append(lines, m.prLine(u))
 		}
 	}
@@ -381,7 +142,7 @@ func (m model) prLines(conv transcript.Conversation, width int) []string {
 // prLine is one PR: "✓ ccs#113 title · ready to merge", the number a link.
 func (m model) prLine(u string) string {
 	p := m.prs[u]
-	g, why := p.status()
+	g, why := p.Status()
 	if p.State == "" && m.fetchPRs == nil {
 		why = "needs gh to look it up"
 	}
@@ -389,17 +150,9 @@ func (m model) prLine(u string) string {
 	if p.Draft || p.State == "" { // grey on GitHub too: nothing is happening to it yet
 		colour = "90"
 	}
-	name := prName(u)
+	name := github.PrName(u)
 	title := p.Title
 	return "\033[" + colour + "m" + glyph + "\033[0m " + hyperlink(u, name) + " " + title + " \033[" + colour + "m· " + why + "\033[0m"
-}
-
-// prName is "repo#N" from a PR address.
-func prName(u string) string {
-	if p := transcript.PrURL.FindStringSubmatch(u); p != nil {
-		return p[2] + "#" + p[3]
-	}
-	return u
 }
 
 // prLinks is conv's PRs for the ^O popup, in the order the header lists them.
@@ -417,12 +170,12 @@ func (m model) prLinks(conv transcript.Conversation) []linkItem {
 // title, so a long title is what gets cut.
 func (m model) prLinkText(u string) string {
 	p := m.prs[u]
-	g, why := p.status()
+	g, why := p.Status()
 	glyph, colour := prMark(g)
 	if p.Draft || p.State == "" {
 		colour = "90"
 	}
-	return "\033[" + colour + "m" + glyph + "\033[39m " + prName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title
+	return "\033[" + colour + "m" + glyph + "\033[39m " + github.PrName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title
 }
 
 // prScope is how far back a session's open PRs are kept up to date; older
@@ -430,7 +183,7 @@ func (m model) prLinkText(u string) string {
 const prScope = 7 * 24 * time.Hour
 
 type prDoneMsg struct {
-	infos map[string]prInfo
+	infos map[string]github.PrInfo
 	err   error
 	round bool // from the minute's round, not the selected session's own request
 }
@@ -470,15 +223,15 @@ func (m *model) prCmd() tea.Cmd {
 			if !m.live[it.conv.SessionID] && it.conv.LastTimestamp < cutoff && it.conv.SessionID != selected {
 				continue
 			}
-			for _, u := range prsOf(it.conv) {
-				if !seen[u] && !m.prs[u].final() {
+			for _, u := range github.PrsOf(it.conv) {
+				if !seen[u] && !m.prs[u].Final() {
 					seen[u] = true
 					urls = append(urls, u)
 				}
 			}
 		}
-		for i := 0; i < len(urls); i += prBatch {
-			m.prQueue = append(m.prQueue, urls[i:min(i+prBatch, len(urls))])
+		for i := 0; i < len(urls); i += github.PrBatch {
+			m.prQueue = append(m.prQueue, urls[i:min(i+github.PrBatch, len(urls))])
 		}
 	}
 	if !m.prSelBusy && len(m.filtered) > 0 && m.previewSettled() { // not for each session scrolled past
@@ -486,9 +239,9 @@ func (m *model) prCmd() tea.Cmd {
 		landed := m.prSelected != conv.SessionID // just selected: its open PRs are refreshed once
 		m.prSelected = conv.SessionID
 		var urls []string
-		for _, u := range prsOf(conv) {
+		for _, u := range github.PrsOf(conv) {
 			p, have := m.prs[u]
-			if ((landed && !p.final()) || (!have && !m.prSelAsked[u])) && len(urls) < prBatch {
+			if ((landed && !p.Final()) || (!have && !m.prSelAsked[u])) && len(urls) < github.PrBatch {
 				urls = append(urls, u)
 				m.prSelAsked[u] = true
 			}
@@ -520,108 +273,4 @@ func (m *model) applyPRs(msg prDoneMsg) {
 	for u, p := range msg.infos {
 		m.prs[u] = p
 	}
-}
-
-// ghFetchPRs is fetchPRs when gh is installed: nil otherwise, so PRs are
-// never looked up.
-func ghFetchPRs() func([]string) (map[string]prInfo, error) {
-	gh, err := exec.LookPath("gh")
-	if err != nil {
-		return nil
-	}
-	return func(urls []string) (map[string]prInfo, error) { return ghPRBatch(gh, urls) }
-}
-
-// prBatch is how many PRs one GraphQL request asks about.
-const prBatch = 40
-
-// ghPRBatch asks about urls in one GraphQL request (each PR an aliased
-// field). A PR that's gone or private comes back null with an error for that
-// field only, and gh exits non-zero, so the data is read whatever the exit.
-// failedCheck is the check-run conclusions GitHub's rollup counts as failing.
-var failedCheck = map[string]bool{"FAILURE": true, "TIMED_OUT": true, "CANCELLED": true, "ACTION_REQUIRED": true, "STARTUP_FAILURE": true}
-
-func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
-	var q strings.Builder
-	q.WriteString("query{")
-	for i, u := range urls {
-		p := transcript.PrURL.FindStringSubmatch(u) // validated when parsed; owner and repo are [A-Za-z0-9_.-]
-		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision reviewThreads(first:100){totalCount nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
-	}
-	q.WriteString("}")
-	raw, runErr := proc.RunBounded(30*time.Second, []string{"GH_PROMPT_DISABLED=1"}, gh, "api", "graphql", "-f", "query="+q.String())
-	var resp struct {
-		Data map[string]*struct {
-			PullRequest *struct {
-				Number           int
-				Title            string
-				State            string
-				IsDraft          bool
-				MergeStateStatus string
-				ReviewDecision   string
-				ReviewThreads    struct {
-					TotalCount int
-					Nodes      []struct{ IsResolved bool }
-				}
-				Commits struct {
-					Nodes []struct {
-						Commit struct {
-							StatusCheckRollup *struct {
-								State    string
-								Contexts struct {
-									Nodes []struct {
-										Name, Conclusion string // a check run
-										Context, State   string // a commit status
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		if runErr != nil {
-			return nil, runErr
-		}
-		return nil, err
-	}
-	out := map[string]prInfo{}
-	for i, u := range urls {
-		r, answered := resp.Data[fmt.Sprintf("p%d", i)]
-		if !answered {
-			continue
-		}
-		if r == nil || r.PullRequest == nil { // deleted, or gh's account can't see it
-			out[u] = prInfo{State: "GONE"}
-			continue
-		}
-		pr := r.PullRequest
-		info := prInfo{Number: pr.Number, Title: pr.Title, State: pr.State, Draft: pr.IsDraft, MergeState: pr.MergeStateStatus, Review: pr.ReviewDecision}
-		for _, t := range pr.ReviewThreads.Nodes {
-			if !t.IsResolved {
-				info.Unresolved++
-			}
-		}
-		info.ThreadsUnread = info.Unresolved == 0 && pr.ReviewThreads.TotalCount > len(pr.ReviewThreads.Nodes)
-		if n := pr.Commits.Nodes; len(n) > 0 && n[0].Commit.StatusCheckRollup != nil {
-			roll := n[0].Commit.StatusCheckRollup
-			info.Checks = roll.State
-			for _, c := range roll.Contexts.Nodes {
-				name, failed := c.Name, failedCheck[c.Conclusion]
-				if c.Context != "" { // a commit status rather than a check run
-					name, failed = c.Context, c.State == "FAILURE" || c.State == "ERROR"
-				}
-				if failed && name != "" && !slices.Contains(info.Failing, name) {
-					info.Failing = append(info.Failing, name)
-				}
-			}
-		}
-		out[u] = info
-	}
-	if len(out) == 0 && runErr != nil {
-		return nil, runErr
-	}
-	return out, nil
 }

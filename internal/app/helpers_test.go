@@ -23,6 +23,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -150,7 +151,7 @@ func TestMain(m *testing.M) {
 	transcript.CodexProcCwd = func(int) string { return "" }
 	proc.TtyOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
-	ghUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }
+	github.GhUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

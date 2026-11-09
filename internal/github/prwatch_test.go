@@ -1,4 +1,4 @@
-package app
+package github
 
 import (
 	"encoding/json"
@@ -181,27 +181,27 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 func watchWorld(t *testing.T) *fakeGitHub {
 	t.Helper()
 	g := &fakeGitHub{}
-	oldRun, oldSettings, oldLog := ghRun, state.SettingsPath, state.UpdateLogPath
+	oldRun, oldSettings, oldLog := GhRun, state.SettingsPath, state.UpdateLogPath
 	dir := t.TempDir()
-	ghRun, state.SettingsPath, state.UpdateLogPath = g.run, dir+"/settings.json", dir+"/update.log"
-	t.Cleanup(func() { ghRun, state.SettingsPath, state.UpdateLogPath = oldRun, oldSettings, oldLog })
+	GhRun, state.SettingsPath, state.UpdateLogPath = g.run, dir+"/settings.json", dir+"/update.log"
+	t.Cleanup(func() { GhRun, state.SettingsPath, state.UpdateLogPath = oldRun, oldSettings, oldLog })
 	return g
 }
 
 // passEvents runs one pass at now and returns its events as "event url" lines.
 func passEvents(t *testing.T, now time.Time) []string {
 	t.Helper()
-	before, _ := os.ReadFile(prEventsPath())
-	if err := watchPass("me", "o", now); err != nil {
+	before, _ := os.ReadFile(PrEventsPath())
+	if err := WatchPass("me", "o", now); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := os.ReadFile(prEventsPath())
+	after, _ := os.ReadFile(PrEventsPath())
 	var got []string
 	for _, line := range strings.Split(strings.TrimSpace(string(after[len(before):])), "\n") {
 		if line == "" {
 			continue
 		}
-		var e prEvent
+		var e PrEvent
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			t.Fatalf("not JSON: %q", line)
 		}
@@ -228,7 +228,7 @@ func TestWatchSeedsQuietly(t *testing.T) {
 	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 {
 		t.Errorf("nothing changed, nothing reported, and a PR green before the start isn't asked about: %v", got)
 	}
-	s, ok := loadPRWatchState()
+	s, ok := LoadPRWatchState()
 	if !ok || s.Updated.IsZero() || s.PRs[a.url()].Checks != "success" {
 		t.Errorf("state is readable with its freshness: %+v", s)
 	}
@@ -294,7 +294,7 @@ func TestWatchMergedWindow(t *testing.T) {
 		t.Errorf("an old merge is never new: %v", got)
 	}
 	last := g.mergedSince[len(g.mergedSince)-1]
-	if since, _ := time.Parse(time.RFC3339, strings.TrimPrefix(last, ">=")); since.Before(later.Add(-mergedWindow - time.Second)) {
+	if since, _ := time.Parse(time.RFC3339, strings.TrimPrefix(last, ">=")); since.Before(later.Add(-MergedWindow - time.Second)) {
 		t.Errorf("merged search looks back at most mergedWindow: %s", last)
 	}
 	// a PR opened and merged between two passes is reported once.
@@ -315,7 +315,7 @@ func TestWatchFailuresChangeNothing(t *testing.T) {
 	g.prs = []*fakePR{a}
 	passEvents(t, now)
 	g.searchFails = true
-	if err := watchPass("me", "o", now.Add(time.Minute)); err == nil {
+	if err := WatchPass("me", "o", now.Add(time.Minute)); err == nil {
 		t.Error("a failed search is an error")
 	}
 	g.searchFails = false
@@ -352,15 +352,15 @@ func TestWatchRestartDoesntReplay(t *testing.T) {
 
 func TestWatchSingleInstance(t *testing.T) {
 	watchWorld(t)
-	f, err := lockPRWatch()
+	f, err := LockPRWatch()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lockPRWatch(); err == nil || !strings.Contains(err.Error(), "already running") {
+	if _, err := LockPRWatch(); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Errorf("a second watcher is refused: %v", err)
 	}
 	f.Close()
-	g, err := lockPRWatch()
+	g, err := LockPRWatch()
 	if err != nil {
 		t.Errorf("free again once the first exits: %v", err)
 	}
@@ -410,13 +410,13 @@ func TestWatchUnresolvedThreads(t *testing.T) {
 	if got := pass(); !slices.Equal(got, []string{"review_not_needed", "threads_unresolved", "threads_unanswered"}) {
 		t.Errorf("open threads: %v, want review_not_needed, threads_unresolved, threads_unanswered and no needs_review", got)
 	}
-	if data, _ := os.ReadFile(prEventsPath()); !strings.Contains(string(data), `"event":"review_not_needed"`) || !strings.Contains(string(data), `"reason":"new_head"`) {
+	if data, _ := os.ReadFile(PrEventsPath()); !strings.Contains(string(data), `"event":"review_not_needed"`) || !strings.Contains(string(data), `"reason":"new_head"`) {
 		t.Errorf("review_not_needed says why: %s", data)
 	}
-	if data, _ := os.ReadFile(prEventsPath()); !strings.Contains(string(data), `"event":"threads_unresolved","pr":"https://github.com/o/a/pull/1"`) || !strings.Contains(string(data), `"unresolved":2`) {
+	if data, _ := os.ReadFile(PrEventsPath()); !strings.Contains(string(data), `"event":"threads_unresolved","pr":"https://github.com/o/a/pull/1"`) || !strings.Contains(string(data), `"unresolved":2`) {
 		t.Errorf("the event carries the count: %s", data)
 	}
-	if st, _ := loadPRWatchState(); st.PRs[pr.url()].needsReview() {
+	if st, _ := LoadPRWatchState(); st.PRs[pr.url()].NeedsReview() {
 		t.Error("a PR with unresolved threads never needs review")
 	}
 
@@ -424,7 +424,7 @@ func TestWatchUnresolvedThreads(t *testing.T) {
 	if got := pass(); len(got) != 0 {
 		t.Errorf("a failed count changes nothing: %v", got)
 	}
-	if st, _ := loadPRWatchState(); st.PRs[pr.url()].Threads == nil || *st.PRs[pr.url()].Threads != 2 {
+	if st, _ := LoadPRWatchState(); st.PRs[pr.url()].Threads == nil || *st.PRs[pr.url()].Threads != 2 {
 		t.Errorf("the last count is kept: %+v", st.PRs[pr.url()])
 	}
 
@@ -440,56 +440,6 @@ func TestWatchUnresolvedThreads(t *testing.T) {
 	}
 }
 
-func TestNeedsReviewNeedsAThreadCount(t *testing.T) {
-	zero, one := 0, 1
-	p := watchedPR{State: "open", Checks: "success", Review: "required"}
-	if p.needsReview() {
-		t.Error("threads never counted: not yet")
-	}
-	if p.Threads = &one; p.needsReview() {
-		t.Error("an unresolved thread: no")
-	}
-	if p.Threads = &zero; !p.needsReview() {
-		t.Error("green, counted, none open: yes")
-	}
-	if g, why := p.status(); g != prWaiting || why != "review required" {
-		t.Errorf("ccs prs: %d %q", g, why)
-	}
-	p.Threads = &one
-	if g, why := p.status(); g != prFix || why != "1 unresolved thread" {
-		t.Errorf("ccs prs shows the threads: %d %q", g, why)
-	}
-}
-
-func TestWatchDefaultsToTheGhUserInEveryOwner(t *testing.T) {
-	old, oldRun := ghUser, ghRun
-	t.Cleanup(func() { ghUser, ghRun = old, oldRun })
-	ghUser = func() (string, error) { return "someone", nil }
-	a := ""
-	if err := defaultAuthor(&a); err != nil || a != "someone" {
-		t.Errorf("author defaults to the gh user: %q %v", a, err)
-	}
-	a = "given"
-	if defaultAuthor(&a); a != "given" {
-		t.Errorf("--author wins: %q", a)
-	}
-	ghUser = func() (string, error) { return "", errors.New("not logged in") }
-	a = ""
-	if err := defaultAuthor(&a); err == nil {
-		t.Error("no gh user: accepted")
-	}
-	var args []string
-	ghRun = func(a ...string) ([]byte, error) { args = a; return []byte("[]"), nil }
-	searchPRs("someone", "", "--state", "open")
-	if slices.Contains(args, "--owner") {
-		t.Errorf("no owner searches every owner: %v", args)
-	}
-	searchPRs("someone", "o", "--state", "open")
-	if i := slices.Index(args, "--owner"); i < 0 || args[i+1] != "o" {
-		t.Errorf("--owner o: %v", args)
-	}
-}
-
 func TestNeedsReviewIsRecheckedAndEndsWithReviewNotNeeded(t *testing.T) {
 	g := watchWorld(t)
 	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
@@ -501,23 +451,23 @@ func TestNeedsReviewIsRecheckedAndEndsWithReviewNotNeeded(t *testing.T) {
 	// The pass says green and waiting, but GitHub, asked again just before
 	// the event, has it approved: no needs_review.
 	green(a)
-	old := reviewRecheck
-	t.Cleanup(func() { reviewRecheck = old })
-	reviewRecheck = func(p watchedPR) (*watchedPR, error) { p.Review = "approved"; return &p, nil }
+	old := ReviewRecheck
+	t.Cleanup(func() { ReviewRecheck = old })
+	ReviewRecheck = func(p WatchedPR) (*WatchedPR, error) { p.Review = "approved"; return &p, nil }
 	if got := passEvents(t, now.Add(3*time.Minute)); slices.Contains(got, "needs_review "+a.url()) {
 		t.Errorf("stale pass data never says awaiting review: %v", got)
 	}
-	reviewRecheck = old
+	ReviewRecheck = old
 	if got := passEvents(t, now.Add(6*time.Minute)); !slices.Contains(got, "needs_review "+a.url()) {
 		t.Errorf("asked again next pass, and still waiting: %v", got)
 	}
-	if st, _ := loadPRWatchState(); !st.PRs[a.url()].Awaiting || st.Version != prWatchVersion {
+	if st, _ := LoadPRWatchState(); !st.PRs[a.url()].Awaiting || st.Version != PrWatchVersion {
 		t.Errorf("awaiting is kept: %+v", st.PRs[a.url()])
 	}
 
 	a.draft = true
 	got := passEvents(t, now.Add(9*time.Minute))
-	data, _ := os.ReadFile(prEventsPath())
+	data, _ := os.ReadFile(PrEventsPath())
 	if !slices.Contains(got, "review_not_needed "+a.url()) || !strings.Contains(string(data), `"reason":"draft"`) {
 		t.Errorf("leaving it says so, with why: %v\n%s", got, data)
 	}
@@ -533,9 +483,9 @@ func TestWatchStateFromBeforeAwaitingIsMigratedQuietly(t *testing.T) {
 	green(a)
 	g.prs = []*fakePR{a}
 	passEvents(t, now)
-	st, _ := loadPRWatchState()
+	st, _ := LoadPRWatchState()
 	st.Version, st.PRs[a.url()].Awaiting = 0, false // as an older ccs wrote it
-	savePRWatchState(st)
+	SavePRWatchState(st)
 	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 {
 		t.Errorf("an upgrade emits nothing: %v", got)
 	}
@@ -549,8 +499,8 @@ func TestThreadsUnansweredByTheOperator(t *testing.T) {
 	g := watchWorld(t)
 	pr := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean", runs: [][3]string{{"test", "completed", "success"}}}
 	g.prs = []*fakePR{pr}
-	setThreadSelves("me", "my-bot, Co-Author")
-	t.Cleanup(func() { setThreadSelves("", "") })
+	SetThreadSelves("me", "my-bot, Co-Author")
+	t.Cleanup(func() { SetThreadSelves("", "") })
 	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
 	pass := func() []string {
 		t.Helper()
@@ -567,11 +517,11 @@ func TestThreadsUnansweredByTheOperator(t *testing.T) {
 	if got := pass(); !slices.Equal(got, []string{"review_not_needed", "threads_unresolved", "threads_unanswered"}) {
 		t.Errorf("four unresolved, one unanswered: %v", got)
 	}
-	st, _ := loadPRWatchState()
+	st, _ := LoadPRWatchState()
 	if p := st.PRs[pr.url()]; len(p.Unanswered) != 1 || p.Unanswered["T1"] != 10 || *p.Threads != 4 {
 		t.Errorf("the operator's, its bot's and co-author's replies answer a thread: %+v", p)
 	}
-	if data, _ := os.ReadFile(prEventsPath()); !strings.Contains(string(data), `"event":"threads_unanswered"`) || !strings.Contains(string(data), `"count":1,"threads":["T1"]`) {
+	if data, _ := os.ReadFile(PrEventsPath()); !strings.Contains(string(data), `"event":"threads_unanswered"`) || !strings.Contains(string(data), `"count":1,"threads":["T1"]`) {
 		t.Errorf("the event carries the count and ids: %s", data)
 	}
 
@@ -582,14 +532,6 @@ func TestThreadsUnansweredByTheOperator(t *testing.T) {
 	pr.threads[1].by, pr.threads[1].last = "reviewer", 21 // a reviewer replies again
 	if got := pass(); !slices.Equal(got, []string{"threads_unanswered"}) {
 		t.Errorf("a new reviewer comment: %v", got)
-	}
-}
-
-func TestRemovedReviewFlagsSayWhereReviewsWent(t *testing.T) {
-	for _, args := range [][]string{{"--review"}, {"--once", "-review-channel=C1"}, {"--dry-run"}, {"--review-hook", "x"}} {
-		if got := runWatch(args); got != 2 {
-			t.Errorf("%v: exit %d, want 2 before anything runs", args, got)
-		}
 	}
 }
 
@@ -613,9 +555,9 @@ func TestPRDetailsReadsEveryPage(t *testing.T) {
 		{repo: "o/r", number: 2, state: "open", head: "b", runs: ok, reviews: append(slices.Clone(comments), [2]string{"x", "APPROVED"})},
 		{repo: "o/r", number: 3, state: "open", head: "c", runs: ok, threads: resolvedOnly},
 	}
-	setThreadSelves("me", "")
-	d := func(n int) *watchedPR {
-		p, err := prDetails(watchedPR{URL: fmt.Sprintf("https://github.com/o/r/pull/%d", n), Repo: "o/r", Number: n})
+	SetThreadSelves("me", "")
+	d := func(n int) *WatchedPR {
+		p, err := PrDetails(WatchedPR{URL: fmt.Sprintf("https://github.com/o/r/pull/%d", n), Repo: "o/r", Number: n})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -635,8 +577,8 @@ func TestPRDetailsReadsEveryPage(t *testing.T) {
 // countDetailReads counts the REST calls about PRs from here on.
 func countDetailReads(t *testing.T) *int {
 	t.Helper()
-	n, run := 0, ghRun
-	ghRun = func(a ...string) ([]byte, error) {
+	n, run := 0, GhRun
+	GhRun = func(a ...string) ([]byte, error) {
 		if a[0] == "api" && strings.HasPrefix(a[1], "repos/") {
 			n++
 		}
@@ -658,7 +600,7 @@ func TestWatchSkipsAnUnchangedSettledPRUntilAFullRead(t *testing.T) {
 	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || *reads != 0 {
 		t.Errorf("unchanged: events %v, %d reads", got, *reads)
 	}
-	if got := passEvents(t, now.Add(prFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || *reads == 0 {
+	if got := passEvents(t, now.Add(PrFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || *reads == 0 {
 		t.Errorf("after prFullEvery: events %v, %d reads", got, *reads)
 	}
 }
@@ -708,7 +650,7 @@ func TestWatchKeepsThreadCountsOfASkippedPR(t *testing.T) {
 	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 {
 		t.Errorf("a skipped PR emits nothing: %v", got)
 	}
-	st, _ := loadPRWatchState()
+	st, _ := LoadPRWatchState()
 	p := st.PRs[a.url()]
 	if p.Threads == nil || *p.Threads != 2 || p.Head != "h1" {
 		t.Errorf("skipped PR's state kept: %+v", p)
@@ -733,7 +675,7 @@ func TestWatchSkipsAnUnchangedGreenDraft(t *testing.T) {
 	if passEvents(t, now.Add(6*time.Minute)); *reads == 0 {
 		t.Error("a draft marked ready must be read")
 	}
-	if p := func() *watchedPR { st, _ := loadPRWatchState(); return st.PRs[a.url()] }(); p.Draft || p.Threads == nil {
+	if p := func() *WatchedPR { st, _ := LoadPRWatchState(); return st.PRs[a.url()] }(); p.Draft || p.Threads == nil {
 		t.Errorf("after ready: draft %v threads %v", p.Draft, p.Threads)
 	}
 }

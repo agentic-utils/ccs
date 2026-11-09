@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -47,35 +48,6 @@ func codexEnv(t *testing.T) {
 	home := t.TempDir()
 	transcript.CodexHome = func() string { return home }
 	t.Cleanup(func() { transcript.CodexHome = old })
-}
-
-func TestCodexClaimByThread(t *testing.T) {
-	live := claimEnv(t)
-	delete(live, os.Getppid()) // not under a Claude Code session either
-	codexEnv(t)
-	writeRollout(t, threadA, "/w", filepath.Join(state.LaunchDir(), "repay-pr-refresh"))
-	t.Setenv("CODEX_THREAD_ID", threadA)
-	msg, err := claim(claimA, false, time.Now())
-	if err != nil || !strings.Contains(msg, "repay-pr-refresh owns") {
-		t.Fatalf("a Codex session ccs launched claims under its launch name: %q %v", msg, err)
-	}
-	c := loadClaims().Claims[claimA][0]
-	if c.Kind != "codex" || c.Thread != threadA || c.Session != threadA || c.PID != 0 {
-		t.Errorf("keyed by its thread, no process (Codex's sandbox can't run ps): %+v", c)
-	}
-
-	// Not launched by ccs: Codex's own title, else the thread id.
-	writeRollout(t, threadB, "/w")
-	os.WriteFile(filepath.Join(transcript.CodexHome(), "session_index.jsonl"), []byte(
-		`{"id":"`+threadB+`","thread_name":"Old title"}`+"\n"+`{"id":"`+threadB+`","thread_name":"Fix repay PR"}`+"\n"), 0o600)
-	t.Setenv("CODEX_THREAD_ID", threadB)
-	if msg, _ := claim(claimB, false, time.Now()); !strings.Contains(msg, "Fix repay PR owns") {
-		t.Errorf("Codex's latest title for the thread: %q", msg)
-	}
-	t.Setenv("CODEX_THREAD_ID", "not-a-uuid")
-	if _, err := claim(claimC, false, time.Now()); err == nil {
-		t.Error("a malformed thread id isn't a Codex session")
-	}
 }
 
 func TestCodexLiveness(t *testing.T) {
@@ -122,6 +94,35 @@ func TestCodexThreadForLaunch(t *testing.T) {
 	}
 }
 
+func TestCodexClaimByThread(t *testing.T) {
+	live := claimEnv(t)
+	delete(live, os.Getppid()) // not under a Claude Code session either
+	codexEnv(t)
+	writeRollout(t, threadA, "/w", filepath.Join(state.LaunchDir(), "repay-pr-refresh"))
+	t.Setenv("CODEX_THREAD_ID", threadA)
+	msg, err := github.Claim(claimA, false, time.Now())
+	if err != nil || !strings.Contains(msg, "repay-pr-refresh owns") {
+		t.Fatalf("a Codex session ccs launched claims under its launch name: %q %v", msg, err)
+	}
+	c := github.LoadClaims().Claims[claimA][0]
+	if c.Kind != "codex" || c.Thread != threadA || c.Session != threadA || c.PID != 0 {
+		t.Errorf("keyed by its thread, no process (Codex's sandbox can't run ps): %+v", c)
+	}
+
+	// Not launched by ccs: Codex's own title, else the thread id.
+	writeRollout(t, threadB, "/w")
+	os.WriteFile(filepath.Join(transcript.CodexHome(), "session_index.jsonl"), []byte(
+		`{"id":"`+threadB+`","thread_name":"Old title"}`+"\n"+`{"id":"`+threadB+`","thread_name":"Fix repay PR"}`+"\n"), 0o600)
+	t.Setenv("CODEX_THREAD_ID", threadB)
+	if msg, _ := github.Claim(claimB, false, time.Now()); !strings.Contains(msg, "Fix repay PR owns") {
+		t.Errorf("Codex's latest title for the thread: %q", msg)
+	}
+	t.Setenv("CODEX_THREAD_ID", "not-a-uuid")
+	if _, err := github.Claim(claimC, false, time.Now()); err == nil {
+		t.Error("a malformed thread id isn't a Codex session")
+	}
+}
+
 func TestCodexNudgeGoesThroughQueue(t *testing.T) {
 	claimEnv(t)
 	codexEnv(t)
@@ -130,13 +131,13 @@ func TestCodexNudgeGoesThroughQueue(t *testing.T) {
 	var got []string
 	sessions.CodexQueue = func(thread, text string) error { got = append(got, thread+"|"+text); return nil }
 	sessions.CodexLive = func(thread string) bool { return thread == threadA }
-	c := prClaim{Session: threadA, Kind: "codex", Thread: threadA, Name: "repay-pr-refresh"}
-	if err := withClaims(func(f *claimsFile) bool { f.Claims[claimA] = []prClaim{c}; return true }); err != nil {
+	c := github.PrClaim{Session: threadA, Kind: "codex", Thread: threadA, Name: "repay-pr-refresh"}
+	if err := github.WithClaims(func(f *github.ClaimsFile) bool { f.Claims[claimA] = []github.PrClaim{c}; return true }); err != nil {
 		t.Fatal(err)
 	}
-	writeWatchState(t, time.Now(), &watchedPR{URL: claimA, Title: "a", State: "open", Head: "h", Checks: "failing", Failing: []string{"setup"}})
-	nudgeTick(time.Now())
-	nudgeTick(time.Now())
+	writeWatchState(t, time.Now(), &github.WatchedPR{URL: claimA, Title: "a", State: "open", Head: "h", Checks: "failing", Failing: []string{"setup"}})
+	github.NudgeTick(time.Now())
+	github.NudgeTick(time.Now())
 	if len(got) != 1 {
 		t.Fatalf("one queued nudge per head and reason: %q", got)
 	}

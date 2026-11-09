@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -75,7 +76,7 @@ func TestTaskCountOnTheTitleRow(t *testing.T) {
 		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s": true}
-	m.prs = map[string]prInfo{"https://github.com/o/r/pull/1": {State: "OPEN", MergeState: "CLEAN"}}
+	m.prs = map[string]github.PrInfo{"https://github.com/o/r/pull/1": {State: "OPEN", MergeState: "CLEAN"}}
 	row := m.sidebarRow(m.filtered[0], false, 40)
 	if !strings.Contains(row[0], "\033["+transcript.TaskColour+"m⧗1") {
 		t.Errorf("the task count goes on the title row, in its own colour: %q", row[0])

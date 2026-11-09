@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -115,7 +116,7 @@ func TestCoordinatorSetupFromCleanState(t *testing.T) {
 	if err != nil || !strings.Contains(string(role), "never do the work yourself") {
 		t.Errorf("role: %v %s", err, role)
 	}
-	if strings.Contains(string(role), "{{events}}") || !strings.Contains(string(role), prEventsPath()) {
+	if strings.Contains(string(role), "{{events}}") || !strings.Contains(string(role), github.PrEventsPath()) {
 		t.Errorf("the events path isn't filled in:\n%s", role)
 	}
 	var cfg struct {

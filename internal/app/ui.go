@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
@@ -199,7 +200,7 @@ type model struct {
 	coordSince time.Time        // when the offer last came on screen: keys wait for its grace
 	coordID    string           // the coordinator session, listed in its own section
 	// Each session's PRs (prs.go): what GitHub said, by address.
-	prs        map[string]prInfo
+	prs        map[string]github.PrInfo
 	prNext     time.Time       // when the next round is due
 	prQueue    [][]string      // the round's requests not sent yet
 	prRound    int             // the round's requests in flight
@@ -209,7 +210,7 @@ type model struct {
 
 	revealed map[string]bool // headless sessions shown anyway: opened by selectSession
 	prErr    string
-	fetchPRs func([]string) (map[string]prInfo, error) // nil: never look PRs up
+	fetchPRs func([]string) (map[string]github.PrInfo, error) // nil: never look PRs up
 	// Ctrl+O: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
 	links       []linkItem
@@ -404,7 +405,7 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		opened:      make(map[string]time.Time),
 		kicked:      make(map[string]bool),
 		hits:        &hitCounter{byID: make(map[string]int)},
-		prs:         make(map[string]prInfo),
+		prs:         make(map[string]github.PrInfo),
 		prSelAsked:  make(map[string]bool),
 	}
 	if !ok {

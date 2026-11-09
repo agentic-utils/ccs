@@ -10,12 +10,12 @@ import (
 )
 
 // nudgeEnv is claimEnv plus a stubbed sendNudge recording what each session got.
-func nudgeEnv(t *testing.T) (live map[int]PrClaim, sent *[]string) {
+func nudgeEnv(t *testing.T) (live map[int]PRClaim, sent *[]string) {
 	t.Helper()
 	live = claimEnv(t)
 	old := SendNudge
 	sent = &[]string{}
-	SendNudge = func(c PrClaim, text string) error {
+	SendNudge = func(c PRClaim, text string) error {
 		*sent = append(*sent, c.Name+": "+text)
 		return nil
 	}
@@ -26,7 +26,7 @@ func nudgeEnv(t *testing.T) (live map[int]PrClaim, sent *[]string) {
 func intp(n int) *int { return &n }
 
 // claimAs records a claim on pr by the live session at pid.
-func claimAs(t *testing.T, live map[int]PrClaim, pid int, pr string) {
+func claimAs(t *testing.T, live map[int]PRClaim, pid int, pr string) {
 	t.Helper()
 	c := live[pid]
 	if err := WithClaims(func(f *ClaimsFile) bool { f.Claims[pr] = append(f.Claims[pr], c); return true }); err != nil {
@@ -36,7 +36,7 @@ func claimAs(t *testing.T, live map[int]PrClaim, pid int, pr string) {
 
 func newEvents(t *testing.T, from int) []NudgeEvent {
 	t.Helper()
-	data, _ := os.ReadFile(PrEventsPath())
+	data, _ := os.ReadFile(PREventsPath())
 	var out []NudgeEvent
 	for _, l := range strings.Split(string(data[from:]), "\n") {
 		var e NudgeEvent
@@ -48,7 +48,7 @@ func newEvents(t *testing.T, from int) []NudgeEvent {
 }
 
 func eventsLen() int {
-	data, _ := os.ReadFile(PrEventsPath())
+	data, _ := os.ReadFile(PREventsPath())
 	return len(data)
 }
 
@@ -114,7 +114,7 @@ func TestNudgesOncePerHeadAndReason(t *testing.T) {
 func TestNudgesOnlyLiveOwners(t *testing.T) {
 	live, sent := nudgeEnv(t)
 	alpha := os.Getppid()
-	live[4242] = PrClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "Tue Nov  3 08:00:00 2026"}
+	live[4242] = PRClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "Tue Nov  3 08:00:00 2026"}
 	claimAs(t, live, alpha, claimA)
 	claimAs(t, live, 4242, claimA)
 	claimAs(t, live, 4242, claimB)
@@ -149,7 +149,7 @@ func TestNudgeFailureIsRetried(t *testing.T) {
 	claimAs(t, live, os.Getppid(), claimA)
 	writeWatchState(t, time.Now(), &WatchedPR{URL: claimA, Title: "a", State: "open", Head: "h", Conflicts: true})
 	tries := 0
-	SendNudge = func(PrClaim, string) error {
+	SendNudge = func(PRClaim, string) error {
 		tries++
 		if tries == 1 {
 			return errors.New("not connected")

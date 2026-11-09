@@ -12,14 +12,14 @@ import (
 
 func TestUnstableSaysWhyNotClean(t *testing.T) {
 	for _, c := range []struct {
-		p     PrInfo
+		p     PRInfo
 		group int
 		want  string
 	}{
-		{PrInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "PENDING"}, PrReady, "ready to merge · optional checks running"},
+		{PRInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "PENDING"}, PRReady, "ready to merge · optional checks running"},
 		// mergeable, but a failed check needs looking at, whether required or not
-		{PrInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "FAILURE", Failing: []string{"lint"}}, PrFix, "optional checks failing: lint"},
-		{PrInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "SUCCESS"}, PrReady, "ready to merge"},
+		{PRInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "FAILURE", Failing: []string{"lint"}}, PRFix, "optional checks failing: lint"},
+		{PRInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "SUCCESS"}, PRReady, "ready to merge"},
 	} {
 		if g, why := c.p.Status(); g != c.group || why != c.want {
 			t.Errorf("%+v: %d %q, want %q", c.p, g, why, c.want)
@@ -29,17 +29,17 @@ func TestUnstableSaysWhyNotClean(t *testing.T) {
 
 func TestUnresolvedThreadsNeedYou(t *testing.T) {
 	for _, c := range []struct {
-		p     PrInfo
+		p     PRInfo
 		group int
 		want  string
 	}{
-		{PrInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS", Unresolved: 2}, PrFix, "2 unresolved threads"},
-		{PrInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "PENDING", Unresolved: 1}, PrFix, "1 unresolved thread"},
+		{PRInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS", Unresolved: 2}, PRFix, "2 unresolved threads"},
+		{PRInfo{State: "OPEN", MergeState: "UNSTABLE", Checks: "PENDING", Unresolved: 1}, PRFix, "1 unresolved thread"},
 		// conflicts and failing checks still say so first
-		{PrInfo{State: "OPEN", MergeState: "DIRTY", Unresolved: 1}, PrFix, "conflicts"},
-		{PrInfo{State: "OPEN", MergeState: "BLOCKED", Checks: "FAILURE", Failing: []string{"test"}, Unresolved: 1}, PrFix, "checks failing: test"},
-		{PrInfo{State: "OPEN", Draft: true, Unresolved: 1}, PrWaiting, "draft"},
-		{PrInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS"}, PrReady, "ready to merge"},
+		{PRInfo{State: "OPEN", MergeState: "DIRTY", Unresolved: 1}, PRFix, "conflicts"},
+		{PRInfo{State: "OPEN", MergeState: "BLOCKED", Checks: "FAILURE", Failing: []string{"test"}, Unresolved: 1}, PRFix, "checks failing: test"},
+		{PRInfo{State: "OPEN", Draft: true, Unresolved: 1}, PRWaiting, "draft"},
+		{PRInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS"}, PRReady, "ready to merge"},
 	} {
 		if g, why := c.p.Status(); g != c.group || why != c.want {
 			t.Errorf("%+v: %d %q, want %d %q", c.p, g, why, c.group, c.want)
@@ -48,8 +48,8 @@ func TestUnresolvedThreadsNeedYou(t *testing.T) {
 }
 
 func TestThreadsBeyondTheBatchAreNotClear(t *testing.T) {
-	p := PrInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS", ThreadsUnread: true}
-	if g, why := p.Status(); g == PrReady || !strings.Contains(why, "100 review threads") {
+	p := PRInfo{State: "OPEN", MergeState: "CLEAN", Checks: "SUCCESS", ThreadsUnread: true}
+	if g, why := p.Status(); g == PRReady || !strings.Contains(why, "100 review threads") {
 		t.Errorf("unread threads: never ready: %d %q", g, why)
 	}
 	p.Unresolved = 2
@@ -70,19 +70,19 @@ func TestNeedsReviewNeedsAThreadCount(t *testing.T) {
 	if p.Threads = &zero; !p.NeedsReview() {
 		t.Error("green, counted, none open: yes")
 	}
-	if g, why := p.status(); g != PrWaiting || why != "review required" {
+	if g, why := p.status(); g != PRWaiting || why != "review required" {
 		t.Errorf("ccs prs: %d %q", g, why)
 	}
 	p.Threads = &one
-	if g, why := p.status(); g != PrFix || why != "1 unresolved thread" {
+	if g, why := p.status(); g != PRFix || why != "1 unresolved thread" {
 		t.Errorf("ccs prs shows the threads: %d %q", g, why)
 	}
 }
 
 func TestWatchDefaultsToTheGhUserInEveryOwner(t *testing.T) {
-	old, oldRun := GhUser, GhRun
-	t.Cleanup(func() { GhUser, GhRun = old, oldRun })
-	GhUser = func() (string, error) { return "someone", nil }
+	old, oldRun := Login, RunGH
+	t.Cleanup(func() { Login, RunGH = old, oldRun })
+	Login = func() (string, error) { return "someone", nil }
 	a := ""
 	if err := defaultAuthor(&a); err != nil || a != "someone" {
 		t.Errorf("author defaults to the gh user: %q %v", a, err)
@@ -91,13 +91,13 @@ func TestWatchDefaultsToTheGhUserInEveryOwner(t *testing.T) {
 	if defaultAuthor(&a); a != "given" {
 		t.Errorf("--author wins: %q", a)
 	}
-	GhUser = func() (string, error) { return "", errors.New("not logged in") }
+	Login = func() (string, error) { return "", errors.New("not logged in") }
 	a = ""
 	if err := defaultAuthor(&a); err == nil {
 		t.Error("no gh user: accepted")
 	}
 	var args []string
-	GhRun = func(a ...string) ([]byte, error) { args = a; return []byte("[]"), nil }
+	RunGH = func(a ...string) ([]byte, error) { args = a; return []byte("[]"), nil }
 	searchPRs("someone", "", "--state", "open")
 	if slices.Contains(args, "--owner") {
 		t.Errorf("no owner searches every owner: %v", args)
@@ -126,8 +126,8 @@ case "$*" in *'repository(owner:"o",name:"r"){pullRequest(number:1)'*) ;; *) exi
 echo '{"data":{"p0":{"pullRequest":{"number":1,"title":"t","state":"OPEN","isDraft":false,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[{"name":"test","conclusion":"FAILURE"},{"name":"lint","conclusion":"SUCCESS"},{"context":"ci/deploy","state":"ERROR"}]}}}}]}}},"p1":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND"}]}'
 exit 1
 `), 0o755)
-	got, err := GhPRBatch(gh, []string{prA, prB})
-	want := PrInfo{Number: 1, Title: "t", State: "OPEN", MergeState: "BLOCKED", Review: "APPROVED", Checks: "FAILURE", Failing: []string{"test", "ci/deploy"}}
+	got, err := QueryPRs(gh, []string{prA, prB})
+	want := PRInfo{Number: 1, Title: "t", State: "OPEN", MergeState: "BLOCKED", Review: "APPROVED", Checks: "FAILURE", Failing: []string{"test", "ci/deploy"}}
 	if err != nil || !reflect.DeepEqual(got[prA], want) {
 		t.Fatalf("got %+v, %v", got, err)
 	}

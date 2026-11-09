@@ -26,15 +26,15 @@ const prPurple = "38;5;141"
 // prMark is a group's glyph and colour.
 func prMark(group int) (string, string) {
 	switch group {
-	case github.PrReady:
+	case github.PRReady:
 		return "✓", "32"
-	case github.PrFix:
+	case github.PRFix:
 		return "✗", "31"
-	case github.PrWaiting:
+	case github.PRWaiting:
 		return "○", amber
-	case github.PrMerged:
+	case github.PRMerged:
 		return "●", prPurple
-	case github.PrClosed:
+	case github.PRClosed:
 		return "●", "31"
 	}
 	return " ", "90"
@@ -43,7 +43,7 @@ func prMark(group int) (string, string) {
 // sessionPRs is conv's PRs, ready first, merged and closed last, otherwise
 // in the order the session first touched them.
 func (m model) sessionPRs(conv transcript.Conversation) []string {
-	urls := slices.Clone(github.PrsOf(conv))
+	urls := slices.Clone(github.PRsOf(conv))
 	slices.SortStableFunc(urls, func(a, b string) int {
 		ga, _ := m.prs[a].Status()
 		gb, _ := m.prs[b].Status()
@@ -54,8 +54,8 @@ func (m model) sessionPRs(conv transcript.Conversation) []string {
 
 // prCounts is how many of conv's PRs are in each group (prReady…prClosed);
 // one GitHub can't find isn't counted.
-func (m model) prCounts(conv transcript.Conversation) (n [github.PrClosed + 1]int) {
-	for _, u := range github.PrsOf(conv) {
+func (m model) prCounts(conv transcript.Conversation) (n [github.PRClosed + 1]int) {
+	for _, u := range github.PRsOf(conv) {
 		if s := m.prs[u].State; s == "" || s == "GONE" { // not looked up yet, or not found
 			continue
 		}
@@ -81,10 +81,10 @@ func (m model) prCell(conv transcript.Conversation, coloured bool) string {
 		}
 		parts = append(parts, s)
 	}
-	add(n[github.PrReady], "✓", "32")
-	add(n[github.PrFix], "✗", "31")
-	add(n[github.PrWaiting], "", amber)
-	add(n[github.PrMerged], "●", prPurple)
+	add(n[github.PRReady], "✓", "32")
+	add(n[github.PRFix], "✗", "31")
+	add(n[github.PRWaiting], "", amber)
+	add(n[github.PRMerged], "●", prPurple)
 	s := strings.Join(parts, " ")
 	return strings.Repeat(" ", max(colPRs-ansi.StringWidth(s), 0)) + s
 }
@@ -100,11 +100,11 @@ func (m model) prLines(conv transcript.Conversation, width int) []string {
 	merged, closed, gone := 0, 0, 0
 	for _, u := range urls {
 		switch g, _ := m.prs[u].Status(); {
-		case g == github.PrMerged:
+		case g == github.PRMerged:
 			merged++
 		case m.prs[u].State == "GONE":
 			gone++
-		case g == github.PrClosed:
+		case g == github.PRClosed:
 			closed++
 		case len(lines) < github.MaxPRLines:
 			lines = append(lines, m.prLine(u))
@@ -150,7 +150,7 @@ func (m model) prLine(u string) string {
 	if p.Draft || p.State == "" { // grey on GitHub too: nothing is happening to it yet
 		colour = "90"
 	}
-	name := github.PrName(u)
+	name := github.PRName(u)
 	title := p.Title
 	return "\033[" + colour + "m" + glyph + "\033[0m " + hyperlink(u, name) + " " + title + " \033[" + colour + "m· " + why + "\033[0m"
 }
@@ -175,7 +175,7 @@ func (m model) prLinkText(u string) string {
 	if p.Draft || p.State == "" {
 		colour = "90"
 	}
-	return "\033[" + colour + "m" + glyph + "\033[39m " + github.PrName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title
+	return "\033[" + colour + "m" + glyph + "\033[39m " + github.PRName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title
 }
 
 // prScope is how far back a session's open PRs are kept up to date; older
@@ -183,7 +183,7 @@ func (m model) prLinkText(u string) string {
 const prScope = 7 * 24 * time.Hour
 
 type prDoneMsg struct {
-	infos map[string]github.PrInfo
+	infos map[string]github.PRInfo
 	err   error
 	round bool // from the minute's round, not the selected session's own request
 }
@@ -223,15 +223,15 @@ func (m *model) prCmd() tea.Cmd {
 			if !m.live[it.conv.SessionID] && it.conv.LastTimestamp < cutoff && it.conv.SessionID != selected {
 				continue
 			}
-			for _, u := range github.PrsOf(it.conv) {
+			for _, u := range github.PRsOf(it.conv) {
 				if !seen[u] && !m.prs[u].Final() {
 					seen[u] = true
 					urls = append(urls, u)
 				}
 			}
 		}
-		for i := 0; i < len(urls); i += github.PrBatch {
-			m.prQueue = append(m.prQueue, urls[i:min(i+github.PrBatch, len(urls))])
+		for i := 0; i < len(urls); i += github.PRBatch {
+			m.prQueue = append(m.prQueue, urls[i:min(i+github.PRBatch, len(urls))])
 		}
 	}
 	if !m.prSelBusy && len(m.filtered) > 0 && m.previewSettled() { // not for each session scrolled past
@@ -239,9 +239,9 @@ func (m *model) prCmd() tea.Cmd {
 		landed := m.prSelected != conv.SessionID // just selected: its open PRs are refreshed once
 		m.prSelected = conv.SessionID
 		var urls []string
-		for _, u := range github.PrsOf(conv) {
+		for _, u := range github.PRsOf(conv) {
 			p, have := m.prs[u]
-			if ((landed && !p.Final()) || (!have && !m.prSelAsked[u])) && len(urls) < github.PrBatch {
+			if ((landed && !p.Final()) || (!have && !m.prSelAsked[u])) && len(urls) < github.PRBatch {
 				urls = append(urls, u)
 				m.prSelAsked[u] = true
 			}

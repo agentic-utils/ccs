@@ -72,14 +72,14 @@ func ReadLiveSessions() map[string]bool {
 func LiveSessionPIDs() map[string]int {
 	out := make(map[string]int)
 	for id, s := range ScanSessions(nil) {
-		out[id] = s.Pid
+		out[id] = s.PID
 	}
 	return out
 }
 
 // LiveSession is a live session's pid and what its file says, read once.
 type LiveSession struct {
-	Pid        int
+	PID        int
 	Stat       SessionStat
 	Start      string // the file's procStart, so a kept session's pid can be checked later
 	Unverified bool   // the pid's start time couldn't be checked against the file's: maybe a recycled pid
@@ -114,7 +114,7 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 		if err != nil || json.Unmarshal(data, &s) != nil || s.SessionID == "" || s.Pid <= 0 {
 			continue
 		}
-		if proc.PidAlive(s.Pid) {
+		if proc.PIDAlive(s.Pid) {
 			byPid[s.Pid] = append(byPid[s.Pid], candidate{s.SessionID, s.ProcStart, s.Stat()})
 		}
 	}
@@ -125,14 +125,14 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 		pids[strconv.Itoa(pid)] = pid
 	}
 	for _, p := range prev {
-		pids[strconv.Itoa(p.Pid)] = p.Pid
+		pids[strconv.Itoa(p.PID)] = p.PID
 	}
 	actual := proc.ProcessStartTimes(pids)
 	live := make(map[string]LiveSession)
 	for pid, cs := range byPid {
 		for _, c := range cs {
 			if match, checked := sameStart(c.start, actual[pid]); match {
-				live[c.id] = LiveSession{Pid: pid, Stat: c.stat, Start: c.start, Unverified: !checked}
+				live[c.id] = LiveSession{PID: pid, Stat: c.stat, Start: c.start, Unverified: !checked}
 			}
 		}
 	}
@@ -142,11 +142,11 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 		}
 	}
 	for id, p := range prev {
-		if _, ok := live[id]; ok || p.Codex || len(byPid[p.Pid]) > 0 || !proc.PidAlive(p.Pid) {
+		if _, ok := live[id]; ok || p.Codex || len(byPid[p.PID]) > 0 || !proc.PIDAlive(p.PID) {
 			continue
 		}
-		if match, checked := sameStart(p.Start, actual[p.Pid]); match && (checked || p.misses < KeepTicks) {
-			live[id] = LiveSession{Pid: p.Pid, Start: p.Start, Unverified: p.Unverified, misses: p.misses + 1}
+		if match, checked := sameStart(p.Start, actual[p.PID]); match && (checked || p.misses < KeepTicks) {
+			live[id] = LiveSession{PID: p.PID, Start: p.Start, Unverified: p.Unverified, misses: p.misses + 1}
 		}
 	}
 	return live
@@ -205,8 +205,6 @@ func ResumeInTmuxWindow(cwd string, args []string) (handled bool, err error) {
 	return tabResult(proc.RunBounded(5*time.Second, nil, "tmux", tmuxArgs...))
 }
 
-// focusSession brings the terminal running pid to the front: its tmux pane
-// when ccs is in tmux, else its iTerm tab. Matched by the process's tty.
 // InITerm: running in iTerm, directly or in tmux inside it. tmux sets
 // TERM_PROGRAM to tmux, but iTerm's LC_TERMINAL and ITERM_SESSION_ID get
 // through, so a session in an ordinary iTerm tab can still be found.
@@ -214,6 +212,8 @@ func InITerm() bool {
 	return os.Getenv("TERM_PROGRAM") == "iTerm.app" || os.Getenv("LC_TERMINAL") == "iTerm2" || os.Getenv("ITERM_SESSION_ID") != ""
 }
 
+// FocusSession brings the terminal running pid to the front: its tmux pane
+// when ccs is in tmux, else its iTerm tab. Matched by the process's tty.
 func FocusSession(pid int, activate bool) bool {
 	out, err := proc.RunBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
 	tty := strings.TrimSpace(string(out))
@@ -538,10 +538,10 @@ var (
 	Lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 	// Stubbed in tests.
-	namedSessions = SessionsNamed
+	namedSessions = Named
 	FocusLinkTTY  = RealFocusLinkTTY
 	ITermRunning  = realITermRunning
-	UrlHandlerApp = realURLHandlerApp
+	URLHandlerApp = realURLHandlerApp
 )
 
 // parseSessionLink is the session a link names. The link comes from anywhere,
@@ -573,7 +573,7 @@ func openLink(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("%d running sessions are named %s, so there's no telling which you meant", len(pids), name)
 	}
-	tty := proc.TtyOf(pids[0])
+	tty := proc.TTYOf(pids[0])
 	if tty == "" {
 		return "", fmt.Errorf("%s has no terminal tab to switch to: an app or claude --bg started it", name)
 	}
@@ -880,7 +880,7 @@ func LinkInstall(stdout, stderr io.Writer) int {
 	app := LinkAppPath()
 	handler := ""
 	for range 10 { // macOS can take a moment to notice the new app
-		if handler = UrlHandlerApp(); handler == app {
+		if handler = URLHandlerApp(); handler == app {
 			fmt.Fprintf(stdout, "ccs:// links now open with %s\n", app)
 			return 0
 		}
@@ -915,7 +915,7 @@ func LinkUninstall(stdout, stderr io.Writer) int {
 // LinkStatus says whether a link would work; 0 only when ours handles them.
 func LinkStatus(stdout io.Writer) int {
 	app := LinkAppPath()
-	handler := UrlHandlerApp()
+	handler := URLHandlerApp()
 	if handler == "" {
 		fmt.Fprintln(stdout, "nothing handles ccs:// links: run ccs link install")
 		return 1
@@ -999,8 +999,8 @@ func launchScript(o LaunchOpts, bin, dir string) string {
 // Launched is a session launch started: its process and terminal, and a
 // Codex session's thread.
 type Launched struct {
-	Pid    int
-	Tty    string
+	PID    int
+	TTY    string
 	thread string
 }
 
@@ -1053,7 +1053,7 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 	if err := CheckLaunchShell(); err != nil {
 		return Launched{}, err
 	}
-	if pids, err := SessionsNamed(o.Name); err != nil {
+	if pids, err := Named(o.Name); err != nil {
 		return Launched{}, err
 	} else if len(pids) > 0 {
 		return Launched{}, fmt.Errorf("a session named %s is already running (pid %d)", o.Name, pids[0])
@@ -1106,7 +1106,7 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 				}
 			}
 		}
-		pids, _ := SessionsNamed(o.Name)
+		pids, _ := Named(o.Name)
 		thread := ""
 		if o.Codex {
 			thread = CodexThreadFor(o.Name) // queue and claim need it
@@ -1118,7 +1118,7 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 			if len(pids) > 0 {
 				return Launched{pids[0], tty, ""}, fmt.Errorf("%s started (pid %d) but Codex wrote no transcript for it within %s, so it can't be messaged: see the tab on %s", o.Name, pids[0], wait, tty)
 			}
-			return Launched{Tty: tty}, fmt.Errorf("%s didn't start within %s: see the tab on %s, where a folder-trust question may be waiting (launcher %s)", o.Name, wait, tty, script)
+			return Launched{TTY: tty}, fmt.Errorf("%s didn't start within %s: see the tab on %s, where a folder-trust question may be waiting (launcher %s)", o.Name, wait, tty, script)
 		}
 		Sleep(250 * time.Millisecond)
 	}
@@ -1243,15 +1243,15 @@ end tell`, proc.ShellQuote(script))
 	return tty, err
 }
 
-// SessionsNamed is the pids of running sessions called name: claude sessions
+// Named is the pids of running sessions called name: claude sessions
 // whose session file says so (its pid checked against the file's start
 // time), and codex sessions ccs launched (their --add-dir is the name's
 // launch folder).
-func SessionsNamed(name string) ([]int, error) {
+func Named(name string) ([]int, error) {
 	var pids []int
 	for _, s := range ScanSessions(nil) {
 		if s.Stat.Name == name {
-			pids = append(pids, s.Pid)
+			pids = append(pids, s.PID)
 		}
 	}
 	out, err := proc.PsAll()
@@ -1286,7 +1286,7 @@ func containsInt(s []int, v int) bool {
 
 // CloseByName closes the one running session called name.
 func CloseByName(name string) (string, error) {
-	pids, err := SessionsNamed(name)
+	pids, err := Named(name)
 	if err != nil {
 		return "", err
 	}
@@ -1305,7 +1305,7 @@ func CloseByName(name string) (string, error) {
 // osascript call per tab (closing several in one loop shifts the indexes).
 // Stopping first means iTerm never asks whether to close a running job.
 func CloseSession(name string, pid int) (string, error) {
-	tty := proc.TtyOf(pid)
+	tty := proc.TTYOf(pid)
 	if tty == "" {
 		return "", fmt.Errorf("%s (pid %d) has no terminal: an app or claude --bg started it, close it there", name, pid)
 	}
@@ -1313,7 +1313,7 @@ func CloseSession(name string, pid int) (string, error) {
 		return "", fmt.Errorf("couldn't stop %s (pid %d): %v", name, pid, err)
 	}
 	deadline := time.Now().Add(CloseWait)
-	for proc.PidAlive(pid) {
+	for proc.PIDAlive(pid) {
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("%s (pid %d) still running %s after SIGTERM; its tab on %s is left open", name, pid, CloseWait, tty)
 		}
@@ -1392,9 +1392,9 @@ func RunLaunch(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if l.thread != "" {
-		fmt.Fprintf(stdout, "launched %s: pid %d, %s, codex thread %s\n", o.Name, l.Pid, l.Tty, l.thread)
+		fmt.Fprintf(stdout, "launched %s: pid %d, %s, codex thread %s\n", o.Name, l.PID, l.TTY, l.thread)
 	} else {
-		fmt.Fprintf(stdout, "launched %s: pid %d, %s\n", o.Name, l.Pid, l.Tty)
+		fmt.Fprintf(stdout, "launched %s: pid %d, %s\n", o.Name, l.PID, l.TTY)
 	}
 	return 0
 }
@@ -1531,7 +1531,7 @@ var (
 )
 
 type ReceiptMsg struct {
-	Id, Status, Reason string // id is the SessionID the message went to
+	ID, Status, Reason string // id is the SessionID the message went to
 }
 
 // receiptInbox returns ccs's listening socket in dir, starting it on first
@@ -1616,7 +1616,7 @@ func ParseReceipt(line []byte) (ReceiptMsg, bool) {
 	}
 	for _, id := range append([]string{r.OrigMsgID}, r.DroppedMsgIDs...) {
 		if sid, ok := SentMsgs.Load(id); ok && id != "" {
-			return ReceiptMsg{Id: sid.(string), Status: r.Status, Reason: r.Reason}, true
+			return ReceiptMsg{ID: sid.(string), Status: r.Status, Reason: r.Reason}, true
 		}
 	}
 	return ReceiptMsg{}, false
@@ -1744,7 +1744,7 @@ func NoteCodexExecs(sessions map[string]LiveSession) {
 	claude := map[int]string{}
 	for id, s := range sessions {
 		if !s.Codex {
-			claude[s.Pid] = id
+			claude[s.PID] = id
 		}
 	}
 	if len(claude) == 0 {
@@ -1948,7 +1948,7 @@ var CodexLive = func(thread string) bool {
 	}
 	if m, ok := transcript.ReadCodexMeta(path); ok {
 		if name := transcript.CodexLaunchName(m); name != "" {
-			pids, err := SessionsNamed(name)
+			pids, err := Named(name)
 			if err == nil {
 				return len(pids) > 0
 			}
@@ -2042,7 +2042,7 @@ func CodexLiveSessions() map[string]LiveSession {
 		if thread == "" {
 			continue
 		}
-		s := LiveSession{Pid: t.pid, Unverified: start.IsZero(), Codex: true}
+		s := LiveSession{PID: t.pid, Unverified: start.IsZero(), Codex: true}
 		if !start.IsZero() {
 			s.Start = start.UTC().Format(time.ANSIC)
 		}

@@ -131,8 +131,8 @@ func TestCodexNudgeGoesThroughQueue(t *testing.T) {
 	var got []string
 	sessions.CodexQueue = func(thread, text string) error { got = append(got, thread+"|"+text); return nil }
 	sessions.CodexLive = func(thread string) bool { return thread == threadA }
-	c := github.PrClaim{Session: threadA, Kind: "codex", Thread: threadA, Name: "repay-pr-refresh"}
-	if err := github.WithClaims(func(f *github.ClaimsFile) bool { f.Claims[claimA] = []github.PrClaim{c}; return true }); err != nil {
+	c := github.PRClaim{Session: threadA, Kind: "codex", Thread: threadA, Name: "repay-pr-refresh"}
+	if err := github.WithClaims(func(f *github.ClaimsFile) bool { f.Claims[claimA] = []github.PRClaim{c}; return true }); err != nil {
 		t.Fatal(err)
 	}
 	writeWatchState(t, time.Now(), &github.WatchedPR{URL: claimA, Title: "a", State: "open", Head: "h", Checks: "failing", Failing: []string{"setup"}})

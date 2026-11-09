@@ -61,20 +61,20 @@ func TestSubagentPRs(t *testing.T) {
 	a := filepath.Join(sub, "agent-a.jsonl")
 	write(a, ghLines("t1", "gh pr create --fill", prA+"\n"+prB))
 	write(filepath.Join(sub, "workflows", "wf_1", "agent-w.jsonl"), ghLines("t2", "gh pr create --fill", prC))
-	if got := github.PrsOf(conv); !slices.Equal(got, []string{prA, prB, prC}) {
+	if got := github.PRsOf(conv); !slices.Equal(got, []string{prA, prB, prC}) {
 		t.Errorf("the session's own PRs, then its subagents' not among them: %v", got)
 	}
 	write(a, ghLines("t3", "gh pr merge 4 --merge", "✓ Merged pull request o/r#4"))
 	github.SubPRCache.Lock()
 	delete(github.SubPRCache.Dirs, sub) // past subagentPRsTTL
 	github.SubPRCache.Unlock()
-	if got := github.PrsOf(conv); !slices.Contains(got, prD) {
+	if got := github.PRsOf(conv); !slices.Contains(got, prD) {
 		t.Errorf("a subagent's later output is read too: %v", got)
 	}
 }
 
 func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
-	m := model{prs: map[string]github.PrInfo{
+	m := model{prs: map[string]github.PRInfo{
 		prA: {State: "MERGED", Title: "old"},
 		prB: {State: "OPEN", MergeState: "BLOCKED", Review: "REVIEW_REQUIRED", Title: "waits"},
 		prC: {State: "OPEN", MergeState: "CLEAN", Title: "go"},
@@ -93,15 +93,15 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 1 ●1" {
 		t.Errorf("PRS column counts every group: %q", got)
 	}
-	m.prs["https://github.com/o/r/pull/5"] = github.PrInfo{State: "CLOSED"}
-	m.prs["https://github.com/o/r/pull/6"] = github.PrInfo{State: "GONE"}
+	m.prs["https://github.com/o/r/pull/5"] = github.PRInfo{State: "CLOSED"}
+	m.prs["https://github.com/o/r/pull/6"] = github.PRInfo{State: "GONE"}
 	if got := strings.TrimSpace(m.prCell(transcript.Conversation{PRs: []string{prA, "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/6"}}, false)); got != "●1" {
 		t.Errorf("merged counted, closed and not found left out: %q", got)
 	}
 	if got := m.prCell(transcript.Conversation{PRs: []string{"https://github.com/o/r/pull/6"}}, false); strings.TrimSpace(got) != "" {
 		t.Errorf("nothing found, nothing shown: %q", got)
 	}
-	m.prs[prB] = github.PrInfo{State: "OPEN", Draft: true, MergeState: "CLEAN"}
+	m.prs[prB] = github.PRInfo{State: "OPEN", Draft: true, MergeState: "CLEAN"}
 	if _, why := m.prs[prB].Status(); why != "draft" {
 		t.Errorf("a draft is never ready to merge: %s", why)
 	}
@@ -113,7 +113,7 @@ func TestPRFetchScope(t *testing.T) {
 		{SessionID: "new", LastTimestamp: time.Now().UTC().Format(time.RFC3339), PRs: []string{prA, prB}},
 		{SessionID: "old", LastTimestamp: "2020-01-01T00:00:00Z", PRs: []string{prC}},
 	}), "", nil)
-	m.fetchPRs = func(urls []string) (map[string]github.PrInfo, error) { asked = append(asked, urls); return nil, nil }
+	m.fetchPRs = func(urls []string) (map[string]github.PRInfo, error) { asked = append(asked, urls); return nil, nil }
 	sel := func(id string) {
 		m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
 	}
@@ -150,16 +150,16 @@ func TestPRFetchScope(t *testing.T) {
 	if len(asked) != 0 {
 		t.Fatalf("nothing more until the next round: %v", asked)
 	}
-	m.prs[prA] = github.PrInfo{State: "MERGED"}
-	m.prs[prB] = github.PrInfo{State: "OPEN"}
-	m.prs[prC] = github.PrInfo{State: "CLOSED"}
+	m.prs[prA] = github.PRInfo{State: "MERGED"}
+	m.prs[prB] = github.PRInfo{State: "OPEN"}
+	m.prs[prC] = github.PRInfo{State: "CLOSED"}
 	m.prNext = time.Time{}
 	run()
 	if len(asked) != 1 || !slices.Equal(asked[0], []string{prB}) {
 		t.Errorf("a round re-asks open PRs only, never merged or closed ones: %v", asked)
 	}
 	// While a round is out, a newly selected session isn't kept waiting.
-	m.prs = map[string]github.PrInfo{}
+	m.prs = map[string]github.PRInfo{}
 	m.prSelAsked = map[string]bool{}
 	m.prNext, m.prRound = time.Time{}, prParallel
 	asked = nil
@@ -177,10 +177,10 @@ func TestSelectingASessionRefreshesItsOpenPRs(t *testing.T) {
 		{SessionID: "a", LastTimestamp: now, PRs: []string{prA, prB}},
 		{SessionID: "b", LastTimestamp: now, PRs: []string{prC}},
 	}), "", nil)
-	m.prs[prA] = github.PrInfo{State: "OPEN"}
-	m.prs[prB] = github.PrInfo{State: "MERGED"}
-	m.prs[prC] = github.PrInfo{State: "OPEN"}
-	m.fetchPRs = func(urls []string) (map[string]github.PrInfo, error) { asked = append(asked, urls); return nil, nil }
+	m.prs[prA] = github.PRInfo{State: "OPEN"}
+	m.prs[prB] = github.PRInfo{State: "MERGED"}
+	m.prs[prC] = github.PRInfo{State: "OPEN"}
+	m.fetchPRs = func(urls []string) (map[string]github.PRInfo, error) { asked = append(asked, urls); return nil, nil }
 	m.prNext = time.Now().Add(time.Hour) // no round in the way
 	run := func(id string) {
 		t.Helper()
@@ -223,7 +223,7 @@ func TestPRColoursMatchGitHub(t *testing.T) {
 	u := func(n int) string { return fmt.Sprint("https://github.com/o/r/pull/", n) }
 	conv := transcript.Conversation{SessionID: "s", PRs: []string{u(1), u(2), u(3), u(4), u(5)}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
-	m.prs = map[string]github.PrInfo{
+	m.prs = map[string]github.PRInfo{
 		u(1): {State: "OPEN", MergeState: "CLEAN"},
 		u(2): {State: "OPEN", Checks: "PENDING", MergeState: "BLOCKED"},
 		u(3): {State: "OPEN", Draft: true},

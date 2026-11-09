@@ -690,7 +690,7 @@ func (m model) linksPopup() string {
 		text := m.linkText(l)
 		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
 		row := text
-		if ansi.Strip(text) != addr && !transcript.PrURL.MatchString(l.url) && !strings.HasPrefix(l.url, sessionLink) {
+		if ansi.Strip(text) != addr && !transcript.PRURL.MatchString(l.url) && !strings.HasPrefix(l.url, sessionLink) {
 			row += " \033[90m" + addr + "\033[39m"
 		}
 		row = ansi.Truncate(row, rowW-2, "…")

@@ -72,7 +72,7 @@ func TestMain(m *testing.M) {
 	sessions.Lsregister = "/bin/false"
 	sessions.FocusLinkTTY = func(string) error { return errors.New("tests focus nothing") }
 	sessions.ITermRunning = func() bool { return false }
-	sessions.UrlHandlerApp = func() string { return "" }
+	sessions.URLHandlerApp = func() string { return "" }
 	// launch and close never touch real tabs or processes unless a test stubs them.
 	state.LaunchDir = func() string { return filepath.Join(dir, "launch") }
 	sessions.OpenLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
@@ -92,9 +92,9 @@ func TestMain(m *testing.M) {
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil } // never the machine's own Codex tabs
 	transcript.CodexProcCwd = func(int) string { return "" }
-	proc.TtyOf = func(int) string { return "" }
+	proc.TTYOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
-	github.GhUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }
+	github.Login = func() (string, error) { return "", errors.New("tests ask gh nothing") }
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

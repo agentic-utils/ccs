@@ -66,7 +66,7 @@ func (m model) taskLines(conv transcript.Conversation, width int) []string {
 		switch {
 		case t.Status != "":
 			ended[t.Status]++
-		case !slices.ContainsFunc(running, func(r transcript.BgTask) bool { return r.Id == t.Id }):
+		case !slices.ContainsFunc(running, func(r transcript.BgTask) bool { return r.ID == t.ID }):
 			ended["ended with the session"]++ // or a monitor past its time
 		}
 	}

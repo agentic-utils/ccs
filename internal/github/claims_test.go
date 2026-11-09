@@ -21,14 +21,14 @@ const (
 
 // claimEnv points the claims and watcher state at a temp folder and stubs
 // the process tree: the test's parent pid runs under session "alpha".
-func claimEnv(t *testing.T) (live map[int]PrClaim) {
+func claimEnv(t *testing.T) (live map[int]PRClaim) {
 	t.Helper()
 	oldSettings, oldLive, oldParent, oldFetch, oldEnd := state.SettingsPath, LiveByPID, ParentPID, FetchOpenPRs, EndState
 	state.SettingsPath = t.TempDir() + "/settings.json"
-	live = map[int]PrClaim{
+	live = map[int]PRClaim{
 		os.Getppid(): {Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"},
 	}
-	LiveByPID = func() map[int]PrClaim { return live }
+	LiveByPID = func() map[int]PRClaim { return live }
 	ParentPID = func(int) int { return 0 }
 	FetchOpenPRs = func(string, string) (map[string]*WatchedPR, error) {
 		return nil, errors.New("no network in tests")
@@ -86,7 +86,7 @@ func TestClaimRefusals(t *testing.T) {
 func TestClaimFindsAnAncestorSession(t *testing.T) {
 	live := claimEnv(t)
 	delete(live, os.Getppid()) // the shell between ccs and claude
-	live[4242] = PrClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
+	live[4242] = PRClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
 	asSession(4242)
 	if msg, err := Claim(claimA, false, time.Now()); err != nil || !strings.HasPrefix(msg, "beta owns") {
 		t.Errorf("the nearest live claude ancestor owns it: %q %v", msg, err)
@@ -96,7 +96,7 @@ func TestClaimFindsAnAncestorSession(t *testing.T) {
 func TestSecondClaimIsKeptAndConcurrentClaimsAllLand(t *testing.T) {
 	live := claimEnv(t)
 	Claim(claimA, false, time.Now())
-	live[4242] = PrClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
+	live[4242] = PRClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
 	delete(live, os.Getppid())
 	asSession(4242)
 	msg, _ := Claim(claimA, false, time.Now())
@@ -115,7 +115,7 @@ func TestSecondClaimIsKeptAndConcurrentClaimsAllLand(t *testing.T) {
 			defer wg.Done()
 			WithClaims(func(c *ClaimsFile) bool {
 				u := "https://github.com/o/r/pull/" + string(rune('a'+i))
-				c.Claims[u] = append(c.Claims[u], PrClaim{Session: "s"})
+				c.Claims[u] = append(c.Claims[u], PRClaim{Session: "s"})
 				return true
 			})
 		}()
@@ -129,7 +129,7 @@ func TestSecondClaimIsKeptAndConcurrentClaimsAllLand(t *testing.T) {
 // writeWatchState saves a watcher state for o's PRs by the author me.
 func writeWatchState(t *testing.T, updated time.Time, prs ...*WatchedPR) {
 	t.Helper()
-	st := PrWatchState{Author: "me", Owner: "o", Started: updated, Updated: updated, PRs: map[string]*WatchedPR{}}
+	st := PRWatchState{Author: "me", Owner: "o", Started: updated, Updated: updated, PRs: map[string]*WatchedPR{}}
 	for _, p := range prs {
 		st.PRs[p.URL] = p
 	}
@@ -150,20 +150,20 @@ func TestPRsListsOwnersAndFlags(t *testing.T) {
 	Claim(claimA, false, now)
 	Claim(claimB, false, now)
 	Claim("https://github.com/o/r/pull/9", false, now) // merged: dropped on read
-	live[4242] = PrClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
+	live[4242] = PRClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
 	delete(live, os.Getppid())
 	asSession(4242)
 	Claim(claimB, false, now) // contested
-	live[os.Getppid()] = PrClaim{Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"}
+	live[os.Getppid()] = PRClaim{Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"}
 
-	rep, err := PrsList("me", "o", false, now)
+	rep, err := PRsList("me", "o", false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rep.PRs) != 3 {
 		t.Fatalf("open PRs only: %+v", rep.PRs)
 	}
-	got := map[string]PrRow{}
+	got := map[string]PRRow{}
 	for _, r := range rep.PRs {
 		got[r.PR] = r
 	}
@@ -191,7 +191,7 @@ func TestPRsListsOwnersAndFlags(t *testing.T) {
 
 	// The beta session stops: its claim goes, so claimB is no longer contested.
 	delete(live, 4242)
-	rep, _ = PrsList("me", "o", true, now)
+	rep, _ = PRsList("me", "o", true, now)
 	for _, r := range rep.PRs {
 		if r.PR == claimB && (r.Contested || len(r.Owners) != 1) {
 			t.Errorf("a stopped session's claim is dropped: %+v", r)
@@ -205,9 +205,9 @@ func TestPRsListsOwnersAndFlags(t *testing.T) {
 func TestClaimOfARecycledPIDIsDropped(t *testing.T) {
 	live := claimEnv(t)
 	Claim(claimA, false, time.Now())
-	live[os.Getppid()] = PrClaim{Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "another start"}
+	live[os.Getppid()] = PRClaim{Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "another start"}
 	writeWatchState(t, time.Now(), &WatchedPR{URL: claimA, Repo: "o/r", Number: 1, State: "open"})
-	rep, _ := PrsList("me", "o", true, time.Now())
+	rep, _ := PRsList("me", "o", true, time.Now())
 	if len(rep.PRs) != 1 || !rep.PRs[0].Unowned {
 		t.Errorf("same pid, different process: not the owner: %+v", rep.PRs)
 	}
@@ -216,9 +216,9 @@ func TestClaimOfARecycledPIDIsDropped(t *testing.T) {
 func TestClaimFollowsARename(t *testing.T) {
 	live := claimEnv(t)
 	Claim(claimA, false, time.Now())
-	live[os.Getppid()] = PrClaim{Session: "s-alpha", Name: "alpha-renamed", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"}
+	live[os.Getppid()] = PRClaim{Session: "s-alpha", Name: "alpha-renamed", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"}
 	writeWatchState(t, time.Now(), &WatchedPR{URL: claimA, Repo: "o/r", Number: 1, State: "open"})
-	rep, _ := PrsList("me", "o", true, time.Now())
+	rep, _ := PRsList("me", "o", true, time.Now())
 	if len(rep.PRs) != 1 || !slices.Equal(rep.PRs[0].Owners, []string{"alpha-renamed"}) {
 		t.Errorf("a /rename after the claim: still its owner, under its new name: %+v", rep.PRs)
 	}
@@ -236,22 +236,22 @@ func TestPRsFreshnessAndStatusline(t *testing.T) {
 		return map[string]*WatchedPR{claimA: {URL: claimA, Repo: "o/r", Number: 1, State: "open", Checks: "success", Review: "approved"}}, nil
 	}
 	// No watcher state: statusline prints nothing and asks nobody.
-	if rep, _ := PrsList("me", "o", true, now); rep.StatusLine() != "" || asked != 0 {
+	if rep, _ := PRsList("me", "o", true, now); rep.StatusLine() != "" || asked != 0 {
 		t.Errorf("offline with no state: %q, asked %d", rep.StatusLine(), asked)
 	}
 	// Stale state: ccs prs asks GitHub; the statusline uses it and says so.
 	writeWatchState(t, now.Add(-time.Hour), &WatchedPR{URL: claimB, Repo: "o/r", Number: 2, State: "open", Checks: "success", Review: "approved"})
-	rep, _ := PrsList("me", "o", false, now)
+	rep, _ := PRsList("me", "o", false, now)
 	if asked != 1 || len(rep.PRs) != 1 || rep.PRs[0].PR != claimA {
 		t.Errorf("stale state: asked %d, %+v", asked, rep.PRs)
 	}
-	rep, _ = PrsList("me", "o", true, now)
+	rep, _ = PRsList("me", "o", true, now)
 	if s := rep.StatusLine(); s != "PRs 1 ready · 1 unowned (stale)" || asked != 1 {
 		t.Errorf("statusline from stale state: %q (asked %d)", s, asked)
 	}
 	// Fresh state: no GitHub call.
 	writeWatchState(t, now.Add(-time.Minute))
-	if _, err := PrsList("me", "o", false, now); err != nil || asked != 1 {
+	if _, err := PRsList("me", "o", false, now); err != nil || asked != 1 {
 		t.Errorf("fresh state is used: asked %d, %v", asked, err)
 	}
 }
@@ -267,7 +267,7 @@ func TestPRsForOneSession(t *testing.T) {
 	Claim(claimA, false, now)
 	Claim(claimB, false, now)
 	alpha := live[os.Getppid()]
-	live[4242] = PrClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
+	live[4242] = PRClaim{Session: "s-beta", Name: "beta", PID: 4242, ProcStart: "x"}
 	delete(live, os.Getppid())
 	asSession(4242)
 	Claim(claimC, false, now)
@@ -277,12 +277,12 @@ func TestPRsForOneSession(t *testing.T) {
 	if code := RunPRs([]string{"--json", "--claude-session-id", "s-alpha"}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
-	var rep PrsReport
+	var rep PRsReport
 	json.Unmarshal([]byte(out.String()), &rep)
 	if len(rep.PRs) != 2 || rep.PRs[0].PR != claimB || rep.PRs[1].PR != claimA {
 		t.Errorf("only alpha's PRs, needing you first: %s", out.String())
 	}
-	if d := rep.PRs[0].OwnersDetail; len(d) != 1 || d[0] != (PrOwner{Name: "alpha", Kind: "claude", Session: "s-alpha"}) {
+	if d := rep.PRs[0].OwnersDetail; len(d) != 1 || d[0] != (PROwner{Name: "alpha", Kind: "claude", Session: "s-alpha"}) {
 		t.Errorf("owners_detail: %+v", d)
 	}
 	out.Reset()
@@ -295,11 +295,11 @@ func TestPRsForOneSession(t *testing.T) {
 	}
 
 	// A Codex claim is found by its thread id.
-	cx := PrOwner{Name: "cx", Kind: "codex", Session: "th-1"}
-	if o := OwnerOf(PrClaim{Session: "th-1", Kind: "codex", Thread: "th-1", Name: "cx"}, live); o != cx {
+	cx := PROwner{Name: "cx", Kind: "codex", Session: "th-1"}
+	if o := OwnerOf(PRClaim{Session: "th-1", Kind: "codex", Thread: "th-1", Name: "cx"}, live); o != cx {
 		t.Errorf("codex owner: %+v", o)
 	}
-	r := PrsReport{PRs: []PrRow{{PR: claimC, OwnersDetail: []PrOwner{cx}}}}
+	r := PRsReport{PRs: []PRRow{{PR: claimC, OwnersDetail: []PROwner{cx}}}}
 	if got := r.OwnedBy("codex", "th-1"); len(got.PRs) != 1 {
 		t.Errorf("by codex thread: %+v", got)
 	}
@@ -326,7 +326,7 @@ func TestPrsListAsksAboutUnknownClaimsAtMostEveryInterval(t *testing.T) {
 	EndState = func(string) (string, error) { asked++; return "open", nil }
 	list := func(at time.Time) {
 		t.Helper()
-		if _, err := PrsList("a", "o", false, at); err != nil {
+		if _, err := PRsList("a", "o", false, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -351,7 +351,7 @@ func TestPrsListWaitsAfterAFailedEndCheck(t *testing.T) {
 	asked := 0
 	EndState = func(string) (string, error) { asked++; return "", errors.New("rate limited") }
 	for _, at := range []time.Time{now, now.Add(time.Minute)} {
-		if _, err := PrsList("a", "o", false, at); err != nil {
+		if _, err := PRsList("a", "o", false, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -371,7 +371,7 @@ func TestPrsListDropsAnEndedClaimAndItsCheck(t *testing.T) {
 	}
 	FetchOpenPRs = func(string, string) (map[string]*WatchedPR, error) { return map[string]*WatchedPR{}, nil }
 	EndState = func(string) (string, error) { return "merged", nil }
-	if _, err := PrsList("a", "o", false, now); err != nil {
+	if _, err := PRsList("a", "o", false, now); err != nil {
 		t.Fatal(err)
 	}
 	c := LoadClaims()

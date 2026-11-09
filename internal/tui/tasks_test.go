@@ -73,10 +73,10 @@ func TestBackgroundTasks(t *testing.T) {
 
 func TestTaskCountOnTheTitleRow(t *testing.T) {
 	conv := transcript.Conversation{SessionID: "s", Title: "work", PRs: []string{"https://github.com/o/r/pull/1"},
-		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+		Tasks: []transcript.BgTask{{ID: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s": true}
-	m.prs = map[string]github.PrInfo{"https://github.com/o/r/pull/1": {State: "OPEN", MergeState: "CLEAN"}}
+	m.prs = map[string]github.PRInfo{"https://github.com/o/r/pull/1": {State: "OPEN", MergeState: "CLEAN"}}
 	row := m.sidebarRow(m.filtered[0], false, 40)
 	if !strings.Contains(row[0], "\033["+transcript.TaskColour+"m⧗1") {
 		t.Errorf("the task count goes on the title row, in its own colour: %q", row[0])
@@ -88,7 +88,7 @@ func TestTaskCountOnTheTitleRow(t *testing.T) {
 
 func TestTasksBeforeHits(t *testing.T) {
 	conv := transcript.Conversation{SessionID: "s", Title: "work", Messages: []transcript.Message{{Role: "user", Text: "needle"}},
-		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+		Tasks: []transcript.BgTask{{ID: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "needle", nil)
 	m.live = map[string]bool{"s": true}
 	if row := strip2(m.sidebarRow(m.filtered[0], false, 40)[0]); !strings.HasSuffix(strings.TrimRight(row, " "), "⧗1 1") {
@@ -121,7 +121,7 @@ func TestSubagentsInThePreviewAndTheList(t *testing.T) {
 	os.WriteFile(filepath.Join(subs, "agent-resumed.jsonl"), []byte(fmt.Sprintf(`{"timestamp":%q}`+"\n", started)), 0o600)
 	write("before-resume", time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339), time.Now().Add(-2*time.Hour))
 	conv := transcript.Conversation{SessionID: "s1", FilePath: path,
-		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+		Tasks: []transcript.BgTask{{ID: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s1": true}
 	m.lastScan = map[string]sessions.LiveSession{"s1": {Start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}

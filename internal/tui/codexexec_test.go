@@ -33,7 +33,7 @@ func TestCodexExecNestsUnderItsParentProcess(t *testing.T) {
 		return out
 	}
 	transcript.CodexProcCwd = func(int) string { return "/w/repo" }
-	sessions.NoteCodexExecs(map[string]sessions.LiveSession{"claude-session": {Pid: 100}})
+	sessions.NoteCodexExecs(map[string]sessions.LiveSession{"claude-session": {PID: 100}})
 	if p := sessions.ExecParentOf(cxA); p != "claude-session" {
 		t.Fatalf("exec under claude's process tree: parent %q", p)
 	}

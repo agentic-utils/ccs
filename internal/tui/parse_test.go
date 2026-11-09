@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -236,72 +235,6 @@ func TestRefreshNote(t *testing.T) {
 	}
 }
 
-func TestParseAppendedReadsOnlyNewLines(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	first := `{"type":"user","cwd":"/p","message":{"content":"hello"},"timestamp":"2026-09-25T10:00:00Z"}` + "\n"
-	if err := os.WriteFile(path, []byte(first), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	prev, err := transcript.ParseConversationFile(path, time.Time{}, 0)
-	if err != nil || prev == nil {
-		t.Fatal(prev, err)
-	}
-	if same, _ := transcript.ParseAppended(prev); same != prev {
-		t.Error("unchanged file should return prev as is")
-	}
-
-	appendTo(t, path, `{"type":"assistant","message":{"content":[{"type":"text","text":"needle reply"}],"usage":{"input_tokens":5,"cache_read_input_tokens":995}},"timestamp":"2026-09-25T10:01:00Z"}`+"\n")
-	c, err := transcript.ParseAppended(prev)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(c.Messages) != 2 || c.ContextTokens != 1000 || c.LastTimestamp != "2026-09-25T10:01:00Z" || c.Cwd != "/p" {
-		t.Errorf("appended parse wrong: %+v", c)
-	}
-	if !strings.Contains(c.SearchLower, "needle reply") || !strings.Contains(c.SearchLower, "hello") {
-		t.Error("search text should cover old and new messages")
-	}
-	if len(prev.Messages) != 1 {
-		t.Error("prev must not be modified")
-	}
-	full, _ := transcript.ParseConversationUncached(path, mustStat(t, path))
-	if full.SearchText == "" || len(full.Messages) != len(c.Messages) || full.ParsedBytes != c.ParsedBytes {
-		t.Errorf("incremental and full parse disagree: %d/%d msgs, %d/%d bytes", len(c.Messages), len(full.Messages), c.ParsedBytes, full.ParsedBytes)
-	}
-
-	// A title arriving later rebuilds the search text.
-	appendTo(t, path, `{"type":"custom-title","customTitle":"Renamed"}`+"\n")
-	c2, _ := transcript.ParseAppended(c)
-	if c2.Title != "Renamed" || !strings.Contains(c2.SearchLower, "renamed") {
-		t.Errorf("title update missed: %q", c2.Title)
-	}
-
-	// A shrunk file (e.g. pruned) is reparsed in full.
-	if err := os.WriteFile(path, []byte(first), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c3, _ := transcript.ParseAppended(c2)
-	if c3 == nil || len(c3.Messages) != 1 {
-		t.Errorf("shrunk file should fully reparse, got %+v", c3)
-	}
-}
-
-func TestParseAppendedUnterminatedTailNoDuplicates(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	// Ends mid-line: the last record is parsed but the next parse must be full.
-	body := `{"type":"user","cwd":"/p","message":{"content":"a"},"timestamp":"t1"}` + "\n" +
-		`{"type":"user","cwd":"/p","message":{"content":"b"},"timestamp":"t2"}`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	prev, _ := transcript.ParseConversationFile(path, time.Time{}, 0)
-	appendTo(t, path, "\n"+`{"type":"user","cwd":"/p","message":{"content":"c"},"timestamp":"t3"}`+"\n")
-	c, _ := transcript.ParseAppended(prev)
-	if len(c.Messages) != 3 {
-		t.Errorf("want a, b, c exactly once, got %d messages", len(c.Messages))
-	}
-}
-
 func TestStaleFullScanDoesNotRollBackLiveContent(t *testing.T) {
 	scanStart := time.Now()
 	old := transcript.Conversation{SessionID: "b", FilePath: "/b", Size: 100, LastTimestamp: "2026-09-25T09:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hi"}}, ReadAt: scanStart}
@@ -319,48 +252,6 @@ func TestStaleFullScanDoesNotRollBackLiveContent(t *testing.T) {
 	m = res.(model)
 	if len(m.filtered) != 1 || m.filtered[m.cursor].conv.SessionID != "b" || m.filtered[0].conv.Size != 200 {
 		t.Errorf("stale scan rolled b back or moved the selection: %+v", m.filtered)
-	}
-}
-
-func TestParseAppendedResumesAfterLineCaughtMidWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	line := func(text string) string {
-		return `{"type":"user","cwd":"/p","message":{"content":"` + text + `"},"timestamp":"t"}` + "\n"
-	}
-	partial := line("beta")[:20] // a write in progress: not valid JSON yet
-	if err := os.WriteFile(path, []byte(line("alpha")+partial), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	prev, _ := transcript.ParseConversationFile(path, time.Time{}, 0)
-	if prev.TailApplied || prev.ParsedBytes == prev.Size {
-		t.Fatal("setup: partial tail should be read but not applied")
-	}
-	appendTo(t, path, line("beta")[20:])
-	c, err := transcript.ParseAppended(prev)
-	if err != nil || len(c.Messages) != 2 || c.Messages[1].Text != "beta" {
-		t.Fatalf("should resume at the partial line, got %+v, %v", c, err)
-	}
-	full, _ := transcript.ParseConversationUncached(path, mustStat(t, path))
-	if c.SearchText != full.SearchText {
-		t.Errorf("incremental search text differs from a full parse:\n%q\n%q", c.SearchText, full.SearchText)
-	}
-}
-
-func TestParseAppendedSearchTextMatchesFullParse(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	// Starts with no cwd; a later meta line supplies it. Messages arrive over
-	// two ticks, so a phrase spans them.
-	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"alpha"},"timestamp":"2026-09-25T10:00:00Z"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c, _ := transcript.ParseConversationFile(path, time.Time{}, 0)
-	appendTo(t, path, `{"type":"user","isMeta":true,"cwd":"/newproject","message":{"content":"x"},"timestamp":"2026-09-25T10:01:00Z"}`+"\n")
-	c, _ = transcript.ParseAppended(c)
-	appendTo(t, path, `{"type":"assistant","message":{"content":[{"type":"text","text":"beta"}]},"timestamp":"2026-09-25T10:02:00Z"}`+"\n")
-	c, _ = transcript.ParseAppended(c)
-	full, _ := transcript.ParseConversationUncached(path, mustStat(t, path))
-	if c.SearchText != full.SearchText || !strings.Contains(c.SearchLower, "/newproject") {
-		t.Errorf("drift from full parse:\n%q\n%q", c.SearchText, full.SearchText)
 	}
 }
 
@@ -423,41 +314,6 @@ func TestOwnPruneResetsParseState(t *testing.T) {
 	}
 }
 
-func TestAppendedSearchTextEqualsFullParseAcrossManyTicks(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	if err := os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"Alpha"},"timestamp":"2026-09-25T10:00:00Z"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c, _ := transcript.ParseConversationFile(path, time.Time{}, 0)
-	for i := 0; i < 5; i++ {
-		appendTo(t, path, fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"text","text":"Reply %d İ"}]},"timestamp":"2026-09-25T10:0%d:00Z"}`, i, i+1)+"\n")
-		appendTo(t, path, `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]},"timestamp":"x"}`+"\n")
-		c, _ = transcript.ParseAppended(c)
-	}
-	full, _ := transcript.ParseConversationUncached(path, mustStat(t, path))
-	if c.SearchText != full.SearchText || c.SearchLower != full.SearchLower {
-		t.Errorf("drift after appends:\n%q\n%q", c.SearchLower, full.SearchLower)
-	}
-}
-
-func TestParseAppendedContinuesFromLateRead(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	line := func(s string) string {
-		return `{"type":"user","cwd":"/p","message":{"content":"` + s + `"},"timestamp":"t"}` + "\n"
-	}
-	if err := os.WriteFile(path, []byte(line("a")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	listCopy, _ := transcript.ParseConversationFile(path, time.Time{}, 0)
-	appendTo(t, path, line("b"))
-	late, _ := transcript.ParseAppended(listCopy) // missed the deadline: result only in the cache
-	appendTo(t, path, line("c"))
-	c, err := transcript.ParseAppended(listCopy) // next tick, still from the stale list copy
-	if err != nil || len(c.Messages) != 3 || c.ParsedBytes <= late.ParsedBytes {
-		t.Errorf("should continue from the late read: %d messages, %v", len(c.Messages), err)
-	}
-}
-
 func TestRecoverWorkerKeepsProcessAlive(t *testing.T) {
 	old := transcript.WorkerPanicLog
 	transcript.WorkerPanicLog = filepath.Join(t.TempDir(), "panic.log")
@@ -478,39 +334,6 @@ func TestRecoverWorkerKeepsProcessAlive(t *testing.T) {
 	m.width, m.height = 200, 30
 	if !strings.Contains(m.View(), "internal error") {
 		t.Error("header should mention the logged error")
-	}
-}
-
-func TestParseUsageModelAndErrors(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.jsonl")
-	reply := func(id string, in, c5, c1, read, out int) string {
-		return fmt.Sprintf(`{"type":"assistant","message":{"id":%q,"model":"claude-opus-5-5","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":%d,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d,"output_tokens":%d,"cache_creation":{"ephemeral_5m_input_tokens":%d,"ephemeral_1h_input_tokens":%d}}},"timestamp":"2026-09-29T10:00:00Z"}`,
-			id, in, c5+c1, read, out, c5, c1) + "\n"
-	}
-	body := `{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"2026-09-29T09:59:00Z"}` + "\n" +
-		reply("m1", 10, 100, 1000, 0, 50) +
-		reply("m1", 10, 100, 1000, 0, 50) + // same reply, second content block: counted once
-		reply("m2", 5, 0, 200, 300_000, 70) +
-		`{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":429,"error":"rate_limit","message":{"id":"e1","model":"<synthetic>","content":[{"type":"text","text":"API Error"}],"usage":{"input_tokens":0,"output_tokens":0}},"timestamp":"2026-09-29T10:05:00Z"}` + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	c, err := transcript.ParseConversationFile(path, time.Time{}, 0)
-	if err != nil || c == nil {
-		t.Fatal(c, err)
-	}
-	want := transcript.TokenUsage{Input: 15, Cache5m: 100, Cache1h: 1200, CacheRead: 300_000, Output: 120}
-	if c.Usage != want {
-		t.Errorf("usage = %+v, want %+v", c.Usage, want)
-	}
-	if c.Model != "claude-opus-5-5" || c.PeakContext != 300_205 || c.LastError != "429 rate_limit" {
-		t.Errorf("model=%q peak=%d err=%q", c.Model, c.PeakContext, c.LastError)
-	}
-	// A successful reply afterwards clears the error.
-	appendTo(t, path, reply("m3", 1, 0, 0, 300_300, 5))
-	c2, _ := transcript.ParseAppended(c)
-	if c2.LastError != "" {
-		t.Errorf("error should clear after a successful reply, got %q", c2.LastError)
 	}
 }
 

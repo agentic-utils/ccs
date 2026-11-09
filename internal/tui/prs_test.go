@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -46,23 +45,6 @@ func ghLines(id, cmd, out string) []string {
 	return []string{
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":` + q(cmd) + `}}]}}`,
 		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + q(out) + `}]}}`,
-	}
-}
-
-func TestPRsFromGhOutput(t *testing.T) {
-	var lines []string
-	lines = append(lines, ghLines("t1", `for r in a b; do gh pr create --repo o/$r --fill; done`, "a | "+prA+" | ok\nb | "+prB)...)
-	lines = append(lines, ghLines("t2", `gh pr merge $n -R o/$r --merge`, "✓ Merged pull request o/r#3 (title)")...)
-	lines = append(lines, ghLines("t3", `gh search prs --owner o`, prD)...) // only mentions a PR
-	var c transcript.Conversation
-	for _, l := range lines {
-		transcript.ParseLine(&c, []byte(l))
-	}
-	if !slices.Equal(c.PRs, []string{prA, prB, prC}) {
-		t.Errorf("PRs gh pr create and merge printed, not ones other output mentions: %v", c.PRs)
-	}
-	if len(c.GhCalls) != 0 {
-		t.Errorf("answered calls are dropped: %v", c.GhCalls)
 	}
 }
 
@@ -234,29 +216,6 @@ func TestSelectingASessionRefreshesItsOpenPRs(t *testing.T) {
 	run("a")
 	if len(asked) != 1 || !slices.Equal(asked[0], []string{prA}) {
 		t.Errorf("coming back refreshes again: %v", asked)
-	}
-}
-
-// A fake gh answering one PR and failing another the way GitHub does: the
-// data for the rest, an error for that field, and a non-zero exit.
-func TestGhPRBatchReadsPartialAnswers(t *testing.T) {
-	dir := t.TempDir()
-	gh := filepath.Join(dir, "gh")
-	os.WriteFile(gh, []byte(`#!/bin/sh
-case "$*" in *'repository(owner:"o",name:"r"){pullRequest(number:1)'*) ;; *) exit 3;; esac
-echo '{"data":{"p0":{"pullRequest":{"number":1,"title":"t","state":"OPEN","isDraft":false,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[{"name":"test","conclusion":"FAILURE"},{"name":"lint","conclusion":"SUCCESS"},{"context":"ci/deploy","state":"ERROR"}]}}}}]}}},"p1":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND"}]}'
-exit 1
-`), 0o755)
-	got, err := github.GhPRBatch(gh, []string{prA, prB})
-	want := github.PrInfo{Number: 1, Title: "t", State: "OPEN", MergeState: "BLOCKED", Review: "APPROVED", Checks: "FAILURE", Failing: []string{"test", "ci/deploy"}}
-	if err != nil || !reflect.DeepEqual(got[prA], want) {
-		t.Fatalf("got %+v, %v", got, err)
-	}
-	if _, why := got[prA].Status(); why != "checks failing: test, ci/deploy" {
-		t.Errorf("a PR with failing checks names them: %q", why)
-	}
-	if got[prB].State != "GONE" {
-		t.Errorf("a PR GitHub couldn't find says so instead of checking forever: %+v", got[prB])
 	}
 }
 

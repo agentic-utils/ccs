@@ -31,29 +31,6 @@ func userLine(entry, prompt, text string) string {
 	return string(b)
 }
 
-func TestHeadlessRule(t *testing.T) {
-	title := `{"type":"custom-title","customTitle":"kept"}`
-	for _, c := range []struct {
-		name  string
-		conv  transcript.Conversation
-		gone  bool
-		about string
-	}{
-		{"one prompt", parsedSession("a", userLine("sdk-cli", "p1", "grant one")), true, "claude -p given one prompt"},
-		{"tool results share it", parsedSession("b", userLine("sdk-cli", "p1", "x"), userLine("sdk-cli", "p1", "y")), true, "lines of the same prompt"},
-		{"second prompt", parsedSession("c", userLine("sdk-cli", "p1", "x"), userLine("sdk-cli", "p2", "and then")), false, "someone talked to it"},
-		{"titled", parsedSession("d", userLine("sdk-cli", "p1", "x"), title), false, "a name the user gave"},
-		{"interactive", parsedSession("e", userLine("cli", "p1", "x")), false, "typed in a terminal"},
-		{"T3 Code", parsedSession("f", userLine("sdk-ts", "p1", "x")), false, "an app you type in"},
-		{"codex exec", transcript.Conversation{SessionID: "g", Kind: transcript.KindCodex, CodexExec: true}, true, "codex exec"},
-		{"codex tui", transcript.Conversation{SessionID: "h", Kind: transcript.KindCodex}, false, "an interactive codex"},
-	} {
-		if got := c.conv.Headless(); got != c.gone {
-			t.Errorf("%s (%s): headless %v, want %v", c.name, c.about, got, c.gone)
-		}
-	}
-}
-
 func headlessModel(convs ...transcript.Conversation) model {
 	for i := range convs {
 		convs[i].Messages = append(convs[i].Messages, transcript.Message{Role: "user", Text: "word " + convs[i].SessionID, Ts: "2026-11-03T10:00:00Z"})

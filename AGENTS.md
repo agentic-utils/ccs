@@ -10,7 +10,7 @@ CLI tool to launch, watch, search and resume coding CLI sessions (Claude Code an
 
 ```bash
 go build
-go test -v -cover
+go test -v -cover ./...
 ```
 
 ### Test Coverage
@@ -48,9 +48,9 @@ Install the release locally: `brew update && brew upgrade ccs`.
 
 ## Architecture
 
-One package, split by area (all `package main`, same directory):
+`main.go` at the root holds only `version` (set at build time by `-X main.version`) and `main()`, which calls `app.Main(version)`, so `go install github.com/agentic-utils/ccs@latest` stays a one-liner. Everything else is one package, `internal/app` (all `package app`, same directory), split by area; the files below are in it:
 
-- `main.go` - `main()`, flags, `--help`, `version`, and the bounded command runners (`runCommand`, `runBounded`)
+- `cli.go` - `Main`, flags, `--help`, `version`, and the bounded command runners (`runCommand`, `runBounded`)
 - `ui.go` - the bubbletea model: `initialModel`, `Init`, `Update`, `View`, the list, mouse handling, popups, key hints (`shortcuts`, `hints`), rename/delete/prune actions
 - `parse.go` - transcript types and parsing (`Conversation`, `RawMessage`, `parseLine`, `parseAppended`, `parseCache`), background refresh, search text, list formatting helpers
 - `preview.go` - the conversation preview: `buildPreviewLines`, `renderBody`, markdown/tables/links, harness/teammate notes, time gutter, pinned date, search-hit jumps, the links popup
@@ -223,4 +223,4 @@ A PR that substantially changes what the list looks like (a new pane, popup, sec
 
 - Use conventional commits (feat:, fix:, docs:, etc.)
 - Run tests before releasing
-- Keep it simple: one package, files split by area as listed under Architecture; put new code in the file for its area
+- Keep it simple: one package (`internal/app`), files split by area as listed under Architecture; put new code in the file for its area

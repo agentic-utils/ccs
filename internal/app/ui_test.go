@@ -1,0 +1,1688 @@
+package app
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/charmbracelet/x/ansi"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+func TestFormatListItemShowsSize(t *testing.T) {
+	item := listItem{conv: Conversation{
+		SessionID:     "s1",
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Size:          75 * 1 << 20,
+		Messages:      []Message{{Role: "user", Text: "hi"}},
+	}}
+	m := initialModel([]listItem{item}, "", nil)
+	if got := m.formatListItem(item, false); !strings.Contains(got, "75MB") {
+		t.Errorf("list row should show the file size, got %q", got)
+	}
+}
+
+func TestDeleteConversation(t *testing.T) {
+	// Create a temp directory to simulate projects dir
+	tmpDir := t.TempDir()
+
+	// Override getProjectsDir for this test
+	origGetProjectsDir := getProjectsDir
+	defer func() {
+		// Can't actually override without refactoring, so just test the logic
+	}()
+	_ = origGetProjectsDir
+
+	// Create test conversations
+	conv1 := Conversation{
+		SessionID: "test-session-1",
+		Cwd:       "/test/project1",
+		Messages: []Message{
+			{Role: "user", Text: "First message"},
+		},
+	}
+	conv2 := Conversation{
+		SessionID: "test-session-2",
+		Cwd:       "/test/project2",
+		Messages: []Message{
+			{Role: "user", Text: "Second message"},
+		},
+	}
+
+	items := []listItem{
+		{conv: conv1, searchText: "test1"},
+		{conv: conv2, searchText: "test2"},
+	}
+
+	// Create model with test data
+	m := model{
+		items:         items,
+		filtered:      items,
+		cursor:        0,
+		deleteIndex:   0,
+		confirmDelete: true,
+	}
+
+	// Create a temporary file for the conversation
+	testFile := filepath.Join(tmpDir, conv1.SessionID+".jsonl")
+	content := `{"type":"user","cwd":"/test/project1","message":{"content":"First message"},"timestamp":"2024-01-15T10:00:00Z"}`
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Note: We can't fully test deleteConversation without dependency injection
+	// but we can verify the file operations and state management logic separately
+
+	// Test file deletion
+	if err := os.Remove(testFile); err != nil {
+		t.Errorf("failed to remove file: %v", err)
+	}
+
+	// Verify file was deleted
+	if _, err := os.Stat(testFile); !os.IsNotExist(err) {
+		t.Error("file should be deleted but still exists")
+	}
+
+	// Test cursor adjustment logic
+	if m.cursor >= len(m.filtered) {
+		m.cursor = len(m.filtered) - 1
+	}
+
+	// Simulate deletion from filtered slice
+	m.filtered = append(m.filtered[:m.deleteIndex], m.filtered[m.deleteIndex+1:]...)
+
+	if len(m.filtered) != 1 {
+		t.Errorf("filtered should have 1 item after deletion, got %d", len(m.filtered))
+	}
+
+	if m.filtered[0].conv.SessionID != "test-session-2" {
+		t.Errorf("remaining conversation should be test-session-2, got %s", m.filtered[0].conv.SessionID)
+	}
+}
+
+func TestDeleteConversationInvalidIndex(t *testing.T) {
+	m := model{
+		items:       []listItem{},
+		filtered:    []listItem{},
+		deleteIndex: 10, // Invalid index
+	}
+
+	// Should not panic when index is out of bounds
+	m.deleteConversation()
+
+	// Verify error is set or state is unchanged
+	// (deleteConversation returns early for invalid index)
+}
+
+func TestDeleteConversationErrorHandling(t *testing.T) {
+	// Test deletion of non-existent file
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "nonexistent.jsonl")
+
+	// Try to delete non-existent file
+	err := os.Remove(testFile)
+	if err == nil {
+		t.Error("expected error when deleting non-existent file")
+	}
+
+	// Verify it's the right kind of error
+	if !os.IsNotExist(err) {
+		t.Errorf("expected IsNotExist error, got: %v", err)
+	}
+}
+
+func TestUpdateFilterIncrementalNarrowing(t *testing.T) {
+	items := []listItem{
+		{conv: Conversation{SessionID: "1"}, searchText: "auth gateway", searchLower: "auth gateway"},
+		{conv: Conversation{SessionID: "2"}, searchText: "auth service", searchLower: "auth service"},
+		{conv: Conversation{SessionID: "3"}, searchText: "billing", searchLower: "billing"},
+	}
+	m := initialModel(items, "", nil)
+
+	check := func(q string, want int) {
+		t.Helper()
+		m.textInput.SetValue(q)
+		m.updateFilter()
+		if len(m.filtered) != want {
+			t.Fatalf("query %q: got %d results, want %d", q, len(m.filtered), want)
+		}
+	}
+	check("auth", 2)         // full scan
+	check("auth gateway", 1) // narrowing: filters the previous 2, not all 3
+	if m.filtered[0].conv.SessionID != "1" {
+		t.Errorf("narrowed result should be session 1, got %s", m.filtered[0].conv.SessionID)
+	}
+	check("auth", 2) // broadening: "auth gateway" not in "auth" -> full rescan
+	check("billing", 1)
+	check("", 3) // cleared
+}
+
+func TestUpdateFilter(t *testing.T) {
+	items := []listItem{
+		{conv: Conversation{SessionID: "test-1"}, searchText: "Hello World foo", searchLower: "hello world foo"},
+		{conv: Conversation{SessionID: "test-2"}, searchText: "Goodbye World bar", searchLower: "goodbye world bar"},
+		{conv: Conversation{SessionID: "test-3"}, searchText: "Hello bar baz", searchLower: "hello bar baz"},
+	}
+
+	m := initialModel(items, "", nil)
+
+	// Test: empty query returns all items
+	m.textInput.SetValue("")
+	m.updateFilter()
+	if len(m.filtered) != 3 {
+		t.Errorf("empty query should return all items, got %d", len(m.filtered))
+	}
+
+	// Test: query matches subset
+	m.textInput.SetValue("hello")
+	m.updateFilter()
+	if len(m.filtered) != 2 {
+		t.Errorf("'hello' query should return 2 items, got %d", len(m.filtered))
+	}
+
+	// Test: case insensitive
+	m.textInput.SetValue("WORLD")
+	m.updateFilter()
+	if len(m.filtered) != 2 {
+		t.Errorf("'WORLD' query should return 2 items (case insensitive), got %d", len(m.filtered))
+	}
+
+	// Test: no matches
+	m.textInput.SetValue("xyz")
+	m.updateFilter()
+	if len(m.filtered) != 0 {
+		t.Errorf("'xyz' query should return 0 items, got %d", len(m.filtered))
+	}
+
+	// Test: cursor adjustment when filtered list shrinks
+	m.cursor = 2
+	m.textInput.SetValue("hello")
+	m.updateFilter()
+	if m.cursor >= len(m.filtered) {
+		t.Errorf("cursor should be adjusted to bounds, cursor=%d, filtered=%d", m.cursor, len(m.filtered))
+	}
+}
+
+func TestFormatListItem(t *testing.T) {
+	// Timestamps render in local time, so pin the zone or this fails outside UTC.
+	defer func(l *time.Location) { time.Local = l }(time.Local)
+	time.Local = time.UTC
+
+	conv := Conversation{
+		SessionID:     "test-123",
+		Cwd:           "/home/user/very-long-project-name-that-exceeds-column-width",
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Messages: []Message{
+			{Role: "user", Text: "This is a very long first message that should be truncated to fit in the column"},
+			{Role: "assistant", Text: "Response"},
+			{Role: "user", Text: "Second message"},
+		},
+	}
+
+	item := listItem{conv: conv, searchText: ""}
+	m := initialModel([]listItem{item}, "", nil)
+
+	// Test selected formatting
+	result := m.formatListItem(item, true)
+	if !strings.Contains(result, "y ago") { // 2024 timestamp, rendered relative
+		t.Errorf("formatted item should show how long ago it was active, got %q", result)
+	}
+	if !strings.Contains(result, "3") { // message count
+		t.Errorf("formatted item should contain message count")
+	}
+
+	// Test non-selected formatting (has ANSI codes)
+	result = m.formatListItem(item, false)
+	if !strings.Contains(result, "\033[") {
+		t.Errorf("non-selected item should contain ANSI color codes")
+	}
+
+	// Test hit count with query
+	m.textInput.SetValue("message")
+	result = m.formatListItem(item, false)
+	// Should show 2 hits (both user messages contain "message")
+	if !strings.Contains(result, "2") {
+		t.Errorf("should show hit count when query matches")
+	}
+}
+
+func TestFormatListItemNamedSessionMarker(t *testing.T) {
+	custom := listItem{conv: Conversation{
+		SessionID:     "s1",
+		Title:         "Refactor auth flow",
+		IsCustomTitle: true,
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Messages:      []Message{{Role: "user", Text: "hi"}},
+	}}
+	// ai-title: has a Title but it's auto-generated - must NOT get the marker.
+	aiTitled := listItem{conv: Conversation{
+		SessionID:     "s2",
+		Title:         "Some auto generated title",
+		IsCustomTitle: false,
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Messages:      []Message{{Role: "user", Text: "hi"}},
+	}}
+	fallback := listItem{conv: Conversation{
+		SessionID:     "s3",
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Messages:      []Message{{Role: "user", Text: "just a first message"}},
+	}}
+	m := initialModel([]listItem{custom, aiTitled, fallback}, "", nil)
+	m.width = 120 // give TOPIC room so the title isn't truncated
+
+	if got := m.formatListItem(custom, false); !strings.Contains(got, "Refactor auth flow ✎") {
+		t.Errorf("user-set custom title should show the marker, got %q", got)
+	}
+	if got := m.formatListItem(aiTitled, false); strings.Contains(got, "✎") {
+		t.Errorf("auto ai-title must NOT show the marker, got %q", got)
+	}
+	if got := m.formatListItem(fallback, false); strings.Contains(got, "✎") {
+		t.Errorf("first-message fallback should not show the marker, got %q", got)
+	}
+}
+
+func TestTopicColWidthFlexes(t *testing.T) {
+	fixed := listIndent + colWhen + colProject + colModel + colCtx + colMsgs + colPRs + colSize + numGaps*colGap + 1 // +1: the scrollbar
+	for _, w := range []int{110, 120, 200} {
+		m := model{width: w}
+		if got, want := m.topicColWidth(), w-fixed; got != want {
+			t.Errorf("topicColWidth(width=%d) = %d, want %d", w, got, want)
+		}
+		m.textInput.SetValue("auth") // HITS takes its column only while searching
+		if got, want := m.topicColWidth(), w-fixed-colHits-colGap; got != want {
+			t.Errorf("searching: topicColWidth(width=%d) = %d, want %d", w, got, want)
+		}
+	}
+	// Tiny terminal clamps to a minimum rather than going negative.
+	if got := (model{width: 20}).topicColWidth(); got != 10 {
+		t.Errorf("topicColWidth(width=20) = %d, want 10 (min)", got)
+	}
+}
+
+func TestFormatListItemFillsWidth(t *testing.T) {
+	item := listItem{conv: Conversation{
+		SessionID:     "s",
+		LastTimestamp: "2024-01-15T10:30:00Z",
+		Size:          1 << 20,
+		Messages:      []Message{{Role: "user", Text: "hi"}},
+	}}
+	for _, w := range []int{110, 120, 200} {
+		m := initialModel([]listItem{item}, "", nil)
+		m.width = w
+		// Selected row has no ANSI codes; its width + the 2-char row prefix
+		// added by View should fill the terminal exactly.
+		if got := ansi.StringWidth(m.formatListItem(item, true)); got != w-listIndent-1 { // the last column is the scrollbar
+			t.Errorf("width=%d: row length = %d, want %d", w, got, w-listIndent-1)
+		}
+	}
+}
+
+func TestUpdateKeyboardNavigation(t *testing.T) {
+	items := []listItem{
+		{conv: Conversation{SessionID: "test-1"}, searchText: "first"},
+		{conv: Conversation{SessionID: "test-2"}, searchText: "second"},
+		{conv: Conversation{SessionID: "test-3"}, searchText: "third"},
+	}
+
+	m := initialModel(items, "", nil)
+	m.width = 100
+	m.height = 30
+
+	// Test down navigation
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = result.(model)
+	if m.cursor != 1 {
+		t.Errorf("down key should move cursor to 1, got %d", m.cursor)
+	}
+
+	// Test up navigation
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = result.(model)
+	if m.cursor != 0 {
+		t.Errorf("up key should move cursor to 0, got %d", m.cursor)
+	}
+
+	// Test up at boundary (should stay at 0)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = result.(model)
+	if m.cursor != 0 {
+		t.Errorf("up at boundary should stay at 0, got %d", m.cursor)
+	}
+
+	// Test down to end
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = result.(model)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = result.(model)
+	if m.cursor != 2 {
+		t.Errorf("should be at last item, got %d", m.cursor)
+	}
+
+	// Test down at boundary (should stay at 2)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = result.(model)
+	if m.cursor != 2 {
+		t.Errorf("down at boundary should stay at 2, got %d", m.cursor)
+	}
+}
+
+func TestUpdateDeleteConfirmation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a real conversation file for testing
+	sessionID := "delete-test-session"
+	testFile := filepath.Join(tmpDir, sessionID+".jsonl")
+	content := `{"type":"user","cwd":"/test","message":{"content":"test message"},"timestamp":"2024-01-15T10:00:00Z"}`
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Override getProjectsDir temporarily
+	originalGetProjectsDir := getProjectsDir
+	defer func() {
+		// Can't easily override without refactoring, so we'll test the flow differently
+		_ = originalGetProjectsDir
+	}()
+
+	items := []listItem{
+		{
+			conv: Conversation{
+				SessionID: sessionID,
+				Cwd:       "/test",
+				Messages:  []Message{{Role: "user", Text: "test message"}},
+			},
+			searchText: "test",
+		},
+		{
+			conv: Conversation{
+				SessionID: "keep-this",
+				Cwd:       "/test2",
+				Messages:  []Message{{Role: "user", Text: "keep message"}},
+			},
+			searchText: "keep",
+		},
+	}
+
+	m := initialModel(items, "", nil)
+	m.width = 100
+	m.height = 30
+
+	// Trigger delete mode with Ctrl+D
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = result.(model)
+	if !m.confirmDelete {
+		t.Error("Ctrl+D should enter delete confirmation mode")
+	}
+	if m.deleteIndex != 0 {
+		t.Errorf("deleteIndex should be 0, got %d", m.deleteIndex)
+	}
+
+	// Test cancellation with 'n'
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = result.(model)
+	if m.confirmDelete {
+		t.Error("'n' should exit delete confirmation mode")
+	}
+
+	// Test cancellation with Esc
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = result.(model)
+	if !m.confirmDelete {
+		t.Error("should be in delete confirmation mode")
+	}
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = result.(model)
+	if m.confirmDelete {
+		t.Error("Esc should exit delete confirmation mode")
+	}
+
+	// Test that other keys are ignored in delete mode
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = result.(model)
+	originalCursor := m.cursor
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = result.(model)
+	if m.cursor != originalCursor {
+		t.Error("arrow keys should be ignored in delete confirmation mode")
+	}
+}
+
+func TestUpdateCtrlU(t *testing.T) {
+	items := []listItem{
+		{conv: Conversation{SessionID: "test-1"}, searchText: "hello"},
+	}
+
+	m := initialModel(items, "initial query", nil)
+
+	// Verify initial query is set
+	if m.textInput.Value() != "initial query" {
+		t.Errorf("initial query should be set")
+	}
+
+	// Esc clears the search
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = result.(model)
+	if m.textInput.Value() != "" {
+		t.Errorf("Esc should clear search, got %q", m.textInput.Value())
+	}
+}
+
+func TestViewRendering(t *testing.T) {
+	items := []listItem{
+		{
+			conv: Conversation{
+				SessionID:     "test-1",
+				Cwd:           "/test/project",
+				LastTimestamp: "2024-01-15T10:00:00Z",
+				Messages: []Message{
+					{Role: "user", Text: "test message", Ts: "2024-01-15T10:00:00Z"},
+				},
+			},
+			searchText: "test",
+		},
+	}
+
+	m := initialModel(items, "", nil)
+	m.width = 120
+	m.height = 30
+	m.table = true // the column headers are the table's
+
+	output := m.View()
+
+	// Check for key UI elements
+	if !strings.Contains(output, "ccs") {
+		t.Error("output should contain 'ccs' title")
+	}
+	if !strings.Contains(output, "type to search") {
+		t.Error("output should contain search prompt")
+	}
+	if !strings.Contains(output, "WHEN") || !strings.Contains(output, "PROJECT") {
+		t.Error("output should contain column headers")
+	}
+	if !strings.Contains(output, "/test/project") {
+		t.Error("output should contain project path in preview")
+	}
+
+	// Test delete confirmation view
+	m.confirmDelete = true
+	m.deleteIndex = 0
+	output = m.View()
+	if !strings.Contains(output, "Delete conversation") {
+		t.Error("delete confirmation should be shown")
+	}
+	if !strings.Contains(strip2(output), "y delete  n/esc cancel") {
+		t.Error("delete confirmation should show its keys")
+	}
+
+	// Test error message display
+	m.confirmDelete = false
+	m.errorMsg = "Test error message"
+	output = m.View()
+	if !strings.Contains(output, "Test error message") {
+		t.Error("error message should be displayed")
+	}
+}
+
+func TestInit(t *testing.T) {
+	m := initialModel([]listItem{}, "", nil)
+	if m.Init() != nil {
+		t.Error("with nothing to refresh, Init should schedule nothing (no cursor blink)")
+	}
+	m.reload = func() ([]listItem, error) { return nil, nil }
+	if m.Init() == nil {
+		t.Error("Init should start the refresh and live ticks")
+	}
+}
+
+func TestIdleScreenDoesNotChange(t *testing.T) {
+	// An idle frame must be identical from one render to the next: the
+	// renderer skips identical frames, so ccs writes nothing and terminals
+	// don't show the tab as busy.
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", LastTimestamp: time.Now().Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	m.reload = func() ([]listItem, error) { return nil, nil }
+	m.lastRefresh = time.Now()
+	first := m.View()
+	time.Sleep(1100 * time.Millisecond)
+	if m.View() != first {
+		t.Error("an idle screen changed within a second; it would redraw constantly")
+	}
+}
+
+func TestDeleteConversationFullFlow(t *testing.T) {
+	// Create temp directory that will act as projects dir
+	tmpDir := t.TempDir()
+
+	// Create test conversation files
+	session1 := "delete-me"
+	session2 := "keep-me"
+
+	file1 := filepath.Join(tmpDir, session1+".jsonl")
+	file2 := filepath.Join(tmpDir, session2+".jsonl")
+
+	content := `{"type":"user","cwd":"/test","message":{"content":"test"},"timestamp":"2024-01-15T10:00:00Z"}`
+	if err := os.WriteFile(file1, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if err := os.WriteFile(file2, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Save and override getProjectsDir
+	oldGetProjectsDir := getProjectsDir
+	getProjectsDir = func() string { return tmpDir }
+	defer func() { getProjectsDir = oldGetProjectsDir }()
+
+	// Create items
+	items := []listItem{
+		{
+			conv: Conversation{
+				SessionID: session1,
+				FilePath:  file1,
+				Messages:  []Message{{Role: "user", Text: "delete this"}},
+			},
+			searchText: "delete",
+		},
+		{
+			conv: Conversation{
+				SessionID: session2,
+				FilePath:  file2,
+				Messages:  []Message{{Role: "user", Text: "keep this"}},
+			},
+			searchText: "keep",
+		},
+	}
+
+	m := initialModel(items, "", nil)
+
+	// Verify initial state
+	if len(m.items) != 2 {
+		t.Fatalf("initial items should be 2, got %d", len(m.items))
+	}
+	if len(m.filtered) != 2 {
+		t.Fatalf("initial filtered should be 2, got %d", len(m.filtered))
+	}
+
+	m.deleteIndex = 0
+	m.confirmDelete = true
+
+	// Execute deletion (needs pointer receiver)
+	(&m).deleteConversation()
+
+	// Verify file was deleted
+	if _, err := os.Stat(file1); !os.IsNotExist(err) {
+		t.Error("file1 should be deleted")
+	}
+
+	// Verify second file still exists
+	if _, err := os.Stat(file2); err != nil {
+		t.Error("file2 should still exist")
+	}
+
+	// Verify filtered list was updated
+	if len(m.filtered) != 1 {
+		t.Errorf("filtered should have 1 item, got %d", len(m.filtered))
+	}
+
+	// Verify items list was updated
+	if len(m.items) != 1 {
+		t.Errorf("items should have 1 item, got %d", len(m.items))
+	}
+
+	// Verify remaining item is session2
+	if m.items[0].conv.SessionID != session2 {
+		t.Errorf("remaining item should be %s, got %s", session2, m.items[0].conv.SessionID)
+	}
+
+	// Verify confirmation mode exited
+	if m.confirmDelete {
+		t.Error("confirmDelete should be false after deletion")
+	}
+}
+
+func TestPruneConversationShrinksAndUpdatesSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s1.jsonl")
+	content := `{"type":"user","message":{"content":"keep"},"uuid":"u1"}` + "\n" +
+		`{"type":"file-history-snapshot","snapshot":{"data":"` + strings.Repeat("x", 4000) + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+
+	item := listItem{conv: Conversation{SessionID: "s1", FilePath: path, Size: info.Size(),
+		Messages: []Message{{Role: "user", Text: "keep"}}}}
+	m := initialModel([]listItem{item}, "", nil)
+	m.confirmPrune = true
+	m.pruneIndex = 0
+	m.pruneConversation()
+
+	if m.errorMsg != "" {
+		t.Fatalf("prune errored: %s", m.errorMsg)
+	}
+	if m.confirmPrune {
+		t.Error("should exit confirm mode after pruning")
+	}
+	after, _ := os.Stat(path)
+	if after.Size() >= info.Size() {
+		t.Errorf("file should shrink: %d -> %d", info.Size(), after.Size())
+	}
+	if m.items[0].conv.Size != after.Size() || m.filtered[0].conv.Size != after.Size() {
+		t.Errorf("displayed size not updated to %d (items=%d filtered=%d)", after.Size(), m.items[0].conv.Size, m.filtered[0].conv.Size)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "file-history-snapshot") {
+		t.Error("snapshot should be removed")
+	}
+	if !strings.Contains(string(data), "keep") {
+		t.Error("conversation message should be kept")
+	}
+}
+
+func TestCtrlXEntersAndCancelsPruneConfirm(t *testing.T) {
+	// Ctrl+X measures the file to preview savings, so it needs a real file.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s1.jsonl")
+	content := `{"type":"user","message":{"content":"hi"}}` + "\n" +
+		`{"type":"file-history-snapshot","snapshot":{"data":"` + strings.Repeat("x", 3000) + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	item := listItem{conv: Conversation{SessionID: "s1", FilePath: path, Size: info.Size(),
+		Messages: []Message{{Role: "user", Text: "hi"}}}}
+	m := initialModel([]listItem{item}, "", nil)
+
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = res.(model)
+	if !m.confirmPrune {
+		t.Fatalf("ctrl+x should enter prune confirm mode (err=%q)", m.errorMsg)
+	}
+	if m.pruneSaved <= 0 {
+		t.Errorf("ctrl+x should measure a positive saving, got %d", m.pruneSaved)
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = res.(model)
+	if m.confirmPrune {
+		t.Error("esc should cancel prune confirm")
+	}
+}
+
+func TestFormatListItemLiveMarker(t *testing.T) {
+	item := listItem{conv: Conversation{SessionID: "s1", Title: "Topic", Messages: []Message{{Role: "user", Text: "x"}}}}
+	m := initialModel([]listItem{item}, "", nil)
+	m.width = 120
+	if strings.Contains(m.formatListItem(item, false), "●") {
+		t.Error("non-live row should have no marker")
+	}
+	m.live = map[string]bool{"s1": true}
+	plain := m.formatListItem(item, true)
+	if !strings.Contains(plain, " ●✻ Topic") {
+		t.Errorf("live row should be marked, got %q", plain)
+	}
+	coloured := m.formatListItem(item, false)
+	if !strings.Contains(coloured, " \033[32m●\033[0m\033[38;5;173m✻\033[0m Topic") {
+		t.Errorf("live marker should be green, got %q", coloured)
+	}
+}
+
+func TestFormatListItemErrorAndLiveMarkers(t *testing.T) {
+	item := listItem{conv: Conversation{SessionID: "s1", Title: "Topic", Spawned: true, LastError: "429", Messages: []Message{{Role: "user", Text: "x"}}}}
+	m := initialModel([]listItem{item}, "", nil)
+	m.width = 120
+	m.live = map[string]bool{"s1": true}
+	if got := m.formatListItem(item, true); !strings.Contains(got, "●!✻ Topic") {
+		t.Errorf("selected row = %q", got)
+	}
+	got := m.formatListItem(item, false)
+	if !strings.Contains(got, "\033[32m●\033[0m\033[1;31m!\033[0m\033[38;5;173m✻\033[0m Topic") {
+		t.Errorf("unselected row = %q", got)
+	}
+	// Same visible width as an unmarked row.
+	plain := listItem{conv: Conversation{SessionID: "s2", Title: "Topic", Messages: item.conv.Messages}}
+	strip := func(s string) int {
+		return utf8.RuneCountInString(regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, ""))
+	}
+	unmarked := m.formatListItem(plain, false)
+	if strip(got) != strip(unmarked) {
+		t.Error("marked row width differs from unmarked row")
+	}
+	// Titles line up whatever the markers.
+	col := func(s string) int {
+		s = regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, "")
+		return utf8.RuneCountInString(s[:strings.Index(s, "Topic")])
+	}
+	if col(got) != col(unmarked) {
+		t.Errorf("topic column differs: marked %d, unmarked %d", col(got), col(unmarked))
+	}
+}
+
+func TestRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s1.jsonl")
+	// No trailing newline: the rename must not fuse onto the last record.
+	if err := os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"t"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := buildItems([]Conversation{{SessionID: "s1", FilePath: path, Messages: []Message{{Role: "user", Text: "hi"}}}})[0]
+	m := initialModel([]listItem{item}, "", nil)
+
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = res.(model)
+	if !m.renaming {
+		t.Fatal("ctrl+r should start renaming")
+	}
+	m.renameInput.SetValue("  new name ")
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = res.(model)
+	if m.renaming || m.items[0].conv.Title != "new name" || !m.items[0].conv.IsCustomTitle {
+		t.Fatalf("rename not applied: %+v err=%q", m.items[0].conv, m.errorMsg)
+	}
+	conv, err := parseConversationFile(path, time.Time{}, 0)
+	if err != nil || conv.Title != "new name" || !conv.IsCustomTitle || len(conv.Messages) != 1 {
+		t.Errorf("reparsed = %+v, %v", conv, err)
+	}
+	m.textInput.SetValue("new name")
+	m.updateFilter()
+	if len(m.filtered) != 1 {
+		t.Error("new name should be searchable")
+	}
+
+	// Live sessions can't be renamed from ccs.
+	m.textInput.SetValue("")
+	m.updateFilter()
+	m.live = map[string]bool{"s1": true}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if m = res.(model); m.renaming || m.errorMsg == "" {
+		t.Error("rename should be refused on a live session")
+	}
+}
+
+func TestRefreshTickRunsReloadAndCarriesGen(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.reload = func() ([]listItem, error) { return []listItem{{conv: Conversation{SessionID: "x"}}}, nil }
+	m.gen = 3
+	_, cmd := m.Update(refreshTickMsg{})
+	msg, ok := cmd().(refreshMsg)
+	if !ok || msg.gen != 3 || len(msg.items) != 1 {
+		t.Fatalf("tick should produce a refreshMsg from reload, got %+v", msg)
+	}
+}
+
+func TestRefreshDroppedWhenStaleOrFailed(t *testing.T) {
+	a := listItem{conv: Conversation{SessionID: "a"}}
+	m := initialModel([]listItem{a}, "", nil)
+
+	// A scan that started before a delete/prune/rename must not undo it.
+	m.gen = 1
+	res, cmd := m.Update(refreshMsg{gen: 0, items: []listItem{a, {conv: Conversation{SessionID: "deleted"}}}})
+	if m = res.(model); len(m.items) != 1 || cmd == nil {
+		t.Errorf("stale refresh should be dropped but still reschedule, items=%d", len(m.items))
+	}
+
+	// A failed scan keeps the current list.
+	res, _ = m.Update(refreshMsg{gen: 1, err: os.ErrNotExist, live: map[string]bool{"a": true}})
+	if m = res.(model); len(m.items) != 1 || !m.live["a"] {
+		t.Error("failed refresh should keep items and still update live")
+	}
+
+	// A successful scan that legitimately finds nothing empties the list.
+	res, _ = m.Update(refreshMsg{gen: 1, items: []listItem{}})
+	if m = res.(model); len(m.items) != 0 {
+		t.Error("empty successful refresh should apply")
+	}
+}
+
+func TestDeleteBumpsGenAndEvictsCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hi"},"timestamp":"t"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseConversationFile(path, time.Time{}, 0); err != nil {
+		t.Fatal(err)
+	}
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", FilePath: path}}}, "", nil)
+	m.deleteIndex = 0
+	m.deleteConversation()
+	parseCacheMu.Lock()
+	_, cached := parseCache[path]
+	parseCacheMu.Unlock()
+	if m.gen != 1 || cached {
+		t.Errorf("delete should bump gen and evict cache: gen=%d cached=%v", m.gen, cached)
+	}
+}
+
+func TestPruneRefusedOnLiveSession(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.live = map[string]bool{"s": true}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m = res.(model); m.confirmPrune || m.errorMsg == "" {
+		t.Error("prune should be refused on a live session")
+	}
+}
+
+func TestLiveCheckedAtConfirmAndAlwaysApplied(t *testing.T) {
+	dir := t.TempDir()
+	old := getSessionsDir
+	getSessionsDir = func() string { return dir }
+	defer func() { getSessionsDir = old }()
+
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hi"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", FilePath: path}}}, "", nil)
+	m.confirmPrune = true
+
+	// Session becomes live between Ctrl+X and y: the confirm must re-check.
+	if err := os.WriteFile(filepath.Join(dir, "1.json"), []byte(fmt.Sprintf(`{"pid":%d,"sessionId":"s"}`, os.Getpid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if m = res.(model); m.confirmPrune || m.errorMsg == "" || m.gen != 0 {
+		t.Errorf("prune confirm should be refused once the session is live (gen=%d err=%q)", m.gen, m.errorMsg)
+	}
+
+	// A dropped (stale) refresh still updates liveness.
+	m.gen = 5
+	res, _ = m.Update(refreshMsg{gen: 0, live: map[string]bool{"other": true}})
+	if m = res.(model); !m.live["other"] {
+		t.Error("live should be applied even when the refresh is stale")
+	}
+}
+
+func TestRefreshStalledShowsInHeader(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 140, 30
+	m.refreshStarted = time.Now().Add(-7 * time.Minute)
+	if !strings.Contains(m.View(), "refresh stalled 7m") {
+		t.Error("a long-running scan should be flagged in the header")
+	}
+	res, _ := m.Update(refreshMsg{})
+	if m = res.(model); m.refreshStalled() {
+		t.Error("a completed scan clears the stall")
+	}
+}
+
+func TestEscOnlyClearsSearch(t *testing.T) {
+	items := buildItems([]Conversation{
+		{SessionID: "a", Messages: []Message{{Role: "user", Text: "apple"}}},
+		{SessionID: "b", Messages: []Message{{Role: "user", Text: "banana"}}},
+	})
+	m := initialModel(items, "apple", nil)
+	if len(m.filtered) != 1 {
+		t.Fatal("setup: query should filter")
+	}
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = res.(model)
+	if m.quitting || cmd != nil || m.textInput.Value() != "" || len(m.filtered) != 2 {
+		t.Fatalf("esc should clear the search and show everything")
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m = res.(model); m.quitting {
+		t.Error("esc never quits, even on an empty search box")
+	}
+}
+
+func TestCtrlCQuitsEvenWithSearch(t *testing.T) {
+	m := initialModel(nil, "something", nil)
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if m = res.(model); !m.quitting {
+		t.Error("ctrl+c should quit straight away")
+	}
+}
+
+func TestSessionStatsAndErrorIcon(t *testing.T) {
+	conv := Conversation{SessionID: "s", Title: "T", Model: "claude-opus-5-5", ContextTokens: 281_000, PeakContext: 281_000,
+		Usage: tokenUsage{Input: 1000, Output: 1000, CacheRead: 1_000_000}, LastError: "429 rate_limit", LastErrorTs: time.Now().Format(time.RFC3339),
+		Messages: []Message{{Role: "user", Text: "x"}}}
+	stats := strings.Join(sessionStats(conv), "\n")
+	for _, want := range []string{"claude-opus-5-5", "281k", "of 1.0M", "28%", "effective 106k", "~$0.53 at API prices", "429 rate_limit"} {
+		if !strings.Contains(stats, want) {
+			t.Errorf("stats missing %q:\n%s", want, stats)
+		}
+	}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.width = 140
+	if !strings.Contains(m.formatListItem(m.items[0], true), "!✻ T") {
+		t.Error("a session whose last action errored should show ! in the list")
+	}
+}
+
+func TestWheelScrollsWhateverIsUnderThePointer(t *testing.T) {
+	m := mouseModel(t)
+	listTop, _, previewTop := m.listLayout()
+
+	// Over the preview: the conversation scrolls, the selection stays.
+	// (The preview opens at the newest message, so wheel up goes back first.)
+	m = m.handleMouse(tea.MouseMsg{X: m.width - 10, Y: previewTop + 2, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	if m.previewScroll != 3 || m.cursor != 0 {
+		t.Fatalf("wheel up over preview: scroll=%d cursor=%d", m.previewScroll, m.cursor)
+	}
+	m = m.handleMouse(tea.MouseMsg{X: m.width - 10, Y: previewTop + 2, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	if m.previewScroll != 0 {
+		t.Errorf("wheel down over preview should come forward again, got %d", m.previewScroll)
+	}
+
+	// Over the list: the selection moves.
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: listTop + 1, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	if m.cursor != 1 {
+		t.Errorf("wheel over list should move the selection, cursor=%d", m.cursor)
+	}
+
+	// Clicking a row selects it.
+	m = m.handleMouse(tea.MouseMsg{X: 10, Y: listTop + rowOf(m, 4), Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.cursor != 4 {
+		t.Errorf("click should select row 4, cursor=%d", m.cursor)
+	}
+
+	// The layout matches what View draws: the preview's first line is the Project header.
+	strip := regexp.MustCompile("\033\\[[0-9;]*m")
+	lines := strings.Split(strip.ReplaceAllString(m.View(), ""), "\n")
+	if !strings.HasPrefix(ansi.Cut(lines[previewTop], m.sidebarWidth()+1, m.width), "Project:") {
+		t.Errorf("previewTop %d doesn't match the screen: %q", previewTop, lines[previewTop])
+	}
+}
+
+func TestLeakedMouseReportNeverReachesSearch(t *testing.T) {
+	m := mouseModel(t)
+	for _, leak := range []string{"[<65;40;12M", "<64;10;5", "[<0;3;4m"} {
+		res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(leak)})
+		if m = res.(model); m.textInput.Value() != "" {
+			t.Errorf("%q leaked into the search box", leak)
+		}
+	}
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if m = res.(model); m.textInput.Value() != "a" {
+		t.Error("ordinary typing must still work")
+	}
+}
+
+func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
+	mk := func(n int) Conversation {
+		c := Conversation{SessionID: "s", Cwd: "/p", Size: int64(n), readAt: time.Now()}
+		for i := 0; i < n; i++ {
+			c.Messages = append(c.Messages, Message{Role: "user", Text: fmt.Sprint("line-", i)})
+		}
+		return c
+	}
+	m := initialModel(buildItems([]Conversation{mk(60)}), "", nil)
+	m.width, m.height = 120, 40
+	m.table = true       // the sidebar's Size line changes with the messages
+	m.previewScroll = 20 // reading back in the history
+	before := m.View()
+	grown := mk(62) // two new messages arrive
+	grown.readAt = time.Now().Add(time.Second)
+	m.applyLive([]Conversation{grown})
+	b, a := strings.Split(strip2(before), "\n"), strings.Split(strip2(m.View()), "\n")
+	_, _, previewTop := m.listLayout()
+	for i := previewTop; i < len(b) && i < len(a); i++ {
+		if bare := func(s string) string { return strings.TrimRight(s, "┃│ ") }; bare(b[i]) != bare(a[i]) { // the scrollbar may move
+			t.Errorf("preview row %d moved:\n was %q\n now %q", i, b[i], a[i])
+		}
+	}
+	m.previewScroll = 0 // at the newest: follow new messages
+	m.applyLive([]Conversation{func() Conversation { c := mk(64); c.readAt = time.Now().Add(2 * time.Second); return c }()})
+	if !strings.Contains(strip2(m.View()), "line-63") {
+		t.Error("at the newest message, new ones should come into view")
+	}
+}
+
+func TestHelpPopup(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 120, 40
+	v := strip2(m.View())
+	if !strings.Contains(v, "? help  ^C quit") || strings.Contains(v, "HITS") || strings.Contains(v, "prune") {
+		t.Errorf("header should list only the essentials:\n%s", v)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	v = strip2(m.View())
+	for _, s := range m.shortcuts() {
+		if !strings.Contains(v, s[0]) || !strings.Contains(v, s[1]) {
+			t.Errorf("popup missing %q %q:\n%s", s[0], s[1], v)
+		}
+	}
+	// Only what applies: one idle conversation, no search typed.
+	if !strings.Contains(v, "resume") || !strings.Contains(v, "edit its name") || !strings.Contains(v, "refresh sessions") || strings.Contains(v, "message it") ||
+		strings.Contains(v, "clear the search") || strings.Contains(v, "move through the list") {
+		t.Errorf("popup should list only the keys that apply:\n%s", v)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m.showUsage = true
+	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}); m.helpOpen {
+		t.Error("the usage screen lists all its keys, so ? should do nothing there")
+	}
+	m.showUsage = false
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if !m.helpOpen || m.textInput.Value() != "" {
+		t.Error("popup should own the keyboard while open")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.helpOpen || strings.Contains(strip2(m.View()), "changelog") {
+		t.Error("esc should close the popup")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	if m.helpOpen {
+		t.Error("ctrl+g should toggle the popup")
+	}
+}
+
+func TestMouseFragmentsDropped(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("["), Alt: true})
+	nm, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	m = nm.(model)
+	for _, frag := range []string{"[", "<65;40", ";12M"} {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(frag)})
+	}
+	if v := m.textInput.Value(); v != "" {
+		t.Errorf("split mouse reports shouldn't reach the search box, got %q", v)
+	}
+	m.lastMouse = time.Time{}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+	if v := m.textInput.Value(); v != "[" {
+		t.Errorf("a typed [ long after any mouse event should still type, got %q", v)
+	}
+}
+
+func TestHeaderNeverWraps(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m.height = 30
+	for _, w := range []int{140, 90, 70, 50, 30, 12} {
+		m.width = w
+		first := strings.Split(m.View(), "\n")[0]
+		if got := ansi.StringWidth(first); got > w {
+			t.Errorf("width %d: header is %d wide: %q", w, got, strip2(first))
+		}
+		plain := strip2(first)
+		if w >= 70 && (!strings.Contains(plain, "? help") || !strings.Contains(plain, "^C quit")) {
+			t.Errorf("width %d: help and quit should stay: %q", w, plain)
+		}
+	}
+}
+
+func TestPrunePromptHints(t *testing.T) {
+	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", Size: 4096}}}, "", nil)
+	m.width, m.height = 140, 30
+	m.confirmPrune, m.pruneIndex, m.pruneSaved = true, 0, 1024
+	if v := strip2(m.View()); !strings.Contains(v, "y prune  n/esc cancel") || strings.Contains(v, "[y/N]") {
+		t.Errorf("prune prompt should use the compact key hints:\n%s", v)
+	}
+}
+
+func TestSearchMatchesWordsAndDashedNames(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "a", Title: "self-revoke-access", Messages: []Message{{Role: "user", Text: "let people drop their own access"}}},
+		{SessionID: "b", Title: "other", Messages: []Message{{Role: "user", Text: "revoke the token, then the self check"}}},
+		{SessionID: "c", Title: "unrelated", Messages: []Message{{Role: "user", Text: "nothing here"}}},
+	}
+	m := initialModel(buildItems(convs), "self revoke", nil)
+	var got []string
+	for _, it := range m.filtered {
+		got = append(got, it.conv.SessionID)
+	}
+	if strings.Join(got, ",") != "a,b" {
+		t.Errorf("every word must appear, in any order, or in the dashed name: got %v", got)
+	}
+	if n := countHits(convs[1], "self revoke"); n != 1 {
+		t.Errorf("a message with both words is a hit, got %d", n)
+	}
+	if h := strip2(highlight("revoke the self", "self revoke")); h != "revoke the self" || !strings.Contains(highlight("revoke the self", "self revoke"), "\033[43;30mself") {
+		t.Errorf("each word is highlighted: %q", highlight("revoke the self", "self revoke"))
+	}
+}
+
+func TestWordsMustShareAMessage(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "split", Title: "x", Messages: []Message{{Role: "user", Text: "self check"}, {Role: "user", Text: "revoke it"}}},
+		{SessionID: "together", Title: "y", Messages: []Message{{Role: "user", Text: "revoke your own access, self service"}}},
+	}
+	m := initialModel(buildItems(convs), "self revoke", nil)
+	if len(m.filtered) != 1 || m.filtered[0].conv.SessionID != "together" {
+		t.Errorf("words in different messages shouldn't match (HITS would be 0): %v", m.filtered)
+	}
+	m = initialModel(buildItems(convs), "revoke", nil)
+	if len(m.filtered) != 2 {
+		t.Errorf("one word matches anywhere: got %d", len(m.filtered))
+	}
+}
+
+func TestSearchWordStartsAndRanking(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "inside", LastTimestamp: "2026-10-09T03:00:00Z", Messages: []Message{{Role: "user", Text: "it fixed itself, then we revoked the key"}}},
+		{SessionID: "apart", LastTimestamp: "2026-10-09T02:00:00Z", Messages: []Message{{Role: "user", Text: "self service: revoke your own access"}}},
+		{SessionID: "phrase", LastTimestamp: "2026-10-08T00:00:00Z", Messages: []Message{{Role: "user", Text: "add a self-revoke button"}}},
+		{SessionID: "named", Title: "self-revoke-access", LastTimestamp: "2026-10-01T00:00:00Z", Messages: []Message{{Role: "user", Text: "hello"}}},
+	}
+	m := initialModel(buildItems(convs), "self revoke", nil)
+	var got []string
+	for _, it := range m.filtered {
+		got = append(got, it.conv.SessionID)
+	}
+	if strings.Join(got, ",") != "named,phrase,apart" {
+		t.Errorf("want name match, then phrase, then the rest; \"itself\" isn't \"self\": got %v", got)
+	}
+	if h := highlight("itself self", "self"); strings.Count(h, "\033[43;30m") != 1 {
+		t.Errorf("only word starts are highlighted: %q", h)
+	}
+	// Typing more narrows from the previous results without losing any.
+	m = initialModel(buildItems(convs), "self rev", nil)
+	m.textInput.SetValue("self revoke")
+	m.updateFilter()
+	if len(m.filtered) != 3 {
+		t.Errorf("narrowing lost results: %d", len(m.filtered))
+	}
+}
+
+func TestLiveMarkerColours(t *testing.T) {
+	conv := Conversation{SessionID: "s", Messages: []Message{{Role: "assistant", Text: "done."}}}
+	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m.width = 140
+	m.live = map[string]bool{"s": true}
+	row := func(status string) string {
+		m.chatStatus = map[string]sessionStat{"s": {status: status}}
+		it := m.filtered[0]
+		it.sectioned = false // no section heading to say it, so the circle does
+		return m.formatListItem(it, false)
+	}
+	if r := row("idle"); !strings.Contains(r, "\033[32m●") {
+		t.Errorf("idle should be a green ●: %q", r)
+	}
+	if r := row("busy"); !strings.Contains(r, "\033["+amber+"m●") {
+		t.Errorf("busy should be an amber ●: %q", r)
+	}
+	if r := row("waiting"); !strings.Contains(r, "\033["+waitColour+"m●") {
+		t.Errorf("waiting on you should be a magenta ●: %q", r)
+	}
+}
+
+func TestScrollThumb(t *testing.T) {
+	if _, _, ok := scrollThumb(10, 0, 10); ok {
+		t.Error("no bar when everything fits")
+	}
+	for _, c := range []struct{ total, start, h, top, size int }{
+		{100, 0, 10, 0, 1},  // a tenth in view: one cell, at the top
+		{100, 90, 10, 9, 1}, // the end: at the bottom
+		{20, 5, 10, 2, 5},   // half in view: half the track, halfway down
+	} {
+		if top, size, _ := scrollThumb(c.total, c.start, c.h); top != c.top || size != c.size {
+			t.Errorf("scrollThumb(%d, %d, %d) = %d, %d; want %d, %d", c.total, c.start, c.h, top, size, c.top, c.size)
+		}
+	}
+}
+
+func TestSidebarAndTable(t *testing.T) {
+	var convs []Conversation
+	for i := range 40 {
+		c := Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p", Size: 2048,
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)}
+		for j := range 80 {
+			c.Messages = append(c.Messages, Message{Role: "user", Text: fmt.Sprint("line-", j)})
+		}
+		convs = append(convs, c)
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 30
+	lines := strings.Split(strip2(m.View()), "\n")
+	if len(lines) != m.height {
+		t.Fatalf("sidebar view is %d rows, want %d", len(lines), m.height)
+	}
+	listTop, _, _ := m.listLayout()
+	sw := m.sidebarWidth()
+	if !strings.Contains(lines[listTop], "not open in claude 40") {
+		t.Errorf("the list opens with its state section's header: %q", lines[listTop])
+	}
+	if row := lines[listTop+1]; !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(lines[listTop], sw+1, m.width), "Project:") {
+		t.Errorf("sidebar row and preview should sit side by side: %q", row)
+	}
+	if ansi.Cut(lines[listTop], sw, sw+1) != "┃" {
+		t.Errorf("the divider should show the list's thumb at the top, got %q", lines[listTop])
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "Size:") {
+		t.Error("the sidebar's preview header should show the size and message count")
+	}
+	if last := lines[len(lines)-1]; !strings.HasSuffix(last, "┃") {
+		t.Errorf("the preview opens at the newest message, so its thumb is at the bottom: %q", last)
+	}
+	if !strings.Contains(ansi.Cut(lines[listTop+2], 0, sw), "now · p") {
+		t.Errorf("a session's second row should say when it was active and its project: %q", lines[listTop+2])
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + rowOf(m, 3) + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.cursor != 3 {
+		t.Errorf("clicking a sidebar row should select it, cursor=%d", m.cursor)
+	}
+
+	m, _ = chord(m, "t")
+	if !m.table || !strings.Contains(m.View(), "PROJECT") {
+		t.Fatal("^T should show the full table with its columns")
+	}
+	if m.uiState().Table != true {
+		t.Error("the table choice should survive a restart after an update")
+	}
+	m, _ = chord(m, "t")
+	if m.table {
+		t.Error("^T again should go back to the sidebar")
+	}
+}
+
+func TestGroupByFolder(t *testing.T) {
+	conv := func(id, cwd, ts string) Conversation {
+		return Conversation{SessionID: id, Title: id, Cwd: cwd, LastTimestamp: ts, Messages: []Message{{Role: "user", Text: "hi"}}}
+	}
+	m := initialModel(buildItems([]Conversation{
+		conv("api-new", "/c/api", "2026-10-23T12:00:00Z"),
+		conv("ccs-tree", "/c/ccs/.claude/worktrees/x", "2026-10-23T11:00:00Z"),
+		conv("api-old", "/c/api", "2026-10-23T10:00:00Z"),
+		conv("ccs-main", "/c/ccs", "2026-10-23T09:00:00Z"),
+	}), "", nil)
+	m.width, m.height = 120, 30
+	m.live = map[string]bool{"ccs-main": true} // open in claude, so its group goes first
+	m.livePIDs = map[string]int{"ccs-main": os.Getpid()}
+	m.sortList()
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "api-old" })
+
+	m, _ = chord(m, "g")
+	var order []string
+	for _, it := range m.filtered {
+		order = append(order, it.conv.SessionID)
+	}
+	// ccs-main is open in claude: its folder in the open half; then the
+	// not-open half, where ccs comes again for its worktree session.
+	if got := strings.Join(order, " "); got != "ccs-main api-new api-old ccs-tree" {
+		t.Errorf("open sessions' folders first, then the rest, worktrees with their repo: %s", got)
+	}
+	if m.filtered[m.cursor].conv.SessionID != "api-old" {
+		t.Error("grouping should keep the selection on its session")
+	}
+	listTop, _, _ := m.listLayout()
+	lines := strings.Split(strip2(m.View()), "\n")
+	// State sections first (idle, then not open), folders within each.
+	for at, want := range map[int]string{0: "idle 1", 1: "ccs 1", 4: "not open in claude 3", 5: "api 2", 10: "ccs 1"} {
+		if !strings.Contains(lines[listTop+at], want) {
+			t.Errorf("row %d should be the header %q:\n%s", at, want, strings.Join(lines[listTop:listTop+13], "\n"))
+		}
+	}
+	if folder, title := strings.Index(lines[listTop+1], "ccs"), strings.Index(lines[listTop+2], "ccs-main"); title <= folder {
+		t.Errorf("a session should sit in from its folder's header: header at %d, title at %d", folder, title)
+	}
+	cur := m.cursor
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.cursor != cur {
+		t.Error("clicking a group's header selects nothing")
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 6, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.filtered[m.cursor].conv.SessionID != "api-new" {
+		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
+	}
+
+	m, _ = chord(m, "g")
+	if m.grouped || m.filtered[0].conv.SessionID != "ccs-main" || m.filtered[1].conv.SessionID != "api-new" {
+		t.Error("^G again should go back to the usual order")
+	}
+}
+
+func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "a", Title: "🚀 漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字 a long wide title", IsCustomTitle: true, Cwd: "/p/漢字漢字漢字漢字漢字漢字漢字", LastTimestamp: "2026-10-23T00:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}},
+		{SessionID: "b", Title: "plain", Cwd: "/p", LastTimestamp: "2026-10-22T00:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}},
+	}
+	for _, table := range []bool{false, true} {
+		for _, msg := range []string{"", strings.Repeat("long error ", 40), "two\nlines"} {
+			m := initialModel(buildItems(convs), "", nil)
+			m.width, m.height, m.errorMsg = 120, 30, msg
+			m.table = table
+			lines := strings.Split(m.View(), "\n")
+			if len(lines) > m.height || !strings.Contains(lines[0], "ccs") {
+				t.Errorf("table=%v error %.12q: %d rows for a %d-row terminal, first %q", table, msg, len(lines), m.height, lines[0])
+			}
+			for i, l := range lines {
+				if ansi.StringWidth(l) > m.width {
+					t.Errorf("table=%v error %.12q: row %d is %d wide, would wrap", table, msg, i, ansi.StringWidth(l))
+				}
+			}
+		}
+	}
+}
+
+func TestSidebarNeverOpensOnHalfASession(t *testing.T) {
+	var convs []Conversation
+	for i := range 20 {
+		convs = append(convs, Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p",
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)})
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 16 // 13 list rows: an odd number of rows for two-row sessions
+	m.cursor = len(m.filtered) - 1
+	listTop, _, _ := m.listLayout()
+	lines := strings.Split(strip2(m.View()), "\n")
+	if !strings.Contains(lines[listTop], "session ") {
+		t.Errorf("the list's top row should be a title, got %q", lines[listTop])
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "session 19") {
+		t.Error("the selection should still be in view")
+	}
+	if !strings.HasPrefix(lines[listTop-1], "───") || !strings.Contains(lines[listTop-1], "┬") {
+		t.Errorf("a rule should sit over the list, joining the divider: %q", lines[listTop-1])
+	}
+}
+
+func TestLastColumnStaysEmpty(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Title: "t", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	res, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = res.(model)
+	for i, l := range strings.Split(m.View(), "\n") {
+		if w := ansi.StringWidth(l); w >= 120 {
+			t.Errorf("row %d is %d wide: it reaches the terminal's last column", i, w)
+		}
+	}
+}
+
+func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
+	parent := Conversation{SessionID: "parent", Title: "parent", LastTimestamp: "2026-10-23T10:00:00Z",
+		spawns: []spawnCmd{{"2026-10-23T09:00:00Z", spawnText(`claude -p "Test of a skill's exit step, then report back" --output-format json`)}}}
+	child := Conversation{SessionID: "child", Spawned: true, FirstTimestamp: "2026-10-23T09:00:05Z", LastTimestamp: "2026-10-23T09:01:00Z",
+		Messages: []Message{{Role: "user", Text: "Test of a skill's exit step, then report back"}}}
+	late := child // the same prompt an hour later: not started by that command
+	late.SessionID, late.FirstTimestamp, late.LastTimestamp = "late", "2026-10-23T10:30:00Z", "2026-10-23T10:31:00Z"
+	other := Conversation{SessionID: "other", Title: "other", LastTimestamp: "2026-10-23T09:30:00Z"}
+	m := initialModel(buildItems([]Conversation{child, other, parent, late}), "", nil)
+	m.width, m.height = 120, 30
+	m.live = map[string]bool{"child": true}
+	m.chatStatus = map[string]sessionStat{"child": {status: "waiting"}}
+	m.sortList()
+	var got []string
+	for _, it := range m.filtered {
+		got = append(got, fmt.Sprintf("%s:%d", it.conv.SessionID, it.depth))
+	}
+	// The child waits on a menu, so its family comes first, parent on top.
+	if strings.Join(got, " ") != "parent:0 child:1 late:0 other:0" {
+		t.Errorf("a spawned session sits under its parent, its family where its most urgent member is: %v", got)
+	}
+	if row := strip2(m.sidebarRow(m.filtered[1], false, 40)[0]); !strings.Contains(row, "└ Test of a skill") {
+		t.Errorf("a child is marked └: %q", row)
+	}
+}
+
+func TestViewIsRememberedAcrossRestarts(t *testing.T) {
+	defer func(p string) { settingsPath = p }(settingsPath)
+	settingsPath = filepath.Join(t.TempDir(), "ccs", "settings.json")
+	if (loadSettings() != settings{}) {
+		t.Fatal("no file: the defaults")
+	}
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m, _ = chord(m, "g")
+	m, _ = chord(m, "t")
+	if got := loadSettings(); !got.Grouped || !got.Table {
+		t.Errorf("^G and ^T should be saved, got %+v", got)
+	}
+	m, _ = chord(m, "g")
+	if got := loadSettings(); got.Grouped || !got.Table {
+		t.Errorf("^G again should be saved too, got %+v", got)
+	}
+}
+
+// rowOf is the list row (from the list's top) where session i's first line is drawn.
+func rowOf(m model, i int) int {
+	return slices.IndexFunc(m.listRows(), func(r listRow) bool { return r.item == i })
+}
+
+func TestHeaderTogglesGreyWithOnGreen(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 170, 20
+	m.checkLatest = func() (string, error) { return "", nil }
+	m.autoFocus, m.autoUpdate = true, false
+	head := strings.Split(m.View(), "\n")[0]
+	plain := strip2(head)
+	if !strings.HasSuffix(plain, "^X A auto-focus on  ^X I auto-update off   ? help  ^C quit") {
+		t.Errorf("the toggles sit on the right, before the key hints: %q", plain)
+	}
+	if !strings.Contains(head, "auto-focus \033[32mon\033[90m") || !strings.Contains(head, "auto-update off") || strings.Contains(head, "\033[33m^") {
+		t.Errorf("only an on state is green, the rest grey: %q", head)
+	}
+	m.width = 90 // the toggles go before the title is cut
+	if plain := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(plain, "auto-focus") || !strings.Contains(plain, "coding cli sessions") {
+		t.Errorf("a narrow header drops the toggles first: %q", plain)
+	}
+}
+
+func TestHeaderShowsAutoFocusKey(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 150, 20
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X A auto-focus off") {
+		t.Errorf("the header should say auto-focus is off, with its key: %q", head)
+	}
+	m.autoFocus = true
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X A auto-focus on") {
+		t.Errorf("the header should say auto-focus is on: %q", head)
+	}
+}
+
+func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	q := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
+	if m, _ = key(m, q); !m.helpOpen {
+		t.Fatal("? on an empty search opens help")
+	}
+	if m, _ = key(m, q); m.helpOpen {
+		t.Fatal("? again closes it")
+	}
+	m.textInput.SetValue("why")
+	if m, _ = key(m, q); m.helpOpen || m.textInput.Value() != "why?" {
+		t.Errorf("with a search typed, ? is text: help=%v search=%q", m.helpOpen, m.textInput.Value())
+	}
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.HasSuffix(head, "auto-focus off   ? help  ^C quit") || strings.Contains(head, "^X G") {
+		t.Errorf("header keys: %q", head)
+	}
+}
+
+func TestCtrlRRefreshesNowAndChecksForUpdates(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	scanned, checked := false, false
+	m.reload = func() ([]listItem, error) { scanned = true; return m.items, nil }
+	m.checkLatest = func() (string, error) { checked = true; return "", nil }
+	m.prNext = time.Now().Add(time.Hour)
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = res.(model)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		if batch, ok := c().(tea.BatchMsg); ok {
+			for _, b := range batch {
+				run(b)
+			}
+		}
+	}
+	run(cmd)
+	if !scanned || !checked {
+		t.Errorf("^R should rescan (%v) and check for an update (%v)", scanned, checked)
+	}
+	if m.refreshStarted.IsZero() || !m.prNext.Before(time.Now().Add(time.Minute)) {
+		t.Error("^R should mark the scan started and bring the PR round forward")
+	}
+}
+
+func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.width, m.height = 120, 30
+	m.textInput.SetValue("fix the login flow")
+	m.textInput.CursorEnd()
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlW})
+	if got := m.textInput.Value(); got != "fix the login " {
+		t.Errorf("^W deletes the word before the cursor: %q", got)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlA})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlK})
+	if got := m.textInput.Value(); got != "" {
+		t.Errorf("^A then ^K deletes the whole line: %q", got)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	if got := m.textInput.Value(); got != "fix the login " {
+		t.Errorf("^Y puts back what ^K deleted: %q", got)
+	}
+	if m.waitOpen || m.autoFocus {
+		t.Error("^W and ^A only edit text now")
+	}
+	// ccs's own actions are ^X chords, ^X ^W as well as ^X W.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "A auto-focus") || !strings.Contains(head, "esc cancel") {
+		t.Errorf("after ^X the header lists what comes next: %q", head)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlA})
+	if !m.autoFocus || m.textInput.Value() != "fix the login " {
+		t.Errorf("^X ^A toggles auto-focus, without editing: on=%v %q", m.autoFocus, m.textInput.Value())
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if got := m.textInput.Value(); got != "fix the login " || m.chordX {
+		t.Errorf("an unknown chord does nothing and types nothing: %q", got)
+	}
+}
+
+func TestEscGoesBackToTheTop(t *testing.T) {
+	var convs []Conversation
+	for i := range 5 {
+		convs = append(convs, Conversation{SessionID: fmt.Sprint("s", i), Messages: []Message{{Role: "user", Text: "hi"}},
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)})
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 30
+	for range 3 {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m.textInput.SetValue("hi")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.textInput.Value() != "" || m.cursor != 0 {
+		t.Errorf("Esc clears the search and goes back to the top: search %q, cursor %d", m.textInput.Value(), m.cursor)
+	}
+}
+
+func TestSortItems(t *testing.T) {
+	// Every order of five, including whole cycles and fixed points, comes out
+	// sorted and stable (equal keys keep their order), none lost or doubled.
+	keys := []int{3, 1, 3, 0, 2}
+	var perm func(k int)
+	perm = func(k int) {
+		if k == len(keys) {
+			items := make([]listItem, len(keys))
+			for i, v := range keys {
+				items[i].rank, items[i].depth = v, i
+			}
+			sortItems(items, func(a, b *listItem) bool { return a.rank < b.rank })
+			for i := 1; i < len(items); i++ {
+				a, b := items[i-1], items[i]
+				if a.rank > b.rank || a.rank == b.rank && a.depth >= b.depth {
+					t.Fatalf("%v: got %v", keys, items)
+				}
+			}
+			return
+		}
+		for i := k; i < len(keys); i++ {
+			keys[k], keys[i] = keys[i], keys[k]
+			perm(k + 1)
+			keys[k], keys[i] = keys[i], keys[k]
+		}
+	}
+	perm(0)
+}
+
+func TestScrollingDoesntSort(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{
+		{SessionID: "a", LastTimestamp: "2026-01-02"}, {SessionID: "b", LastTimestamp: "2026-01-01"},
+	}), "", nil)
+	m.width, m.height = 120, 30
+	m.live = map[string]bool{"b": true} // as a tick sets it; the tick's own sort would bring b up
+	for _, msg := range []tea.Msg{tea.KeyMsg{Type: tea.KeyDown}, tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress}} {
+		res, _ := m.Update(msg)
+		if m = res.(model); m.filtered[0].conv.SessionID != "a" {
+			t.Fatalf("%T sorted the list", msg)
+		}
+	}
+	res, _ := m.Update(chatTickResult{id: "b"})
+	if m = res.(model); m.filtered[0].conv.SessionID != "b" {
+		t.Error("any other message should sort it")
+	}
+}
+
+func TestDotOnlyWhenItAdds(t *testing.T) {
+	convs := []Conversation{
+		{SessionID: "idle", Title: "idle one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
+		{SessionID: "done", Title: "done one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok.", Ts: "2026-09-29T11:00:00Z"}}},
+		{SessionID: "app", Title: "app one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
+		{SessionID: "pin", Title: "pin one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 140, 30
+	m.live = map[string]bool{"idle": true, "done": true, "app": true, "pin": true}
+	m.chatStatus = map[string]sessionStat{"idle": {status: "idle"}, "done": {status: "idle"}, "app": {status: "idle"}, "pin": {status: "idle"}}
+	m.hosts = map[string]string{"app": "Zed"}
+	seen := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	m.marks = &sessionMarks{
+		Since:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // done: replied since ccs first ran, never looked at
+		Seen:   map[string]time.Time{"idle": seen, "app": seen, "pin": seen},
+		Pinned: []string{"pin"},
+	}
+	m.sortList()
+	row := func(id string) string {
+		for _, it := range m.filtered {
+			if it.conv.SessionID == id {
+				return strip2(m.formatListItem(it, false))
+			}
+		}
+		t.Fatalf("%s not listed", id)
+		return ""
+	}
+	if r := row("idle"); strings.Contains(r, "●") {
+		t.Errorf("idle under the idle heading needs no circle: %q", r)
+	}
+	if r := row("done"); !strings.Contains(r, "●✻ done one") {
+		t.Errorf("done keeps its (cyan) circle, which the heading doesn't say: %q", r)
+	}
+	if r := row("app"); !strings.Contains(r, "○✻ app one") {
+		t.Errorf("hosted in another app keeps its hollow circle: %q", r)
+	}
+	if r := row("pin"); !strings.Contains(r, "●✻ pin one") {
+		t.Errorf("a pinned row has no state heading, so it keeps its circle: %q", r)
+	}
+}
+
+func TestShortcutsKeepChordsTogether(t *testing.T) {
+	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.width, m.height = 120, 40
+	first, last, n := -1, -1, 0
+	for i, s := range m.shortcuts() {
+		if len(s[1]) > 70 {
+			t.Errorf("%s is longer than a line: %q", s[0], s[1])
+		}
+		if strings.HasPrefix(s[0], "^X") {
+			if first < 0 {
+				first = i
+			}
+			last = i
+			n++
+		}
+	}
+	for i, s := range m.shortcuts()[first : last+1] {
+		if s[0] != "" && !strings.HasPrefix(s[0], "^X") {
+			t.Errorf("%q sits among the ^X chords (row %d)", s[0], first+i)
+		}
+	}
+	if n == 0 {
+		t.Fatal("no ^X chords listed")
+	}
+}

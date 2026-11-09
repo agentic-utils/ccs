@@ -181,27 +181,27 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 func watchWorld(t *testing.T) *fakeGitHub {
 	t.Helper()
 	g := &fakeGitHub{}
-	oldRun, oldSettings, oldLog := GhRun, state.SettingsPath, state.UpdateLogPath
+	oldRun, oldSettings, oldLog := RunGH, state.SettingsPath, state.UpdateLogPath
 	dir := t.TempDir()
-	GhRun, state.SettingsPath, state.UpdateLogPath = g.run, dir+"/settings.json", dir+"/update.log"
-	t.Cleanup(func() { GhRun, state.SettingsPath, state.UpdateLogPath = oldRun, oldSettings, oldLog })
+	RunGH, state.SettingsPath, state.UpdateLogPath = g.run, dir+"/settings.json", dir+"/update.log"
+	t.Cleanup(func() { RunGH, state.SettingsPath, state.UpdateLogPath = oldRun, oldSettings, oldLog })
 	return g
 }
 
 // passEvents runs one pass at now and returns its events as "event url" lines.
 func passEvents(t *testing.T, now time.Time) []string {
 	t.Helper()
-	before, _ := os.ReadFile(PrEventsPath())
+	before, _ := os.ReadFile(PREventsPath())
 	if err := WatchPass("me", "o", now); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := os.ReadFile(PrEventsPath())
+	after, _ := os.ReadFile(PREventsPath())
 	var got []string
 	for _, line := range strings.Split(strings.TrimSpace(string(after[len(before):])), "\n") {
 		if line == "" {
 			continue
 		}
-		var e PrEvent
+		var e PREvent
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			t.Fatalf("not JSON: %q", line)
 		}
@@ -410,10 +410,10 @@ func TestWatchUnresolvedThreads(t *testing.T) {
 	if got := pass(); !slices.Equal(got, []string{"review_not_needed", "threads_unresolved", "threads_unanswered"}) {
 		t.Errorf("open threads: %v, want review_not_needed, threads_unresolved, threads_unanswered and no needs_review", got)
 	}
-	if data, _ := os.ReadFile(PrEventsPath()); !strings.Contains(string(data), `"event":"review_not_needed"`) || !strings.Contains(string(data), `"reason":"new_head"`) {
+	if data, _ := os.ReadFile(PREventsPath()); !strings.Contains(string(data), `"event":"review_not_needed"`) || !strings.Contains(string(data), `"reason":"new_head"`) {
 		t.Errorf("review_not_needed says why: %s", data)
 	}
-	if data, _ := os.ReadFile(PrEventsPath()); !strings.Contains(string(data), `"event":"threads_unresolved","pr":"https://github.com/o/a/pull/1"`) || !strings.Contains(string(data), `"unresolved":2`) {
+	if data, _ := os.ReadFile(PREventsPath()); !strings.Contains(string(data), `"event":"threads_unresolved","pr":"https://github.com/o/a/pull/1"`) || !strings.Contains(string(data), `"unresolved":2`) {
 		t.Errorf("the event carries the count: %s", data)
 	}
 	if st, _ := LoadPRWatchState(); st.PRs[pr.url()].NeedsReview() {
@@ -461,13 +461,13 @@ func TestNeedsReviewIsRecheckedAndEndsWithReviewNotNeeded(t *testing.T) {
 	if got := passEvents(t, now.Add(6*time.Minute)); !slices.Contains(got, "needs_review "+a.url()) {
 		t.Errorf("asked again next pass, and still waiting: %v", got)
 	}
-	if st, _ := LoadPRWatchState(); !st.PRs[a.url()].Awaiting || st.Version != PrWatchVersion {
+	if st, _ := LoadPRWatchState(); !st.PRs[a.url()].Awaiting || st.Version != PRWatchVersion {
 		t.Errorf("awaiting is kept: %+v", st.PRs[a.url()])
 	}
 
 	a.draft = true
 	got := passEvents(t, now.Add(9*time.Minute))
-	data, _ := os.ReadFile(PrEventsPath())
+	data, _ := os.ReadFile(PREventsPath())
 	if !slices.Contains(got, "review_not_needed "+a.url()) || !strings.Contains(string(data), `"reason":"draft"`) {
 		t.Errorf("leaving it says so, with why: %v\n%s", got, data)
 	}
@@ -521,7 +521,7 @@ func TestThreadsUnansweredByTheOperator(t *testing.T) {
 	if p := st.PRs[pr.url()]; len(p.Unanswered) != 1 || p.Unanswered["T1"] != 10 || *p.Threads != 4 {
 		t.Errorf("the operator's, its bot's and co-author's replies answer a thread: %+v", p)
 	}
-	if data, _ := os.ReadFile(PrEventsPath()); !strings.Contains(string(data), `"event":"threads_unanswered"`) || !strings.Contains(string(data), `"count":1,"threads":["T1"]`) {
+	if data, _ := os.ReadFile(PREventsPath()); !strings.Contains(string(data), `"event":"threads_unanswered"`) || !strings.Contains(string(data), `"count":1,"threads":["T1"]`) {
 		t.Errorf("the event carries the count and ids: %s", data)
 	}
 
@@ -557,7 +557,7 @@ func TestPRDetailsReadsEveryPage(t *testing.T) {
 	}
 	SetThreadSelves("me", "")
 	d := func(n int) *WatchedPR {
-		p, err := PrDetails(WatchedPR{URL: fmt.Sprintf("https://github.com/o/r/pull/%d", n), Repo: "o/r", Number: n})
+		p, err := PRDetails(WatchedPR{URL: fmt.Sprintf("https://github.com/o/r/pull/%d", n), Repo: "o/r", Number: n})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -577,8 +577,8 @@ func TestPRDetailsReadsEveryPage(t *testing.T) {
 // countDetailReads counts the REST calls about PRs from here on.
 func countDetailReads(t *testing.T) *int {
 	t.Helper()
-	n, run := 0, GhRun
-	GhRun = func(a ...string) ([]byte, error) {
+	n, run := 0, RunGH
+	RunGH = func(a ...string) ([]byte, error) {
 		if a[0] == "api" && strings.HasPrefix(a[1], "repos/") {
 			n++
 		}
@@ -600,7 +600,7 @@ func TestWatchSkipsAnUnchangedSettledPRUntilAFullRead(t *testing.T) {
 	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || *reads != 0 {
 		t.Errorf("unchanged: events %v, %d reads", got, *reads)
 	}
-	if got := passEvents(t, now.Add(PrFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || *reads == 0 {
+	if got := passEvents(t, now.Add(PRFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || *reads == 0 {
 		t.Errorf("after prFullEvery: events %v, %d reads", got, *reads)
 	}
 }

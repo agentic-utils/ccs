@@ -178,7 +178,7 @@ func TestCodexLiveSessionsFromProcesses(t *testing.T) {
 	sessions.CodexLiveCache.Out = nil
 	sessions.CodexLiveCache.Unlock()
 	live := sessions.CodexLiveSessions()
-	if len(live) != 2 || live[cxA].Pid != 100 || live[cxB].Pid != 101 || !live[cxA].Codex {
+	if len(live) != 2 || live[cxA].PID != 100 || live[cxB].PID != 101 || !live[cxA].Codex {
 		t.Errorf("two TUIs on two threads, servers and exec runs left out: %+v", live)
 	}
 	if live[cxA].Stat.Status != "idle" {
@@ -248,7 +248,7 @@ func TestCodexResumeAndSend(t *testing.T) {
 	if err != nil || !slices.Equal(got, []string{cxA, "carry on"}) || !strings.Contains(note, "codex queue") {
 		t.Errorf("the message box queues into the thread: %v %q %v", got, note, err)
 	}
-	if h := mcp.McpHeader(transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, Cwd: "/w"}); !strings.Contains(h, "kind codex") || !strings.Contains(h, "codex resume "+cxA) {
+	if h := mcp.Header(transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, Cwd: "/w"}); !strings.Contains(h, "kind codex") || !strings.Contains(h, "codex resume "+cxA) {
 		t.Errorf("MCP says it's Codex and how to resume it:\n%s", h)
 	}
 }

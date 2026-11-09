@@ -36,7 +36,7 @@ func TestMain(m *testing.M) {
 	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil }
-	proc.TtyOf = func(int) string { return "" }
+	proc.TTYOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	code := m.Run()
 	os.RemoveAll(dir)

@@ -17,7 +17,7 @@ func TestMain(m *testing.M) {
 	state.ActivityLogPath = filepath.Join(dir, "activity.log")
 	state.SettingsPath = filepath.Join(dir, "settings.json")
 	state.MarksPath = filepath.Join(dir, "sessions.json")
-	GhUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }
+	Login = func() (string, error) { return "", errors.New("tests ask gh nothing") }
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

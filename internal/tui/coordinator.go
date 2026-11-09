@@ -168,7 +168,7 @@ func writeCoordinatorFolder() error {
 		return err
 	}
 	for path, text := range map[string]string{
-		filepath.Join(dir, "CLAUDE.md"):                strings.ReplaceAll(coordinatorBrief, "{{events}}", github.PrEventsPath()),
+		filepath.Join(dir, "CLAUDE.md"):                strings.ReplaceAll(coordinatorBrief, "{{events}}", github.PREventsPath()),
 		filepath.Join(dir, ".claude", "settings.json"): coordinatorSettings,
 	} {
 		if _, err := os.Stat(path); err == nil {
@@ -206,19 +206,19 @@ func findCoordinator() coordinatorState {
 	live := sessions.ScanSessions(nil)
 	if rec.SessionID != "" {
 		if s, ok := live[rec.SessionID]; ok {
-			return coordinatorState{coordLive, rec, s.Pid}
+			return coordinatorState{coordLive, rec, s.PID}
 		}
 	}
 	if followLive(&rec, live) {
 		rec.save()
-		return coordinatorState{coordLive, rec, live[rec.SessionID].Pid}
+		return coordinatorState{coordLive, rec, live[rec.SessionID].PID}
 	}
 	if rec.SessionID != "" {
 		if pid := startingProcess(rec.SessionID); pid != 0 {
 			// Its arguments keep the id it started with, so after /clear (with a
 			// new name too) it's this process that says which session it is now.
 			for id, s := range live {
-				if s.Pid == pid {
+				if s.PID == pid {
 					rec.SessionID = id
 					rec.save()
 					return coordinatorState{coordLive, rec, pid}
@@ -460,7 +460,7 @@ func createCoordinator(p coordinatorPlan, inPlace bool) (string, error) {
 	}
 	// Only a released one can still be running here: findCoordinator would have
 	// found any other. Before anything changes, and it'd be taken for the new one.
-	if pids, err := sessions.SessionsNamed(coordinatorName); err == nil && len(pids) > 0 {
+	if pids, err := sessions.Named(coordinatorName); err == nil && len(pids) > 0 {
 		return "", fmt.Errorf("a session named %s is still running (pid %d): close or rename it first (ccs close %s)", coordinatorName, pids[0], coordinatorName)
 	}
 	done, errs := applyMCP(p.fixes)

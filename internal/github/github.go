@@ -73,9 +73,9 @@ func (p *WatchedPR) NeedsReview() bool {
 	return p.State == "open" && !p.Draft && p.Checks == "success" && p.threadsClear() && p.Review == "required"
 }
 
-// PrWatchState is the watcher's record, kept between passes and restarts.
+// PRWatchState is the watcher's record, kept between passes and restarts.
 // Updated says how fresh it is, for readers such as ccs prs.
-type PrWatchState struct {
+type PRWatchState struct {
 	Author  string                `json:"author"`
 	Owner   string                `json:"owner"`
 	Started time.Time             `json:"started"` // the first pass: merges before it are never news
@@ -90,13 +90,13 @@ const ReviewMoved = "review requests moved out of ccs: the two-slack plugin's re
 
 // ReviewRecheck is a PR as GitHub has it now (prDetails), asked just before
 // needs_review is emitted. Stubbed in tests.
-var ReviewRecheck = func(p WatchedPR) (*WatchedPR, error) { return PrDetails(p) }
+var ReviewRecheck = func(p WatchedPR) (*WatchedPR, error) { return PRDetails(p) }
 
-// PrWatchVersion is the state format: 2 added Awaiting.
-const PrWatchVersion = 2
+// PRWatchVersion is the state format: 2 added Awaiting.
+const PRWatchVersion = 2
 
-// PrEvent is one line of prEventsPath.
-type PrEvent struct {
+// PREvent is one line of prEventsPath.
+type PREvent struct {
 	At     string   `json:"at"`
 	Event  string   `json:"event"`
 	PR     string   `json:"pr,omitempty"`
@@ -149,7 +149,7 @@ func stillNeedsReview(p *WatchedPR) bool {
 	return f.Review != "approved" && f.Review != "changes_requested" && f.Head == p.Head && !f.Draft && f.Checks == "success"
 }
 
-func PrWatchStatePath() string {
+func PRWatchStatePath() string {
 	return filepath.Join(filepath.Dir(state.SettingsPath), "pr-watch.json")
 }
 
@@ -157,13 +157,13 @@ func prWatchLockPath() string {
 	return filepath.Join(filepath.Dir(state.SettingsPath), "pr-watch.lock")
 }
 
-// PrEventsPath is where events go, beside the update and activity logs.
-func PrEventsPath() string {
+// PREventsPath is where events go, beside the update and activity logs.
+func PREventsPath() string {
 	return filepath.Join(filepath.Dir(state.UpdateLogPath), "pr-events.jsonl")
 }
 
-// GhRun runs gh; tests stub it.
-var GhRun = func(args ...string) ([]byte, error) {
+// RunGH runs gh; tests stub it.
+var RunGH = func(args ...string) ([]byte, error) {
 	out, err := proc.RunBounded(30*time.Second, nil, "gh", args...)
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
@@ -185,20 +185,20 @@ const (
 
 // LoadPRWatchState is the watcher's last record; ok is false when there's
 // none (it hasn't run, or the file is unreadable).
-func LoadPRWatchState() (s PrWatchState, ok bool) {
-	b, err := os.ReadFile(PrWatchStatePath())
+func LoadPRWatchState() (s PRWatchState, ok bool) {
+	b, err := os.ReadFile(PRWatchStatePath())
 	if err != nil || json.Unmarshal(b, &s) != nil || s.PRs == nil {
-		return PrWatchState{}, false
+		return PRWatchState{}, false
 	}
 	return s, true
 }
 
-func SavePRWatchState(s PrWatchState) error {
+func SavePRWatchState(s PRWatchState) error {
 	data, err := json.MarshalIndent(s, "", " ")
 	if err != nil {
 		return err
 	}
-	path := PrWatchStatePath()
+	path := PRWatchStatePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -244,7 +244,7 @@ func RunWatch(args []string) int {
 	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unanswered review threads")
 	selfLogins := fs.String("self-logins", "", "comma-separated GitHub logins whose replies also answer a review thread (bots or co-authors acting for you), besides --author")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, threads_unanswered, merged, closed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). Only one ccs watch runs at a time.\n\n", PrEventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, threads_unanswered, merged, closed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). Only one ccs watch runs at a time.\n\n", PREventsPath())
 		fs.PrintDefaults()
 	}
 	for _, a := range args {
@@ -303,7 +303,7 @@ func WatchPass(author, owner string, now time.Time) error {
 	old, ok := LoadPRWatchState()
 	seeding := !ok || old.Author != author || old.Owner != owner
 	if seeding {
-		old = PrWatchState{Author: author, Owner: owner, Started: now, PRs: map[string]*WatchedPR{}}
+		old = PRWatchState{Author: author, Owner: owner, Started: now, PRs: map[string]*WatchedPR{}}
 	}
 	open, err := searchPRs(author, owner, "--state", "open")
 	if err != nil {
@@ -322,10 +322,10 @@ func WatchPass(author, owner string, now time.Time) error {
 			p.Awaiting = p.AskedHead != "" && p.AskedHead == p.Head && p.NeedsReview()
 		}
 	}
-	next := PrWatchState{Author: author, Owner: owner, Started: old.Started, Updated: now, PRs: map[string]*WatchedPR{}, Version: PrWatchVersion}
-	var events []PrEvent
+	next := PRWatchState{Author: author, Owner: owner, Started: old.Started, Updated: now, PRs: map[string]*WatchedPR{}, Version: PRWatchVersion}
+	var events []PREvent
 	emit := func(p *WatchedPR, event string) {
-		e := PrEvent{At: now.UTC().Format(time.RFC3339), Event: event, PR: p.URL, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head}
+		e := PREvent{At: now.UTC().Format(time.RFC3339), Event: event, PR: p.URL, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head}
 		switch event {
 		case "checks_failing":
 			e.Checks = p.Failing
@@ -350,7 +350,7 @@ func WatchPass(author, owner string, now time.Time) error {
 			return
 		}
 		n.Awaiting = false
-		e := PrEvent{At: now.UTC().Format(time.RFC3339), Event: "review_not_needed", PR: n.URL, Repo: n.Repo, Number: n.Number, Title: n.Title, Head: o.AskedHead, Reason: why}
+		e := PREvent{At: now.UTC().Format(time.RFC3339), Event: "review_not_needed", PR: n.URL, Repo: n.Repo, Number: n.Number, Title: n.Title, Head: o.AskedHead, Reason: why}
 		events = append(events, e)
 	}
 
@@ -472,7 +472,7 @@ func WatchPass(author, owner string, now time.Time) error {
 	}
 
 	if seeding {
-		events = append([]PrEvent{{At: now.UTC().Format(time.RFC3339), Event: "watch_started", Review: fmt.Sprintf("%d open PRs by %s in %s", len(open), author, cmp.Or(owner, "any owner"))}}, events...)
+		events = append([]PREvent{{At: now.UTC().Format(time.RFC3339), Event: "watch_started", Review: fmt.Sprintf("%d open PRs by %s in %s", len(open), author, cmp.Or(owner, "any owner"))}}, events...)
 	}
 	if err := writePREvents(events); err != nil {
 		return fmt.Errorf("writing events: %w", err)
@@ -481,7 +481,7 @@ func WatchPass(author, owner string, now time.Time) error {
 }
 
 // writePREvents appends events to prEventsPath and prints them.
-func writePREvents(events []PrEvent) error {
+func writePREvents(events []PREvent) error {
 	all := make([]any, len(events))
 	for i, e := range events {
 		all[i] = e
@@ -500,7 +500,7 @@ func writeEventLines(events []any) error {
 		b.Write(line)
 		b.WriteByte('\n')
 	}
-	path := PrEventsPath()
+	path := PREventsPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -516,9 +516,9 @@ func writeEventLines(events []any) error {
 	return nil
 }
 
-// GhUser is the login gh is signed in as. Stubbed in tests.
-var GhUser = func() (string, error) {
-	out, err := GhRun("api", "user", "--jq", ".login")
+// Login is the login gh is signed in as. Stubbed in tests.
+var Login = func() (string, error) {
+	out, err := RunGH("api", "user", "--jq", ".login")
 	if err != nil {
 		return "", err
 	}
@@ -531,7 +531,7 @@ func defaultAuthor(author *string) error {
 	if *author != "" {
 		return nil
 	}
-	login, err := GhUser()
+	login, err := Login()
 	if err != nil || login == "" {
 		return fmt.Errorf("--author not given and gh can't say who you are (gh auth login?): %v", err)
 	}
@@ -547,7 +547,7 @@ func searchPRs(author, owner string, filters ...string) ([]WatchedPR, error) {
 		args = append(args, "--owner", owner)
 	}
 	args = append(append(args, "--sort", "updated", "--limit", "200", "--json", "url,title,number,repository,isDraft,updatedAt"), filters...)
-	out, err := GhRun(args...)
+	out, err := RunGH(args...)
 	if err != nil {
 		return nil, err
 	}
@@ -566,12 +566,12 @@ func searchPRs(author, owner string, filters ...string) ([]WatchedPR, error) {
 	}
 	var prs []WatchedPR
 	for _, r := range rows {
-		if strings.TrimSpace(r.URL) == "" || !transcript.PrURL.MatchString(r.URL) {
+		if strings.TrimSpace(r.URL) == "" || !transcript.PRURL.MatchString(r.URL) {
 			continue
 		}
 		repo := r.Repository.NameWithOwner
 		if repo == "" {
-			p := transcript.PrURL.FindStringSubmatch(r.URL)
+			p := transcript.PRURL.FindStringSubmatch(r.URL)
 			repo = p[1] + "/" + p[2]
 		}
 		prs = append(prs, WatchedPR{URL: r.URL, Repo: repo, Number: r.Number, Title: r.Title, Draft: r.IsDraft, UpdatedAt: r.UpdatedAt, State: "open"})
@@ -637,7 +637,7 @@ func ghPaged[T any](path, key string) ([]T, error) {
 	return nil, fmt.Errorf("%s: more than %d pages", path, ghMaxPages)
 }
 
-func PrDetails(p WatchedPR) (*WatchedPR, error) {
+func PRDetails(p WatchedPR) (*WatchedPR, error) {
 	base := "repos/" + p.Repo
 	var pr struct {
 		Draft          bool   `json:"draft"`
@@ -759,7 +759,7 @@ func unresolvedThreads(p WatchedPR) (int, map[string]int64, error) {
 		if after != "" {
 			args = append(args, "-f", "after="+after)
 		}
-		out, err := GhRun(args...)
+		out, err := RunGH(args...)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -849,7 +849,7 @@ func prDetailsAll(open []WatchedPR) []*WatchedPR {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			d, err := PrDetails(p)
+			d, err := PRDetails(p)
 			if err != nil {
 				state.LogActivity("pr watch: %s skipped this pass: %v", p.URL, err)
 				return
@@ -861,15 +861,15 @@ func prDetailsAll(open []WatchedPR) []*WatchedPR {
 	return details
 }
 
-// PrFullEvery is how long an unchanged PR with settled checks goes without its
+// PRFullEvery is how long an unchanged PR with settled checks goes without its
 // details being read. A re-run check or a conflict from the base moving doesn't
 // change updatedAt, so those can be noticed this late.
-const PrFullEvery = 15 * time.Minute
+const PRFullEvery = 15 * time.Minute
 
 // prSettled: what the search shows hasn't changed since old was read, and old
 // isn't waiting on anything a pass needs to see, so old can stand in for it.
 func prSettled(old *WatchedPR, p WatchedPR, now time.Time) bool {
-	if old == nil || old.State != "open" || old.Head == "" || p.UpdatedAt == "" || p.UpdatedAt != old.UpdatedAt || now.Sub(old.FullAt) >= PrFullEvery {
+	if old == nil || old.State != "open" || old.Head == "" || p.UpdatedAt == "" || p.UpdatedAt != old.UpdatedAt || now.Sub(old.FullAt) >= PRFullEvery {
 		return false
 	}
 	// a draft's threads are never counted, so it can't wait for them
@@ -921,7 +921,7 @@ func prEndState(p *WatchedPR) (string, error) {
 }
 
 func ghJSON(v any, path string) error {
-	out, err := GhRun("api", path)
+	out, err := RunGH("api", path)
 	if err != nil {
 		return err
 	}
@@ -933,8 +933,8 @@ func ghJSON(v any, path string) error {
 // PRs nobody owns and PRs two live sessions both claim. Claims of merged or
 // closed PRs, and of sessions no longer running, are dropped on every read.
 
-// PrClaim is one session's claim on a PR.
-type PrClaim struct {
+// PRClaim is one session's claim on a PR.
+type PRClaim struct {
 	Session   string    `json:"session"`          // Claude Code session id, or a Codex thread id
 	Kind      string    `json:"kind,omitempty"`   // "codex" for a Codex session, else Claude Code
 	Thread    string    `json:"thread,omitempty"` // a Codex session's thread id
@@ -947,7 +947,7 @@ type PrClaim struct {
 
 // ClaimsFile is claimsPath: each PR's claims, in the order they were made.
 type ClaimsFile struct {
-	Claims map[string][]PrClaim `json:"claims"`
+	Claims map[string][]PRClaim `json:"claims"`
 	// Checked is when each claimed PR outside the watcher's state was last
 	// asked about, so every session's status line shares one check.
 	Checked map[string]time.Time `json:"checked,omitempty"`
@@ -1034,7 +1034,7 @@ func LoadClaims() ClaimsFile {
 		json.Unmarshal(b, &c)
 	}
 	if c.Claims == nil {
-		c.Claims = map[string][]PrClaim{}
+		c.Claims = map[string][]PRClaim{}
 	}
 	return c
 }
@@ -1051,17 +1051,17 @@ var ParentPID = func(pid int) int {
 
 // LiveByPID is each running claude session by its pid, as scanSessions
 // checks them (the pid's start time matches its session file). Stubbed in tests.
-var LiveByPID = func() map[int]PrClaim {
-	out := map[int]PrClaim{}
+var LiveByPID = func() map[int]PRClaim {
+	out := map[int]PRClaim{}
 	for id, s := range sessions.ScanSessions(nil) {
-		out[s.Pid] = PrClaim{Session: id, Name: s.Stat.Name, PID: s.Pid, ProcStart: s.Start}
+		out[s.PID] = PRClaim{Session: id, Name: s.Stat.Name, PID: s.PID, ProcStart: s.Start}
 	}
 	return out
 }
 
 // callingSession is the claude session this process runs under: the first
 // ancestor that is a live session's claude process.
-func callingSession() (PrClaim, error) {
+func callingSession() (PRClaim, error) {
 	if c, ok := codexSession(); ok {
 		return c, nil
 	}
@@ -1076,12 +1076,12 @@ func callingSession() (PrClaim, error) {
 		}
 		pid = ParentPID(pid)
 	}
-	return PrClaim{}, errors.New("not run from a Claude Code or Codex session: ccs claim must be run by the session that owns the PR")
+	return PRClaim{}, errors.New("not run from a Claude Code or Codex session: ccs claim must be run by the session that owns the PR")
 }
 
 // claimLive: the claim's session still runs in the same process (a Codex
 // session: codexLive).
-func claimLive(c PrClaim, live map[int]PrClaim) bool {
+func claimLive(c PRClaim, live map[int]PRClaim) bool {
 	if c.Kind == "codex" {
 		return sessions.CodexLive(c.Thread)
 	}
@@ -1091,7 +1091,7 @@ func claimLive(c PrClaim, live map[int]PrClaim) bool {
 
 // ownerName is the name c's session goes by now: a /rename after the claim
 // changes the session file's name, never the claim's session or pid.
-func ownerName(c PrClaim, live map[int]PrClaim) string {
+func ownerName(c PRClaim, live map[int]PRClaim) string {
 	if s, ok := live[c.PID]; ok && c.Kind != "codex" && s.Session == c.Session && s.Name != "" {
 		return s.Name
 	}
@@ -1101,7 +1101,7 @@ func ownerName(c PrClaim, live map[int]PrClaim) string {
 // Claim records (or with release, drops) the calling session's Claim on pr.
 // Another session's Claim on it stays: two owners is something to flag.
 func Claim(pr string, release bool, now time.Time) (string, error) {
-	if !transcript.PrURL.MatchString(pr) {
+	if !transcript.PRURL.MatchString(pr) {
 		return "", fmt.Errorf("not a GitHub PR address: %s", pr)
 	}
 	me, err := callingSession()
@@ -1110,7 +1110,7 @@ func Claim(pr string, release bool, now time.Time) (string, error) {
 	}
 	var msg string
 	err = WithClaims(func(c *ClaimsFile) bool {
-		mine := func(x PrClaim) bool { return x.Session == me.Session }
+		mine := func(x PRClaim) bool { return x.Session == me.Session }
 		has := slices.ContainsFunc(c.Claims[pr], mine)
 		if release {
 			if !has {
@@ -1141,8 +1141,8 @@ func Claim(pr string, release bool, now time.Time) (string, error) {
 	return msg, err
 }
 
-// PrRow is one line of ccs prs.
-type PrRow struct {
+// PRRow is one line of ccs prs.
+type PRRow struct {
 	PR     string   `json:"pr"`
 	Repo   string   `json:"repo"`
 	Number int      `json:"number"`
@@ -1150,7 +1150,7 @@ type PrRow struct {
 	Owners []string `json:"owners"` // names of the live sessions claiming it
 	// OwnersDetail is the same owners with their kind ("claude" or "codex")
 	// and id (the Claude Code session id, or the Codex thread id).
-	OwnersDetail []PrOwner `json:"owners_detail,omitempty"`
+	OwnersDetail []PROwner `json:"owners_detail,omitempty"`
 	Head         string    `json:"head,omitempty"` // head commit SHA
 	// NeedsReview: awaiting review now (watchedPR.needsReview, as the
 	// needs_review event); from a fresh fetch, the same pass data.
@@ -1161,16 +1161,16 @@ type PrRow struct {
 	Contested   bool   `json:"contested,omitempty"` // claimed by two or more live sessions
 }
 
-// PrOwner is one live session claiming a PR.
-type PrOwner struct {
+// PROwner is one live session claiming a PR.
+type PROwner struct {
 	Name    string `json:"name"`
 	Kind    string `json:"kind"`
 	Session string `json:"session"`
 }
 
 // OwnerOf is c as a prOwner: a Codex claim's id is its thread.
-func OwnerOf(c PrClaim, live map[int]PrClaim) PrOwner {
-	o := PrOwner{Name: ownerName(c, live), Kind: "claude", Session: c.Session}
+func OwnerOf(c PRClaim, live map[int]PRClaim) PROwner {
+	o := PROwner{Name: ownerName(c, live), Kind: "claude", Session: c.Session}
 	if c.Kind == "codex" {
 		o.Kind = "codex"
 		if c.Thread != "" {
@@ -1182,11 +1182,11 @@ func OwnerOf(c PrClaim, live map[int]PrClaim) PrOwner {
 
 // OwnedBy keeps the PRs the session of that kind ("claude": its session
 // id; "codex": its thread id) claims; a claim of the other kind never matches.
-func (r PrsReport) OwnedBy(kind, id string) PrsReport {
+func (r PRsReport) OwnedBy(kind, id string) PRsReport {
 	out := r
 	out.PRs = nil
 	for _, p := range r.PRs {
-		if slices.ContainsFunc(p.OwnersDetail, func(o PrOwner) bool { return o.Kind == kind && o.Session == id }) {
+		if slices.ContainsFunc(p.OwnersDetail, func(o PROwner) bool { return o.Kind == kind && o.Session == id }) {
 			out.PRs = append(out.PRs, p)
 		}
 	}
@@ -1195,7 +1195,7 @@ func (r PrsReport) OwnedBy(kind, id string) PrsReport {
 
 // sessionLine is --statusline for one session: its PRs by group, "PRs ✓1
 // ✗1 2" (ready, needing you, waiting), empty when it claims none.
-func (r PrsReport) sessionLine() string {
+func (r PRsReport) sessionLine() string {
 	n := map[string]int{}
 	for _, p := range r.PRs {
 		n[p.Group]++
@@ -1220,11 +1220,11 @@ func (r PrsReport) sessionLine() string {
 	return s
 }
 
-// PrsReport is ccs prs: the author's open PRs and how fresh the answer is.
-type PrsReport struct {
+// PRsReport is ccs prs: the author's open PRs and how fresh the answer is.
+type PRsReport struct {
 	Updated time.Time `json:"updated"` // when GitHub was last asked
 	Stale   bool      `json:"stale,omitempty"`
-	PRs     []PrRow   `json:"prs"`
+	PRs     []PRRow   `json:"prs"`
 }
 
 // status is the PR's group and why, by the list's rules (prInfo.status): a
@@ -1232,24 +1232,24 @@ type PrsReport struct {
 func (p *WatchedPR) status() (int, string) {
 	switch {
 	case p.Draft:
-		return PrWaiting, "draft"
+		return PRWaiting, "draft"
 	case p.Conflicts:
-		return PrFix, "conflicts"
+		return PRFix, "conflicts"
 	case p.Checks == "failing":
-		return PrFix, "checks failing: " + strings.Join(p.Failing, ", ")
+		return PRFix, "checks failing: " + strings.Join(p.Failing, ", ")
 	case p.Threads != nil && *p.Threads > 0:
-		return PrFix, threadsText(*p.Threads)
+		return PRFix, threadsText(*p.Threads)
 	case p.Review == "changes_requested":
-		return PrFix, "changes requested"
+		return PRFix, "changes requested"
 	case p.Checks == "pending":
-		return PrWaiting, "checks running"
+		return PRWaiting, "checks running"
 	case p.Review == "approved":
-		return PrReady, "ready to merge"
+		return PRReady, "ready to merge"
 	}
-	return PrWaiting, "review required"
+	return PRWaiting, "review required"
 }
 
-var groupNames = map[int]string{PrReady: "ready", PrFix: "needs_you", PrWaiting: "waiting"}
+var groupNames = map[int]string{PRReady: "ready", PRFix: "needs_you", PRWaiting: "waiting"}
 
 // FetchOpenPRs asks GitHub (REST) for the author's open PRs; one that
 // couldn't be read is left out. Stubbed in tests.
@@ -1269,18 +1269,18 @@ var FetchOpenPRs = func(author, owner string) (map[string]*WatchedPR, error) {
 
 // EndState is prEndState for a claimed PR the open list doesn't have. Stubbed in tests.
 var EndState = func(pr string) (string, error) {
-	p := transcript.PrURL.FindStringSubmatch(pr)
+	p := transcript.PRURL.FindStringSubmatch(pr)
 	n, _ := strconv.Atoi(p[3])
 	return prEndState(&WatchedPR{Repo: p[1] + "/" + p[2], Number: n})
 }
 
-// PrsList builds ccs prs. With offline, it never asks GitHub: the watcher's
+// PRsList builds ccs prs. With offline, it never asks GitHub: the watcher's
 // state however old (Stale says so), and claims are pruned only of ended
 // sessions and of PRs the state knows merged or closed.
-func PrsList(author, owner string, offline bool, now time.Time) (PrsReport, error) {
+func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, error) {
 	st, ok := LoadPRWatchState()
 	ok = ok && st.Author == author && st.Owner == owner
-	var rep PrsReport
+	var rep PRsReport
 	open := map[string]*WatchedPR{}
 	ended := map[string]bool{}
 	switch {
@@ -1327,7 +1327,7 @@ func PrsList(author, owner string, offline bool, now time.Time) (PrsReport, erro
 	prune := func(c *ClaimsFile) bool {
 		changed := false
 		for u, cs := range c.Claims {
-			kept := slices.DeleteFunc(slices.Clone(cs), func(x PrClaim) bool { return !claimLive(x, live) })
+			kept := slices.DeleteFunc(slices.Clone(cs), func(x PRClaim) bool { return !claimLive(x, live) })
 			for i := range kept {
 				if n := ownerName(kept[i], live); n != kept[i].Name {
 					kept[i].Name = n // renamed since it claimed
@@ -1353,7 +1353,7 @@ func PrsList(author, owner string, offline bool, now time.Time) (PrsReport, erro
 
 	for u, p := range open {
 		g, why := p.status()
-		row := PrRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.NeedsReview(), Group: groupNames[g], Status: why}
+		row := PRRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.NeedsReview(), Group: groupNames[g], Status: why}
 		for _, c := range claims.Claims[u] {
 			o := OwnerOf(c, live)
 			row.Owners = append(row.Owners, o.Name)
@@ -1364,7 +1364,7 @@ func PrsList(author, owner string, offline bool, now time.Time) (PrsReport, erro
 		rep.PRs = append(rep.PRs, row)
 	}
 	order := map[string]int{"needs_you": 0, "ready": 1, "waiting": 2}
-	slices.SortFunc(rep.PRs, func(a, b PrRow) int {
+	slices.SortFunc(rep.PRs, func(a, b PRRow) int {
 		if d := order[a.Group] - order[b.Group]; d != 0 {
 			return d
 		}
@@ -1374,7 +1374,7 @@ func PrsList(author, owner string, offline bool, now time.Time) (PrsReport, erro
 }
 
 // StatusLine is ccs prs --statusline: counts only, "" when there's nothing.
-func (r PrsReport) StatusLine() string {
+func (r PRsReport) StatusLine() string {
 	var ready, fix, unowned, contested int
 	for _, p := range r.PRs {
 		switch p.Group {
@@ -1411,7 +1411,7 @@ func (r PrsReport) StatusLine() string {
 }
 
 // Text is ccs prs for people: one line per PR, needing you first.
-func (r PrsReport) Text() string {
+func (r PRsReport) Text() string {
 	if len(r.PRs) == 0 {
 		return "no open PRs\n"
 	}
@@ -1503,7 +1503,7 @@ func RunPRs(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	rep, err := PrsList(*author, *owner, *line, time.Now())
+	rep, err := PRsList(*author, *owner, *line, time.Now())
 	if err != nil {
 		fmt.Fprintln(stderr, "ccs prs:", err)
 		return 1
@@ -1526,7 +1526,7 @@ func RunPRs(args []string, stdout, stderr io.Writer) int {
 		}
 	case *asJSON:
 		if rep.PRs == nil {
-			rep.PRs = []PrRow{}
+			rep.PRs = []PRRow{}
 		}
 		b, _ := json.MarshalIndent(rep, "", "  ")
 		fmt.Fprintln(stdout, string(b))
@@ -1545,12 +1545,12 @@ func RunPRs(args []string, stdout, stderr io.Writer) int {
 
 // codexSession is the Codex session this process runs in, from the
 // CODEX_THREAD_ID Codex gives every command; ok false outside Codex.
-func codexSession() (PrClaim, bool) {
+func codexSession() (PRClaim, bool) {
 	thread := os.Getenv("CODEX_THREAD_ID")
 	if !transcript.CodexThreadID.MatchString(thread) {
-		return PrClaim{}, false
+		return PRClaim{}, false
 	}
-	c := PrClaim{Session: thread, Kind: "codex", Thread: thread}
+	c := PRClaim{Session: thread, Kind: "codex", Thread: thread}
 	if m, ok := transcript.ReadCodexMeta(transcript.CodexRollout(thread)); ok {
 		c.Name = transcript.CodexLaunchName(m)
 	}
@@ -1563,8 +1563,8 @@ func codexSession() (PrClaim, bool) {
 	return c, true
 }
 
-// PrsOf is conv's PRs and then its subagents' not among them.
-func PrsOf(conv transcript.Conversation) []string {
+// PRsOf is conv's PRs and then its subagents' not among them.
+func PRsOf(conv transcript.Conversation) []string {
 	sub := subagentPRs(conv)
 	if len(sub) == 0 {
 		return conv.PRs
@@ -1682,12 +1682,12 @@ func (f *subPRFile) line(line []byte) {
 	}
 	for _, b := range blocks {
 		switch {
-		case b.Type == "tool_use" && b.Name == "Bash" && transcript.GhPRCall(b.Input.Command):
+		case b.Type == "tool_use" && b.Name == "Bash" && transcript.GHPRCall(b.Input.Command):
 			f.pending = append(f.pending, b.ID)
 		case b.Type == "tool_result" && slices.Contains(f.pending, b.ToolUseID):
 			f.pending = slices.DeleteFunc(f.pending, func(id string) bool { return id == b.ToolUseID })
-			for _, u := range transcript.GhOutputPRs(transcript.ResultText(b.Content)) {
-				if transcript.PrURL.MatchString(u) && !slices.Contains(f.prs, u) {
+			for _, u := range transcript.GHOutputPRs(transcript.ResultText(b.Content)) {
+				if transcript.PRURL.MatchString(u) && !slices.Contains(f.prs, u) {
 					f.prs = append(f.prs, u)
 				}
 			}
@@ -1695,8 +1695,8 @@ func (f *subPRFile) line(line []byte) {
 	}
 }
 
-// PrInfo is what GitHub says about a PR.
-type PrInfo struct {
+// PRInfo is what GitHub says about a PR.
+type PRInfo struct {
 	Number     int
 	Title      string
 	State      string // OPEN, MERGED, CLOSED
@@ -1720,7 +1720,7 @@ func threadsText(n int) string {
 }
 
 // failingNames is the failing checks for a status line: at most three, then +N.
-func (p PrInfo) failingNames() string {
+func (p PRInfo) failingNames() string {
 	if len(p.Failing) == 0 {
 		return ""
 	}
@@ -1732,88 +1732,88 @@ func (p PrInfo) failingNames() string {
 	return s
 }
 
-func (p PrInfo) Final() bool { return p.State == "MERGED" || p.State == "CLOSED" }
+func (p PRInfo) Final() bool { return p.State == "MERGED" || p.State == "CLOSED" }
 
 // PR groups, in the order a session lists them: what you can act on first,
 // merged and closed last.
 const (
-	PrReady   = iota // ready to merge
-	PrFix            // needs you: failing checks, conflicts, changes requested, behind
-	PrWaiting        // checks running, review required, draft, or not looked up yet
-	PrMerged
-	PrClosed
+	PRReady   = iota // ready to merge
+	PRFix            // needs you: failing checks, conflicts, changes requested, behind
+	PRWaiting        // checks running, review required, draft, or not looked up yet
+	PRMerged
+	PRClosed
 )
 
 // Status is p's group and what to say about it. GitHub's mergeStateStatus is
 // the verdict on "ready to merge" (branch protection, required checks and
 // reviews); the rest only explains why not.
-func (p PrInfo) Status() (int, string) {
+func (p PRInfo) Status() (int, string) {
 	switch {
 	case p.State == "MERGED":
-		return PrMerged, "merged"
+		return PRMerged, "merged"
 	case p.State == "CLOSED":
-		return PrClosed, "closed"
+		return PRClosed, "closed"
 	case p.State == "GONE":
-		return PrClosed, "not found: deleted, or gh can't see it"
+		return PRClosed, "not found: deleted, or gh can't see it"
 	case p.State == "":
-		return PrWaiting, "checking…"
+		return PRWaiting, "checking…"
 	case p.Draft:
-		return PrWaiting, "draft"
+		return PRWaiting, "draft"
 	case p.MergeState == "DIRTY":
-		return PrFix, "conflicts"
+		return PRFix, "conflicts"
 	case p.MergeState == "UNSTABLE" && len(p.Failing) > 0:
 		// Mergeable, but a failed check often skips what follows it (build, deploy).
-		return PrFix, "optional checks failing" + p.failingNames()
+		return PRFix, "optional checks failing" + p.failingNames()
 	case p.Checks == "FAILURE" || p.Checks == "ERROR":
-		return PrFix, "checks failing" + p.failingNames()
+		return PRFix, "checks failing" + p.failingNames()
 	case p.Unresolved > 0: // never ready while a review thread is open, even if GitHub would merge it
-		return PrFix, threadsText(p.Unresolved)
+		return PRFix, threadsText(p.Unresolved)
 	case p.ThreadsUnread:
-		return PrWaiting, "over 100 review threads: see them on GitHub"
+		return PRWaiting, "over 100 review threads: see them on GitHub"
 	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
-		return PrReady, "ready to merge"
+		return PRReady, "ready to merge"
 	case p.MergeState == "UNSTABLE" && (p.Checks == "PENDING" || p.Checks == "EXPECTED"):
 		// UNSTABLE is any optional check not passed yet, running included.
-		return PrReady, "ready to merge · optional checks running"
+		return PRReady, "ready to merge · optional checks running"
 	case p.MergeState == "UNSTABLE":
-		return PrReady, "ready to merge"
+		return PRReady, "ready to merge"
 	case p.Review == "CHANGES_REQUESTED":
-		return PrFix, "changes requested"
+		return PRFix, "changes requested"
 	case p.MergeState == "BEHIND":
-		return PrFix, "behind its base"
+		return PRFix, "behind its base"
 	case p.Checks == "PENDING" || p.Checks == "EXPECTED":
-		return PrWaiting, "checks running"
+		return PRWaiting, "checks running"
 	case p.Review == "REVIEW_REQUIRED":
-		return PrWaiting, "review required"
+		return PRWaiting, "review required"
 	case p.MergeState == "UNKNOWN":
-		return PrWaiting, "github is checking it"
+		return PRWaiting, "github is checking it"
 	}
-	return PrWaiting, "blocked"
+	return PRWaiting, "blocked"
 }
 
 // MaxPRLines is how many PRs the preview header lists; ^O lists them all.
 const MaxPRLines = 5
 
-// PrName is "repo#N" from a PR address.
-func PrName(u string) string {
-	if p := transcript.PrURL.FindStringSubmatch(u); p != nil {
+// PRName is "repo#N" from a PR address.
+func PRName(u string) string {
+	if p := transcript.PRURL.FindStringSubmatch(u); p != nil {
 		return p[2] + "#" + p[3]
 	}
 	return u
 }
 
-// GhFetchPRs is fetchPRs when gh is installed: nil otherwise, so PRs are
+// FetchPRs is fetchPRs when gh is installed: nil otherwise, so PRs are
 // never looked up.
-func GhFetchPRs() func([]string) (map[string]PrInfo, error) {
+func FetchPRs() func([]string) (map[string]PRInfo, error) {
 	gh, err := exec.LookPath("gh")
 	if err != nil {
 		return nil
 	}
-	return func(urls []string) (map[string]PrInfo, error) { return GhPRBatch(gh, urls) }
+	return func(urls []string) (map[string]PRInfo, error) { return QueryPRs(gh, urls) }
 }
 
-// PrBatch is how many PRs one GraphQL request asks about.
-const PrBatch = 40
+// PRBatch is how many PRs one GraphQL request asks about.
+const PRBatch = 40
 
 // ghPRBatch asks about urls in one GraphQL request (each PR an aliased
 // field). A PR that's gone or private comes back null with an error for that
@@ -1821,11 +1821,11 @@ const PrBatch = 40
 // failedCheck is the check-run conclusions GitHub's rollup counts as failing.
 var failedCheck = map[string]bool{"FAILURE": true, "TIMED_OUT": true, "CANCELLED": true, "ACTION_REQUIRED": true, "STARTUP_FAILURE": true}
 
-func GhPRBatch(gh string, urls []string) (map[string]PrInfo, error) {
+func QueryPRs(gh string, urls []string) (map[string]PRInfo, error) {
 	var q strings.Builder
 	q.WriteString("query{")
 	for i, u := range urls {
-		p := transcript.PrURL.FindStringSubmatch(u) // validated when parsed; owner and repo are [A-Za-z0-9_.-]
+		p := transcript.PRURL.FindStringSubmatch(u) // validated when parsed; owner and repo are [A-Za-z0-9_.-]
 		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision reviewThreads(first:100){totalCount nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
 	}
 	q.WriteString("}")
@@ -1867,18 +1867,18 @@ func GhPRBatch(gh string, urls []string) (map[string]PrInfo, error) {
 		}
 		return nil, err
 	}
-	out := map[string]PrInfo{}
+	out := map[string]PRInfo{}
 	for i, u := range urls {
 		r, answered := resp.Data[fmt.Sprintf("p%d", i)]
 		if !answered {
 			continue
 		}
 		if r == nil || r.PullRequest == nil { // deleted, or gh's account can't see it
-			out[u] = PrInfo{State: "GONE"}
+			out[u] = PRInfo{State: "GONE"}
 			continue
 		}
 		pr := r.PullRequest
-		info := PrInfo{Number: pr.Number, Title: pr.Title, State: pr.State, Draft: pr.IsDraft, MergeState: pr.MergeStateStatus, Review: pr.ReviewDecision}
+		info := PRInfo{Number: pr.Number, Title: pr.Title, State: pr.State, Draft: pr.IsDraft, MergeState: pr.MergeStateStatus, Review: pr.ReviewDecision}
 		for _, t := range pr.ReviewThreads.Nodes {
 			if !t.IsResolved {
 				info.Unresolved++
@@ -1947,7 +1947,7 @@ type NudgeEvent struct {
 }
 
 // SendNudge delivers a nudge to a live session; stubbed in tests.
-var SendNudge = func(c PrClaim, text string) error {
+var SendNudge = func(c PRClaim, text string) error {
 	if c.Kind == "codex" {
 		return sessions.CodexQueue(c.Thread, sessions.CodexNudgeNote+text)
 	}

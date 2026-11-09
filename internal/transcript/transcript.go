@@ -86,7 +86,7 @@ type Conversation struct {
 	TailApplied bool           // an unterminated last line parsed as a record, so resuming at ParsedBytes would repeat it
 	Pending     *toolCall      // the last tool call still without a result: what a waiting session asks about
 	PRs         []string       // its PRs, first touched first: Claude Code's pr-link records, and those gh pr create/merge printed (ghPRCall)
-	GhCalls     []string       // gh pr create/merge calls awaiting their output
+	GHCalls     []string       // gh pr create/merge calls awaiting their output
 	Spawns      []SpawnCmd     // claude -p commands it ran, to find the sessions they started
 	Peers       []PeerRef      // its messages to and from other sessions, to link the two ends
 	outputs     []replyOutput  // each reply's output tokens, for the working line's count this turn
@@ -133,7 +133,7 @@ type RawMessage struct {
 	PromptID       string `json:"promptId"`   // one per prompt the session was given
 	TeamName       string `json:"teamName"`   // set on teammate transcripts spawned by a team lead
 	CustomTitle    string `json:"customTitle"`
-	PrURL          string `json:"prUrl"` // pr-link: a PR a gh command in the session touched
+	PRURL          string `json:"prUrl"` // pr-link: a PR a gh command in the session touched
 	AiTitle        string `json:"aiTitle"`
 	// A message that arrived mid-turn (typed by the user, or from another
 	// session or ccs) is logged as an attachment, not a user line.
@@ -540,7 +540,7 @@ func ParseLine(conv *Conversation, line []byte) bool {
 		conv.Title = raw.CustomTitle // user-set name wins over ai-title
 		conv.IsCustomTitle = raw.CustomTitle != ""
 	case "pr-link":
-		addPR(conv, raw.PrURL)
+		addPR(conv, raw.PRURL)
 	case "system":
 		if raw.Subtype == "turn_duration" {
 			noteTurnEnd(conv, raw.DurationMs, raw.Timestamp)
@@ -685,9 +685,9 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
 			noteResult(conv, b.ToolUseID, b.Content)
-			if i := slices.Index(conv.GhCalls, b.ToolUseID); i >= 0 {
-				conv.GhCalls = slices.Delete(slices.Clone(conv.GhCalls), i, i+1)
-				for _, u := range GhOutputPRs(ResultText(b.Content)) {
+			if i := slices.Index(conv.GHCalls, b.ToolUseID); i >= 0 {
+				conv.GHCalls = slices.Delete(slices.Clone(conv.GHCalls), i, i+1)
+				for _, u := range GHOutputPRs(ResultText(b.Content)) {
 					addPR(conv, u)
 				}
 			}
@@ -709,8 +709,8 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 				if json.Unmarshal(call.Input, &in) == nil && IsSpawn(in.Command) {
 					conv.Spawns = append(conv.Spawns, SpawnCmd{ts, SpawnText(in.Command)})
 				}
-				if GhPRCall(in.Command) {
-					conv.GhCalls = append(slices.Clone(conv.GhCalls), call.ID)
+				if GHPRCall(in.Command) {
+					conv.GHCalls = append(slices.Clone(conv.GHCalls), call.ID)
 				}
 			}
 		case b.Type == "tool_result" && conv.Pending != nil && b.ToolUseID == conv.Pending.ID:
@@ -1030,7 +1030,6 @@ func FormatAgo(ts string, now time.Time) string {
 	return fmt.Sprintf("%d%s ago", n, unit)
 }
 
-// formatBytes renders a byte count compactly (fits the 6-wide SIZE column).
 // FormatTokens renders a token count for the 5-wide CTX column: 950, 12k,
 // 281k, 1.2M. Blank when unknown (no reply with usage yet).
 func FormatTokens(n int) string {
@@ -1048,6 +1047,7 @@ func FormatTokens(n int) string {
 	}
 }
 
+// FormatBytes renders a byte count compactly (fits the 6-wide SIZE column).
 func FormatBytes(n int64) string {
 	switch {
 	case n >= 1<<30:
@@ -1239,9 +1239,9 @@ func QueryMatches(lower, name string, terms []string) bool {
 	}
 }
 
-// PrURL is a github.com PR address; anything else in a pr-link is ignored,
+// PRURL is a github.com PR address; anything else in a pr-link is ignored,
 // since its parts go into a GraphQL query.
-var PrURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$`)
+var PRURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$`)
 
 var (
 	prInOutput  = regexp.MustCompile(`https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+\b`)
@@ -1250,19 +1250,19 @@ var (
 
 // addPR adds u to conv's PRs once, if it's a PR address.
 func addPR(conv *Conversation, u string) {
-	if PrURL.MatchString(u) && !slices.Contains(conv.PRs, u) {
+	if PRURL.MatchString(u) && !slices.Contains(conv.PRs, u) {
 		conv.PRs = append(slices.Clone(conv.PRs), u)
 	}
 }
 
-// GhPRCall: a Bash command whose output names the PRs it opened or merged.
-func GhPRCall(cmd string) bool {
+// GHPRCall: a Bash command whose output names the PRs it opened or merged.
+func GHPRCall(cmd string) bool {
 	return strings.Contains(cmd, "gh pr create") || strings.Contains(cmd, "gh pr merge")
 }
 
-// GhOutputPRs is the PRs a ghPRCall printed: create prints the new PR's
+// GHOutputPRs is the PRs a ghPRCall printed: create prints the new PR's
 // address, merge "Merged pull request owner/repo#N".
-func GhOutputPRs(out string) []string {
+func GHOutputPRs(out string) []string {
 	urls := prInOutput.FindAllString(out, -1)
 	for _, m := range prMergedOut.FindAllStringSubmatch(out, -1) {
 		urls = append(urls, "https://github.com/"+m[1]+"/pull/"+m[2])
@@ -1483,8 +1483,8 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 			}
 		case rec.Type == "event_msg" && p.Type == "item_completed" && p.Item != nil:
 			if p.Item.Type == "CommandExecution" {
-				if cmd := codexCommand(p.Item.Command); GhPRCall(cmd) {
-					for _, u := range GhOutputPRs(p.Item.Output) {
+				if cmd := codexCommand(p.Item.Command); GHPRCall(cmd) {
+					for _, u := range GHOutputPRs(p.Item.Output) {
 						addPR(conv, u)
 					}
 				}
@@ -1635,7 +1635,7 @@ func CodexSandboxArgs(dirs ...string) []string {
 // Monitor. Subagents, async or teammates, are counted apart from their own
 // meta.json (subagentsOf), so they never show twice.
 type BgTask struct {
-	Id, Kind, Desc, Started string
+	ID, Kind, Desc, Started string
 	Status                  string    // "" while running; completed, failed or stopped from its notification
 	Expires                 time.Time // a monitor's own end, if it never reports one
 }
@@ -1656,12 +1656,12 @@ func noteCall(conv *Conversation, call toolCall, ts string) {
 	if desc == "" {
 		desc = in.Command
 	}
-	conv.calls = append(slices.Clone(conv.calls), BgTask{Id: call.ID, Kind: call.Name, Desc: strings.Join(strings.Fields(desc), " "), Started: ts})
+	conv.calls = append(slices.Clone(conv.calls), BgTask{ID: call.ID, Kind: call.Name, Desc: strings.Join(strings.Fields(desc), " "), Started: ts})
 }
 
 // noteResult makes a call a task when its result says it went to the background.
 func noteResult(conv *Conversation, id string, content json.RawMessage) {
-	i := slices.IndexFunc(conv.calls, func(t BgTask) bool { return t.Id == id })
+	i := slices.IndexFunc(conv.calls, func(t BgTask) bool { return t.ID == id })
 	if i < 0 {
 		return
 	}
@@ -1706,7 +1706,7 @@ func noteEnds(conv *Conversation, line []byte) {
 		return
 	}
 	for _, m := range taskEnd.FindAllSubmatch(line, -1) {
-		if i := slices.IndexFunc(conv.Tasks, func(t BgTask) bool { return t.Id == string(m[1]) }); i >= 0 && conv.Tasks[i].Status == "" {
+		if i := slices.IndexFunc(conv.Tasks, func(t BgTask) bool { return t.ID == string(m[1]) }); i >= 0 && conv.Tasks[i].Status == "" {
 			conv.Tasks = slices.Clone(conv.Tasks)
 			conv.Tasks[i].Status = string(m[2])
 		}

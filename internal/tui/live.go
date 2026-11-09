@@ -75,9 +75,9 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 		}
 		msg.hosts = map[string]string{}
 		for id, s := range scanned {
-			live[id], msg.pids[id] = true, s.Pid
+			live[id], msg.pids[id] = true, s.PID
 			msg.stats[id] = s.Stat
-			if h := sessions.HostOf(s.Pid, s.Start); h != "" {
+			if h := sessions.HostOf(s.PID, s.Start); h != "" {
 				msg.hosts[id] = h
 			}
 			if s.Unverified {

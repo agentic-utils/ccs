@@ -34,7 +34,7 @@ func TestMain(m *testing.M) {
 	Lsregister = "/bin/false"
 	FocusLinkTTY = func(string) error { return errors.New("tests focus nothing") }
 	ITermRunning = func() bool { return false }
-	UrlHandlerApp = func() string { return "" }
+	URLHandlerApp = func() string { return "" }
 	OpenLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
 	RetypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
 	CheckLaunchShell = func() error { return nil }
@@ -47,7 +47,7 @@ func TestMain(m *testing.M) {
 	transcript.CodexProcCwd = func(int) string { return "" }
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil }
-	proc.TtyOf = func(int) string { return "" }
+	proc.TTYOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	code := m.Run()
 	os.RemoveAll(dir)

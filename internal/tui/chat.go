@@ -502,9 +502,9 @@ func (m *model) checkDelivered(id string) {
 
 // applyReceipt updates the status line from a session's delivery receipt.
 func (m *model) applyReceipt(r sessions.ReceiptMsg) {
-	name := r.Id
+	name := r.ID
 	for _, item := range m.items {
-		if item.conv.SessionID == r.Id {
+		if item.conv.SessionID == r.ID {
 			name = m.sessionName(item.conv)
 		}
 	}
@@ -514,12 +514,12 @@ func (m *model) applyReceipt(r sessions.ReceiptMsg) {
 	if m.held == nil {
 		m.held = make(map[string]bool)
 	}
-	delete(m.sentAt, r.Id) // a receipt beats the guess
+	delete(m.sentAt, r.ID) // a receipt beats the guess
 	switch r.Status {
 	case "held":
-		m.held[r.Id] = true
+		m.held[r.ID] = true
 	case "delivered":
-		delete(m.held, r.Id) // approved; the transcript shows it next
+		delete(m.held, r.ID) // approved; the transcript shows it next
 	default:
 		why := map[string]string{
 			"denied":  "declined in that session",
@@ -533,9 +533,9 @@ func (m *model) applyReceipt(r sessions.ReceiptMsg) {
 		if r.Status == "dropped" && r.Reason != "" {
 			why += " (" + r.Reason + ")"
 		}
-		delete(m.held, r.Id)
-		delete(m.pending, r.Id)
-		m.sendNote[r.Id] = "✗ " + name + " didn't take it: " + why
+		delete(m.held, r.ID)
+		delete(m.pending, r.ID)
+		m.sendNote[r.ID] = "✗ " + name + " didn't take it: " + why
 	}
 }
 

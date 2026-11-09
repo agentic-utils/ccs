@@ -94,7 +94,7 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, map[string]any{"code": -32602, "message": "invalid params"}
 		}
-		text, err := McpCall(p.Name, p.Arguments, load)
+		text, err := Call(p.Name, p.Arguments, load)
 		if err != nil {
 			return map[string]any{"content": []any{map[string]any{"type": "text", "text": err.Error()}}, "isError": true}, nil
 		}
@@ -196,10 +196,10 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("launched %s: pid %d, %s", a.Name, l.Pid, l.Tty), nil
+	return fmt.Sprintf("launched %s: pid %d, %s", a.Name, l.PID, l.TTY), nil
 }
 
-func McpCall(name string, raw json.RawMessage, load mcpSource) (string, error) {
+func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	if name == "launch_session" || name == "close_session" {
 		return mcpSessionCall(name, raw)
 	}
@@ -265,8 +265,8 @@ func clampInt(v, def, hi int) int {
 	return min(v, hi)
 }
 
-// McpHeader is one session's summary line for search and list results.
-func McpHeader(c transcript.Conversation) string {
+// Header is one session's summary line for search and list results.
+func Header(c transcript.Conversation) string {
 	kind, resume := "claude", "claude --resume "
 	if c.Kind == transcript.KindCodex {
 		kind, resume = transcript.KindCodex, "codex resume "
@@ -326,7 +326,7 @@ func mcpSearch(convs []transcript.Conversation, query string, n int) (string, er
 	}
 	b.WriteString("\n")
 	for i, h := range found[:min(n, len(found))] {
-		fmt.Fprintf(&b, "\n%d. %s\n  %d matching messages", i+1, McpHeader(h.c), h.hits)
+		fmt.Fprintf(&b, "\n%d. %s\n  %d matching messages", i+1, Header(h.c), h.hits)
 		if h.snippet != "" {
 			fmt.Fprintf(&b, ", e.g.: %s", h.snippet)
 		}
@@ -344,7 +344,7 @@ func mcpList(convs []transcript.Conversation, n int) string {
 	}
 	b.WriteString("\n")
 	for i, c := range convs[:min(n, len(convs))] {
-		fmt.Fprintf(&b, "\n%d. %s\n", i+1, McpHeader(c))
+		fmt.Fprintf(&b, "\n%d. %s\n", i+1, Header(c))
 	}
 	return b.String()
 }
@@ -397,7 +397,7 @@ func mcpRead(convs []transcript.Conversation, id, query string, offset, limit in
 	page := idx[offset:min(offset+limit, len(idx))]
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", McpHeader(c))
+	fmt.Fprintf(&b, "%s\n", Header(c))
 	fmt.Fprintf(&b, "messages %d-%d of %d", offset+1, offset+len(page), len(idx))
 	if query != "" {
 		fmt.Fprintf(&b, " matching %q (with context)", query)

@@ -337,7 +337,7 @@ func Main(v string) {
 		}
 	}
 	m.usageExclude = excludeDirs
-	m.fetchPRs = github.GhFetchPRs()
+	m.fetchPRs = github.FetchPRs()
 	m.reload = func() ([]listItem, error) {
 		convs, err := transcript.GetConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {

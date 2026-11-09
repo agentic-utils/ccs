@@ -201,7 +201,7 @@ type model struct {
 	coordSince time.Time        // when the offer last came on screen: keys wait for its grace
 	coordID    string           // the coordinator session, listed in its own section
 	// Each session's PRs (prs.go): what GitHub said, by address.
-	prs        map[string]github.PrInfo
+	prs        map[string]github.PRInfo
 	prNext     time.Time       // when the next round is due
 	prQueue    [][]string      // the round's requests not sent yet
 	prRound    int             // the round's requests in flight
@@ -211,7 +211,7 @@ type model struct {
 
 	revealed map[string]bool // headless sessions shown anyway: opened by selectSession
 	prErr    string
-	fetchPRs func([]string) (map[string]github.PrInfo, error) // nil: never look PRs up
+	fetchPRs func([]string) (map[string]github.PRInfo, error) // nil: never look PRs up
 	// Ctrl+O: the links in the visible part of the preview, to open by key.
 	linksOpen   bool
 	links       []linkItem
@@ -406,7 +406,7 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		opened:      make(map[string]time.Time),
 		kicked:      make(map[string]bool),
 		hits:        &hitCounter{byID: make(map[string]int)},
-		prs:         make(map[string]github.PrInfo),
+		prs:         make(map[string]github.PRInfo),
 		prSelAsked:  make(map[string]bool),
 	}
 	if !ok {
@@ -905,7 +905,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.errorMsg = "Couldn't start " + msg.name + ": " + msg.err.Error()
 		} else {
-			m.note(fmt.Sprintf("Started %s (pid %d, %s)", msg.name, msg.l.Pid, msg.l.Tty))
+			m.note(fmt.Sprintf("Started %s (pid %d, %s)", msg.name, msg.l.PID, msg.l.TTY))
 		}
 		return m, nil
 

@@ -65,8 +65,8 @@ func RunCommandIn(dir string, timeout time.Duration, env []string, detach bool, 
 	return out, err
 }
 
-// PidAlive probes pid with signal 0; EPERM still means the process exists.
-func PidAlive(pid int) bool {
+// PIDAlive probes pid with signal 0; EPERM still means the process exists.
+func PIDAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
 }
@@ -116,8 +116,8 @@ var PsAll = func() (string, error) {
 	return string(out), err
 }
 
-// TtyOf is pid's terminal, "" when it has none. Stubbed in tests.
-var TtyOf = func(pid int) string {
+// TTYOf is pid's terminal, "" when it has none. Stubbed in tests.
+var TTYOf = func(pid int) string {
 	out, err := RunBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
 	tty := strings.TrimSpace(string(out))
 	if err != nil || tty == "" || tty == "??" {

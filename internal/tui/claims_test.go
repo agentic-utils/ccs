@@ -21,7 +21,7 @@ func TestPRsCLIAndMCP(t *testing.T) {
 	if code := github.RunPRs([]string{"--json", "--owner", "o"}, &out, &errs); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
-	var rep github.PrsReport
+	var rep github.PRsReport
 	if err := json.Unmarshal([]byte(out.String()), &rep); err != nil || len(rep.PRs) != 1 || !rep.PRs[0].Unowned {
 		t.Errorf("--json: %v %s", err, out.String())
 	}
@@ -36,11 +36,11 @@ func TestPRsCLIAndMCP(t *testing.T) {
 	if code := github.RunClaim(nil, &out, &errs); code != 2 {
 		t.Errorf("no URL: exit %d", code)
 	}
-	if res, err := mcp.McpCall("list_prs", nil, nil); err != nil || !strings.Contains(fmt.Sprint(res), claimA) {
+	if res, err := mcp.Call("list_prs", nil, nil); err != nil || !strings.Contains(fmt.Sprint(res), claimA) {
 		t.Errorf("list_prs defaults to the running watcher's author and owner: %v %v", res, err)
 	}
-	os.Remove(github.PrWatchStatePath())
-	if _, err := mcp.McpCall("list_prs", nil, nil); err == nil {
+	os.Remove(github.PRWatchStatePath())
+	if _, err := mcp.Call("list_prs", nil, nil); err == nil {
 		t.Error("no watcher state and no gh user: list_prs should fail")
 	}
 	out.Reset()
@@ -59,14 +59,14 @@ const (
 
 // claimEnv points the claims and watcher state at a temp folder and stubs
 // the process tree: the test's parent pid runs under session "alpha".
-func claimEnv(t *testing.T) (live map[int]github.PrClaim) {
+func claimEnv(t *testing.T) (live map[int]github.PRClaim) {
 	t.Helper()
 	oldSettings, oldLive, oldParent, oldFetch, oldEnd := state.SettingsPath, github.LiveByPID, github.ParentPID, github.FetchOpenPRs, github.EndState
 	state.SettingsPath = t.TempDir() + "/settings.json"
-	live = map[int]github.PrClaim{
+	live = map[int]github.PRClaim{
 		os.Getppid(): {Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"},
 	}
-	github.LiveByPID = func() map[int]github.PrClaim { return live }
+	github.LiveByPID = func() map[int]github.PRClaim { return live }
 	github.ParentPID = func(int) int { return 0 }
 	github.FetchOpenPRs = func(string, string) (map[string]*github.WatchedPR, error) {
 		return nil, errors.New("no network in tests")
@@ -81,7 +81,7 @@ func claimEnv(t *testing.T) (live map[int]github.PrClaim) {
 // writeWatchState saves a watcher state for o's PRs by the author me.
 func writeWatchState(t *testing.T, updated time.Time, prs ...*github.WatchedPR) {
 	t.Helper()
-	st := github.PrWatchState{Author: "me", Owner: "o", Started: updated, Updated: updated, PRs: map[string]*github.WatchedPR{}}
+	st := github.PRWatchState{Author: "me", Owner: "o", Started: updated, Updated: updated, PRs: map[string]*github.WatchedPR{}}
 	for _, p := range prs {
 		st.PRs[p.URL] = p
 	}

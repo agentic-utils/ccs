@@ -1076,7 +1076,7 @@ func TestPRsFromGhOutput(t *testing.T) {
 	if !slices.Equal(c.PRs, []string{prA, prB, prC}) {
 		t.Errorf("PRs gh pr create and merge printed, not ones other output mentions: %v", c.PRs)
 	}
-	if len(c.GhCalls) != 0 {
-		t.Errorf("answered calls are dropped: %v", c.GhCalls)
+	if len(c.GHCalls) != 0 {
+		t.Errorf("answered calls are dropped: %v", c.GHCalls)
 	}
 }

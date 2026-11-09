@@ -141,10 +141,10 @@ func TestParseSessionLink(t *testing.T) {
 func stubLink(t *testing.T, pids []int, tty string) (focused *[]string) {
 	t.Helper()
 	focused = &[]string{}
-	oldNamed, oldTTY, oldFocus := namedSessions, proc.TtyOf, FocusLinkTTY
-	t.Cleanup(func() { namedSessions, proc.TtyOf, FocusLinkTTY = oldNamed, oldTTY, oldFocus })
+	oldNamed, oldTTY, oldFocus := namedSessions, proc.TTYOf, FocusLinkTTY
+	t.Cleanup(func() { namedSessions, proc.TTYOf, FocusLinkTTY = oldNamed, oldTTY, oldFocus })
 	namedSessions = func(string) ([]int, error) { return pids, nil }
-	proc.TtyOf = func(int) string { return tty }
+	proc.TTYOf = func(int) string { return tty }
 	FocusLinkTTY = func(tty string) error { *focused = append(*focused, tty); return nil }
 	return focused
 }
@@ -494,7 +494,7 @@ func TestLaunchWaitsForTheSession(t *testing.T) {
 	}
 	cwd := t.TempDir()
 	l, err := LaunchSession(LaunchOpts{Name: "worker", Brief: "fix the `thing` $NOW", Cwd: cwd})
-	if err != nil || l.Pid != os.Getpid() || l.Tty != "/dev/ttys042" {
+	if err != nil || l.PID != os.Getpid() || l.TTY != "/dev/ttys042" {
 		t.Fatalf("launched: %+v, %v", l, err)
 	}
 	if script != filepath.Join(state.LaunchDir(), "worker", "launch.sh") {
@@ -536,7 +536,7 @@ func TestLaunchTypesTheLauncherAgainWhenTheShellLostIt(t *testing.T) {
 		write("1.json", os.Getpid(), "late") // this time it starts
 		return nil
 	}
-	if l, err := LaunchSession(LaunchOpts{Name: "late", Brief: "x", Cwd: t.TempDir()}); err != nil || l.Pid != os.Getpid() || typed != 1 {
+	if l, err := LaunchSession(LaunchOpts{Name: "late", Brief: "x", Cwd: t.TempDir()}); err != nil || l.PID != os.Getpid() || typed != 1 {
 		t.Errorf("typed again once and started: %+v %v, typed %d", l, err, typed)
 	}
 
@@ -579,7 +579,7 @@ func TestCodexSessionsFoundByTheirLaunchFolder(t *testing.T) {
 			"  102 ttys002 /bin/codex --add-dir " + d + "-other x\n" + // another name's folder
 			"  103 ttys003 vim " + d + "/brief.md\n", nil
 	}
-	if pids, _ := SessionsNamed("cx"); len(pids) != 1 || pids[0] != 101 {
+	if pids, _ := Named("cx"); len(pids) != 1 || pids[0] != 101 {
 		t.Errorf("only codex with that launch folder: %v", pids)
 	}
 }
@@ -594,16 +594,16 @@ func TestCloseStopsThenClosesTheTab(t *testing.T) {
 	go func() { child.Wait(); close(exited) }()
 	pid := child.Process.Pid
 	write("a.json", pid, "worker")
-	oldTTY, oldSig, oldTab, oldWait := proc.TtyOf, proc.SignalPID, CloseTab, CloseWait
+	oldTTY, oldSig, oldTab, oldWait := proc.TTYOf, proc.SignalPID, CloseTab, CloseWait
 	t.Cleanup(func() {
-		proc.TtyOf, proc.SignalPID, CloseTab, CloseWait = oldTTY, oldSig, oldTab, oldWait
+		proc.TTYOf, proc.SignalPID, CloseTab, CloseWait = oldTTY, oldSig, oldTab, oldWait
 		child.Process.Kill()
 	})
-	proc.TtyOf = func(int) string { return "/dev/ttys044" }
+	proc.TTYOf = func(int) string { return "/dev/ttys044" }
 	CloseWait = 2 * time.Second
 	var closed []string
 	CloseTab = func(tty string) bool {
-		if proc.PidAlive(pid) {
+		if proc.PIDAlive(pid) {
 			select {
 			case <-exited:
 			default:
@@ -638,14 +638,14 @@ func TestCloseRefusals(t *testing.T) {
 		t.Errorf("two sessions with one name are left alone: %v", err)
 	}
 	write("c.json", os.Getpid(), "stuck")
-	oldTTY, oldSig, oldTab, oldWait := proc.TtyOf, proc.SignalPID, CloseTab, CloseWait
+	oldTTY, oldSig, oldTab, oldWait := proc.TTYOf, proc.SignalPID, CloseTab, CloseWait
 	t.Cleanup(func() {
-		proc.TtyOf, proc.SignalPID, CloseTab, CloseWait = oldTTY, oldSig, oldTab, oldWait
+		proc.TTYOf, proc.SignalPID, CloseTab, CloseWait = oldTTY, oldSig, oldTab, oldWait
 	})
 	if _, err := CloseSession("stuck", os.Getpid()); err == nil || !strings.Contains(err.Error(), "no terminal") {
 		t.Errorf("no tty (an app or claude --bg): %v", err)
 	}
-	proc.TtyOf = func(int) string { return "/dev/ttys045" }
+	proc.TTYOf = func(int) string { return "/dev/ttys045" }
 	proc.SignalPID = func(int, syscall.Signal) error { return nil } // ignores it
 	CloseWait = 200 * time.Millisecond
 	tabClosed := false
@@ -843,15 +843,15 @@ func TestLinkUninstall(t *testing.T) {
 
 func TestLinkInstallReportsAnotherHandler(t *testing.T) {
 	_, app := fakeAppTools(t)
-	oldHandler, oldSleep := UrlHandlerApp, Sleep
-	t.Cleanup(func() { UrlHandlerApp, Sleep = oldHandler, oldSleep })
+	oldHandler, oldSleep := URLHandlerApp, Sleep
+	t.Cleanup(func() { URLHandlerApp, Sleep = oldHandler, oldSleep })
 	Sleep = func(time.Duration) {}
-	UrlHandlerApp = func() string { return "/Applications/Other.app" }
+	URLHandlerApp = func() string { return "/Applications/Other.app" }
 	var out, errs bytes.Buffer
 	if got := LinkInstall(&out, &errs); got != 1 || !strings.Contains(errs.String(), "Other.app") {
 		t.Fatalf("exit %d, %q", got, errs.String())
 	}
-	UrlHandlerApp = func() string { return app }
+	URLHandlerApp = func() string { return app }
 	if got := LinkInstall(&out, &errs); got != 0 || !strings.Contains(out.String(), "now open with") {
 		t.Fatalf("exit %d, %q", got, out.String())
 	}
@@ -859,7 +859,7 @@ func TestLinkInstallReportsAnotherHandler(t *testing.T) {
 	if got := LinkStatus(&out); got != 0 || !strings.Contains(out.String(), "which runs") {
 		t.Fatalf("exit %d, %q", got, out.String())
 	}
-	UrlHandlerApp = func() string { return "" }
+	URLHandlerApp = func() string { return "" }
 	if got := LinkStatus(&out); got != 1 {
 		t.Fatalf("exit %d with no handler", got)
 	}

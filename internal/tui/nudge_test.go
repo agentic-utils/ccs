@@ -27,10 +27,10 @@ func TestNudgeEnvelopeIsNotTheUser(t *testing.T) {
 	sum := sha256.Sum256([]byte(sock))
 	os.WriteFile(filepath.Join(sessDir, fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))), []byte(`{"peerToken":"tok"}`), 0o600)
 
-	if err := github.SendNudge(github.PrClaim{Session: "s-other", PID: pid}, "x"); err == nil {
+	if err := github.SendNudge(github.PRClaim{Session: "s-other", PID: pid}, "x"); err == nil {
 		t.Error("a pid now running another session is refused")
 	}
-	if err := github.SendNudge(github.PrClaim{Session: "s-me", PID: pid}, "checks failing"); err != nil {
+	if err := github.SendNudge(github.PRClaim{Session: "s-me", PID: pid}, "checks failing"); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(<-got), "\n")

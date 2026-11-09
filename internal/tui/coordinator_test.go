@@ -116,7 +116,7 @@ func TestCoordinatorSetupFromCleanState(t *testing.T) {
 	if err != nil || !strings.Contains(string(role), "never do the work yourself") {
 		t.Errorf("role: %v %s", err, role)
 	}
-	if strings.Contains(string(role), "{{events}}") || !strings.Contains(string(role), github.PrEventsPath()) {
+	if strings.Contains(string(role), "{{events}}") || !strings.Contains(string(role), github.PREventsPath()) {
 		t.Errorf("the events path isn't filled in:\n%s", role)
 	}
 	var cfg struct {
@@ -456,7 +456,7 @@ func TestCoordinatorListFollowsClear(t *testing.T) {
 	coordinatorRecord{SessionID: "before-clear", Offered: true}.save()
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "before-clear", Title: "coordinator"}, {SessionID: "after-clear", Title: "coordinator"}}), "", nil)
 	m.coordID = "before-clear"
-	res, _ := m.Update(liveMsg{pids: map[string]int{"after-clear": 7}, scan: map[string]sessions.LiveSession{"after-clear": {Pid: 7, Stat: sessions.SessionStat{Name: "coordinator"}}}})
+	res, _ := m.Update(liveMsg{pids: map[string]int{"after-clear": 7}, scan: map[string]sessions.LiveSession{"after-clear": {PID: 7, Stat: sessions.SessionStat{Name: "coordinator"}}}})
 	m = res.(model)
 	if m.coordID != "after-clear" {
 		t.Errorf("the list follows the session: %s", m.coordID)
@@ -466,7 +466,7 @@ func TestCoordinatorListFollowsClear(t *testing.T) {
 	}
 	// Two with its name: never guess, and a closed coordinator stays recorded.
 	coordinatorRecord{SessionID: "before-clear"}.save()
-	two := map[string]sessions.LiveSession{"x": {Pid: 7, Stat: sessions.SessionStat{Name: "coordinator"}}, "y": {Pid: 8, Stat: sessions.SessionStat{Name: "coordinator"}}}
+	two := map[string]sessions.LiveSession{"x": {PID: 7, Stat: sessions.SessionStat{Name: "coordinator"}}, "y": {PID: 8, Stat: sessions.SessionStat{Name: "coordinator"}}}
 	rec := loadCoordinator()
 	if followLive(&rec, two) || followLive(&rec, map[string]sessions.LiveSession{}) || rec.SessionID != "before-clear" {
 		t.Errorf("%+v", rec)
@@ -646,7 +646,7 @@ func TestCoordinatorRelease(t *testing.T) {
 		}
 		m := initialModel(buildItems([]transcript.Conversation{{SessionID: "the-id", Title: "coordinator"}}), "", nil)
 		m.coordID = "the-id"
-		res, _ := m.Update(liveMsg{pids: map[string]int{"the-id": 7}, scan: map[string]sessions.LiveSession{"the-id": {Pid: 7, Stat: sessions.SessionStat{Name: "coordinator"}}}})
+		res, _ := m.Update(liveMsg{pids: map[string]int{"the-id": 7}, scan: map[string]sessions.LiveSession{"the-id": {PID: 7, Stat: sessions.SessionStat{Name: "coordinator"}}}})
 		if m = res.(model); m.coordID != "" || sectionOf(m.filtered[0].familyState) == coordinatorSec {
 			t.Errorf("still on top: %q", m.coordID)
 		}

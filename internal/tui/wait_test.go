@@ -763,7 +763,7 @@ func TestWaitUncheckedPidGetsTheBannerWithANote(t *testing.T) {
 		t.Error("a matching procStart is verified")
 	}
 	sessionFileFor(t, body("Fri Sep 25 09:00:00 2026"))
-	if s := sessions.ScanSessions(nil); s["live"].Pid != 0 {
+	if s := sessions.ScanSessions(nil); s["live"].PID != 0 {
 		t.Error("a start time that doesn't match is a recycled pid: not live at all")
 	}
 }

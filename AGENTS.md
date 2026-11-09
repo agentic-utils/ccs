@@ -207,7 +207,9 @@ The table (^X T):
 
 ### Demo
 
-`demo.gif` in the README is recorded by `demo/record.py`: it writes made-up conversations into a throwaway HOME (never real transcripts), builds ccs at the latest tag, drives it with scripted keys in a 140x40 pty and saves `demo/demo.cast`. Render with `agg --theme monokai --font-size 14 --idle-time-limit 3 demo/demo.cast demo.gif`. Re-record after visible UI changes; edit `KEYS` to change what it shows.
+`demo.gif` in the README is recorded by `demo/record.py`: it writes made-up conversations into a throwaway HOME (never real transcripts), starts an idle process with a session file for each live one (coordinator, waiting, idle, busy), answers PR lookups with `demo/fake_gh.py`, builds ccs at the latest release tag, drives it with scripted keys in a 140x40 pty and saves `demo/demo.cast`. Render with `agg --theme monokai --font-size 14 --idle-time-limit 3 demo/demo.cast demo.gif`; edit `KEYS` to change what it shows, and keep the GIF around 1 to 2 MB.
+
+A PR that substantially changes what the list looks like (a new pane, popup, section, layout or view, or a key shown in the demo) re-records the GIF in the same PR (`python3 demo/record.py`, then agg, run locally by whoever makes the change, since CI doesn't record), checks every frame for real names or paths, and updates the README's alt text and feature list to match. Colour, wording and fixes that don't change the layout don't count.
 
 ## Design docs
 

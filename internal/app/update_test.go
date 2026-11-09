@@ -2,26 +2,20 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -29,6 +23,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 
@@ -36,33 +31,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func TestNewerVersion(t *testing.T) {
-	cases := []struct {
-		tag, cur string
-		want     bool
-	}{
-		{"v0.25.0", "0.24.1", true},
-		{"v0.24.2", "0.24.1", true},
-		{"v1.0.0", "0.99.99", true},
-		{"v0.24.1", "0.24.1", false},
-		{"v0.9.0", "0.24.1", false}, // numeric, not lexical
-		{"v0.25.0", "dev", false},
-		{"garbage", "0.24.1", false},
-	}
-	for _, c := range cases {
-		if got := newerVersion(c.tag, c.cur); got != c.want {
-			t.Errorf("newerVersion(%q, %q) = %v, want %v", c.tag, c.cur, got, c.want)
-		}
-	}
-}
-
 func TestUpdatePopupFlow(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.24.1"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.24.1"
 	upgraded := false
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
-	m.upgrade = &upgrader{install: func(_ string, step func(string)) (string, error) {
+	m.upgrade = &selfupdate.Upgrader{InstallFunc: func(_ string, step func(string)) (string, error) {
 		step("brew upgrade")
 		upgraded = true
 		return "/bin/ccs", nil
@@ -95,10 +70,10 @@ func TestUpdatePopupFlow(t *testing.T) {
 }
 
 func TestUpdatePopupLaterAndFailure(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.24.1"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.24.1"
 	m := initialModel(nil, "", nil)
-	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", fmt.Errorf("network down") }}
+	m.upgrade = &selfupdate.Upgrader{InstallFunc: func(string, func(string)) (string, error) { return "", fmt.Errorf("network down") }}
 
 	res, _ := m.Update(latestMsg{tag: "v0.25.0"})
 	m = res.(model)
@@ -130,8 +105,8 @@ func TestUpdatePopupLaterAndFailure(t *testing.T) {
 }
 
 func TestUpdatePopupWithoutBrew(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.24.1"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.24.1"
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 100, 30
 	res, _ := m.Update(latestMsg{tag: "v0.25.0"})
@@ -141,24 +116,13 @@ func TestUpdatePopupWithoutBrew(t *testing.T) {
 	}
 }
 
-func TestReleaseTagFromURL(t *testing.T) {
-	if tag, err := releaseTagFromURL("https://github.com/agentic-utils/ccs/releases/tag/v0.24.1"); err != nil || tag != "v0.24.1" {
-		t.Errorf("got %q, %v", tag, err)
-	}
-	for _, bad := range []string{"", "https://github.com/agentic-utils/ccs/releases"} {
-		if _, err := releaseTagFromURL(bad); err == nil {
-			t.Errorf("%q should be rejected", bad)
-		}
-	}
-}
-
 func TestReplaceBinary(t *testing.T) {
 	exe := filepath.Join(t.TempDir(), "ccs")
 	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	fakeRelease(t, "v9.9.9", []byte("new binary"), false)
-	if _, err := chooseUpgrader(exe).Install("v9.9.9", func(string) {}); err != nil {
+	if _, err := selfupdate.ChooseUpgrader(exe).Install("v9.9.9", func(string) {}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(exe)
@@ -177,7 +141,7 @@ func TestReplaceBinaryRejectsBadChecksum(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeRelease(t, "v9.9.9", []byte("evil"), true)
-	if _, err := chooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "checksum") {
+	if _, err := selfupdate.ChooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "checksum") {
 		t.Fatalf("want checksum error, got %v", err)
 	}
 	if got, _ := os.ReadFile(exe); string(got) != "old" {
@@ -187,7 +151,7 @@ func TestReplaceBinaryRejectsBadChecksum(t *testing.T) {
 
 func TestSignedSums(t *testing.T) {
 	fakeRelease(t, "v9.9.9", []byte("bin"), false)
-	if _, err := signedSums("v9.9.9"); err != nil {
+	if _, err := selfupdate.SignedSums("v9.9.9"); err != nil {
 		t.Fatalf("a release CI signed should pass: %v", err)
 	}
 
@@ -195,8 +159,8 @@ func TestSignedSums(t *testing.T) {
 	sums := []byte("abc  ccs_x.tar.gz\n")
 	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
 	cases := map[string][]byte{
-		"other tag": ed25519.Sign(testReleaseKey, signedMessage("v1.0.0", sums)),
-		"other key": ed25519.Sign(other, signedMessage("v2.0.0", sums)),
+		"other tag": ed25519.Sign(testReleaseKey, selfupdate.SignedMessage("v1.0.0", sums)),
+		"other key": ed25519.Sign(other, selfupdate.SignedMessage("v2.0.0", sums)),
 		"junk":      []byte("not a signature"),
 	}
 	for name, sig := range cases {
@@ -207,14 +171,14 @@ func TestSignedSums(t *testing.T) {
 			}
 			w.Write(sums)
 		}))
-		releaseDownloadURL = srv.URL
-		if _, err := signedSums("v2.0.0"); err == nil || !strings.Contains(err.Error(), "isn't signed by ccs's CI") {
+		selfupdate.ReleaseDownloadURL = srv.URL
+		if _, err := selfupdate.SignedSums("v2.0.0"); err == nil || !strings.Contains(err.Error(), "isn't signed by ccs's CI") {
 			t.Errorf("%s: want a signature error, got %v", name, err)
 		}
 		srv.Close()
 	}
-	releaseDownloadURL = "http://127.0.0.1:1"
-	if _, err := signedSums("v2.0.0"); err == nil {
+	selfupdate.ReleaseDownloadURL = "http://127.0.0.1:1"
+	if _, err := selfupdate.SignedSums("v2.0.0"); err == nil {
 		t.Error("no signature to download must fail")
 	}
 }
@@ -225,9 +189,9 @@ func TestReplaceBinaryRejectsUnsignedRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeRelease(t, "v9.9.9", []byte("evil"), false)
-	defer func(k ed25519.PublicKey) { releaseKey = k }(releaseKey)
-	releaseKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
-	if _, err := chooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "isn't signed") {
+	defer func(k ed25519.PublicKey) { selfupdate.ReleaseKey = k }(selfupdate.ReleaseKey)
+	selfupdate.ReleaseKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	if _, err := selfupdate.ChooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "isn't signed") {
 		t.Fatalf("want a signature error, got %v", err)
 	}
 	if got, _ := os.ReadFile(exe); string(got) != "old" {
@@ -254,7 +218,7 @@ func TestSignReleaseScript(t *testing.T) {
 	}
 	body, _ := os.ReadFile(sums)
 	sig, _ := os.ReadFile(sums + ".sig")
-	if !ed25519.Verify(testReleaseKey.Public().(ed25519.PublicKey), signedMessage("v3.2.1", body), sig) {
+	if !ed25519.Verify(testReleaseKey.Public().(ed25519.PublicKey), selfupdate.SignedMessage("v3.2.1", body), sig) {
 		t.Error("ccs must accept what sign-release.sh signs")
 	}
 
@@ -267,15 +231,15 @@ func TestSignReleaseScript(t *testing.T) {
 
 // TestCheckFormula: brew installs only a formula whose archive CI signed.
 func TestCheckFormula(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "1.0.0"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "1.0.0"
 	fakeRelease(t, "v9.9.9", []byte("bin"), false)
-	sums, err := signedSums("v9.9.9")
+	sums, err := selfupdate.SignedSums("v9.9.9")
 	if err != nil {
 		t.Fatal(err)
 	}
 	asset := fmt.Sprintf("ccs_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
-	good := checksumFor(string(sums), asset)
+	good := selfupdate.ChecksumFor(string(sums), asset)
 	brew := filepath.Join(t.TempDir(), "brew")
 	formula := func(url, sum string) {
 		info := fmt.Sprintf(`{"formulae":[{"urls":{"stable":{"url":%q,"checksum":%q}}}]}`, url, sum)
@@ -284,14 +248,14 @@ func TestCheckFormula(t *testing.T) {
 	cases := []struct {
 		name, url, sum, want string
 	}{
-		{"signed", releaseDownloadURL + "/v9.9.9/" + asset, good, ""},
-		{"other checksum", releaseDownloadURL + "/v9.9.9/" + asset, strings.Repeat("0", 64), "isn't the one"},
-		{"not newer", releaseDownloadURL + "/v0.9.0/" + asset, good, "not newer"},
+		{"signed", selfupdate.ReleaseDownloadURL + "/v9.9.9/" + asset, good, ""},
+		{"other checksum", selfupdate.ReleaseDownloadURL + "/v9.9.9/" + asset, strings.Repeat("0", 64), "isn't the one"},
+		{"not newer", selfupdate.ReleaseDownloadURL + "/v0.9.0/" + asset, good, "not newer"},
 		{"elsewhere", "https://example.com/v9.9.9/" + asset, good, "not a ccs release"},
 	}
 	for _, c := range cases {
 		formula(c.url, c.sum)
-		err := checkFormula(brew)
+		err := selfupdate.CheckFormula(brew)
 		if (c.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), c.want)) {
 			t.Errorf("%s: want %q, got %v", c.name, c.want, err)
 		}
@@ -310,44 +274,8 @@ func TestReplaceBinaryUnwritableDir(t *testing.T) {
 	os.Chmod(dir, 0o555)
 	defer os.Chmod(dir, 0o755)
 	fakeRelease(t, "v9.9.9", []byte("new"), false)
-	if _, err := chooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "can't write") {
+	if _, err := selfupdate.ChooseUpgrader(exe).Install("v9.9.9", func(string) {}); err == nil || !strings.Contains(err.Error(), "can't write") {
 		t.Fatalf("want a clear permission error, got %v", err)
-	}
-}
-
-func TestChooseUpgrader(t *testing.T) {
-	if chooseUpgrader("/nix/store/abc-ccs/bin/ccs") != nil {
-		t.Error("nix store is read-only: notify only")
-	}
-	if chooseUpgrader(filepath.Join(t.TempDir(), "ccs")) == nil {
-		t.Error("a plain install should self-update")
-	}
-	// A Homebrew keg is never replaced in place: it gets brew or nothing.
-	up := chooseUpgrader("/opt/homebrew/Cellar/ccs/0.25.0/bin/ccs")
-	if _, err := exec.LookPath("brew"); err != nil && up != nil {
-		t.Error("Cellar install without brew on PATH must not self-replace")
-	}
-}
-
-func TestUpgraderInstallWaitsForPrepare(t *testing.T) {
-	release := make(chan struct{})
-	var order []string
-	var mu sync.Mutex
-	log := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
-	u := &upgrader{
-		prepare: func(string) error { <-release; log("prepared"); return nil },
-		install: func(string, func(string)) (string, error) { log("installed"); return "", nil },
-	}
-	u.Prepare("v1")
-	u.Prepare("v1") // second call is a no-op
-	var steps []string
-	done := make(chan struct{})
-	go func() { u.Install("v1", func(s string) { steps = append(steps, s) }); close(done) }()
-	time.Sleep(50 * time.Millisecond)
-	close(release)
-	<-done
-	if strings.Join(order, ",") != "prepared,installed" || len(steps) == 0 || steps[0] != "finishing download" {
-		t.Errorf("install must wait for prepare: order=%v steps=%v", order, steps)
 	}
 }
 
@@ -357,13 +285,13 @@ func TestPreparedReleaseSkipsDownloadOnInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeRelease(t, "v9.9.9", []byte("new binary"), false)
-	u := chooseUpgrader(exe)
+	u := selfupdate.ChooseUpgrader(exe)
 	u.Prepare("v9.9.9")
-	u.mu.Lock()
-	done := u.pending["v9.9.9"]
-	u.mu.Unlock()
+	u.Mu.Lock()
+	done := u.Pending["v9.9.9"]
+	u.Mu.Unlock()
 	<-done
-	releaseDownloadURL = "http://127.0.0.1:1" // any download after prepare would now fail
+	selfupdate.ReleaseDownloadURL = "http://127.0.0.1:1" // any download after prepare would now fail
 	var steps []string
 	if _, err := u.Install("v9.9.9", func(s string) { steps = append(steps, s) }); err != nil {
 		t.Fatalf("install should use the prepared download: %v (steps %v)", err, steps)
@@ -384,11 +312,11 @@ func TestUpdatingHeaderShowsStep(t *testing.T) {
 }
 
 func TestUpdatePopupWaitsBehindPrompts(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.27.1"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.27.1"
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s", Title: "old"}}}, "", nil)
 	m.width, m.height = 100, 30
-	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
+	m.upgrade = &selfupdate.Upgrader{InstallFunc: func(string, func(string)) (string, error) { return "", nil }}
 	m.renaming = true
 	m.renameInput = textinput.New()
 	m.renameInput.Focus()
@@ -448,7 +376,7 @@ func TestUpdateLogRecordsCommandsAndDownloads(t *testing.T) {
 		t.Fatal("want failure")
 	}
 	fakeRelease(t, "v9.9.9", []byte("bin"), false)
-	if _, err := download(releaseDownloadURL + "/v9.9.9/checksums.txt"); err != nil {
+	if _, err := selfupdate.Download(selfupdate.ReleaseDownloadURL + "/v9.9.9/checksums.txt"); err != nil {
 		t.Fatal(err)
 	}
 	state.LogUpdate("install v9.9.9: %v in %s", state.ErrOrOK(nil), time.Second)
@@ -468,111 +396,48 @@ func TestFailedUpdatePopupPointsAtLog(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 120, 30
 	m.updateTo, m.updateErr, m.updateOpen = "v9.9.9", "brew upgrade: curl: (35) Recv failure", true
-	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
+	m.upgrade = &selfupdate.Upgrader{InstallFunc: func(string, func(string)) (string, error) { return "", nil }}
 	if !strings.Contains(m.View(), state.UpdateLogPath) {
 		t.Error("a failed update should point at the update log")
 	}
 }
 
-func TestDownloadFallsBackPastStalledAddress(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "payload") }))
-	defer srv.Close()
-	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
-
-	// An address that accepts TCP but never answers the TLS handshake.
-	stall, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stall.Close()
-	go func() {
-		for {
-			c, err := stall.Accept()
-			if err != nil {
-				return
-			}
-			defer c.Close()
-		}
-	}()
-
-	oldResolve, oldDial, oldTLS, oldTimeout := resolveHost, dialAddr, downloadTLSConfig, addrAttemptTimeout
-	defer func() {
-		resolveHost, dialAddr, downloadTLSConfig, addrAttemptTimeout = oldResolve, oldDial, oldTLS, oldTimeout
-	}()
-	failedAddrs.Range(func(k, _ any) bool { failedAddrs.Delete(k); return true })
-	pool := x509.NewCertPool()
-	pool.AddCert(srv.Certificate())
-	downloadTLSConfig = &tls.Config{RootCAs: pool}
-	addrAttemptTimeout = 300 * time.Millisecond
-	resolveHost = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1", "192.0.2.2"}, nil }
-	var tried []string
-	dialAddr = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		tried = append(tried, addr)
-		if strings.HasPrefix(addr, "192.0.2.1:") {
-			return (&net.Dialer{}).DialContext(ctx, network, stall.Addr().String())
-		}
-		return (&net.Dialer{}).DialContext(ctx, network, "127.0.0.1:"+port)
-	}
-	downloadTransport.CloseIdleConnections()
-
-	start := time.Now()
-	body, err := download("https://example.com:" + port + "/x")
-	if err != nil || string(body) != "payload" {
-		t.Fatalf("download = %q, %v", body, err)
-	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("fallback took %v; the stalled address should cost ~one attempt limit", d)
-	}
-	if _, bad := failedAddrs.Load("192.0.2.1"); !bad {
-		t.Error("the stalled address should be remembered as failed")
-	}
-	// Next time the failed address goes last.
-	tried = nil
-	downloadTransport.CloseIdleConnections()
-	if _, err := download("https://example.com:" + port + "/x"); err != nil {
-		t.Fatal(err)
-	}
-	if len(tried) == 0 || !strings.HasPrefix(tried[0], "192.0.2.2:") {
-		t.Errorf("known-bad address should be tried last, got %v", tried)
-	}
-}
-
 func TestSeedFile(t *testing.T) {
 	fakeRelease(t, "v1.0.0", []byte("bin"), false)
-	url := releaseDownloadURL + "/v1.0.0/checksums.txt"
-	body, err := download(url)
+	url := selfupdate.ReleaseDownloadURL + "/v1.0.0/checksums.txt"
+	body, err := selfupdate.Download(url)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := sha256Hex(body)
+	want := selfupdate.Sha256Hex(body)
 	path := filepath.Join(t.TempDir(), "cached.tar.gz")
 
-	if err := seedFile(path, url, want); err != nil {
+	if err := selfupdate.SeedFile(path, url, want); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := os.ReadFile(path); sha256Hex(got) != want {
+	if got, _ := os.ReadFile(path); selfupdate.Sha256Hex(got) != want {
 		t.Fatal("seeded file has the wrong content")
 	}
 	// Already valid: no download (an unreachable URL proves it isn't fetched).
-	if err := seedFile(path, "http://127.0.0.1:1/unreachable", want); err != nil {
+	if err := selfupdate.SeedFile(path, "http://127.0.0.1:1/unreachable", want); err != nil {
 		t.Errorf("valid cache should be kept without downloading: %v", err)
 	}
 	// Checksum mismatch: error, and nothing replaces the cache file.
 	other := filepath.Join(t.TempDir(), "other.tar.gz")
-	if err := seedFile(other, url, strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+	if err := selfupdate.SeedFile(other, url, strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Errorf("want checksum mismatch, got %v", err)
 	}
-	if fileExists(other) {
+	if selfupdate.FileExists(other) {
 		t.Error("a mismatched download must not be written to the cache")
 	}
 }
 
 func TestUpdatePopupOverlaysEveryScreen(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.36.0"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.36.0"
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Title: "Some session", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}), "", nil)
 	m.width, m.height = 140, 40
-	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
+	m.upgrade = &selfupdate.Upgrader{InstallFunc: func(string, func(string)) (string, error) { return "", nil }}
 	m.usage = usageData{now: time.Now(), buckets: make([]usageBucketTotals, usageBuckets)}
 	res, _ := m.Update(latestMsg{tag: "v0.37.0"})
 	m = res.(model)
@@ -646,29 +511,10 @@ func TestUIStateSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestParseChangelog(t *testing.T) {
-	feed := `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">
-<entry><title>v0.44.0</title><content type="html">&lt;ul&gt;&lt;li&gt;feat: not yet offered&lt;/li&gt;&lt;/ul&gt;</content></entry>
-<entry><title>v0.43.1</title><content type="html">&lt;h2&gt;Changelog&lt;/h2&gt;&lt;ul&gt;
-&lt;li&gt;&lt;a href=&quot;x&quot;&gt;&lt;tt&gt;4cde904&lt;/tt&gt;&lt;/a&gt; Merge pull request &lt;a&gt;#66&lt;/a&gt; from x&lt;/li&gt;
-&lt;li&gt;&lt;a href=&quot;x&quot;&gt;&lt;tt&gt;7d1e6c2&lt;/tt&gt;&lt;/a&gt; fix: clearer &amp;quot;status&amp;quot; line&lt;/li&gt;&lt;/ul&gt;</content></entry>
-<entry><title>v0.43.0</title><content type="html">&lt;ul&gt;&lt;li&gt;feat: readable preview&lt;/li&gt;&lt;/ul&gt;</content></entry>
-<entry><title>v0.42.0</title><content type="html">&lt;ul&gt;&lt;li&gt;feat: already installed&lt;/li&gt;&lt;/ul&gt;</content></entry>
-</feed>`
-	got, err := parseChangelog(strings.NewReader(feed), "0.42.0", "v0.43.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"v0.43.1", `  • fix: clearer "status" line`, "v0.43.0", "  • feat: readable preview"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
 func TestUpdatePopupShowsChangelog(t *testing.T) {
-	old := version
-	version = "0.24.1"
-	defer func() { version = old }()
+	old := state.Version
+	state.Version = "0.24.1"
+	defer func() { state.Version = old }()
 	m := model{width: 100, fetchChangelog: func(tag string) ([]string, error) {
 		lines := []string{tag}
 		for i := range 20 {
@@ -694,8 +540,8 @@ func TestUpdatePopupShowsChangelog(t *testing.T) {
 }
 
 func TestChangelogPopup(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.2.0"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.2.0"
 	var lines []string
 	for v := 30; v > 0; v-- {
 		lines = append(lines, fmt.Sprintf("v0.%d.0", v), fmt.Sprintf("  feat: thing %d", v))
@@ -770,20 +616,6 @@ func TestChangelogRetry(t *testing.T) {
 	}
 }
 
-func TestParseAPIChangelog(t *testing.T) {
-	body := `[{"tag_name":"v0.3.0","body":"## Changelog\n*  fix: newer\n"},
-{"tag_name":"v0.2.1","body":"## Changelog\n* 35cdc1b016d93b529a853c93a980acb55be9c985 chore: rename org\n* 4cde904 Merge pull request #1 from x\n\n"},
-{"tag_name":"v0.2.0","body":"## Changelog\n* f15ec5c Add GoReleaser config\n"}]`
-	got, err := parseAPIChangelog(strings.NewReader(body), "0.0.0", "v0.2.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"v0.2.1", "  • chore: rename org", "v0.2.0", "  • Add GoReleaser config"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
 func TestChangelogScrollHintOnlyWhenScrollable(t *testing.T) {
 	m := model{width: 100, height: 30, notesOpen: true, notes: []string{"v1.0.0", "  • fix: x"}}
 	if v := strip2(m.notesPopup()); strings.Contains(v, "scroll") {
@@ -813,13 +645,13 @@ func TestChangelogWidthSteady(t *testing.T) {
 }
 
 func TestAutoUpdateInstallsWhileAway(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.24.1"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.24.1"
 	installs := 0
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
 	m.autoUpdate = true
-	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { installs++; return "/bin/ccs", nil }}
+	m.upgrade = &selfupdate.Upgrader{InstallFunc: func(string, func(string)) (string, error) { installs++; return "/bin/ccs", nil }}
 
 	res, cmd := m.Update(latestMsg{tag: "v0.25.0"})
 	m = res.(model)
@@ -852,11 +684,11 @@ func TestAutoUpdateInstallsWhileAway(t *testing.T) {
 }
 
 func TestAutoUpdateFailureIsOffered(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.24.1"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.24.1"
 	m := initialModel(nil, "", nil)
 	m.autoUpdate, m.blurred = true, true
-	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", fmt.Errorf("network down") }}
+	m.upgrade = &selfupdate.Upgrader{InstallFunc: func(string, func(string)) (string, error) { return "", fmt.Errorf("network down") }}
 	res, _ := m.Update(latestMsg{tag: "v0.25.0"})
 	m = res.(model)
 	res, cmd := m.Update(autoUpdateTickMsg{})
@@ -872,8 +704,8 @@ func TestAutoUpdateFailureIsOffered(t *testing.T) {
 }
 
 func TestUpdatedPopupAfterRestart(t *testing.T) {
-	defer func(v string) { version = v }(version)
-	version = "0.25.0"
+	defer func(v string) { state.Version = v }(state.Version)
+	state.Version = "0.25.0"
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
 	m.updatedFrom, m.updatedOpen = "0.24.1", true

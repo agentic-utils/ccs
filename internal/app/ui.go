@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
@@ -145,7 +146,7 @@ type model struct {
 	// upgrade installs tag and returns the binary to restart; nil means ccs
 	// can't update this install itself (e.g. Nix), so only notify.
 	checkLatest    func() (string, error)
-	upgrade        *upgrader
+	upgrade        *selfupdate.Upgrader
 	progress       *updateProgress // step + start time, written by the upgrade goroutine
 	updateTo       string          // newer release tag found, "" if none
 	changelog      []string        // what changed from this version up to updateTo, for the popup
@@ -804,9 +805,9 @@ func (m model) Init() tea.Cmd {
 	if m.updatedFrom != "" && m.fetchNotes != nil { // what changed since the version it updated from
 		from := m.updatedFrom
 		cmds = append(cmds, func() tea.Msg {
-			lines, err := releaseChangelog(from, "v"+version)
+			lines, err := selfupdate.ReleaseChangelog(from, "v"+state.Version)
 			if err != nil {
-				state.LogUpdate("changelog %s..%s: %v", from, version, err)
+				state.LogUpdate("changelog %s..%s: %v", from, state.Version, err)
 			}
 			return updatedChangelogMsg{lines}
 		})
@@ -1184,7 +1185,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case latestMsg:
 		m.updateCheckFailed = msg.err != nil
 		var fetch tea.Cmd
-		if newerVersion(msg.tag, version) && m.autoUpdate && m.upgrade != nil && msg.tag != m.autoFailed && !m.updating {
+		if selfupdate.NewerVersion(msg.tag, state.Version) && m.autoUpdate && m.upgrade != nil && msg.tag != m.autoFailed && !m.updating {
 			// No offer: prepared now, installed once you're away (autoUpdateTick).
 			first := msg.tag != m.updateTo
 			m.updateTo = msg.tag
@@ -1195,7 +1196,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(away, tea.Tick(updateCheckInterval, func(time.Time) tea.Msg { return updateCheckTickMsg{} }))
 		}
-		if newerVersion(msg.tag, version) && msg.tag != m.dismissed && !m.updating {
+		if selfupdate.NewerVersion(msg.tag, state.Version) && msg.tag != m.dismissed && !m.updating {
 			if msg.tag != m.updateTo {
 				m.updateOpen = true
 				m.updateShownAt = time.Now()
@@ -2307,7 +2308,7 @@ func (m model) viewScreen() string {
 			toggles = append(toggles, toggleHint("^X I", "auto-update", m.autoUpdate))
 		}
 	}
-	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", version, note, status)
+	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", state.Version, note, status)
 	pairs, keep := []string{"?", "help", "^C", "quit"}, 2 // the rest are in ? help
 	if m.showUsage {                                      // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^X U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help

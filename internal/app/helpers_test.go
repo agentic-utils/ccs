@@ -25,6 +25,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
@@ -55,7 +56,7 @@ func fakeRelease(t *testing.T, tag string, binary []byte, tamper bool) {
 	if tamper {
 		sums = strings.Repeat("0", 64) + "  " + asset + "\n"
 	}
-	sig := ed25519.Sign(testReleaseKey, signedMessage(tag, []byte(sums)))
+	sig := ed25519.Sign(testReleaseKey, selfupdate.SignedMessage(tag, []byte(sums)))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/" + tag + "/checksums.txt":
@@ -69,9 +70,9 @@ func fakeRelease(t *testing.T, tag string, binary []byte, tamper bool) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	old := releaseDownloadURL
-	releaseDownloadURL = srv.URL
-	t.Cleanup(func() { releaseDownloadURL = old })
+	old := selfupdate.ReleaseDownloadURL
+	selfupdate.ReleaseDownloadURL = srv.URL
+	t.Cleanup(func() { selfupdate.ReleaseDownloadURL = old })
 }
 
 // firstOfBatch runs the first command of a tea.Batch (the upgrade itself;
@@ -123,7 +124,7 @@ func TestMain(m *testing.M) {
 	sessions.ListAgents = func() (map[string]sessions.BgSession, error) { return nil, nil } // never the real claude agents
 	sessions.T3Link = func(int) (string, error) { return "", errors.New("no T3 Code in tests") }
 	sessions.OpenApp = func(string) error { return errors.New("tests open nothing") }
-	releaseKey = testReleaseKey.Public().(ed25519.PublicKey)
+	selfupdate.ReleaseKey = testReleaseKey.Public().(ed25519.PublicKey)
 	// links never register a handler or drive the real iTerm unless a test stubs them.
 	sessions.LinkAppPath = func() string { return filepath.Join(dir, "CCS Links.app") }
 	sessions.Lsregister = "/bin/false"

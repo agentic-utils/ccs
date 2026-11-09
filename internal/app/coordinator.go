@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -167,7 +168,7 @@ func writeCoordinatorFolder() error {
 		return err
 	}
 	for path, text := range map[string]string{
-		filepath.Join(dir, "CLAUDE.md"):                strings.ReplaceAll(coordinatorBrief, "{{events}}", prEventsPath()),
+		filepath.Join(dir, "CLAUDE.md"):                strings.ReplaceAll(coordinatorBrief, "{{events}}", github.PrEventsPath()),
 		filepath.Join(dir, ".claude", "settings.json"): coordinatorSettings,
 	} {
 		if _, err := os.Stat(path); err == nil {

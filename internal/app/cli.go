@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
@@ -173,17 +174,17 @@ func Main(v string) {
 		os.Exit(sessions.RunLink(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "watch" {
-		os.Exit(runWatch(args[1:]))
+		os.Exit(github.RunWatch(args[1:]))
 	}
 	if len(args) > 0 && args[0] == "claim" {
-		os.Exit(runClaim(args[1:], os.Stdout, os.Stderr))
+		os.Exit(github.RunClaim(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "review" {
-		fmt.Fprintln(os.Stderr, "ccs review is gone:", reviewMoved)
+		fmt.Fprintln(os.Stderr, "ccs review is gone:", github.ReviewMoved)
 		os.Exit(2)
 	}
 	if len(args) > 0 && args[0] == "prs" {
-		os.Exit(runPRs(args[1:], os.Stdout, os.Stderr))
+		os.Exit(github.RunPRs(args[1:], os.Stdout, os.Stderr))
 	}
 
 	for _, arg := range args {
@@ -336,7 +337,7 @@ func Main(v string) {
 		}
 	}
 	m.usageExclude = excludeDirs
-	m.fetchPRs = ghFetchPRs()
+	m.fetchPRs = github.GhFetchPRs()
 	m.reload = func() ([]listItem, error) {
 		convs, err := transcript.GetConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {

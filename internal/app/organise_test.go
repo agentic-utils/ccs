@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -23,7 +24,7 @@ func TestDoneUntilSeen(t *testing.T) {
 	m.width, m.height = 140, 30
 	m.marks = &sessionMarks{Since: now.Add(-time.Hour), Seen: map[string]time.Time{}}
 	m.live = map[string]bool{"old": true, "new": true}
-	m.chatStatus = map[string]sessionStat{"old": {status: "idle"}, "new": {status: "idle"}}
+	m.chatStatus = map[string]sessions.SessionStat{"old": {Status: "idle"}, "new": {Status: "idle"}}
 	m.blurred = true // not looking yet
 	m.sortList()
 	v := strip2(m.View())
@@ -88,7 +89,7 @@ func TestPinnedSectionKeepsOrder(t *testing.T) {
 	m.width, m.height = 140, 30
 	m.marks = &sessionMarks{Since: now, Seen: map[string]time.Time{}}
 	m.live = map[string]bool{"a": true}
-	m.chatStatus = map[string]sessionStat{"a": {status: "waiting"}}
+	m.chatStatus = map[string]sessions.SessionStat{"a": {Status: "waiting"}}
 	m.sortList()
 	sel := func(id string) {
 		for i, it := range m.filtered {
@@ -195,12 +196,12 @@ func TestSnoozeAndSettle(t *testing.T) {
 		t.Errorf("snoozed for an hour:\n%s", strip2(m.View()))
 	}
 	m.live = map[string]bool{"s": true}
-	m.chatStatus = map[string]sessionStat{"s": {status: "waiting"}}
+	m.chatStatus = map[string]sessions.SessionStat{"s": {Status: "waiting"}}
 	m.sortList()
 	if v := strip2(m.View()); strings.Contains(v, "snoozed 1") || !strings.Contains(v, "waiting on you 1") {
 		t.Errorf("a question wakes it:\n%s", v)
 	}
-	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
+	m.chatStatus = map[string]sessions.SessionStat{"s": {Status: "idle"}}
 	m.sortList()
 	m, _ = chord(m, "s")
 	if m.snoozeOpen || strings.Contains(strip2(m.View()), "snoozed") {

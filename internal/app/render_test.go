@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -74,7 +75,7 @@ func TestOverlayFrameFitsTheTerminal(t *testing.T) {
 		w, h := size[0], size[1]
 		m := richModel(t, w, h)
 		now := time.Now()
-		stats := map[string]sessionStat{"live": waiting(now.Add(-55*time.Minute), "input needed"), "menu": waiting(now.Add(-5*time.Minute), "permission prompt")}
+		stats := map[string]sessions.SessionStat{"live": waiting(now.Add(-55*time.Minute), "input needed"), "menu": waiting(now.Add(-5*time.Minute), "permission prompt")}
 		m.applyStats(stats)
 		checkFrame(t, fmt.Sprintf("banner %dx%d", w, h), m.View(), w, h)
 		m = selectLive(m)
@@ -104,7 +105,7 @@ func TestScreenUsesOnlySymbolsEveryTerminalDrawsNarrow(t *testing.T) {
 	m.items[3].conv.Spawned = true
 	m.updateFilter()
 	now := time.Now()
-	stats := map[string]sessionStat{"live": waiting(now, "input needed"), "menu": waiting(now, "permission prompt")}
+	stats := map[string]sessions.SessionStat{"live": waiting(now, "input needed"), "menu": waiting(now, "permission prompt")}
 	m.applyStats(stats)
 	m = selectLive(m)
 	views := []string{m.View()}

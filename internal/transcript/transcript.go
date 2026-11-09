@@ -1369,6 +1369,13 @@ func codexHarness(text string) bool {
 	return strings.HasPrefix(t, "<") || strings.HasPrefix(t, "# AGENTS.md instructions") || strings.HasPrefix(t, ">>> ")
 }
 
+// Codex sessions in the list: each transcript (a "rollout" under
+// $CODEX_HOME/sessions/YYYY/MM/DD) parses into a transcript.Conversation with Kind
+// "codex", sorted, searched and previewed with Claude's. A Codex rollout is
+// small next to a Claude transcript and isn't appended to in place by a
+// resume, so a changed one is simply parsed again (ParseCache keeps the
+// unchanged ones).
+
 // ParseCodexFile parses one rollout, with the cutoff, size limit and cache
 // parseConversationFile applies to Claude's transcripts.
 func ParseCodexFile(path string, cutoff time.Time, maxSize int64) (*Conversation, error) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -84,27 +85,27 @@ func TestCodexLiveness(t *testing.T) {
 	oldPS := proc.PsAll
 	t.Cleanup(func() { proc.PsAll = oldPS })
 	proc.PsAll = func() (string, error) { return "", nil }
-	if codexLive(threadA) {
+	if sessions.CodexLive(threadA) {
 		t.Error("a thread ccs launched is live only while its codex process runs")
 	}
 	proc.PsAll = func() (string, error) {
 		return "  101 ttys001 /bin/codex -s workspace-write --add-dir " + filepath.Join(state.LaunchDir(), name) + " --add-dir /s x\n", nil
 	}
-	if !codexLive(threadA) {
+	if !sessions.CodexLive(threadA) {
 		t.Error("its codex process is running")
 	}
 
 	// Not launched by ccs: live while its transcript is recent.
 	path = writeRollout(t, threadB, "/w")
-	if !codexLive(threadB) {
+	if !sessions.CodexLive(threadB) {
 		t.Error("a recently written thread counts as live")
 	}
-	old := time.Now().Add(-codexIdle - time.Hour)
+	old := time.Now().Add(-sessions.CodexIdle - time.Hour)
 	os.Chtimes(path, old, old)
-	if codexLive(threadB) {
+	if sessions.CodexLive(threadB) {
 		t.Error("a thread quiet for longer than codexIdle doesn't")
 	}
-	if codexLive("01a1a1ff-0000-0000-0000-000000000000") {
+	if sessions.CodexLive("01a1a1ff-0000-0000-0000-000000000000") {
 		t.Error("a thread with no transcript isn't live")
 	}
 }
@@ -113,10 +114,10 @@ func TestCodexThreadForLaunch(t *testing.T) {
 	codexEnv(t)
 	writeRollout(t, threadB, "/w", filepath.Join(state.LaunchDir(), "other"))
 	writeRollout(t, threadA, "/w", filepath.Join(state.LaunchDir(), "mine"))
-	if got := codexThreadFor("mine"); got != threadA {
+	if got := sessions.CodexThreadFor("mine"); got != threadA {
 		t.Errorf("the thread whose roots hold the name's launch folder: %q", got)
 	}
-	if got := codexThreadFor("nobody"); got != "" {
+	if got := sessions.CodexThreadFor("nobody"); got != "" {
 		t.Errorf("no thread for a name never launched: %q", got)
 	}
 }
@@ -124,11 +125,11 @@ func TestCodexThreadForLaunch(t *testing.T) {
 func TestCodexNudgeGoesThroughQueue(t *testing.T) {
 	claimEnv(t)
 	codexEnv(t)
-	oldQ, oldLive := codexQueue, codexLive
-	t.Cleanup(func() { codexQueue, codexLive = oldQ, oldLive })
+	oldQ, oldLive := sessions.CodexQueue, sessions.CodexLive
+	t.Cleanup(func() { sessions.CodexQueue, sessions.CodexLive = oldQ, oldLive })
 	var got []string
-	codexQueue = func(thread, text string) error { got = append(got, thread+"|"+text); return nil }
-	codexLive = func(thread string) bool { return thread == threadA }
+	sessions.CodexQueue = func(thread, text string) error { got = append(got, thread+"|"+text); return nil }
+	sessions.CodexLive = func(thread string) bool { return thread == threadA }
 	c := prClaim{Session: threadA, Kind: "codex", Thread: threadA, Name: "repay-pr-refresh"}
 	if err := withClaims(func(f *claimsFile) bool { f.Claims[claimA] = []prClaim{c}; return true }); err != nil {
 		t.Fatal(err)
@@ -139,7 +140,7 @@ func TestCodexNudgeGoesThroughQueue(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("one queued nudge per head and reason: %q", got)
 	}
-	if !strings.HasPrefix(got[0], threadA+"|"+codexNudgeNote) || !strings.Contains(got[0], "checks failing: setup") || strings.Contains(got[0], transcript.CcsNote) {
+	if !strings.HasPrefix(got[0], threadA+"|"+sessions.CodexNudgeNote) || !strings.Contains(got[0], "checks failing: setup") || strings.Contains(got[0], transcript.CcsNote) {
 		t.Errorf("queued into its thread, saying it's an automatic notice and not the user: %q", got[0])
 	}
 }

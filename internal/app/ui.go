@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -89,33 +90,33 @@ type model struct {
 	renameInput     textinput.Model
 	launchStep      int // ^X N: 1 typing the new session's name, 2 its brief
 	launchInput     textinput.Model
-	launchName      string               // the name typed at step 1
-	launchCwd       string               // where it starts: the selected session's folder
-	errorMsg        string               // Show deletion/prune errors
-	noteMsg         string               // errorMsg set by note(): information, not an error, so not red
-	preview         *previewCache        // memoised preview lines for the selected conversation
-	hits            *hitCounter          // memoised per-query hit counts, keyed by SessionID
-	lastFilterQuery string               // lowercased query the current m.filtered was built from
-	live            map[string]bool      // SessionIDs attached to a running claude process
-	livePIDs        map[string]int       // live SessionID -> claude pid (for its session file and socket)
-	hosts           map[string]string    // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
-	bg              map[string]bgSession // background sessions (claude --bg), opened with claude attach
-	agentsAt        time.Time            // when claude agents was last asked
-	stopArmed       string               // ^X K pressed once on this session: again stops it
+	launchName      string                        // the name typed at step 1
+	launchCwd       string                        // where it starts: the selected session's folder
+	errorMsg        string                        // Show deletion/prune errors
+	noteMsg         string                        // errorMsg set by note(): information, not an error, so not red
+	preview         *previewCache                 // memoised preview lines for the selected conversation
+	hits            *hitCounter                   // memoised per-query hit counts, keyed by SessionID
+	lastFilterQuery string                        // lowercased query the current m.filtered was built from
+	live            map[string]bool               // SessionIDs attached to a running claude process
+	livePIDs        map[string]int                // live SessionID -> claude pid (for its session file and socket)
+	hosts           map[string]string             // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
+	bg              map[string]sessions.BgSession // background sessions (claude --bg), opened with claude attach
+	agentsAt        time.Time                     // when claude agents was last asked
+	stopArmed       string                        // ^X K pressed once on this session: again stops it
 	stopArmedAt     time.Time
 
 	// transcript.Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
 	chatInput  textinput.Model
-	chatFor    string                    // the session chatInput's draft belongs to
-	chatDrafts map[string]string         // the other sessions' drafts, so a draft never follows the selection
-	pasted     map[string]*sessionImages // images behind the [Image #N] in each session's boxes
-	chatTickOn bool                      // the fast refresh for the selected live session is running
-	chatStatus map[string]sessionStat    // every live session's last known status (set only by setStat; applyStats drops sessions that are gone)
-	pending    map[string]string         // text sent but not yet seen in the transcript, by SessionID
-	sendNote   map[string]string         // outcome of the last send, by SessionID
-	sentAt     map[string]time.Time      // when a socket send finished, by SessionID, until the session queues it
-	held       map[string]bool           // a receipt said the session is holding the message for approval
+	chatFor    string                          // the session chatInput's draft belongs to
+	chatDrafts map[string]string               // the other sessions' drafts, so a draft never follows the selection
+	pasted     map[string]*sessionImages       // images behind the [Image #N] in each session's boxes
+	chatTickOn bool                            // the fast refresh for the selected live session is running
+	chatStatus map[string]sessions.SessionStat // every live session's last known status (set only by setStat; applyStats drops sessions that are gone)
+	pending    map[string]string               // text sent but not yet seen in the transcript, by SessionID
+	sendNote   map[string]string               // outcome of the last send, by SessionID
+	sentAt     map[string]time.Time            // when a socket send finished, by SessionID, until the session queues it
+	held       map[string]bool                 // a receipt said the session is holding the message for approval
 	sending    bool
 
 	// Input-prompt overlay (see wait*): live sessions waiting on the user.
@@ -128,16 +129,16 @@ type model struct {
 	waitPreview    *previewCache     // the overlay's transcript, wrapped to its width
 	waitDue        map[string]bool   // sessions with a wait (or a snooze that ran out) not yet seen: the banner shows them
 	snoozed        map[string]snoozeRec
-	snooze         time.Duration              // CCS_SNOOZE
-	unverified     map[string]bool            // live sessions whose pid couldn't be checked against their file
-	lastScan       map[string]liveSession     // the last live tick's sessions, so the next can keep one whose file is briefly unreadable
-	reload         func() ([]listItem, error) // re-scans conversations; nil disables auto-refresh
-	gen            int                        // bumped by delete/prune/rename so an older in-flight refresh can't undo them
-	refreshStarted time.Time                  // when the in-flight scan began; zero when none
-	lastRefresh    time.Time                  // when the list last matched disk (startup or a completed scan)
-	lastKick       time.Time                  // last full scan started early because an unknown session went live
-	kicked         map[string]bool            // unknown live sessions an early scan was already started for
-	refreshFailed  bool                       // the last scan errored; the list is from lastRefresh
+	snooze         time.Duration                   // CCS_SNOOZE
+	unverified     map[string]bool                 // live sessions whose pid couldn't be checked against their file
+	lastScan       map[string]sessions.LiveSession // the last live tick's sessions, so the next can keep one whose file is briefly unreadable
+	reload         func() ([]listItem, error)      // re-scans conversations; nil disables auto-refresh
+	gen            int                             // bumped by delete/prune/rename so an older in-flight refresh can't undo them
+	refreshStarted time.Time                       // when the in-flight scan began; zero when none
+	lastRefresh    time.Time                       // when the list last matched disk (startup or a completed scan)
+	lastKick       time.Time                       // last full scan started early because an unknown session went live
+	kicked         map[string]bool                 // unknown live sessions an early scan was already started for
+	refreshFailed  bool                            // the last scan errored; the list is from lastRefresh
 
 	// Self-update. checkLatest nil disables the check (tests, dev builds);
 	// upgrade installs tag and returns the binary to restart; nil means ccs
@@ -487,7 +488,7 @@ func (m model) liveGroup(c transcript.Conversation) int {
 		return 0
 	case m.waitSignal(c) == waitAsked: // idle, its last message asks something
 		return 1
-	case m.chatStatus[c.SessionID].status == "busy":
+	case m.chatStatus[c.SessionID].Status == "busy":
 		return 3
 	}
 	return 2
@@ -723,7 +724,7 @@ func (m *model) spawnParent(c transcript.Conversation) string {
 		return c.ParentID
 	}
 	if c.Kind == transcript.KindCodex {
-		if p := execParentOf(c.SessionID); p != "" { // a codex exec seen running under that session
+		if p := sessions.ExecParentOf(c.SessionID); p != "" { // a codex exec seen running under that session
 			return p
 		}
 	}
@@ -902,7 +903,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.errorMsg = "Couldn't start " + msg.name + ": " + msg.err.Error()
 		} else {
-			m.note(fmt.Sprintf("Started %s (pid %d, %s)", msg.name, msg.l.pid, msg.l.tty))
+			m.note(fmt.Sprintf("Started %s (pid %d, %s)", msg.name, msg.l.Pid, msg.l.Tty))
 		}
 		return m, nil
 
@@ -1030,7 +1031,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case liveTickMsg:
-		ask := time.Since(m.agentsAt) >= agentsInterval
+		ask := time.Since(m.agentsAt) >= sessions.AgentsInterval
 		if ask {
 			m.agentsAt = time.Now()
 		}
@@ -1047,7 +1048,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncCoordinator()
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
-			if msg.live[id] || time.Since(t) >= openedGrace {
+			if msg.live[id] || time.Since(t) >= sessions.OpenedGrace {
 				delete(m.opened, id)
 				continue
 			}
@@ -1306,7 +1307,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.checkDelivered(msg.id)
 		return m, nil
 
-	case receiptMsg:
+	case sessions.ReceiptMsg:
 		m.applyReceipt(msg)
 		return m, waitReceipt
 
@@ -1323,7 +1324,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sendDoneMsg:
 		m.sending = false
-		if !errors.Is(msg.err, errUnsent) {
+		if !errors.Is(msg.err, sessions.ErrUnsent) {
 			m.dropSentImages(msg.id, msg.text)
 		}
 		if m.sendNote == nil {
@@ -1332,7 +1333,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sendNote[msg.id] = msg.note
 		if msg.err != nil {
 			delete(m.pending, msg.id)
-			if errors.Is(msg.err, errUnsent) {
+			if errors.Is(msg.err, sessions.ErrUnsent) {
 				m.sendNote[msg.id] += " · " + m.giveBack(msg.id, msg.text, msg.overlay)
 			}
 		} else if strings.Contains(msg.note, "socket") {
@@ -1554,7 +1555,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case m.coordBusy || m.resuming:
 				m.errorMsg = "Still opening the coordinator..."
-			case !canOpenTabs():
+			case !sessions.CanOpenTabs():
 				m.errorMsg = "^X O opens a tab in iTerm or tmux, and this is neither: run ccs coordinator instead"
 			default:
 				m.coordBusy, m.errorMsg = true, ""
@@ -1564,7 +1565,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k == "^x n" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
-			if !canOpenTabs() {
+			if !sessions.CanOpenTabs() {
 				m.errorMsg = "^X N opens the new session in an iTerm tab or tmux window, and this is neither"
 				return m, nil
 			}
@@ -1575,7 +1576,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.launchStep, m.errorMsg = 1, ""
-			m.launchInput = launchPrompt("New session name: ", "")
+			m.launchInput = sessions.LaunchPrompt("New session name: ", "")
 			return m, nil
 		}
 		if k == "^x r" && !m.prompting() && !m.acctOpen && !m.waitOpen {
@@ -1710,7 +1711,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					m.launchName, m.launchStep = v, 2
-					m.launchInput = launchPrompt("Brief: ", "")
+					m.launchInput = sessions.LaunchPrompt("Brief: ", "")
 					m.errorMsg = ""
 					return m, nil
 				}
@@ -1720,7 +1721,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.launchStep, m.errorMsg = 0, ""
 				m.note("Starting " + m.launchName + "…")
-				return m, launchCmd(launchOpts{name: m.launchName, brief: v, cwd: m.launchCwd})
+				return m, launchCmd(sessions.LaunchOpts{Name: m.launchName, Brief: v, Cwd: m.launchCwd})
 			case "esc", "ctrl+c":
 				m.launchStep = 0
 				return m, nil
@@ -2129,8 +2130,8 @@ func (m model) shortcuts() [][2]string {
 
 	group("^X then a letter: view and tools")
 	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you: answer, open or snooze them")
-	add(canOpenTabs(), "^X N", "start a new session in an iTerm tab or tmux window, in this one's folder")
-	add(canOpenTabs(), "^X O", "open the coordinator, setting one up if there is none")
+	add(sessions.CanOpenTabs(), "^X N", "start a new session in an iTerm tab or tmux window, in this one's folder")
+	add(sessions.CanOpenTabs(), "^X O", "open the coordinator, setting one up if there is none")
 	add(!m.grouped, "^X G", "group the list by folder")
 	add(m.grouped, "^X G", "stop grouping by folder")
 	add(!m.table, "^X T", "the full table, every column")
@@ -2324,7 +2325,7 @@ func (m model) viewScreen() string {
 	var sections []string
 	var inputSection string
 	if m.launchStep > 0 {
-		sections = append(sections, "  "+m.launchInput.View()+"  \033[90min "+tildePath(m.launchCwd)+"  "+hints(keyEnter, map[bool]string{true: "next", false: "start it"}[m.launchStep == 1], keyEsc, "cancel")+"\033[0m")
+		sections = append(sections, "  "+m.launchInput.View()+"  \033[90min "+sessions.TildePath(m.launchCwd)+"  "+hints(keyEnter, map[bool]string{true: "next", false: "start it"}[m.launchStep == 1], keyEsc, "cancel")+"\033[0m")
 	} else if m.renaming {
 		sections = append(sections, "  "+m.renameInput.View()+"  \033[90m"+hints(keyEnter, "save", keyEsc, "cancel")+"\033[0m")
 	} else if m.confirmPrune {
@@ -2555,7 +2556,7 @@ func (m model) listMarks(item listItem) (string, string) {
 	// magenta when a menu or prompt waits on you, light magenta when idle and
 	// its last message asks something.
 	liveGlyph, liveColour := "●", "32"
-	if h := m.hostedApp(conv.SessionID); h != "" && h != t3App { // open in an app ccs can't switch to
+	if h := m.hostedApp(conv.SessionID); h != "" && h != sessions.T3App { // open in an app ccs can't switch to
 		liveGlyph = "○"
 	}
 	switch m.waitSignal(conv) { // the circle stays (● or ○ says whether ccs can open it); its colour says why
@@ -2564,7 +2565,7 @@ func (m model) listMarks(item listItem) (string, string) {
 	case waitAsked:
 		liveColour = askedColour
 	default:
-		if m.chatStatus[conv.SessionID].status == "busy" {
+		if m.chatStatus[conv.SessionID].Status == "busy" {
 			liveColour = amber
 		} else if m.unseen(conv) && conv.SessionID != m.viewing { // being read now: no longer unread
 			liveColour = doneColour

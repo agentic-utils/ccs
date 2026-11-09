@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -43,7 +44,7 @@ func TestBackgroundTasks(t *testing.T) {
 	}
 	conv.SessionID = "s"
 	m.live = map[string]bool{"s": true}
-	m.lastScan = map[string]liveSession{"s": {start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
+	m.lastScan = map[string]sessions.LiveSession{"s": {Start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
 	var running []string
 	for _, task := range m.runningTasks(conv) {
 		running = append(running, task.Kind+":"+task.Desc)
@@ -63,7 +64,7 @@ func TestBackgroundTasks(t *testing.T) {
 	}
 	// A task from before the session's current claude process (say it was
 	// resumed) died with the old one.
-	m.lastScan = map[string]liveSession{"s": {start: time.Now().UTC().Format(time.ANSIC)}}
+	m.lastScan = map[string]sessions.LiveSession{"s": {Start: time.Now().UTC().Format(time.ANSIC)}}
 	if len(m.runningTasks(conv)) != 0 {
 		t.Error("tasks started before the current process aren't running")
 	}
@@ -122,7 +123,7 @@ func TestSubagentsInThePreviewAndTheList(t *testing.T) {
 		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s1": true}
-	m.lastScan = map[string]liveSession{"s1": {start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
+	m.lastScan = map[string]sessions.LiveSession{"s1": {Start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
 	if got := m.taskCell(conv, false); got != "⧗1 ◆3" {
 		t.Errorf("background tasks and subagents are counted apart: %q", got)
 	}

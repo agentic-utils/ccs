@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -77,7 +78,7 @@ func (m *model) startRefresh(early bool) tea.Cmd {
 	reload, gen := m.reload, m.gen
 	return func() tea.Msg {
 		items, err := reload()
-		return refreshMsg{items: items, err: err, live: readLiveSessions(), gen: gen, early: early}
+		return refreshMsg{items: items, err: err, live: sessions.ReadLiveSessions(), gen: gen, early: early}
 	}
 }
 

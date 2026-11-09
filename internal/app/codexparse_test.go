@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -81,14 +82,14 @@ func TestCodexRolloutParses(t *testing.T) {
 	if !strings.Contains(c.SearchLower, "codex") {
 		t.Error("searching codex finds every Codex session")
 	}
-	if st := codexStat(path); st.status != "idle" {
+	if st := sessions.CodexStat(path); st.Status != "idle" {
 		t.Errorf("a finished turn is idle: %+v", st)
 	}
 	// A turn that's started and not finished is busy.
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	f.WriteString(`{"timestamp":"2026-11-03T10:01:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}` + "\n")
 	f.Close()
-	if st := codexStat(path); st.status != "busy" {
+	if st := sessions.CodexStat(path); st.Status != "busy" {
 		t.Errorf("an unfinished turn is busy: %+v", st)
 	}
 	if c, _ := transcript.ParseCodexFile(path, time.Time{}, 0); c == nil || !c.CodexBusy {
@@ -172,15 +173,15 @@ func TestCodexLiveSessionsFromProcesses(t *testing.T) {
 		}
 		return "/w/empty"
 	}
-	codexLiveCache.Lock()
-	codexLiveCache.out = nil
-	codexLiveCache.Unlock()
-	live := codexLiveSessions()
-	if len(live) != 2 || live[cxA].pid != 100 || live[cxB].pid != 101 || !live[cxA].codex {
+	sessions.CodexLiveCache.Lock()
+	sessions.CodexLiveCache.Out = nil
+	sessions.CodexLiveCache.Unlock()
+	live := sessions.CodexLiveSessions()
+	if len(live) != 2 || live[cxA].Pid != 100 || live[cxB].Pid != 101 || !live[cxA].Codex {
 		t.Errorf("two TUIs on two threads, servers and exec runs left out: %+v", live)
 	}
-	if live[cxA].stat.status != "idle" {
-		t.Errorf("status from its rollout: %+v", live[cxA].stat)
+	if live[cxA].Stat.Status != "idle" {
+		t.Errorf("status from its rollout: %+v", live[cxA].Stat)
 	}
 }
 
@@ -239,10 +240,10 @@ func TestCodexResumeAndSend(t *testing.T) {
 		t.Errorf("a fork: %v", args)
 	}
 	var got []string
-	old := codexQueue
-	codexQueue = func(thread, text string) error { got = []string{thread, text}; return nil }
-	defer func() { codexQueue = old }()
-	note, err := deliverCodex(cxA, "flux", "carry on")
+	old := sessions.CodexQueue
+	sessions.CodexQueue = func(thread, text string) error { got = []string{thread, text}; return nil }
+	defer func() { sessions.CodexQueue = old }()
+	note, err := sessions.DeliverCodex(cxA, "flux", "carry on")
 	if err != nil || !slices.Equal(got, []string{cxA, "carry on"}) || !strings.Contains(note, "codex queue") {
 		t.Errorf("the message box queues into the thread: %v %q %v", got, note, err)
 	}

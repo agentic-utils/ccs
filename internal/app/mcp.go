@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -184,16 +185,16 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 		}
 	}
 	if name == "close_session" {
-		return closeByName(a.Name)
+		return sessions.CloseByName(a.Name)
 	}
 	if !filepath.IsAbs(a.Cwd) {
 		return "", fmt.Errorf("cwd must be an absolute path")
 	}
-	l, err := launchSession(launchOpts{name: a.Name, brief: a.Brief, resume: a.Resume, cwd: a.Cwd, codex: a.Codex})
+	l, err := sessions.LaunchSession(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex})
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("launched %s: pid %d, %s", a.Name, l.pid, l.tty), nil
+	return fmt.Sprintf("launched %s: pid %d, %s", a.Name, l.Pid, l.Tty), nil
 }
 
 func mcpCall(name string, raw json.RawMessage, load mcpSource) (string, error) {

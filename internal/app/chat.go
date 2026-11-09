@@ -1,22 +1,13 @@
 package app
 
 import (
-	"bufio"
-	"bytes"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -26,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -42,7 +34,7 @@ type chatTickMsg struct{}
 type chatTickResult struct {
 	id   string
 	conv *transcript.Conversation // set when the transcript grew
-	stat sessionStat
+	stat sessions.SessionStat
 	gen  int
 }
 
@@ -52,41 +44,6 @@ type sendDoneMsg struct {
 	err     error
 	text    string // what was sent, given back to its box when nothing was (errUnsent)
 	overlay bool   // sent from the overlay's box, not the main one
-}
-
-// sessionStat is what a live session's file says about it right now.
-type sessionStat struct {
-	status     string    // "busy", "idle", "waiting" (on the user) or "shell"
-	waitingFor string    // with "waiting": "permission prompt", "input needed"
-	since      time.Time // statusUpdatedAt; zero when the file has none
-	name       string
-}
-
-// sessionFile is the part of ~/.claude/sessions/<pid>.json ccs uses.
-type sessionFile struct {
-	SessionID       string `json:"sessionId"`
-	Name            string `json:"name"`
-	Status          string `json:"status"`
-	StatusUpdatedAt int64  `json:"statusUpdatedAt"` // epoch ms
-	WaitingFor      string `json:"waitingFor"`
-	Socket          string `json:"messagingSocketPath"`
-}
-
-func (f sessionFile) stat() sessionStat {
-	st := sessionStat{status: f.Status, waitingFor: f.WaitingFor, name: f.Name}
-	if f.StatusUpdatedAt > 0 {
-		st.since = time.UnixMilli(f.StatusUpdatedAt)
-	}
-	return st
-}
-
-func readSessionFile(pid int) (sessionFile, error) {
-	var f sessionFile
-	data, err := os.ReadFile(filepath.Join(getSessionsDir(), strconv.Itoa(pid)+".json"))
-	if err != nil {
-		return f, err
-	}
-	return f, json.Unmarshal(data, &f)
 }
 
 func (m model) selectedLive() bool {
@@ -204,12 +161,12 @@ func (m model) chatTickCmd() tea.Cmd {
 			}
 		}()
 		if conv.Kind == transcript.KindCodex {
-			res.stat = codexStat(conv.FilePath)
-		} else if f, err := readSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
-			res.stat = f.stat()
+			res.stat = sessions.CodexStat(conv.FilePath)
+		} else if f, err := sessions.ReadSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
+			res.stat = f.Stat()
 		}
-		if _, busy := liveReads.LoadOrStore(conv.FilePath, true); !busy {
-			defer liveReads.Delete(conv.FilePath)
+		if _, busy := sessions.LiveReads.LoadOrStore(conv.FilePath, true); !busy {
+			defer sessions.LiveReads.Delete(conv.FilePath)
 			if c, err := transcript.ParseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
 				res.conv = c
 			}
@@ -221,8 +178,8 @@ func (m model) chatTickCmd() tea.Cmd {
 // sessionName is how the status line names a session: its Claude Code name,
 // else its title, else its topic.
 func (m model) sessionName(conv transcript.Conversation) string {
-	if st, ok := m.chatStatus[conv.SessionID]; ok && st.name != "" {
-		return st.name
+	if st, ok := m.chatStatus[conv.SessionID]; ok && st.Name != "" {
+		return st.Name
 	}
 	if conv.Title != "" {
 		return transcript.Truncate(conv.Title, 30)
@@ -261,13 +218,13 @@ var spinnerFrames = []string{"·", "✢", "✳", "✶", "✻", "✽", "✻", "�
 // does: its glyph and word in the agent's colour, then how long this turn has
 // run and its output tokens so far. Claude Code keeps its verb and tip to
 // itself, so the word is always the same and there's no tip.
-func workingLine(conv transcript.Conversation, st sessionStat, now time.Time) string {
+func workingLine(conv transcript.Conversation, st sessions.SessionStat, now time.Time) string {
 	_, colour := transcript.AgentGlyph(conv)
 	frame := spinnerFrames[int(now.UnixMilli()/int64(chatFastRefresh/time.Millisecond))%len(spinnerFrames)]
 	var facts []string
-	if !st.since.IsZero() { // the status clock starts with the turn; steps don't reset it
-		facts = append(facts, formatTook(now.Sub(st.since)))
-		if n := conv.OutputSince(st.since); n > 0 {
+	if !st.Since.IsZero() { // the status clock starts with the turn; steps don't reset it
+		facts = append(facts, formatTook(now.Sub(st.Since)))
+		if n := conv.OutputSince(st.Since); n > 0 {
 			count := transcript.FormatTokens(int(n))
 			if n >= 1000 && n < 10000 { // the 2.5k Claude Code would say, not 2k
 				count = fmt.Sprintf("%.1fk", float64(n)/1000)
@@ -286,7 +243,7 @@ func workingLine(conv transcript.Conversation, st sessionStat, now time.Time) st
 func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus bool, width int) string {
 	id, name := conv.SessionID, m.sessionName(conv)
 	working := ""
-	if st := m.chatStatus[id]; st.status == "busy" {
+	if st := m.chatStatus[id]; st.Status == "busy" {
 		working = workingLine(conv, st, time.Now())
 	}
 	full := width
@@ -299,17 +256,17 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 		left = "\033[33m  ⏸ held: approve it in " + name + " · " + chatSnippet(m.pending[id], width-50-len(name)) + "\033[0m"
 	case m.pending[id] != "" && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
 		why := " · if it runs with bypass permissions, approve it in that session"
-		if m.chatStatus[id].status == "waiting" {
+		if m.chatStatus[id].Status == "waiting" {
 			why = " · it may wait until its menu is answered"
 		}
 		left = "\033[33m  ⚠ not picked up yet: " + chatSnippet(m.pending[id], width-25-len(why)) + why + "\033[0m"
-	case m.pending[id] != "" && m.chatStatus[id].status == "busy":
+	case m.pending[id] != "" && m.chatStatus[id].Status == "busy":
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-48) + " · Claude sees it after its current step\033[0m"
 	case m.pending[id] != "":
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.sendNote[id] != "":
 		left = "  " + m.sendNote[id]
-	case m.chatStatus[id].status == "waiting": // menus and prompts never reach the transcript
+	case m.chatStatus[id].Status == "waiting": // menus and prompts never reach the transcript
 		left = "\033[1;" + amber + "m  ? " + waitingLine(conv) + "\033[0m"
 	}
 	width = full
@@ -386,19 +343,14 @@ func (m *model) sendTo(conv transcript.Conversation, overlay bool) tea.Cmd {
 		}()
 		deliver := deliverMessage
 		if kind == transcript.KindCodex {
-			deliver = func(_ int, id, name, text string, _ bool) (string, error) { return deliverCodex(id, name, text) }
+			deliver = func(_ int, id, name, text string, _ bool) (string, error) {
+				return sessions.DeliverCodex(id, name, text)
+			}
 		}
 		note, err := deliver(pid, id, name, wire, verified)
 		return sendDoneMsg{id: id, note: note, err: err, text: text, overlay: overlay}
 	}
 }
-
-// errNotConnected means the socket couldn't be reached at all, so nothing
-// was sent and the terminal fallback is safe.
-var errNotConnected = errors.New("not connected")
-
-// errUnsent means nothing reached the session, so the text goes back to its box.
-var errUnsent = errors.New("not sent")
 
 // deliverMessage sends text to a live session: through its message socket
 // if it can be reached, else typed into its terminal. Never both: once the
@@ -406,38 +358,38 @@ var errUnsent = errors.New("not sent")
 // Typing needs a verified pid: keys typed into a recycled one reach a stranger.
 func deliverMessage(pid int, id, name, text string, verified bool) (string, error) {
 	changed := func(err error) (string, error) {
-		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("%w: session file: %v", errUnsent, err)
+		return "✗ Couldn't reach " + name + ": its session has changed", fmt.Errorf("%w: session file: %v", sessions.ErrUnsent, err)
 	}
-	f, err := readSessionFile(pid)
+	f, err := sessions.ReadSessionFile(pid)
 	if err != nil || f.SessionID != id {
 		return changed(err)
 	}
 	if f.Socket != "" {
-		msgID, err := sendViaSocket(f.Socket, peerToken(pid, f.Socket), text)
+		msgID, err := sendViaSocket(f.Socket, sessions.PeerToken(pid, f.Socket), text)
 		if msgID != "" {
-			sentMsgs.Store(msgID, id) // so a receipt can find the session
+			sessions.SentMsgs.Store(msgID, id) // so a receipt can find the session
 		}
 		if err == nil {
 			return "✓ Sent to " + name + " via its message socket (as a message from ccs)", nil
 		}
-		if !errors.Is(err, errNotConnected) {
+		if !errors.Is(err, sessions.ErrNotConnected) {
 			return "✗ Sending to " + name + " may have failed: " + err.Error(), err
 		}
 	}
 	// Read again: the socket attempt can take seconds and a menu may have come
 	// up since. Typed keys would land in it and could pick an option.
-	if f, err := readSessionFile(pid); err != nil || f.SessionID != id {
+	if f, err := sessions.ReadSessionFile(pid); err != nil || f.SessionID != id {
 		return changed(err)
 	} else if f.Status == "waiting" {
-		return "✗ Not typed into " + name + ": it's showing a menu, answer it in its tab", fmt.Errorf("%w: on a menu", errUnsent)
+		return "✗ Not typed into " + name + ": it's showing a menu, answer it in its tab", fmt.Errorf("%w: on a menu", sessions.ErrUnsent)
 	}
 	if !verified {
-		return "✗ Not typed into " + name + ": its process couldn't be checked against its session file", fmt.Errorf("%w: unverified pid", errUnsent)
+		return "✗ Not typed into " + name + ": its process couldn't be checked against its session file", fmt.Errorf("%w: unverified pid", sessions.ErrUnsent)
 	}
 	where, err := typeIntoSession(pid, text)
 	switch {
 	case where == "":
-		return "✗ Couldn't reach " + name + ": its message socket isn't reachable and it isn't in iTerm or tmux", fmt.Errorf("%w: unreachable", errUnsent)
+		return "✗ Couldn't reach " + name + ": its message socket isn't reachable and it isn't in iTerm or tmux", fmt.Errorf("%w: unreachable", sessions.ErrUnsent)
 	case errors.Is(err, proc.ErrTimedOut):
 		return "⚠ Typing into " + name + "'s " + where + " timed out; it may have been typed", err
 	case err != nil:
@@ -450,193 +402,12 @@ func deliverMessage(pid int, id, name, text string, verified bool) (string, erro
 // socket: newline-delimited JSON, an auth line with the session's peer token
 // first, then the message wrapped so the session sees it came from ccs.
 func sendViaSocket(path, token, text string) (string, error) {
-	return sendEnvelope(path, token, ccsSender, transcript.CcsNote, text, true)
-}
-
-// sendEnvelope is sendViaSocket with its own sender name and leading note;
-// replyTo gives a return address for receipts (only a process that serves
-// them should ask for them).
-func sendEnvelope(path, token, sender, note, text string, replyTo bool) (string, error) {
-	conn, err := net.DialTimeout("unix", path, 2*time.Second)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", errNotConnected, err)
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(3 * time.Second))
-	var out bytes.Buffer
-	if token != "" {
-		line, _ := json.Marshal(map[string]string{"type": "auth", "token": token})
-		out.Write(append(line, '\n'))
-	}
-	body := strings.ReplaceAll(text, "</cross-session-message>", "</ cross-session-message>")
-	msgID := newUUID()
-	msg := map[string]any{
-		"type":    "user",
-		"message": map[string]string{"role": "user", "content": "<cross-session-message from-name=\"" + sender + "\">\n" + note + body + "\n</cross-session-message>"},
-		"msg_id":  msgID,
-		"msgV":    1,
-	}
-	// A return address lets the session send receipts (held, refused…); it
-	// only replies to one in its own socket folder.
-	if replyTo {
-		if inbox := receiptInbox(filepath.Dir(path)); inbox != "" {
-			msg["from"] = "uds:" + inbox
-		}
-	}
-	line, _ := json.Marshal(msg)
-	out.Write(append(line, '\n'))
-	if _, err := conn.Write(out.Bytes()); err != nil {
-		return msgID, err
-	}
-	time.Sleep(150 * time.Millisecond) // as Claude Code's own sender does before ending
-	if uc, ok := conn.(*net.UnixConn); ok {
-		return msgID, uc.CloseWrite()
-	}
-	return msgID, nil
-}
-
-// Delivery receipts. A Claude Code session sends one back, as a
-// {"type":"control","action":"peer_message_status"} line, only when a
-// message doesn't go straight in: held for approval (bypass-permissions
-// sessions), then delivered, denied or expired; refused; or dropped. It
-// connects to the "from" address, which must be a .sock in the recipient's
-// own socket folder, and checks the listener is the process that sent.
-var (
-	inboxMu    sync.Mutex
-	inboxes    = map[string]net.Listener{} // socket folder -> ccs's listener there
-	sentMsgs   sync.Map                    // msg_id -> SessionID
-	receiptsCh = make(chan receiptMsg, 16)
-)
-
-type receiptMsg struct {
-	id, status, reason string // id is the SessionID the message went to
-}
-
-// receiptInbox returns ccs's listening socket in dir, starting it on first
-// use; "" if it can't (the send then just goes without a return address).
-func receiptInbox(dir string) string {
-	inboxMu.Lock()
-	defer inboxMu.Unlock()
-	if l, ok := inboxes[dir]; ok {
-		return l.Addr().String()
-	}
-	path := filepath.Join(dir, fmt.Sprintf("ccs-%d-inbox.sock", os.Getpid()))
-	if len(path) > 100 { // unix socket paths are limited to ~104 bytes
-		return ""
-	}
-	reapInboxes(dir)
-	os.Remove(path) // our own pid's leftover, if any
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return ""
-	}
-	os.Chmod(path, 0o600)
-	inboxes[dir] = l
-	go serveReceipts(l)
-	return path
-}
-
-// reapInboxes removes inbox sockets left by ccs processes that have exited.
-func reapInboxes(dir string) {
-	matches, _ := filepath.Glob(filepath.Join(dir, "ccs-*-inbox.sock"))
-	for _, m := range matches {
-		var pid int
-		if _, err := fmt.Sscanf(filepath.Base(m), "ccs-%d-inbox.sock", &pid); err != nil || pid == os.Getpid() {
-			continue
-		}
-		if syscall.Kill(pid, 0) == syscall.ESRCH {
-			os.Remove(m)
-		}
-	}
-}
-
-func serveReceipts(l net.Listener) {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return // closed
-		}
-		go func() {
-			defer conn.Close()
-			conn.SetDeadline(time.Now().Add(10 * time.Second))
-			sc := bufio.NewScanner(conn)
-			sc.Buffer(make([]byte, 64<<10), 1<<20)
-			for sc.Scan() {
-				if r, ok := parseReceipt(sc.Bytes()); ok {
-					select {
-					case receiptsCh <- r:
-					default: // nobody's reading fast enough; the heuristic still covers it
-					}
-				}
-			}
-		}()
-	}
-}
-
-// parseReceipt reads one line sent to ccs's inbox; anything but a receipt
-// for a message ccs sent (an auth line, a reply, an idle notice) is ignored.
-func parseReceipt(line []byte) (receiptMsg, bool) {
-	var r struct {
-		Type, Action, Status, Reason string
-		StatusDetail                 string   `json:"status_detail"`
-		OrigMsgID                    string   `json:"orig_msg_id"`
-		DropReason                   string   `json:"drop_reason"`
-		DroppedMsgIDs                []string `json:"dropped_msg_ids"`
-	}
-	if json.Unmarshal(line, &r) != nil || r.Type != "control" || r.Action != "peer_message_status" {
-		return receiptMsg{}, false
-	}
-	if r.Status == "expired" && r.StatusDetail == "refused" {
-		r.Status = "refused"
-	}
-	if r.Status == "dropped" && r.DropReason != "" {
-		r.Reason = r.DropReason
-	}
-	for _, id := range append([]string{r.OrigMsgID}, r.DroppedMsgIDs...) {
-		if sid, ok := sentMsgs.Load(id); ok && id != "" {
-			return receiptMsg{id: sid.(string), status: r.Status, reason: r.Reason}, true
-		}
-	}
-	return receiptMsg{}, false
+	return sessions.SendEnvelope(path, token, ccsSender, transcript.CcsNote, text, true)
 }
 
 // waitReceipt delivers the next receipt to Update; it blocks, so an idle
 // screen stays still.
-func waitReceipt() tea.Msg { return <-receiptsCh }
-
-// closeInboxes stops ccs's receipt sockets and removes their files.
-func closeInboxes() {
-	inboxMu.Lock()
-	defer inboxMu.Unlock()
-	for dir, l := range inboxes {
-		l.Close() // Go removes the socket file on Close
-		delete(inboxes, dir)
-	}
-}
-
-// peerToken reads the recipient's peer token from
-// ~/.claude/sessions/<pid>.<sha256(socket path)>.key, "" if there isn't one
-// (macOS sessions don't require it by default).
-func peerToken(pid int, socket string) string {
-	paths := []string{socket}
-	if real, err := filepath.EvalSymlinks(socket); err == nil && real != socket {
-		paths = append(paths, real)
-	}
-	for _, p := range paths {
-		sum := sha256.Sum256([]byte(p))
-		data, err := os.ReadFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))))
-		if err != nil {
-			continue
-		}
-		var k struct {
-			PeerToken string `json:"peerToken"`
-		}
-		if json.Unmarshal(data, &k) == nil && k.PeerToken != "" {
-			return k.PeerToken
-		}
-	}
-	return ""
-}
+func waitReceipt() tea.Msg { return <-sessions.ReceiptsCh }
 
 // typeIntoSession types text into the terminal running pid and presses
 // Enter: its tmux pane, else its iTerm tab. where names what it used ("" if
@@ -659,7 +430,7 @@ func typeKeys(pid int, text string, enter bool) (where string, err error) {
 	tty = "/dev/" + tty
 	if os.Getenv("TMUX") != "" {
 		panes, err := proc.RunBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
-		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
+		if target := sessions.TmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
 			if _, err := proc.RunBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "-l", "--", text); err != nil || !enter {
 				return "tmux pane", err
 			}
@@ -667,7 +438,7 @@ func typeKeys(pid int, text string, enter bool) (where string, err error) {
 			return "tmux pane", err
 		}
 	}
-	if !inITerm() {
+	if !sessions.InITerm() {
 		return "", nil
 	}
 	script := fmt.Sprintf(`tell application "iTerm2"
@@ -730,10 +501,10 @@ func (m *model) checkDelivered(id string) {
 }
 
 // applyReceipt updates the status line from a session's delivery receipt.
-func (m *model) applyReceipt(r receiptMsg) {
-	name := r.id
+func (m *model) applyReceipt(r sessions.ReceiptMsg) {
+	name := r.Id
 	for _, item := range m.items {
-		if item.conv.SessionID == r.id {
+		if item.conv.SessionID == r.Id {
 			name = m.sessionName(item.conv)
 		}
 	}
@@ -743,28 +514,28 @@ func (m *model) applyReceipt(r receiptMsg) {
 	if m.held == nil {
 		m.held = make(map[string]bool)
 	}
-	delete(m.sentAt, r.id) // a receipt beats the guess
-	switch r.status {
+	delete(m.sentAt, r.Id) // a receipt beats the guess
+	switch r.Status {
 	case "held":
-		m.held[r.id] = true
+		m.held[r.Id] = true
 	case "delivered":
-		delete(m.held, r.id) // approved; the transcript shows it next
+		delete(m.held, r.Id) // approved; the transcript shows it next
 	default:
 		why := map[string]string{
 			"denied":  "declined in that session",
 			"expired": "it was held and expired without approval",
 			"refused": "that session isn't accepting messages",
 			"dropped": "dropped at its inbox",
-		}[r.status]
+		}[r.Status]
 		if why == "" {
-			why = r.status
+			why = r.Status
 		}
-		if r.status == "dropped" && r.reason != "" {
-			why += " (" + r.reason + ")"
+		if r.Status == "dropped" && r.Reason != "" {
+			why += " (" + r.Reason + ")"
 		}
-		delete(m.held, r.id)
-		delete(m.pending, r.id)
-		m.sendNote[r.id] = "✗ " + name + " didn't take it: " + why
+		delete(m.held, r.Id)
+		delete(m.pending, r.Id)
+		m.sendNote[r.Id] = "✗ " + name + " didn't take it: " + why
 	}
 }
 
@@ -788,14 +559,6 @@ func peerParts(text string) (from, body string, ok bool) {
 		from = f[1]
 	}
 	return from, stripImageNote(strings.TrimPrefix(m[2], transcript.CcsNote)), true
-}
-
-func newUUID() string {
-	var b [16]byte
-	rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // peerEnds maps message keys to the sessions that sent and received them,

@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 
@@ -160,16 +161,16 @@ func Main(v string) {
 		return
 	}
 	if len(args) > 0 && args[0] == "launch" {
-		os.Exit(runLaunch(args[1:], os.Stdout, os.Stderr))
+		os.Exit(sessions.RunLaunch(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == coordinatorName {
 		os.Exit(runCoordinator(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal()))
 	}
 	if len(args) > 0 && args[0] == "close" {
-		os.Exit(runClose(args[1:], os.Stdout, os.Stderr))
+		os.Exit(sessions.RunClose(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "link" {
-		os.Exit(runLink(args[1:], os.Stdout, os.Stderr))
+		os.Exit(sessions.RunLink(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "watch" {
 		os.Exit(runWatch(args[1:]))
@@ -292,7 +293,7 @@ func Main(v string) {
 	// Run TUI with mouse reporting, so the wheel scrolls whatever is under the
 	// pointer (see listLayout). A report that arrives fragmented can reach
 	// Update as typed text; mouseLeak drops those before the search box.
-	go refreshLinkApp()
+	go sessions.RefreshLinkApp()
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus = s.Table, s.Grouped, s.AutoFocus
@@ -318,7 +319,7 @@ func Main(v string) {
 			m.restore(state)
 		}
 	}
-	m.livePIDs = liveSessionPIDs()
+	m.livePIDs = sessions.LiveSessionPIDs()
 	m.live = make(map[string]bool, len(m.livePIDs))
 	for id := range m.livePIDs {
 		m.live[id] = true
@@ -357,7 +358,7 @@ func Main(v string) {
 	if stop := finalModel.(model).profileStop; stop != nil {
 		stop()
 	}
-	closeInboxes()
+	sessions.CloseInboxes()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

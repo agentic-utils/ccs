@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -173,15 +174,15 @@ func TestNudgeFailureIsRetried(t *testing.T) {
 
 func TestNudgeEnvelopeIsNotTheUser(t *testing.T) {
 	claimEnv(t)
-	sessions := t.TempDir() // never the real ~/.claude/sessions
-	old := getSessionsDir
-	getSessionsDir = func() string { return sessions }
-	t.Cleanup(func() { getSessionsDir = old })
+	sessDir := t.TempDir() // never the real ~/.claude/sessions
+	old := sessions.GetSessionsDir
+	sessions.GetSessionsDir = func() string { return sessDir }
+	t.Cleanup(func() { sessions.GetSessionsDir = old })
 	sock, got := fakeSocket(t)
 	pid := os.Getpid()
-	os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"s-me","name":"me","messagingSocketPath":%q}`, sock)), 0o600)
+	os.WriteFile(filepath.Join(sessDir, fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"s-me","name":"me","messagingSocketPath":%q}`, sock)), 0o600)
 	sum := sha256.Sum256([]byte(sock))
-	os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))), []byte(`{"peerToken":"tok"}`), 0o600)
+	os.WriteFile(filepath.Join(sessDir, fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))), []byte(`{"peerToken":"tok"}`), 0o600)
 
 	if err := sendNudge(prClaim{Session: "s-other", PID: pid}, "x"); err == nil {
 		t.Error("a pid now running another session is refused")

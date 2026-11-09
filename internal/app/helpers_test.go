@@ -24,6 +24,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -113,30 +114,30 @@ func TestMain(m *testing.M) {
 	state.UpdateLogPath = filepath.Join(dir, "update.log")
 	state.ActivityLogPath = filepath.Join(dir, "activity.log")
 	focusRecordPath = filepath.Join(dir, "auto-focus.json")
-	openRecordPath = filepath.Join(dir, "open-sessions.json")
+	sessions.OpenRecordPath = filepath.Join(dir, "open-sessions.json")
 	previewDebounce = 0 // tests check the preview right after moving
 	state.SettingsPath = filepath.Join(dir, "settings.json")
 	state.MarksPath = filepath.Join(dir, "sessions.json")
-	hostOf = func(int, string) string { return "" }                       // every session in a terminal, wherever the tests run
-	listAgents = func() (map[string]bgSession, error) { return nil, nil } // never the real claude agents
-	t3Link = func(int) (string, error) { return "", errors.New("no T3 Code in tests") }
-	openApp = func(string) error { return errors.New("tests open nothing") }
+	sessions.HostOf = func(int, string) string { return "" }                                // every session in a terminal, wherever the tests run
+	sessions.ListAgents = func() (map[string]sessions.BgSession, error) { return nil, nil } // never the real claude agents
+	sessions.T3Link = func(int) (string, error) { return "", errors.New("no T3 Code in tests") }
+	sessions.OpenApp = func(string) error { return errors.New("tests open nothing") }
 	releaseKey = testReleaseKey.Public().(ed25519.PublicKey)
 	// links never register a handler or drive the real iTerm unless a test stubs them.
-	linkAppPath = func() string { return filepath.Join(dir, "CCS Links.app") }
-	lsregister = "/bin/false"
-	focusLinkTTY = func(string) error { return errors.New("tests focus nothing") }
-	iTermRunning = func() bool { return false }
-	urlHandlerApp = func() string { return "" }
+	sessions.LinkAppPath = func() string { return filepath.Join(dir, "CCS Links.app") }
+	sessions.Lsregister = "/bin/false"
+	sessions.FocusLinkTTY = func(string) error { return errors.New("tests focus nothing") }
+	sessions.ITermRunning = func() bool { return false }
+	sessions.UrlHandlerApp = func() string { return "" }
 	// launch and close never touch real tabs or processes unless a test stubs them.
 	state.LaunchDir = func() string { return filepath.Join(dir, "launch") }
-	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
-	retypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
-	checkLaunchShell = func() error { return nil }
-	closeTab = func(string) bool { return false }
-	focusTTY = func(string, bool) bool { return false }
+	sessions.OpenLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
+	sessions.RetypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
+	sessions.CheckLaunchShell = func() error { return nil }
+	sessions.CloseTab = func(string) bool { return false }
+	sessions.FocusTTY = func(string, bool) bool { return false }
 	focusPID = func(int, bool) bool { return false }
-	execScript = func(string) error { return errors.New("tests exec nothing") }
+	sessions.ExecScript = func(string) error { return errors.New("tests exec nothing") }
 	mcpRun = func(string, ...string) ([]byte, error) { return nil, errors.New("tests run no claude or codex") }
 	namedTranscript = func(string) string { return "" }
 	coordinatorProbe = func() tea.Msg { return nil }
@@ -144,8 +145,8 @@ func TestMain(m *testing.M) {
 	proc.PsTree = func() (string, error) { return "", nil } // never the machine's own processes
 	// never the real Codex: its data folder is a temp one, and nothing is queued.
 	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }
-	codexQueue = func(string, string) error { return errors.New("tests queue nothing") }
-	liveCodexSessions = func() map[string]liveSession { return nil } // never the machine's own Codex tabs
+	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
+	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil } // never the machine's own Codex tabs
 	transcript.CodexProcCwd = func(int) string { return "" }
 	proc.TtyOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
@@ -181,9 +182,9 @@ func strip2(s string) string { return ansiSeq.ReplaceAllString(s, "") }
 func chatModel(t *testing.T) model {
 	t.Helper()
 	dir := t.TempDir()
-	old := getSessionsDir
-	getSessionsDir = func() string { return dir }
-	t.Cleanup(func() { getSessionsDir = old })
+	old := sessions.GetSessionsDir
+	sessions.GetSessionsDir = func() string { return dir }
+	t.Cleanup(func() { sessions.GetSessionsDir = old })
 	items := buildItems([]transcript.Conversation{
 		{SessionID: "idle", Title: "Quiet one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hello"}}},
 		{SessionID: "live", Title: "Busy one", LastTimestamp: "2026-09-29T10:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hi"}}},

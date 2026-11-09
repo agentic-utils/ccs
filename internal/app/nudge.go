@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 )
 
@@ -66,9 +67,9 @@ type nudgeEvent struct {
 // sendNudge delivers a nudge to a live session; stubbed in tests.
 var sendNudge = func(c prClaim, text string) error {
 	if c.Kind == "codex" {
-		return codexQueue(c.Thread, codexNudgeNote+text)
+		return sessions.CodexQueue(c.Thread, sessions.CodexNudgeNote+text)
 	}
-	f, err := readSessionFile(c.PID)
+	f, err := sessions.ReadSessionFile(c.PID)
 	if err != nil {
 		return fmt.Errorf("session file: %w", err)
 	}
@@ -78,7 +79,7 @@ var sendNudge = func(c prClaim, text string) error {
 	if f.Socket == "" {
 		return fmt.Errorf("it has no message socket")
 	}
-	_, err = sendEnvelope(f.Socket, peerToken(c.PID, f.Socket), nudgeSender, nudgeNote, text, false)
+	_, err = sessions.SendEnvelope(f.Socket, sessions.PeerToken(c.PID, f.Socket), nudgeSender, nudgeNote, text, false)
 	return err
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -34,8 +35,8 @@ func coordinatorFixture(t *testing.T) (ran *[]string) {
 	transcript.GetProjectsDir = func() string { return filepath.Join(dir, "projects") }
 	sessionsFixture(t)
 	stubLaunch(t)
-	oldBin := lookBin
-	lookBin = func(name string) (string, error) {
+	oldBin := sessions.LookBin
+	sessions.LookBin = func(name string) (string, error) {
 		if name == "claude" {
 			return "/bin/claude", nil
 		}
@@ -56,7 +57,7 @@ func coordinatorFixture(t *testing.T) (ran *[]string) {
 		return []byte(`No MCP server named "ccs".`), errors.New("exit status 1")
 	}
 	t.Cleanup(func() {
-		state.SettingsPath, state.MarksPath, transcript.GetProjectsDir, mcpRun, lookBin = oldSettings, oldMarks, oldProjects, oldRun, oldBin
+		state.SettingsPath, state.MarksPath, transcript.GetProjectsDir, mcpRun, sessions.LookBin = oldSettings, oldMarks, oldProjects, oldRun, oldBin
 	})
 	return ran
 }
@@ -66,13 +67,13 @@ func coordinatorFixture(t *testing.T) (ran *[]string) {
 func startsAs(t *testing.T, name string) (scripts *[]string) {
 	t.Helper()
 	scripts = &[]string{}
-	old := openLaunchTab
-	openLaunchTab = func(script string) (string, error) {
+	old := sessions.OpenLaunchTab
+	sessions.OpenLaunchTab = func(script string) (string, error) {
 		*scripts = append(*scripts, script)
-		os.WriteFile(filepath.Join(getSessionsDir(), "1.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"started","name":"`+name+`"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "1.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"started","name":"`+name+`"}`), 0o600)
 		return "/dev/ttys9", nil
 	}
-	t.Cleanup(func() { openLaunchTab = old })
+	t.Cleanup(func() { sessions.OpenLaunchTab = old })
 	return scripts
 }
 
@@ -91,9 +92,9 @@ func TestCoordinatorSetupFromCleanState(t *testing.T) {
 	ran := coordinatorFixture(t)
 	scripts := startsAs(t, coordinatorName)
 	var focused string
-	oldFocus := focusTTY
-	focusTTY = func(tty string, _ bool) bool { focused = tty; return true }
-	defer func() { focusTTY = oldFocus }()
+	oldFocus := sessions.FocusTTY
+	sessions.FocusTTY = func(tty string, _ bool) bool { focused = tty; return true }
+	defer func() { sessions.FocusTTY = oldFocus }()
 
 	out, code := runCoord("--yes")
 	if code != 0 {
@@ -159,8 +160,8 @@ func TestCoordinatorAsksBeforeChangingAnything(t *testing.T) {
 
 func TestCoordinatorMCPAlreadyInstalledIsLeftAlone(t *testing.T) {
 	coordinatorFixture(t)
-	oldBin, oldRun := lookBin, mcpRun
-	lookBin = func(name string) (string, error) { return "/bin/" + name, nil }
+	oldBin, oldRun := sessions.LookBin, mcpRun
+	sessions.LookBin = func(name string) (string, error) { return "/bin/" + name, nil }
 	var ran []string
 	mcpRun = func(bin string, args ...string) ([]byte, error) {
 		ran = append(ran, bin+" "+strings.Join(args, " "))
@@ -169,7 +170,7 @@ func TestCoordinatorMCPAlreadyInstalledIsLeftAlone(t *testing.T) {
 		}
 		return []byte("Status: ✔ Connected"), nil
 	}
-	defer func() { lookBin, mcpRun = oldBin, oldRun }()
+	defer func() { sessions.LookBin, mcpRun = oldBin, oldRun }()
 	p := planCoordinator(false)
 	if len(p.fixes) != 0 || len(p.notes) != 0 || slices.ContainsFunc(p.lines(), func(l string) bool { return strings.Contains(l, "mcp") }) {
 		t.Errorf("nothing to do, nothing to say: %+v %v", p, p.lines())
@@ -226,15 +227,15 @@ func TestMCPCommandsRunFromHome(t *testing.T) {
 
 func TestCoordinatorMCPCodexMissingOnly(t *testing.T) {
 	coordinatorFixture(t)
-	oldBin, oldRun := lookBin, mcpRun
-	lookBin = func(name string) (string, error) { return "/bin/" + name, nil }
+	oldBin, oldRun := sessions.LookBin, mcpRun
+	sessions.LookBin = func(name string) (string, error) { return "/bin/" + name, nil }
 	mcpRun = func(bin string, args ...string) ([]byte, error) {
 		if bin == "codex" {
 			return []byte(`[{"name":"other"}]`), nil
 		}
 		return []byte("Connected"), nil
 	}
-	defer func() { lookBin, mcpRun = oldBin, oldRun }()
+	defer func() { sessions.LookBin, mcpRun = oldBin, oldRun }()
 	p := planCoordinator(false)
 	if len(p.fixes) != 1 || !strings.HasPrefix(p.fixes[0].String(), "codex mcp add ccs --") {
 		t.Errorf("%+v", p)
@@ -269,9 +270,9 @@ func TestCoordinatorMCPFailureIsReported(t *testing.T) {
 
 func TestCoordinatorNeedsClaude(t *testing.T) {
 	coordinatorFixture(t)
-	old := lookBin
-	lookBin = func(string) (string, error) { return "", errors.New("no") }
-	defer func() { lookBin = old }()
+	old := sessions.LookBin
+	sessions.LookBin = func(string) (string, error) { return "", errors.New("no") }
+	defer func() { sessions.LookBin = old }()
 	out, code := runCoord("--yes")
 	if code == 0 || !strings.Contains(out, "needs Claude Code") {
 		t.Errorf("%d %s", code, out)
@@ -283,7 +284,7 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		coordinatorFixture(t)
 		scripts := startsAs(t, coordinatorName)
 		coordinatorRecord{SessionID: "the-id"}.save()
-		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"the-id","name":"renamed"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"the-id","name":"renamed"}`), 0o600)
 		var pid int
 		old := focusPID
 		focusPID = func(p int, _ bool) bool { pid = p; return true }
@@ -297,7 +298,7 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		coordinatorFixture(t)
 		scripts := startsAs(t, coordinatorName)
 		coordinatorRecord{SessionID: "before-clear"}.save()
-		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"coordinator"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"coordinator"}`), 0o600)
 		old := focusPID
 		focusPID = func(int, bool) bool { return true }
 		defer func() { focusPID = old }()
@@ -357,7 +358,7 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		coordinatorFixture(t)
 		scripts := startsAs(t, coordinatorName)
 		coordinatorRecord{SessionID: "before-clear"}.save()
-		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"coordinator"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"coordinator"}`), 0o600)
 		oldPs, oldFocus := proc.PsAll, focusPID
 		proc.PsAll = func() (string, error) {
 			return itoa(os.Getpid()) + " ttys1 /bin/claude hello --session-id before-clear --name coordinator\n", nil
@@ -372,7 +373,7 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 	t.Run("cleared and renamed: the process says which it is", func(t *testing.T) {
 		coordinatorFixture(t)
 		coordinatorRecord{SessionID: "before-clear"}.save()
-		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"hub"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"hub"}`), 0o600)
 		old := proc.PsAll
 		proc.PsAll = func() (string, error) {
 			return itoa(os.Getpid()) + " ttys1 /bin/claude hello --session-id before-clear --name coordinator\n", nil
@@ -416,7 +417,7 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		}
 		// One that's already up can still be switched to.
 		coordinatorRecord{SessionID: "the-id"}.save()
-		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"the-id","name":"coordinator"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"the-id","name":"coordinator"}`), 0o600)
 		old := focusPID
 		focusPID = func(int, bool) bool { return true }
 		defer func() { focusPID = old }()
@@ -454,7 +455,7 @@ func TestCoordinatorListFollowsClear(t *testing.T) {
 	coordinatorRecord{SessionID: "before-clear", Offered: true}.save()
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "before-clear", Title: "coordinator"}, {SessionID: "after-clear", Title: "coordinator"}}), "", nil)
 	m.coordID = "before-clear"
-	res, _ := m.Update(liveMsg{pids: map[string]int{"after-clear": 7}, scan: map[string]liveSession{"after-clear": {pid: 7, stat: sessionStat{name: "coordinator"}}}})
+	res, _ := m.Update(liveMsg{pids: map[string]int{"after-clear": 7}, scan: map[string]sessions.LiveSession{"after-clear": {Pid: 7, Stat: sessions.SessionStat{Name: "coordinator"}}}})
 	m = res.(model)
 	if m.coordID != "after-clear" {
 		t.Errorf("the list follows the session: %s", m.coordID)
@@ -464,9 +465,9 @@ func TestCoordinatorListFollowsClear(t *testing.T) {
 	}
 	// Two with its name: never guess, and a closed coordinator stays recorded.
 	coordinatorRecord{SessionID: "before-clear"}.save()
-	two := map[string]liveSession{"x": {pid: 7, stat: sessionStat{name: "coordinator"}}, "y": {pid: 8, stat: sessionStat{name: "coordinator"}}}
+	two := map[string]sessions.LiveSession{"x": {Pid: 7, Stat: sessions.SessionStat{Name: "coordinator"}}, "y": {Pid: 8, Stat: sessions.SessionStat{Name: "coordinator"}}}
 	rec := loadCoordinator()
-	if followLive(&rec, two) || followLive(&rec, map[string]liveSession{}) || rec.SessionID != "before-clear" {
+	if followLive(&rec, two) || followLive(&rec, map[string]sessions.LiveSession{}) || rec.SessionID != "before-clear" {
 		t.Errorf("%+v", rec)
 	}
 }
@@ -528,7 +529,7 @@ func TestCoordinatorKeepsTheUsersEdits(t *testing.T) {
 
 func TestCoordinatorAdopt(t *testing.T) {
 	coordinatorFixture(t)
-	os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"their-id","name":"hub"}`), 0o600)
+	os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"their-id","name":"hub"}`), 0o600)
 	out, code := runCoord("--adopt", "hub")
 	if code != 0 || !strings.Contains(out, "now the coordinator") {
 		t.Fatalf("%d %s", code, out)
@@ -554,7 +555,7 @@ func TestCoordinatorAdoptOnlyWhatItCanBringBack(t *testing.T) {
 	t.Run("two running with the name: never a guess", func(t *testing.T) {
 		coordinatorFixture(t)
 		for i, id := range []string{"one", "two"} {
-			os.WriteFile(filepath.Join(getSessionsDir(), itoa(i)+".json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"`+id+`","name":"hub"}`), 0o600)
+			os.WriteFile(filepath.Join(sessions.GetSessionsDir(), itoa(i)+".json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"`+id+`","name":"hub"}`), 0o600)
 		}
 		out, code := runCoord("--adopt", "hub")
 		if code != 1 || !strings.Contains(out, "2 running sessions") || loadCoordinator().SessionID != "" {
@@ -566,7 +567,7 @@ func TestCoordinatorAdoptOnlyWhatItCanBringBack(t *testing.T) {
 	})
 	t.Run("a name launch can't take is refused now, not when reopening", func(t *testing.T) {
 		coordinatorFixture(t)
-		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"their-id","name":"my hub"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"their-id","name":"my hub"}`), 0o600)
 		out, code := runCoord("--adopt", "my hub")
 		if code != 1 || !strings.Contains(out, "rename it") || loadCoordinator().SessionID != "" {
 			t.Errorf("%d %s %+v", code, out, loadCoordinator())
@@ -622,7 +623,7 @@ func TestCoordinatorBriefLimits(t *testing.T) {
 
 func TestCoordinatorRelease(t *testing.T) {
 	running := func() {
-		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"the-id","name":"coordinator"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"the-id","name":"coordinator"}`), 0o600)
 	}
 	t.Run("running: an ordinary session, not closed, not found again by name", func(t *testing.T) {
 		coordinatorFixture(t)
@@ -644,7 +645,7 @@ func TestCoordinatorRelease(t *testing.T) {
 		}
 		m := initialModel(buildItems([]transcript.Conversation{{SessionID: "the-id", Title: "coordinator"}}), "", nil)
 		m.coordID = "the-id"
-		res, _ := m.Update(liveMsg{pids: map[string]int{"the-id": 7}, scan: map[string]liveSession{"the-id": {pid: 7, stat: sessionStat{name: "coordinator"}}}})
+		res, _ := m.Update(liveMsg{pids: map[string]int{"the-id": 7}, scan: map[string]sessions.LiveSession{"the-id": {Pid: 7, Stat: sessions.SessionStat{Name: "coordinator"}}}})
 		if m = res.(model); m.coordID != "" || sectionOf(m.filtered[0].familyState) == coordinatorSec {
 			t.Errorf("still on top: %q", m.coordID)
 		}
@@ -698,7 +699,7 @@ func TestCoordinatorRelease(t *testing.T) {
 	t.Run("adopting clears it", func(t *testing.T) {
 		coordinatorFixture(t)
 		coordinatorRecord{Offered: true, Released: true}.save()
-		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"their-id","name":"hub"}`), 0o600)
+		os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"their-id","name":"hub"}`), 0o600)
 		if out, code := runCoord("--adopt", "hub"); code != 0 {
 			t.Fatalf("%d %s", code, out)
 		}
@@ -721,9 +722,9 @@ func TestCoordinatorInPlaceOutsideTabs(t *testing.T) {
 	coordinatorFixture(t)
 	t.Setenv("ITERM_SESSION_ID", "")
 	var ran string
-	old := execScript
-	execScript = func(s string) error { ran = s; return nil }
-	defer func() { execScript = old }()
+	old := sessions.ExecScript
+	sessions.ExecScript = func(s string) error { ran = s; return nil }
+	defer func() { sessions.ExecScript = old }()
 	if out, code := runCoord("--yes"); code != 0 || !strings.HasSuffix(ran, "launch.sh") {
 		t.Errorf("%d %s %q", code, out, ran)
 	}
@@ -955,12 +956,12 @@ func TestCoordinatorProbeOffersOnlyWhenNoneAndUnanswered(t *testing.T) {
 	rec := loadCoordinator()
 	rec.Offered = false
 	rec.save()
-	os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"x","name":"coordinator"}`), 0o600)
+	os.WriteFile(filepath.Join(sessions.GetSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"x","name":"coordinator"}`), 0o600)
 	if probeCoordinator() != nil {
 		t.Error("one exists: no offer")
 	}
 	t.Setenv("ITERM_SESSION_ID", "")
-	os.Remove(filepath.Join(getSessionsDir(), "7.json"))
+	os.Remove(filepath.Join(sessions.GetSessionsDir(), "7.json"))
 	rec = loadCoordinator()
 	rec.SessionID = ""
 	rec.save()
@@ -1058,32 +1059,12 @@ func TestMCPCommandsCaptureStderr(t *testing.T) {
 	}
 }
 
-func TestLaunchOpensTabsInTmuxToo(t *testing.T) {
-	t.Setenv("TMUX", "/tmp/s,1,0")
-	if !canOpenTabs() {
-		t.Error("tmux can open a window")
-	}
-	t.Setenv("TMUX", "")
-	if canOpenTabs() {
-		t.Error("nothing to open a tab in")
-	}
-}
-
-func TestTmuxRunsTheLauncherDirectly(t *testing.T) {
-	args := tmuxWindowArgs("/home/a b/launch.sh")
-	// Everything after the options must be more than one word, or tmux hands it to a shell.
-	i := slices.Index(args, "#{pane_tty}") + 1
-	if got := args[i:]; len(got) < 2 || got[len(got)-1] != "/home/a b/launch.sh" {
-		t.Errorf("%q", got)
-	}
-}
-
 func TestNoZshChangesNothing(t *testing.T) {
 	ran := coordinatorFixture(t)
 	scripts := startsAs(t, coordinatorName)
-	old := checkLaunchShell
-	checkLaunchShell = func() error { return errors.New("sessions are started with zsh, and there's none") }
-	defer func() { checkLaunchShell = old }()
+	old := sessions.CheckLaunchShell
+	sessions.CheckLaunchShell = func() error { return errors.New("sessions are started with zsh, and there's none") }
+	defer func() { sessions.CheckLaunchShell = old }()
 	out, code := runCoord("--yes")
 	if code != 1 || !strings.Contains(out, "zsh") || len(*scripts) > 0 {
 		t.Errorf("%d %s %v", code, out, *scripts)
@@ -1096,19 +1077,5 @@ func TestNoZshChangesNothing(t *testing.T) {
 	}
 	if loadCoordinator().SessionID != "" {
 		t.Error("recorded a session")
-	}
-}
-
-func TestCloseCountsAWindowGoneWithItsSessionAsClosed(t *testing.T) {
-	t.Setenv("TMUX", "/tmp/s,1,0")
-	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID"} {
-		t.Setenv(k, "")
-	}
-	bin := t.TempDir()
-	os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\necho '/dev/ttys1 other:0.0'\n"), 0o700)
-	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
-	// Reads the real closeTab, which TestMain stubs.
-	if !realCloseTab("/dev/ttys9") {
-		t.Error("no pane on that tty in tmux: its window closed itself")
 	}
 }

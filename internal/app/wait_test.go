@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -39,8 +40,8 @@ func waitModel(t *testing.T) model {
 	return m
 }
 
-func waiting(since time.Time, why string) sessionStat {
-	return sessionStat{status: "waiting", waitingFor: why, since: since}
+func waiting(since time.Time, why string) sessions.SessionStat {
+	return sessions.SessionStat{Status: "waiting", WaitingFor: why, Since: since}
 }
 
 func typeIn(m model, s string) model {
@@ -51,7 +52,7 @@ func typeIn(m model, s string) model {
 }
 
 // openByHand applies stats and opens the overlay with Ctrl+W.
-func openByHand(m model, stats map[string]sessionStat) model {
+func openByHand(m model, stats map[string]sessions.SessionStat) model {
 	m.applyStats(stats)
 	m.closeWait()
 	m, _ = chord(m, "w")
@@ -74,7 +75,7 @@ func topRow(m model) string { return strings.Split(strip2(m.View()), "\n")[0] }
 // sessionFileFor writes this process's session file.
 func sessionFileFor(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", os.Getpid()))
+	path := filepath.Join(sessions.GetSessionsDir(), fmt.Sprintf("%d.json", os.Getpid()))
 	os.WriteFile(path, []byte(body), 0o600)
 	return path
 }
@@ -97,10 +98,10 @@ func liveTickOnce(m model) model {
 func TestWaitQueueOrderAndSignals(t *testing.T) {
 	m := waitModel(t)
 	now := time.Now()
-	m.applyStats(map[string]sessionStat{
+	m.applyStats(map[string]sessions.SessionStat{
 		"live": waiting(now.Add(-time.Minute), "permission prompt"),
 		"menu": waiting(now.Add(-time.Hour), "input needed"),
-		"asks": {status: "idle", since: now},
+		"asks": {Status: "idle", Since: now},
 	})
 	ids := func(q []transcript.Conversation) string {
 		var s []string
@@ -116,7 +117,7 @@ func TestWaitQueueOrderAndSignals(t *testing.T) {
 		t.Errorf("by hand the asking session comes last: got %s", got)
 	}
 	// Shell mode and dead sessions never wait.
-	m.setStat("live", sessionStat{status: "shell"})
+	m.setStat("live", sessions.SessionStat{Status: "shell"})
 	m.live["menu"] = false
 	if got := ids(m.waitQueue(false)); got != "" {
 		t.Errorf("shell and dead sessions aren't waiting: got %s", got)
@@ -126,7 +127,7 @@ func TestWaitQueueOrderAndSignals(t *testing.T) {
 func TestWaitBannerShowsTheOldestAndTakesNoKeys(t *testing.T) {
 	m := selectLive(waitModel(t))
 	now := time.Now()
-	m.applyStats(map[string]sessionStat{"live": waiting(now.Add(-time.Minute), "permission prompt"), "menu": waiting(now.Add(-time.Hour), "input needed")})
+	m.applyStats(map[string]sessions.SessionStat{"live": waiting(now.Add(-time.Minute), "permission prompt"), "menu": waiting(now.Add(-time.Hour), "input needed")})
 	if top := bannerRow(m); m.waitOpen || !strings.Contains(top, "Menu one is waiting on you") || !strings.Contains(top, "+1 more") {
 		t.Fatalf("a pop-up is a banner on the oldest wait, not the overlay: open=%v top=%q", m.waitOpen, top)
 	}
@@ -165,15 +166,15 @@ func TestWaitBannerShowsTheOldestAndTakesNoKeys(t *testing.T) {
 func TestWaitBannerNeverHidesALaterWait(t *testing.T) {
 	m := waitModel(t)
 	now := time.Now()
-	m.applyStats(map[string]sessionStat{"live": waiting(now.Add(-time.Minute), "permission prompt")})
+	m.applyStats(map[string]sessions.SessionStat{"live": waiting(now.Add(-time.Minute), "permission prompt")})
 	// Answered in its tab; then another session starts waiting.
-	m.applyStats(map[string]sessionStat{"live": {status: "busy", since: now}, "menu": waiting(now, "input needed")})
+	m.applyStats(map[string]sessions.SessionStat{"live": {Status: "busy", Since: now}, "menu": waiting(now, "input needed")})
 	if !strings.Contains(bannerRow(m), "Menu one is waiting on you") {
 		t.Fatalf("the banner should move on to the new wait: %q", bannerRow(m))
 	}
 	// Seen and closed, while yet another wait arrives: that one still gets the banner.
 	m, _ = chord(m, "w")
-	m.applyStats(map[string]sessionStat{"live": waiting(now.Add(time.Second), "permission prompt"), "menu": waiting(now, "input needed")})
+	m.applyStats(map[string]sessions.SessionStat{"live": waiting(now.Add(time.Second), "permission prompt"), "menu": waiting(now, "input needed")})
 	m, _ = chord(m, "w")
 	if m.waitOpen || !strings.Contains(bannerRow(m), "Busy one is waiting on you") {
 		t.Fatalf("a wait that arrived while the overlay was open was never shown, so it gets the banner: open=%v top=%q", m.waitOpen, bannerRow(m))
@@ -183,8 +184,8 @@ func TestWaitBannerNeverHidesALaterWait(t *testing.T) {
 func TestWaitEscOnAStaleSessionShowsTheNext(t *testing.T) {
 	m := waitModel(t)
 	now := time.Now()
-	m = openByHand(m, map[string]sessionStat{"live": waiting(now.Add(-time.Minute), "permission prompt")})
-	m.applyStats(map[string]sessionStat{"live": {status: "busy", since: now}, "menu": waiting(now, "input needed")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(now.Add(-time.Minute), "permission prompt")})
+	m.applyStats(map[string]sessions.SessionStat{"live": {Status: "busy", Since: now}, "menu": waiting(now, "input needed")})
 	if m.waitID != "live" {
 		t.Fatalf("the overlay stays on its session: %q", m.waitID)
 	}
@@ -196,7 +197,7 @@ func TestWaitEscOnAStaleSessionShowsTheNext(t *testing.T) {
 
 func TestWaitAskedGetsNoBannerButOpensByHand(t *testing.T) {
 	m := waitModel(t)
-	m.applyStats(map[string]sessionStat{"asks": {status: "idle", since: time.Now()}})
+	m.applyStats(map[string]sessions.SessionStat{"asks": {Status: "idle", Since: time.Now()}})
 	if strings.Contains(bannerRow(m), "waiting on you") {
 		t.Error("an asking (idle) session gets no banner")
 	}
@@ -209,7 +210,7 @@ func TestWaitAskedGetsNoBannerButOpensByHand(t *testing.T) {
 func TestWaitSnoozeComesBackAndEndsWithTheWait(t *testing.T) {
 	m := waitModel(t)
 	m.snooze = 15 * time.Minute
-	stats := map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")}
+	stats := map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")}
 	m = openByHand(m, stats)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.waitOpen || time.Until(m.snoozed["live"].Until) < 14*time.Minute {
@@ -228,8 +229,8 @@ func TestWaitSnoozeComesBackAndEndsWithTheWait(t *testing.T) {
 	}
 
 	// Leaving the wait ends the snooze.
-	m.snoozed["live"] = snoozeRec{Since: stats["live"].since, Until: time.Now().Add(time.Hour)}
-	m.applyStats(map[string]sessionStat{"live": {status: "busy", since: time.Now().Add(time.Second)}})
+	m.snoozed["live"] = snoozeRec{Since: stats["live"].Since, Until: time.Now().Add(time.Hour)}
+	m.applyStats(map[string]sessions.SessionStat{"live": {Status: "busy", Since: time.Now().Add(time.Second)}})
 	if _, ok := m.snoozed["live"]; ok {
 		t.Error("a new status should end the snooze")
 	}
@@ -237,8 +238,8 @@ func TestWaitSnoozeComesBackAndEndsWithTheWait(t *testing.T) {
 
 func TestWaitWithoutATimestamp(t *testing.T) {
 	m := waitModel(t)
-	z := (sessionFile{Status: "waiting"}).stat()
-	m.applyStats(map[string]sessionStat{"live": z, "menu": waiting(time.Now().Add(-time.Minute), "input needed")})
+	z := (sessions.SessionFile{Status: "waiting"}).Stat()
+	m.applyStats(map[string]sessions.SessionStat{"live": z, "menu": waiting(time.Now().Add(-time.Minute), "input needed")})
 	if q := m.waitQueue(false); len(q) != 2 || q[0].SessionID != "menu" {
 		t.Errorf("an unknown wait time sorts last: %v", q)
 	}
@@ -249,19 +250,19 @@ func TestWaitWithoutATimestamp(t *testing.T) {
 	}
 	// Snoozed, the same wait stays snoozed; busy then waiting is a new one.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
-	m.applyStats(map[string]sessionStat{"live": z})
+	m.applyStats(map[string]sessions.SessionStat{"live": z})
 	if !m.snoozedNow("live") {
 		t.Fatal("the same wait stays snoozed")
 	}
-	m.applyStats(map[string]sessionStat{"live": (sessionFile{Status: "busy"}).stat()})
-	m.applyStats(map[string]sessionStat{"live": z})
+	m.applyStats(map[string]sessions.SessionStat{"live": (sessions.SessionFile{Status: "busy"}).Stat()})
+	m.applyStats(map[string]sessions.SessionStat{"live": z})
 	if m.snoozedNow("live") || !m.waitDue["live"] {
 		t.Fatalf("busy then waiting is a new wait, even without a timestamp: snoozed=%v due=%v", m.snoozedNow("live"), m.waitDue["live"])
 	}
 	// A snooze restored after a restart can't be matched to a wait without a timestamp, so it can't hide one.
 	n := waitModel(t)
 	n.snoozed = map[string]snoozeRec{"live": {Until: time.Now().Add(time.Hour)}}
-	n.applyStats(map[string]sessionStat{"live": z})
+	n.applyStats(map[string]sessions.SessionStat{"live": z})
 	if n.snoozedNow("live") {
 		t.Error("a restored snooze without a timestamp mustn't hide a wait")
 	}
@@ -315,7 +316,7 @@ func TestWaitKeepsASessionOnlyWhileItsProcessRuns(t *testing.T) {
 	path = sessionFileFor(t, fmt.Sprintf(`{"pid":%d,"sessionId":"live","status":"idle"}`, os.Getpid()))
 	m = liveTickOnce(m)
 	os.WriteFile(path, []byte(`{"sessionId":`), 0o600)
-	for i := 0; i <= keepTicks; i++ {
+	for i := 0; i <= sessions.KeepTicks; i++ {
 		m = liveTickOnce(m)
 	}
 	if m.live["live"] {
@@ -327,7 +328,7 @@ func TestWaitEnterSendsOrGoesToTab(t *testing.T) {
 	m := waitModel(t)
 	sock, got := fakeSocket(t)
 	sessionFileFor(t, fmt.Sprintf(`{"sessionId":"live","messagingSocketPath":%q}`, sock))
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "input needed")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "input needed")})
 	m = typeIn(m, "blue")
 	if m.textInput.Value() != "" || m.chatInput.Value() != "" {
 		t.Fatal("typing in the overlay must not reach the search or the main message box")
@@ -355,7 +356,7 @@ func TestWaitEnterSendsOrGoesToTab(t *testing.T) {
 func TestWaitRefusedSendGivesTheTextBack(t *testing.T) {
 	m := waitModel(t)
 	sessionFileFor(t, `{"sessionId":"live","status":"waiting"}`) // no socket, on a menu
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	m = typeIn(m, "use option two")
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
 	res, _ := m.Update(cmd())
@@ -387,7 +388,7 @@ func TestWaitRefusedSendGivesTheTextBack(t *testing.T) {
 
 func TestWaitMarkersAndHeaderCount(t *testing.T) {
 	m := waitModel(t)
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt"), "asks": {status: "idle", since: time.Now()}})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt"), "asks": {Status: "idle", Since: time.Now()}})
 	m.closeWait() // seen: the title row is back
 	if view := strip2(m.View()); !strings.Contains(view, "1 waiting") {
 		t.Errorf("header counts menus and prompts, not the dim ? guess:\n%s", view)
@@ -415,7 +416,7 @@ func TestSnoozeLength(t *testing.T) {
 func TestWaitSnoozeSurvivesRestartAndFirstTick(t *testing.T) {
 	m := waitModel(t)
 	since := time.Now().Add(-time.Hour)
-	stats := map[string]sessionStat{"live": waiting(since, "permission prompt")}
+	stats := map[string]sessions.SessionStat{"live": waiting(since, "permission prompt")}
 	m = openByHand(m, stats)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	data, _ := json.Marshal(m.uiState())
@@ -433,10 +434,10 @@ func TestWaitSnoozeSurvivesRestartAndFirstTick(t *testing.T) {
 
 func TestWaitNewPromptIsNotCoveredByOldSnooze(t *testing.T) {
 	m := waitModel(t)
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now().Add(-time.Minute), "permission prompt")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now().Add(-time.Minute), "permission prompt")})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	// Answered in its tab and a new prompt came within one tick: still "waiting", new statusUpdatedAt.
-	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "input needed")})
+	m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "input needed")})
 	if !strings.Contains(bannerRow(m), "Busy one is waiting on you") {
 		t.Fatalf("a new wait gets the banner despite the old snooze: %q", bannerRow(m))
 	}
@@ -444,10 +445,10 @@ func TestWaitNewPromptIsNotCoveredByOldSnooze(t *testing.T) {
 
 func TestWaitEmptyStatusChangesNothing(t *testing.T) {
 	m := waitModel(t)
-	stats := map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")}
+	stats := map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")}
 	m = openByHand(m, stats)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
-	m.applyStats(map[string]sessionStat{"live": {}}) // file caught without a status
+	m.applyStats(map[string]sessions.SessionStat{"live": {}}) // file caught without a status
 	m.applyStats(stats)
 	if !m.snoozedNow("live") || m.waitDue["live"] {
 		t.Fatal("a status-less read mustn't end the snooze")
@@ -456,7 +457,7 @@ func TestWaitEmptyStatusChangesNothing(t *testing.T) {
 
 func TestWaitSeenAndClosedGetsNoBanner(t *testing.T) {
 	m := waitModel(t)
-	stats := map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")}
+	stats := map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")}
 	m = openByHand(m, stats)
 	m, _ = chord(m, "w") // close
 	m.applyStats(stats)
@@ -467,7 +468,7 @@ func TestWaitSeenAndClosedGetsNoBanner(t *testing.T) {
 
 func TestWaitCtrlYShowsSnoozedAndKeepsTheirSnoozes(t *testing.T) {
 	m := waitModel(t)
-	stats := map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")}
+	stats := map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")}
 	m = openByHand(m, stats)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	m, _ = chord(m, "w")
@@ -487,7 +488,7 @@ func TestWaitCtrlYShowsSnoozedAndKeepsTheirSnoozes(t *testing.T) {
 func TestWaitDraftStaysWithItsSession(t *testing.T) {
 	m := waitModel(t)
 	now := time.Now()
-	m = openByHand(m, map[string]sessionStat{"menu": waiting(now.Add(-time.Hour), "permission prompt"), "live": waiting(now, "permission prompt")})
+	m = openByHand(m, map[string]sessions.SessionStat{"menu": waiting(now.Add(-time.Hour), "permission prompt"), "live": waiting(now, "permission prompt")})
 	m = typeIn(m, "yes drop the table")
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlN})
 	if m.waitID != "live" || m.waitInput.Value() != "" {
@@ -541,7 +542,7 @@ func TestWaitOwnsTheKeyboardAndMouse(t *testing.T) {
 			m.items[i].conv.Messages = msgs
 		}
 	}
-	open := openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	open := openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	withOffer := open
 	withOffer.updateOpen, withOffer.updateTo = true, "v9.9.9"
 	for name, s := range map[string]model{"open": open, "under the update offer": withOffer} {
@@ -560,7 +561,7 @@ func TestWaitOwnsTheKeyboardAndMouse(t *testing.T) {
 
 func TestWaitCtrlYWorksOnTheUsageScreen(t *testing.T) {
 	m := waitModel(t)
-	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	m.showUsage = true
 	if !strings.Contains(bannerRow(m), "Busy one is waiting on you") {
 		t.Errorf("the banner shows on the usage screen too: %q", bannerRow(m))
@@ -577,7 +578,7 @@ func TestWaitCtrlYWorksOnTheUsageScreen(t *testing.T) {
 func TestWaitLongDraftKeepsTheOverlaySize(t *testing.T) {
 	m := waitModel(t)
 	res, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = openByHand(res.(model), map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	m = openByHand(res.(model), map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	before := strings.Count(m.waitPopup(), "\n")
 	m = typeIn(m, strings.Repeat("long draft ", 30))
 	pop := m.waitPopup()
@@ -613,7 +614,7 @@ func TestWaitFitsATinyTerminal(t *testing.T) {
 	for _, sz := range [][2]int{{20, waitMinHeight}, {40, 12}, {120, 40}, {80, waitMinHeight}} {
 		m := waitModel(t)
 		m.width, m.height = sz[0], sz[1]
-		m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+		m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 		pop := strings.Split(m.waitPopup(), "\n")
 		w := 0
 		for _, l := range pop {
@@ -629,7 +630,7 @@ func TestWaitFitsATinyTerminal(t *testing.T) {
 	// Shorter, there's only the banner, and Ctrl+W says why.
 	m := waitModel(t)
 	m.height = waitMinHeight - 1
-	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	m, _ = chord(m, "w")
 	if m.waitOpen || !strings.Contains(m.errorMsg, "taller") || !strings.Contains(bannerRow(m), "waiting on you") {
 		t.Fatalf("a terminal too short for the overlay keeps the banner and says why: open=%v err=%q", m.waitOpen, m.errorMsg)
@@ -645,7 +646,7 @@ func TestWaitFitsATinyTerminal(t *testing.T) {
 
 func TestWaitHintsListEveryKey(t *testing.T) {
 	m := waitModel(t)
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	pop := strings.Split(strip2(m.waitPopup()), "\n")
 	for _, want := range []string{"enter open its tab", "esc snooze", "↑↓", "pgup", "^X W close", "^C quit"} {
 		if !strings.Contains(pop[len(pop)-2], want) {
@@ -656,7 +657,7 @@ func TestWaitHintsListEveryKey(t *testing.T) {
 
 func TestWaitOverlayShowsOnlyItsOwnErrors(t *testing.T) {
 	m := waitModel(t)
-	m = openByHand(m, map[string]sessionStat{"menu": waiting(time.Now(), "permission prompt")})
+	m = openByHand(m, map[string]sessions.SessionStat{"menu": waiting(time.Now(), "permission prompt")})
 	m.errorMsg = "Busy one is no longer running"
 	if v := strip2(m.waitPopup()); strings.Contains(v, "no longer running") || !strings.Contains(v, "only shown in its own tab") {
 		t.Fatalf("a main-screen error must not replace the overlay's note:\n%s", v)
@@ -668,7 +669,7 @@ func TestWaitEnterReportsInsteadOfDoingNothing(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "")
 	m := waitModel(t)
 	sessionFileFor(t, `{"sessionId":"live"}`)
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	m = typeIn(m, "go on")
 	m, inFlight := key(m, tea.KeyMsg{Type: tea.KeyEnter})
 	m = typeIn(m, "and more")
@@ -714,7 +715,7 @@ func TestWaitAskedHeuristic(t *testing.T) {
 		"Done.":                   waitNone,
 	} {
 		m := waitModel(t)
-		m.chatStatus = map[string]sessionStat{"asks": {status: "idle"}}
+		m.chatStatus = map[string]sessions.SessionStat{"asks": {Status: "idle"}}
 		if got := m.waitSignal(transcript.Conversation{SessionID: "asks", Messages: []transcript.Message{{Role: "assistant", Text: txt}}}); got != want {
 			t.Errorf("%q: got %d, want %d", txt, got, want)
 		}
@@ -723,7 +724,7 @@ func TestWaitAskedHeuristic(t *testing.T) {
 
 func TestWaitFastTickFollowsTheOverlay(t *testing.T) {
 	m := waitModel(t) // the selection is "idle", not live
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	m.chatTickOn = false
 	if m.ensureChatTick() == nil {
 		t.Error("the fast tick should follow the overlay's session")
@@ -732,9 +733,9 @@ func TestWaitFastTickFollowsTheOverlay(t *testing.T) {
 
 func TestWaitForgetsSessionsThatAreGone(t *testing.T) {
 	m := waitModel(t)
-	m.applyStats(map[string]sessionStat{"menu": {status: "idle", since: time.Now()}})
+	m.applyStats(map[string]sessions.SessionStat{"menu": {Status: "idle", Since: time.Now()}})
 	m.live = map[string]bool{"live": true}
-	m.applyStats(map[string]sessionStat{"live": {status: "idle", since: time.Now()}})
+	m.applyStats(map[string]sessions.SessionStat{"live": {Status: "idle", Since: time.Now()}})
 	if _, ok := m.chatStatus["menu"]; ok {
 		t.Error("chatStatus should drop a session that's no longer live")
 	}
@@ -747,7 +748,7 @@ func TestWaitUncheckedPidGetsTheBannerWithANote(t *testing.T) {
 		return fmt.Sprintf(`{"pid":%d,"sessionId":"live","status":"waiting","statusUpdatedAt":1790000000000,"procStart":%q}`, os.Getpid(), procStart)
 	}
 	sessionFileFor(t, body("")) // no procStart: can't check the pid
-	if s := scanSessions(nil); !s["live"].unverified || s["live"].stat.status != "waiting" {
+	if s := sessions.ScanSessions(nil); !s["live"].Unverified || s["live"].Stat.Status != "waiting" {
 		t.Fatalf("a file without procStart should read as unverified: %+v", s["live"])
 	}
 	m = liveTickOnce(m)
@@ -758,11 +759,11 @@ func TestWaitUncheckedPidGetsTheBannerWithANote(t *testing.T) {
 		t.Fatal("the overlay notes an unchecked pid")
 	}
 	sessionFileFor(t, body("Fri Sep 25 10:00:00 2026"))
-	if s := scanSessions(nil); s["live"].unverified {
+	if s := sessions.ScanSessions(nil); s["live"].Unverified {
 		t.Error("a matching procStart is verified")
 	}
 	sessionFileFor(t, body("Fri Sep 25 09:00:00 2026"))
-	if s := scanSessions(nil); s["live"].pid != 0 {
+	if s := sessions.ScanSessions(nil); s["live"].Pid != 0 {
 		t.Error("a start time that doesn't match is a recycled pid: not live at all")
 	}
 }
@@ -818,12 +819,12 @@ func TestWaitMainBoxTextComesBackWhenReselected(t *testing.T) {
 
 func TestWaitDiscardedDraftIsReported(t *testing.T) {
 	m := waitModel(t)
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "permission prompt"), "menu": waiting(time.Now(), "permission prompt")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt"), "menu": waiting(time.Now(), "permission prompt")})
 	m = typeIn(m, "half an answer")
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlN}) // the draft is kept with its session
 	m, _ = chord(m, "w")
 	m.live = map[string]bool{"menu": true}
-	m.applyStats(map[string]sessionStat{"menu": waiting(time.Now(), "permission prompt")})
+	m.applyStats(map[string]sessions.SessionStat{"menu": waiting(time.Now(), "permission prompt")})
 	if !strings.Contains(m.errorMsg, "discarded") {
 		t.Fatalf("a kept draft thrown away when its session exits should be reported: %q", m.errorMsg)
 	}
@@ -833,7 +834,7 @@ func TestWaitHeaderCountKeepsTheTitleRow(t *testing.T) {
 	m := waitModel(t)
 	m.updating, m.updateTo = true, "v9.9.9"
 	m.progress = &updateProgress{step: "downloading", started: time.Now()}
-	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "permission prompt")})
+	m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
 	if top := topRow(m); !strings.Contains(top, "updating to v9.9.9") || !strings.Contains(top, "^X W 1 waiting") || !strings.Contains(top, "quit") {
 		t.Fatalf("the waiting count sits with the title row's notes and hints: %q", top)
 	}
@@ -859,7 +860,7 @@ func TestWaitingQuestionShownAndAnswered(t *testing.T) {
 		t.Fatalf("pending = %+v", conv.Pending)
 	}
 	m.filtered = m.items
-	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "input needed")})
+	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "input needed")})
 	pop := strip2(m.waitPopup())
 	for _, want := range []string{"? Pick a colour", "1  red", "2  green", "     calm", "1-2 answer"} {
 		if !strings.Contains(pop, want) {
@@ -892,7 +893,7 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 	}
 	m.updateFilter()
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
-	m.applyStats(map[string]sessionStat{"live": waiting(time.Now(), "input needed")})
+	m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "input needed")})
 	v := strip2(m.View())
 	for _, want := range []string{"? Which checks?  (pick any)", "1  lint", "2  tests", "answer it in its tab"} {
 		if !strings.Contains(v, want) {
@@ -913,7 +914,7 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 
 func TestListOrdersWaitingThenIdleThenBusy(t *testing.T) {
 	m := selectLive(waitModel(t))
-	m.applyStats(map[string]sessionStat{"menu": waiting(time.Now(), "input needed"), "asks": {status: "idle"}, "live": {status: "busy"}})
+	m.applyStats(map[string]sessions.SessionStat{"menu": waiting(time.Now(), "input needed"), "asks": {Status: "idle"}, "live": {Status: "busy"}})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}) // any update re-sorts
 	var got []string
 	for _, it := range m.filtered {
@@ -954,12 +955,12 @@ func TestLongQuestionWrapsInFull(t *testing.T) {
 
 func TestStatusChangeKeepsTheSelectionOnItsSession(t *testing.T) {
 	m := selectLive(waitModel(t))
-	m.applyStats(map[string]sessionStat{"live": {status: "idle"}, "asks": {status: "idle"}})
+	m.applyStats(map[string]sessions.SessionStat{"live": {Status: "idle"}, "asks": {Status: "idle"}})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
 	row := m.cursor
 	// It goes busy (say Enter resumed it): busy sorts below idle.
-	m.applyStats(map[string]sessionStat{"live": {status: "busy"}, "asks": {status: "idle"}})
+	m.applyStats(map[string]sessions.SessionStat{"live": {Status: "busy"}, "asks": {Status: "idle"}})
 	res, _ := m.Update(struct{}{}) // a tick, not a key
 	m = res.(model)
 	if m.filtered[m.cursor].conv.SessionID != "live" {
@@ -974,11 +975,11 @@ func TestQuestionMarkColours(t *testing.T) {
 	conv := transcript.Conversation{SessionID: "s", Messages: []transcript.Message{{Role: "assistant", Text: "Want me to add that?"}}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s": true}
-	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
+	m.chatStatus = map[string]sessions.SessionStat{"s": {Status: "idle"}}
 	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+askedColour+"m●") {
 		t.Errorf("idle with a question in its last message: a light magenta ●, got %q", marks)
 	}
-	m.chatStatus["s"] = sessionStat{status: "waiting"}
+	m.chatStatus["s"] = sessions.SessionStat{Status: "waiting"}
 	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+waitColour+"m●") {
 		t.Errorf("a menu or prompt waiting: a magenta ●, got %q", marks)
 	}
@@ -994,7 +995,7 @@ func TestAskedSortsBetweenWaitingAndIdle(t *testing.T) {
 	}
 	m := initialModel(buildItems([]transcript.Conversation{mk("busy", "working"), mk("idle", "done."), mk("asked", "Want that?"), mk("menu", "pick one")}), "", nil)
 	m.live = map[string]bool{"busy": true, "idle": true, "asked": true, "menu": true}
-	m.chatStatus = map[string]sessionStat{"busy": {status: "busy"}, "idle": {status: "idle"}, "asked": {status: "idle"}, "menu": {status: "waiting"}}
+	m.chatStatus = map[string]sessions.SessionStat{"busy": {Status: "busy"}, "idle": {Status: "idle"}, "asked": {Status: "idle"}, "menu": {Status: "waiting"}}
 	m.sortList()
 	var got []string
 	for _, it := range m.filtered {
@@ -1026,40 +1027,40 @@ func TestAutoFocus(t *testing.T) {
 		return m
 	}
 	m := start()
-	tick := func(stats map[string]sessionStat) {
+	tick := func(stats map[string]sessions.SessionStat) {
 		t.Helper()
 		m.applyStats(stats)
 		if cmd := m.autoFocusCmd(); cmd != nil {
 			m.applyAutoFocus(cmd().(autoFocusMsg))
 		}
 	}
-	wait := func(at time.Time) sessionStat { return sessionStat{status: "waiting", since: at} }
-	busy := sessionStat{status: "busy"}
+	wait := func(at time.Time) sessions.SessionStat { return sessions.SessionStat{Status: "waiting", Since: at} }
+	busy := sessions.SessionStat{Status: "busy"}
 
 	idle = 5 * time.Second
-	tick(map[string]sessionStat{"a": wait(now), "b": busy, "c": busy})
+	tick(map[string]sessions.SessionStat{"a": wait(now), "b": busy, "c": busy})
 	if len(switched) != 1 || switched[0] != 1 {
 		t.Fatalf("a question already waiting at startup is switched to: %v", switched)
 	}
 	idle = 0
-	tick(map[string]sessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": busy})
+	tick(map[string]sessions.SessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": busy})
 	if len(switched) != 1 {
 		t.Fatal("while the user is typing, it waits rather than switch under them")
 	}
 	idle = 5 * time.Second
-	tick(map[string]sessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": busy})
+	tick(map[string]sessions.SessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": busy})
 	if len(switched) != 2 || switched[1] != 2 {
 		t.Fatalf("once the user is still, it switches to b: %v", switched)
 	}
-	tick(map[string]sessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": wait(now.Add(2 * time.Second))})
+	tick(map[string]sessions.SessionStat{"a": busy, "b": wait(now.Add(time.Second)), "c": wait(now.Add(2 * time.Second))})
 	if len(switched) != 2 {
 		t.Fatalf("not again until b's question is answered: %v", switched)
 	}
-	tick(map[string]sessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second))})
+	tick(map[string]sessions.SessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second))})
 	if len(switched) != 3 || switched[2] != 3 {
 		t.Fatalf("b answered, so on to c: %v", switched)
 	}
-	tick(map[string]sessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second))})
+	tick(map[string]sessions.SessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second))})
 	if len(switched) != 3 {
 		t.Fatalf("once per wait: %v", switched)
 	}
@@ -1067,7 +1068,7 @@ func TestAutoFocus(t *testing.T) {
 	// A restart (say an update) remembers c was dealt with, but d's question,
 	// which came up meanwhile, is still news.
 	m = start()
-	tick(map[string]sessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second)), "d": wait(now.Add(3 * time.Second))})
+	tick(map[string]sessions.SessionStat{"a": busy, "b": busy, "c": wait(now.Add(2 * time.Second)), "d": wait(now.Add(3 * time.Second))})
 	if len(switched) != 4 || switched[3] != 4 {
 		t.Fatalf("after a restart: d, not c again: %v", switched)
 	}
@@ -1094,11 +1095,11 @@ func TestAutoFocusSkipsHostedSessions(t *testing.T) {
 	m.hosts = map[string]string{"t3": "T3 Code (Beta)"}
 	m.autoFocus = true
 	now := time.Now()
-	m.applyStats(map[string]sessionStat{"t3": {status: "waiting", since: now}})
+	m.applyStats(map[string]sessions.SessionStat{"t3": {Status: "waiting", Since: now}})
 	if cmd := m.autoFocusCmd(); cmd != nil {
 		t.Fatal("a session in an app has no tab to switch to")
 	}
-	m.applyStats(map[string]sessionStat{"t3": {status: "waiting", since: now}, "term": {status: "waiting", since: now}})
+	m.applyStats(map[string]sessions.SessionStat{"t3": {Status: "waiting", Since: now}, "term": {Status: "waiting", Since: now}})
 	if cmd := m.autoFocusCmd(); cmd != nil {
 		m.applyAutoFocus(cmd().(autoFocusMsg))
 	}

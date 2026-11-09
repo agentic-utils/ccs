@@ -14,42 +14,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
-
-func TestLaunchScript(t *testing.T) {
-	dir := "/c/launch/n"
-	got := launchScript(launchOpts{name: "n", brief: "do it", cwd: "/w"}, "/bin/claude", dir)
-	want := "#!/bin/zsh -l\ncd '/w' || exit 1\n[ -f ~/.claude.secret ] && source ~/.claude.secret\n" +
-		`exec '/bin/claude' "$(cat '/c/launch/n/brief.md')" --name 'n' ${=CCS_CLAUDE_ARGS}` + "\n"
-	if got != want {
-		t.Errorf("the brief goes before CCS_CLAUDE_ARGS (its --channels takes every word after it):\n%s", got)
-	}
-	got = launchScript(launchOpts{name: "n", resume: "abc", cwd: "/w"}, "/bin/claude", dir)
-	if !strings.Contains(got, `exec '/bin/claude' --resume 'abc' --name 'n' ${=CCS_CLAUDE_ARGS}`) {
-		t.Errorf("resume, no brief:\n%s", got)
-	}
-	got = launchScript(launchOpts{name: "n", brief: "x", cwd: "/w", codex: true}, "/bin/codex", dir)
-	stateDir := proc.ShellQuote(filepath.Dir(state.SettingsPath))
-	if !strings.Contains(got, `exec '/bin/codex' -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir '/c/launch/n' --add-dir `+stateDir+` "$(cat '/c/launch/n/brief.md')"`) || strings.Contains(got, "claude.secret") {
-		t.Errorf("codex: the user's approval mode, network on, its launch folder (marking it) and ccs's state writable:\n%s", got)
-	}
-	got = launchScript(launchOpts{name: "n", resume: "r1", cwd: "/w", codex: true}, "/bin/codex", dir)
-	if !strings.Contains(got, `exec '/bin/codex' resume 'r1' -s`) {
-		t.Errorf("codex resume:\n%s", got)
-	}
-}
 
 // sessionsFixture points ccs at a temporary sessions folder; write adds a
 // live session file for pid called name.
 func sessionsFixture(t *testing.T) (write func(file string, pid int, name string)) {
 	t.Helper()
 	dir := t.TempDir()
-	old, oldStarts := getSessionsDir, proc.ProcessStartTimes
-	getSessionsDir = func() string { return dir }
+	old, oldStarts := sessions.GetSessionsDir, proc.ProcessStartTimes
+	sessions.GetSessionsDir = func() string { return dir }
 	proc.ProcessStartTimes = func(map[string]int) map[int]time.Time { return nil } // unknown: not checked
-	t.Cleanup(func() { getSessionsDir, proc.ProcessStartTimes = old, oldStarts })
+	t.Cleanup(func() { sessions.GetSessionsDir, proc.ProcessStartTimes = old, oldStarts })
 	return func(file string, pid int, name string) {
 		os.WriteFile(filepath.Join(dir, file), []byte(fmt.Sprintf(`{"pid":%d,"sessionId":"id-%s-%d","name":%q}`, pid, name, pid, name)), 0o600)
 	}
@@ -58,12 +36,12 @@ func sessionsFixture(t *testing.T) (write func(file string, pid int, name string
 func stubLaunch(t *testing.T) {
 	t.Helper()
 	t.Setenv("ITERM_SESSION_ID", "w0t0p0")
-	oldBin, oldWait := lookBin, launchWait
-	lookBin = func(name string) (string, error) { return "/bin/" + name, nil }
-	launchWait = 300 * time.Millisecond
-	oldTab, oldRetype, oldRetypeAt, oldRunning := openLaunchTab, retypeLauncher, launchRetype, launcherRunning
+	oldBin, oldWait := sessions.LookBin, sessions.LaunchWait
+	sessions.LookBin = func(name string) (string, error) { return "/bin/" + name, nil }
+	sessions.LaunchWait = 300 * time.Millisecond
+	oldTab, oldRetype, oldRetypeAt, oldRunning := sessions.OpenLaunchTab, sessions.RetypeLauncher, sessions.LaunchRetype, sessions.LauncherRunning
 	t.Cleanup(func() {
-		lookBin, launchWait, openLaunchTab, retypeLauncher, launchRetype, launcherRunning = oldBin, oldWait, oldTab, oldRetype, oldRetypeAt, oldRunning
+		sessions.LookBin, sessions.LaunchWait, sessions.OpenLaunchTab, sessions.RetypeLauncher, sessions.LaunchRetype, sessions.LauncherRunning = oldBin, oldWait, oldTab, oldRetype, oldRetypeAt, oldRunning
 	})
 }
 
@@ -71,14 +49,14 @@ func TestLaunchWaitsForTheSession(t *testing.T) {
 	write := sessionsFixture(t)
 	stubLaunch(t)
 	var script string
-	openLaunchTab = func(s string) (string, error) {
+	sessions.OpenLaunchTab = func(s string) (string, error) {
 		script = s
 		write("1.json", os.Getpid(), "worker") // claude starts and writes its session file
 		return "/dev/ttys042", nil
 	}
 	cwd := t.TempDir()
-	l, err := launchSession(launchOpts{name: "worker", brief: "fix the `thing` $NOW", cwd: cwd})
-	if err != nil || l.pid != os.Getpid() || l.tty != "/dev/ttys042" {
+	l, err := sessions.LaunchSession(sessions.LaunchOpts{Name: "worker", Brief: "fix the `thing` $NOW", Cwd: cwd})
+	if err != nil || l.Pid != os.Getpid() || l.Tty != "/dev/ttys042" {
 		t.Fatalf("launched: %+v, %v", l, err)
 	}
 	if script != filepath.Join(state.LaunchDir(), "worker", "launch.sh") {
@@ -90,15 +68,15 @@ func TestLaunchWaitsForTheSession(t *testing.T) {
 		t.Errorf("brief kept as written, launcher starts in cwd: %q\n%s", brief, body)
 	}
 
-	if _, err := launchSession(launchOpts{name: "worker", brief: "again", cwd: cwd}); err == nil || !strings.Contains(err.Error(), "already running") {
+	if _, err := sessions.LaunchSession(sessions.LaunchOpts{Name: "worker", Brief: "again", Cwd: cwd}); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Errorf("a name already running is refused: %v", err)
 	}
 	for _, bad := range []string{"", "a b", "x;rm", "-n", strings.Repeat("a", 65)} {
-		if _, err := launchSession(launchOpts{name: bad, brief: "x", cwd: cwd}); err == nil {
+		if _, err := sessions.LaunchSession(sessions.LaunchOpts{Name: bad, Brief: "x", Cwd: cwd}); err == nil {
 			t.Errorf("name %q should be refused", bad)
 		}
 	}
-	if _, err := launchSession(launchOpts{name: "ok", cwd: cwd}); err == nil {
+	if _, err := sessions.LaunchSession(sessions.LaunchOpts{Name: "ok", Cwd: cwd}); err == nil {
 		t.Error("nothing to start: no brief and nothing to resume")
 	}
 }
@@ -106,12 +84,12 @@ func TestLaunchWaitsForTheSession(t *testing.T) {
 func TestLaunchTypesTheLauncherAgainWhenTheShellLostIt(t *testing.T) {
 	write := sessionsFixture(t)
 	stubLaunch(t)
-	launchWait, launchRetype = time.Second, 50*time.Millisecond
-	openLaunchTab = func(string) (string, error) { return "/dev/ttys044", nil } // typed before the shell read input: lost
+	sessions.LaunchWait, sessions.LaunchRetype = time.Second, 50*time.Millisecond
+	sessions.OpenLaunchTab = func(string) (string, error) { return "/dev/ttys044", nil } // typed before the shell read input: lost
 	running := false
-	launcherRunning = func(tty, script string) bool { return running }
+	sessions.LauncherRunning = func(tty, script string) bool { return running }
 	typed := 0
-	retypeLauncher = func(tty, script string) error {
+	sessions.RetypeLauncher = func(tty, script string) error {
 		typed++
 		if tty != "/dev/ttys044" || !strings.HasSuffix(script, "launch.sh") {
 			t.Errorf("typed into %s: %s", tty, script)
@@ -120,16 +98,16 @@ func TestLaunchTypesTheLauncherAgainWhenTheShellLostIt(t *testing.T) {
 		write("1.json", os.Getpid(), "late") // this time it starts
 		return nil
 	}
-	if l, err := launchSession(launchOpts{name: "late", brief: "x", cwd: t.TempDir()}); err != nil || l.pid != os.Getpid() || typed != 1 {
+	if l, err := sessions.LaunchSession(sessions.LaunchOpts{Name: "late", Brief: "x", Cwd: t.TempDir()}); err != nil || l.Pid != os.Getpid() || typed != 1 {
 		t.Errorf("typed again once and started: %+v %v, typed %d", l, err, typed)
 	}
 
 	// Something runs the launcher already (claude at a trust prompt): never typed into.
-	openLaunchTab = func(string) (string, error) { return "/dev/ttys045", nil }
-	launcherRunning = func(string, string) bool { return true }
+	sessions.OpenLaunchTab = func(string) (string, error) { return "/dev/ttys045", nil }
+	sessions.LauncherRunning = func(string, string) bool { return true }
 	typed = 0
-	launchWait = 200 * time.Millisecond
-	launchSession(launchOpts{name: "stuck", brief: "x", cwd: t.TempDir()})
+	sessions.LaunchWait = 200 * time.Millisecond
+	sessions.LaunchSession(sessions.LaunchOpts{Name: "stuck", Brief: "x", Cwd: t.TempDir()})
 	if typed != 0 {
 		t.Errorf("typed into a tab that runs it: %d", typed)
 	}
@@ -138,17 +116,17 @@ func TestLaunchTypesTheLauncherAgainWhenTheShellLostIt(t *testing.T) {
 func TestLaunchFailsLoudlyWhenNothingStarts(t *testing.T) {
 	sessionsFixture(t)
 	stubLaunch(t)
-	openLaunchTab = func(string) (string, error) { return "/dev/ttys043", nil }
-	_, err := launchSession(launchOpts{name: "ghost", brief: "x", cwd: t.TempDir()})
+	sessions.OpenLaunchTab = func(string) (string, error) { return "/dev/ttys043", nil }
+	_, err := sessions.LaunchSession(sessions.LaunchOpts{Name: "ghost", Brief: "x", Cwd: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "didn't start") || !strings.Contains(err.Error(), "ttys043") {
 		t.Errorf("says it didn't start and where to look: %v", err)
 	}
-	openLaunchTab = func(string) (string, error) { return "", errors.New("Automation denied") }
-	if _, err := launchSession(launchOpts{name: "ghost2", brief: "x", cwd: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "Automation denied") {
+	sessions.OpenLaunchTab = func(string) (string, error) { return "", errors.New("Automation denied") }
+	if _, err := sessions.LaunchSession(sessions.LaunchOpts{Name: "ghost2", Brief: "x", Cwd: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "Automation denied") {
 		t.Errorf("a tab that couldn't open is an error: %v", err)
 	}
 	t.Setenv("ITERM_SESSION_ID", "")
-	if _, err := launchSession(launchOpts{name: "ghost3", brief: "x", cwd: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "iTerm") {
+	if _, err := sessions.LaunchSession(sessions.LaunchOpts{Name: "ghost3", Brief: "x", Cwd: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "iTerm") {
 		t.Errorf("outside iTerm: %v", err)
 	}
 }
@@ -163,7 +141,7 @@ func TestCodexSessionsFoundByTheirLaunchFolder(t *testing.T) {
 			"  102 ttys002 /bin/codex --add-dir " + d + "-other x\n" + // another name's folder
 			"  103 ttys003 vim " + d + "/brief.md\n", nil
 	}
-	if pids, _ := sessionsNamed("cx"); len(pids) != 1 || pids[0] != 101 {
+	if pids, _ := sessions.SessionsNamed("cx"); len(pids) != 1 || pids[0] != 101 {
 		t.Errorf("only codex with that launch folder: %v", pids)
 	}
 }
@@ -178,15 +156,15 @@ func TestCloseStopsThenClosesTheTab(t *testing.T) {
 	go func() { child.Wait(); close(exited) }()
 	pid := child.Process.Pid
 	write("a.json", pid, "worker")
-	oldTTY, oldSig, oldTab, oldWait := proc.TtyOf, proc.SignalPID, closeTab, closeWait
+	oldTTY, oldSig, oldTab, oldWait := proc.TtyOf, proc.SignalPID, sessions.CloseTab, sessions.CloseWait
 	t.Cleanup(func() {
-		proc.TtyOf, proc.SignalPID, closeTab, closeWait = oldTTY, oldSig, oldTab, oldWait
+		proc.TtyOf, proc.SignalPID, sessions.CloseTab, sessions.CloseWait = oldTTY, oldSig, oldTab, oldWait
 		child.Process.Kill()
 	})
 	proc.TtyOf = func(int) string { return "/dev/ttys044" }
-	closeWait = 2 * time.Second
+	sessions.CloseWait = 2 * time.Second
 	var closed []string
-	closeTab = func(tty string) bool {
+	sessions.CloseTab = func(tty string) bool {
 		if proc.PidAlive(pid) {
 			select {
 			case <-exited:
@@ -205,7 +183,7 @@ func TestCloseStopsThenClosesTheTab(t *testing.T) {
 		<-exited // reaped, so pidAlive sees it gone
 		return err
 	}
-	msg, err := closeByName("worker")
+	msg, err := sessions.CloseByName("worker")
 	if err != nil || !strings.Contains(msg, "closed worker") || len(closed) != 1 || closed[0] != "/dev/ttys044" {
 		t.Fatalf("closed: %q, %v, tabs %v", msg, err, closed)
 	}
@@ -213,26 +191,28 @@ func TestCloseStopsThenClosesTheTab(t *testing.T) {
 
 func TestCloseRefusals(t *testing.T) {
 	write := sessionsFixture(t)
-	if _, err := closeByName("nobody"); err == nil || !strings.Contains(err.Error(), "no running session") {
+	if _, err := sessions.CloseByName("nobody"); err == nil || !strings.Contains(err.Error(), "no running session") {
 		t.Errorf("unknown name: %v", err)
 	}
 	write("a.json", os.Getpid(), "twin")
 	write("b.json", os.Getppid(), "twin")
-	if _, err := closeByName("twin"); err == nil || !strings.Contains(err.Error(), "2 running sessions") {
+	if _, err := sessions.CloseByName("twin"); err == nil || !strings.Contains(err.Error(), "2 running sessions") {
 		t.Errorf("two sessions with one name are left alone: %v", err)
 	}
 	write("c.json", os.Getpid(), "stuck")
-	oldTTY, oldSig, oldTab, oldWait := proc.TtyOf, proc.SignalPID, closeTab, closeWait
-	t.Cleanup(func() { proc.TtyOf, proc.SignalPID, closeTab, closeWait = oldTTY, oldSig, oldTab, oldWait })
-	if _, err := closeSession("stuck", os.Getpid()); err == nil || !strings.Contains(err.Error(), "no terminal") {
+	oldTTY, oldSig, oldTab, oldWait := proc.TtyOf, proc.SignalPID, sessions.CloseTab, sessions.CloseWait
+	t.Cleanup(func() {
+		proc.TtyOf, proc.SignalPID, sessions.CloseTab, sessions.CloseWait = oldTTY, oldSig, oldTab, oldWait
+	})
+	if _, err := sessions.CloseSession("stuck", os.Getpid()); err == nil || !strings.Contains(err.Error(), "no terminal") {
 		t.Errorf("no tty (an app or claude --bg): %v", err)
 	}
 	proc.TtyOf = func(int) string { return "/dev/ttys045" }
 	proc.SignalPID = func(int, syscall.Signal) error { return nil } // ignores it
-	closeWait = 200 * time.Millisecond
+	sessions.CloseWait = 200 * time.Millisecond
 	tabClosed := false
-	closeTab = func(string) bool { tabClosed = true; return true }
-	if _, err := closeSession("stuck", os.Getpid()); err == nil || !strings.Contains(err.Error(), "still running") || tabClosed {
+	sessions.CloseTab = func(string) bool { tabClosed = true; return true }
+	if _, err := sessions.CloseSession("stuck", os.Getpid()); err == nil || !strings.Contains(err.Error(), "still running") || tabClosed {
 		t.Errorf("a process that won't exit keeps its tab: %v, closed %v", err, tabClosed)
 	}
 }
@@ -241,7 +221,7 @@ func TestLaunchAndCloseFromTheList(t *testing.T) {
 	stubLaunch(t)
 	sessionsFixture(t)
 	var script string
-	openLaunchTab = func(s string) (string, error) { script = s; return "", errors.New("no tab in tests") }
+	sessions.OpenLaunchTab = func(s string) (string, error) { script = s; return "", errors.New("no tab in tests") }
 	cwd := t.TempDir()
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
 	m.width, m.height = 120, 30
@@ -292,7 +272,7 @@ func TestLaunchResumeNeedsATranscript(t *testing.T) {
 	sessionsFixture(t)
 	stubLaunch(t)
 	opened := false
-	openLaunchTab = func(string) (string, error) { opened = true; return "", errors.New("stop here") }
+	sessions.OpenLaunchTab = func(string) (string, error) { opened = true; return "", errors.New("stop here") }
 	projects := t.TempDir()
 	old := transcript.GetProjectsDir
 	transcript.GetProjectsDir = func() string { return projects }
@@ -309,7 +289,7 @@ func TestLaunchResumeNeedsATranscript(t *testing.T) {
 		codex bool
 	}{{"missing-id", false}, {"01a1a197-0000-0000-0000-000000000000", true}, {thread, false}, {"known-id", true}} {
 		opened = false
-		_, err := launchSession(launchOpts{name: "r", resume: c.id, codex: c.codex, cwd: t.TempDir()})
+		_, err := sessions.LaunchSession(sessions.LaunchOpts{Name: "r", Resume: c.id, Codex: c.codex, Cwd: t.TempDir()})
 		if err == nil || !strings.Contains(err.Error(), "to resume") || opened {
 			t.Errorf("%+v: refused before any tab opens: %v (opened %v)", c, err, opened)
 		}
@@ -319,7 +299,7 @@ func TestLaunchResumeNeedsATranscript(t *testing.T) {
 		codex bool
 	}{{"known-id", false}, {thread, true}} {
 		opened = false
-		launchSession(launchOpts{name: "r", resume: c.id, codex: c.codex, cwd: t.TempDir()})
+		sessions.LaunchSession(sessions.LaunchOpts{Name: "r", Resume: c.id, Codex: c.codex, Cwd: t.TempDir()})
 		if !opened {
 			t.Errorf("%+v: a session that exists gets its tab", c)
 		}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 
@@ -859,9 +860,9 @@ func TestPruneRefusedOnLiveSession(t *testing.T) {
 
 func TestLiveCheckedAtConfirmAndAlwaysApplied(t *testing.T) {
 	dir := t.TempDir()
-	old := getSessionsDir
-	getSessionsDir = func() string { return dir }
-	defer func() { getSessionsDir = old }()
+	old := sessions.GetSessionsDir
+	sessions.GetSessionsDir = func() string { return dir }
+	defer func() { sessions.GetSessionsDir = old }()
 
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hi"}}`+"\n"), 0o644); err != nil {
@@ -1178,7 +1179,7 @@ func TestLiveMarkerColours(t *testing.T) {
 	m.width = 140
 	m.live = map[string]bool{"s": true}
 	row := func(status string) string {
-		m.chatStatus = map[string]sessionStat{"s": {status: status}}
+		m.chatStatus = map[string]sessions.SessionStat{"s": {Status: status}}
 		it := m.filtered[0]
 		it.sectioned = false // no section heading to say it, so the circle does
 		return m.formatListItem(it, false)
@@ -1386,7 +1387,7 @@ func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
 	m := initialModel(buildItems([]transcript.Conversation{child, other, parent, late}), "", nil)
 	m.width, m.height = 120, 30
 	m.live = map[string]bool{"child": true}
-	m.chatStatus = map[string]sessionStat{"child": {status: "waiting"}}
+	m.chatStatus = map[string]sessions.SessionStat{"child": {Status: "waiting"}}
 	m.sortList()
 	var got []string
 	for _, it := range m.filtered {
@@ -1615,7 +1616,7 @@ func TestDotOnlyWhenItAdds(t *testing.T) {
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 140, 30
 	m.live = map[string]bool{"idle": true, "done": true, "app": true, "pin": true}
-	m.chatStatus = map[string]sessionStat{"idle": {status: "idle"}, "done": {status: "idle"}, "app": {status: "idle"}, "pin": {status: "idle"}}
+	m.chatStatus = map[string]sessions.SessionStat{"idle": {Status: "idle"}, "done": {Status: "idle"}, "app": {Status: "idle"}, "pin": {Status: "idle"}}
 	m.hosts = map[string]string{"app": "Zed"}
 	seen := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	m.marks = &sessionMarks{

@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -69,7 +70,7 @@ func (m model) waitSignal(conv transcript.Conversation) int {
 	if !m.live[conv.SessionID] {
 		return waitNone
 	}
-	switch m.chatStatus[conv.SessionID].status {
+	switch m.chatStatus[conv.SessionID].Status {
 	case "waiting":
 		return waitPrompt
 	case "idle":
@@ -114,7 +115,7 @@ func (m model) waitQueue(all bool) []transcript.Conversation {
 	}
 	for _, q := range [][]transcript.Conversation{prompts, asked} {
 		sort.SliceStable(q, func(i, j int) bool {
-			a, b := m.chatStatus[q[i].SessionID].since, m.chatStatus[q[j].SessionID].since
+			a, b := m.chatStatus[q[i].SessionID].Since, m.chatStatus[q[j].SessionID].Since
 			if a.IsZero() != b.IsZero() {
 				return b.IsZero()
 			}
@@ -137,25 +138,25 @@ func (m model) waitPos(q []transcript.Conversation) int {
 // session after ccs starts counts as a new wait, except that a restored
 // snooze for the same statusUpdatedAt still holds (without one, it can't be
 // matched, so it goes).
-func (m *model) setStat(id string, st sessionStat) {
-	if st.status == "" {
+func (m *model) setStat(id string, st sessions.SessionStat) {
+	if st.Status == "" {
 		return
 	}
 	if m.chatStatus == nil {
-		m.chatStatus = make(map[string]sessionStat)
+		m.chatStatus = make(map[string]sessions.SessionStat)
 	}
 	old, had := m.chatStatus[id]
 	m.chatStatus[id] = st
 	switch {
-	case st.status != "waiting":
+	case st.Status != "waiting":
 		delete(m.snoozed, id)
 		delete(m.waitDue, id)
 	case !had:
-		if s, ok := m.snoozed[id]; ok && (st.since.IsZero() || !s.Since.Equal(st.since)) {
+		if s, ok := m.snoozed[id]; ok && (st.Since.IsZero() || !s.Since.Equal(st.Since)) {
 			delete(m.snoozed, id)
 		}
 		m.markDue(id)
-	case old.status != "waiting" || !st.since.IsZero() && !st.since.Equal(old.since):
+	case old.Status != "waiting" || !st.Since.IsZero() && !st.Since.Equal(old.Since):
 		delete(m.snoozed, id)
 		m.markDue(id)
 	}
@@ -165,7 +166,7 @@ func (m *model) setStat(id string, st sessionStat) {
 // (the live tick keeps one whose file is briefly unreadable while its
 // process runs), and ends snoozes whose time is up, so their wait gets the
 // banner again.
-func (m *model) applyStats(stats map[string]sessionStat) {
+func (m *model) applyStats(stats map[string]sessions.SessionStat) {
 	if stats == nil {
 		return
 	}
@@ -188,7 +189,7 @@ func (m *model) applyStats(stats map[string]sessionStat) {
 		}
 	}
 	for id := range m.waitDue {
-		if m.chatStatus[id].status != "waiting" {
+		if m.chatStatus[id].Status != "waiting" {
 			delete(m.waitDue, id)
 		}
 	}
@@ -384,7 +385,7 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.snoozed == nil {
 				m.snoozed = make(map[string]snoozeRec)
 			}
-			m.snoozed[m.waitID] = snoozeRec{Since: m.chatStatus[m.waitID].since, Until: time.Now().Add(m.snooze)}
+			m.snoozed[m.waitID] = snoozeRec{Since: m.chatStatus[m.waitID].Since, Until: time.Now().Add(m.snooze)}
 		}
 		q := m.waitQueue(true)
 		if i := slices.IndexFunc(q, func(c transcript.Conversation) bool {
@@ -560,13 +561,13 @@ func (m model) waitPopup() string {
 	case !ok:
 		title += " · \033[90msession gone\033[0m"
 	case m.waitSignal(conv) == waitPrompt:
-		why := st.waitingFor
+		why := st.WaitingFor
 		if why == "" {
 			why = "waiting"
 		}
 		title += " · " + m.sessionName(conv) + " · " + why
-		if !st.since.IsZero() {
-			title += fmt.Sprintf(" · %dm", int(time.Since(st.since).Minutes()))
+		if !st.Since.IsZero() {
+			title += fmt.Sprintf(" · %dm", int(time.Since(st.Since).Minutes()))
 		}
 	case m.waitSignal(conv) == waitAsked:
 		title += " · " + m.sessionName(conv) + " · \033[90mits last message asks you something\033[0m"
@@ -644,7 +645,7 @@ var userIdle = func() (time.Duration, bool) {
 }
 
 // autoFocusTab selects a session's tab or pane without bringing iTerm in front.
-var autoFocusTab = func(pid int) bool { return focusSession(pid, false) }
+var autoFocusTab = func(pid int) bool { return sessions.FocusSession(pid, false) }
 
 type autoFocusMsg struct {
 	id      string
@@ -669,9 +670,9 @@ func (m *model) autoFocusCmd() tea.Cmd {
 		m.focusHandled, m.focusNoted = map[string]time.Time{}, map[string]bool{}
 	}
 	if held := m.focusHeld; held != "" {
-		if m.chatStatus[held].status == "waiting" {
+		if m.chatStatus[held].Status == "waiting" {
 			for sid, st := range m.chatStatus {
-				if h, ok := m.focusHandled[sid]; sid != held && st.status == "waiting" && !(ok && h.Equal(st.since)) {
+				if h, ok := m.focusHandled[sid]; sid != held && st.Status == "waiting" && !(ok && h.Equal(st.Since)) {
 					m.noteFocus(sid, "held", "auto-focus: %s is waiting too; holding on %s until it's answered", m.focusName(sid), m.focusName(held))
 				}
 			}
@@ -682,7 +683,7 @@ func (m *model) autoFocusCmd() tea.Cmd {
 	}
 	id := ""
 	for sid, st := range m.chatStatus {
-		if h, ok := m.focusHandled[sid]; st.status != "waiting" || ok && h.Equal(st.since) {
+		if h, ok := m.focusHandled[sid]; st.Status != "waiting" || ok && h.Equal(st.Since) {
 			continue
 		}
 		id = sid // ponytail: any one of several waits; the rest follow once it's answered
@@ -692,17 +693,17 @@ func (m *model) autoFocusCmd() tea.Cmd {
 		return nil
 	}
 	if h := m.hosts[id]; h != "" { // no terminal to switch to (a background one too: attach is your call)
-		m.focusHandled[id] = m.chatStatus[id].since
+		m.focusHandled[id] = m.chatStatus[id].Since
 		m.noteFocus(id, "hosted", "auto-focus: %s is waiting in %s, which ccs can't switch to", m.focusName(id), h)
 		return nil
 	}
 	why := ""
-	if w := m.chatStatus[id].waitingFor; w != "" {
+	if w := m.chatStatus[id].WaitingFor; w != "" {
 		why = " (" + w + ")"
 	}
 	m.noteFocus(id, "waiting", "auto-focus: %s is waiting%s", m.focusName(id), why)
 	m.focusBusy = true
-	since := m.chatStatus[id].since
+	since := m.chatStatus[id].Since
 	return func() tea.Msg {
 		idle, ok := userIdle()
 		if !ok || idle < autoFocusIdle {
@@ -738,7 +739,7 @@ func (m *model) applyAutoFocus(msg autoFocusMsg) {
 
 // noteFocus logs a step of a wait once (by kind), not on every tick it lasts.
 func (m *model) noteFocus(id, kind, format string, args ...any) {
-	key := id + " " + kind + " " + m.chatStatus[id].since.String()
+	key := id + " " + kind + " " + m.chatStatus[id].Since.String()
 	if m.focusNoted[key] {
 		return
 	}
@@ -748,7 +749,7 @@ func (m *model) noteFocus(id, kind, format string, args ...any) {
 
 // focusName names a session for the log.
 func (m model) focusName(id string) string {
-	if n := m.chatStatus[id].name; n != "" {
+	if n := m.chatStatus[id].Name; n != "" {
 		return n
 	}
 	return id[:min(8, len(id))]
@@ -779,7 +780,7 @@ func loadFocusRecord() (handled map[string]time.Time, ok bool) {
 func (m *model) saveFocusRecord() {
 	open := map[string]time.Time{}
 	for id, since := range m.focusHandled {
-		if m.chatStatus[id].status == "waiting" {
+		if m.chatStatus[id].Status == "waiting" {
 			open[id] = since
 		}
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/x/term"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -201,22 +202,22 @@ func findCoordinator() coordinatorState {
 	if rec.Released {
 		return coordinatorState{kind: coordNone, rec: rec}
 	}
-	live := scanSessions(nil)
+	live := sessions.ScanSessions(nil)
 	if rec.SessionID != "" {
 		if s, ok := live[rec.SessionID]; ok {
-			return coordinatorState{coordLive, rec, s.pid}
+			return coordinatorState{coordLive, rec, s.Pid}
 		}
 	}
 	if followLive(&rec, live) {
 		rec.save()
-		return coordinatorState{coordLive, rec, live[rec.SessionID].pid}
+		return coordinatorState{coordLive, rec, live[rec.SessionID].Pid}
 	}
 	if rec.SessionID != "" {
 		if pid := startingProcess(rec.SessionID); pid != 0 {
 			// Its arguments keep the id it started with, so after /clear (with a
 			// new name too) it's this process that says which session it is now.
 			for id, s := range live {
-				if s.pid == pid {
+				if s.Pid == pid {
 					rec.SessionID = id
 					rec.save()
 					return coordinatorState{coordLive, rec, pid}
@@ -225,7 +226,7 @@ func findCoordinator() coordinatorState {
 			return coordinatorState{coordStarting, rec, pid}
 		}
 	}
-	if rec.SessionID != "" && resumable(rec.SessionID, false) {
+	if rec.SessionID != "" && sessions.Resumable(rec.SessionID, false) {
 		return coordinatorState{coordResumable, rec, 0}
 	}
 	if id := namedTranscript(rec.name()); id != "" {
@@ -238,13 +239,13 @@ func findCoordinator() coordinatorState {
 
 // followLive points rec at the one running session with its name, when the
 // recorded id isn't running: /clear gives a session a new id and keeps its name.
-func followLive(rec *coordinatorRecord, live map[string]liveSession) bool {
+func followLive(rec *coordinatorRecord, live map[string]sessions.LiveSession) bool {
 	if _, ok := live[rec.SessionID]; ok && rec.SessionID != "" {
 		return false
 	}
 	found := ""
 	for id, s := range live {
-		if s.stat.name == rec.name() && !s.codex {
+		if s.Stat.Name == rec.name() && !s.Codex {
 			if found != "" {
 				return false
 			}
@@ -349,7 +350,7 @@ func ccsCommand() string {
 // missingMCP says which installed CLIs lack the ccs MCP server. A CLI that
 // can't say is left alone, with a note: never install over an unknown.
 func missingMCP() (fixes []mcpFix, notes []string) {
-	if _, err := lookBin("claude"); err == nil {
+	if _, err := sessions.LookBin("claude"); err == nil {
 		out, err := mcpRun("claude", "mcp", "get", "ccs")
 		switch {
 		case err == nil:
@@ -362,7 +363,7 @@ func missingMCP() (fixes []mcpFix, notes []string) {
 			notes = append(notes, fmt.Sprintf("couldn't tell whether Claude Code has the ccs MCP server: %v", err))
 		}
 	}
-	if _, err := lookBin("codex"); err == nil {
+	if _, err := sessions.LookBin("codex"); err == nil {
 		out, err := mcpRun("codex", "mcp", "list", "--json")
 		var servers []struct {
 			Name string `json:"name"`
@@ -428,7 +429,7 @@ func (p coordinatorPlan) lines() []string {
 	if _, err := os.Stat(coordinatorDir()); err == nil {
 		verb = "use "
 	}
-	out := []string{verb + tildePath(coordinatorDir())}
+	out := []string{verb + sessions.TildePath(coordinatorDir())}
 	for _, f := range p.fixes {
 		out = append(out, "run "+f.String())
 	}
@@ -450,15 +451,15 @@ func newSessionID() (string, error) {
 // has it from its first turn. A failed MCP step is reported, not fatal: the
 // role works through the ccs commands alone.
 func createCoordinator(p coordinatorPlan, inPlace bool) (string, error) {
-	if _, err := lookBin("claude"); err != nil {
+	if _, err := sessions.LookBin("claude"); err != nil {
 		return "", errors.New("the coordinator needs Claude Code, since Codex sessions can't receive messages from other sessions (they can still work under it): install claude first")
 	}
-	if err := checkLaunchShell(); err != nil {
+	if err := sessions.CheckLaunchShell(); err != nil {
 		return "", err
 	}
 	// Only a released one can still be running here: findCoordinator would have
 	// found any other. Before anything changes, and it'd be taken for the new one.
-	if pids, err := sessionsNamed(coordinatorName); err == nil && len(pids) > 0 {
+	if pids, err := sessions.SessionsNamed(coordinatorName); err == nil && len(pids) > 0 {
 		return "", fmt.Errorf("a session named %s is still running (pid %d): close or rename it first (ccs close %s)", coordinatorName, pids[0], coordinatorName)
 	}
 	done, errs := applyMCP(p.fixes)
@@ -474,14 +475,14 @@ func createCoordinator(p coordinatorPlan, inPlace bool) (string, error) {
 	if err := rec.save(); err != nil {
 		return "", err
 	}
-	o := launchOpts{name: coordinatorName, brief: coordinatorPrompt, cwd: coordinatorDir(), sessionID: id, focus: true, wait: coordinatorWait, inPlace: inPlace}
+	o := sessions.LaunchOpts{Name: coordinatorName, Brief: coordinatorPrompt, Cwd: coordinatorDir(), SessionID: id, Focus: true, Wait: coordinatorWait, InPlace: inPlace}
 	if inPlace && len(done)+len(errs) > 0 {
 		fmt.Fprintln(os.Stderr, strings.Join(append(done, errs...), "\n"))
 	}
-	if _, err := launchSession(o); err != nil {
+	if _, err := sessions.LaunchSession(o); err != nil {
 		return strings.Join(append(done, errs...), "; "), err
 	}
-	return strings.Join(append(append(done, errs...), "coordinator started; its role is in "+tildePath(filepath.Join(coordinatorDir(), "CLAUDE.md"))), "; "), nil
+	return strings.Join(append(append(done, errs...), "coordinator started; its role is in "+sessions.TildePath(filepath.Join(coordinatorDir(), "CLAUDE.md"))), "; "), nil
 }
 
 // openCoordinator goes to the one that exists: its tab if it's running,
@@ -498,8 +499,8 @@ func openCoordinator(s coordinatorState, inPlace bool) (string, error) {
 		}
 		return "", fmt.Errorf("%s is running (pid %d), but ccs can't switch to its tab from here", name, s.pid)
 	case coordResumable:
-		o := launchOpts{name: name, resume: s.rec.SessionID, cwd: sessionCwd(s.rec.SessionID), focus: true, wait: coordinatorWait, inPlace: inPlace}
-		if _, err := launchSession(o); err != nil {
+		o := sessions.LaunchOpts{Name: name, Resume: s.rec.SessionID, Cwd: sessionCwd(s.rec.SessionID), Focus: true, Wait: coordinatorWait, InPlace: inPlace}
+		if _, err := sessions.LaunchSession(o); err != nil {
 			return "", err
 		}
 		return "Resumed " + name, nil
@@ -508,7 +509,7 @@ func openCoordinator(s coordinatorState, inPlace bool) (string, error) {
 }
 
 // focusPID is focusSession, stubbed in tests.
-var focusPID = focusSession
+var focusPID = sessions.FocusSession
 
 // adoptCoordinator makes an existing session the coordinator, by its name or
 // id. Its folder and role stay its own.
@@ -520,16 +521,16 @@ func adoptCoordinator(who string) (string, error) {
 	}
 	rec := loadCoordinator()
 	id, name, matches := "", "", 0
-	for sid, s := range scanSessions(nil) {
-		if !s.codex && (s.stat.name == who || sid == who) {
-			id, name = sid, s.stat.name
+	for sid, s := range sessions.ScanSessions(nil) {
+		if !s.Codex && (s.Stat.Name == who || sid == who) {
+			id, name = sid, s.Stat.Name
 			matches++
 		}
 	}
 	if matches > 1 {
 		return "", fmt.Errorf("%d running sessions are named %q: give the id of the one you mean", matches, who)
 	}
-	if id == "" && resumable(who, false) {
+	if id == "" && sessions.Resumable(who, false) {
 		id, name = who, sessionTitle(who)
 	}
 	if id == "" {
@@ -623,7 +624,7 @@ func runCoordinator(args []string, stdin io.Reader, stdout, stderr io.Writer, is
 		fmt.Fprintln(stdout, msg)
 		return 0
 	}
-	inPlace := !canOpenTabs()
+	inPlace := !sessions.CanOpenTabs()
 	release, s, err := coordinatorTurn()
 	defer release()
 	if err != nil {
@@ -719,10 +720,10 @@ func probeCoordinator() tea.Msg {
 
 // coordinatorOfferable: the popup hasn't been answered, and could set one up here.
 func coordinatorOfferable() bool {
-	if loadCoordinator().Offered || !canOpenTabs() {
+	if loadCoordinator().Offered || !sessions.CanOpenTabs() {
 		return false
 	}
-	_, err := lookBin("claude")
+	_, err := sessions.LookBin("claude")
 	return err == nil
 }
 

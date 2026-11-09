@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -143,8 +144,8 @@ var parentPID = func(pid int) int {
 // checks them (the pid's start time matches its session file). Stubbed in tests.
 var liveByPID = func() map[int]prClaim {
 	out := map[int]prClaim{}
-	for id, s := range scanSessions(nil) {
-		out[s.pid] = prClaim{Session: id, Name: s.stat.name, PID: s.pid, ProcStart: s.start}
+	for id, s := range sessions.ScanSessions(nil) {
+		out[s.Pid] = prClaim{Session: id, Name: s.Stat.Name, PID: s.Pid, ProcStart: s.Start}
 	}
 	return out
 }
@@ -173,7 +174,7 @@ func callingSession() (prClaim, error) {
 // session: codexLive).
 func claimLive(c prClaim, live map[int]prClaim) bool {
 	if c.Kind == "codex" {
-		return codexLive(c.Thread)
+		return sessions.CodexLive(c.Thread)
 	}
 	s, ok := live[c.PID]
 	return ok && s.Session == c.Session && s.ProcStart == c.ProcStart

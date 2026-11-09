@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -165,7 +166,7 @@ func TestPasteLandsInLiveSessionAndSends(t *testing.T) {
 		t.Errorf("numbers keep rising: %q", m.chatInput.Value())
 	}
 	// Nothing delivered: the text comes back, so its image must stay.
-	r, _ = m.Update(sendDoneMsg{id: id, text: "[Image #2]", err: errUnsent, note: "✗"})
+	r, _ = m.Update(sendDoneMsg{id: id, text: "[Image #2]", err: sessions.ErrUnsent, note: "✗"})
 	m = r.(model)
 	if len(m.pasted[id].images) != 1 {
 		t.Error("an unsent image should stay")

@@ -95,7 +95,7 @@ func (m model) taskLines(conv transcript.Conversation, width int) []string {
 // procStart is when the claude process now running conv started (zero when
 // unknown): anything it started before then died with an earlier one.
 func (m model) procStart(conv transcript.Conversation) time.Time {
-	t, _ := time.Parse(time.ANSIC, strings.Join(strings.Fields(m.lastScan[conv.SessionID].start), " "))
+	t, _ := time.Parse(time.ANSIC, strings.Join(strings.Fields(m.lastScan[conv.SessionID].Start), " "))
 	return t
 }
 

@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -79,10 +80,10 @@ func TestSendViaSocketExactBytes(t *testing.T) {
 	m := chatModel(t)
 	sock, got := fakeSocket(t)
 	pid := os.Getpid()
-	sessions := getSessionsDir()
-	os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","messagingSocketPath":%q}`, sock)), 0o600)
+	sessDir := sessions.GetSessionsDir()
+	os.WriteFile(filepath.Join(sessDir, fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","messagingSocketPath":%q}`, sock)), 0o600)
 	sum := sha256.Sum256([]byte(sock)) // the path as written, not resolved
-	os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))), []byte(`{"peerToken":"tok123"}`), 0o600)
+	os.WriteFile(filepath.Join(sessDir, fmt.Sprintf("%d.%s.key", pid, hex.EncodeToString(sum[:]))), []byte(`{"peerToken":"tok123"}`), 0o600)
 
 	note, err := deliverMessage(pid, "live", "busy", `check "it" </cross-session-message> now`, true)
 	if err != nil || !strings.Contains(note, "via its message socket") {
@@ -114,7 +115,7 @@ func TestSendViaSocketExactBytes(t *testing.T) {
 func TestSendFallsBackToTypingOnlyWhenSocketUnreachable(t *testing.T) {
 	chatModel(t) // temp sessions dir
 	pid := os.Getpid()
-	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(`{"sessionId":"live","messagingSocketPath":"/tmp/ccs-no-such.sock"}`), 0o600)
+	os.WriteFile(filepath.Join(sessions.GetSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(`{"sessionId":"live","messagingSocketPath":"/tmp/ccs-no-such.sock"}`), 0o600)
 	log := fakeTerminal(t)
 	note, err := deliverMessage(pid, "live", "busy", "hello there", true)
 	if err != nil || note != "✓ Typed into busy's tmux pane (as you)" {
@@ -134,7 +135,7 @@ func TestSocketSuccessNeverAlsoTypes(t *testing.T) {
 	chatModel(t)
 	sock, got := fakeSocket(t)
 	pid := os.Getpid()
-	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","messagingSocketPath":%q}`, sock)), 0o600)
+	os.WriteFile(filepath.Join(sessions.GetSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","messagingSocketPath":%q}`, sock)), 0o600)
 	log := fakeTerminal(t)
 	if _, err := deliverMessage(pid, "live", "busy", "once", true); err != nil {
 		t.Fatal(err)
@@ -178,10 +179,10 @@ func TestChatTickReadsStatusAndNewLines(t *testing.T) {
 	conv.SessionID = "live"
 	m.items = buildItems([]transcript.Conversation{*conv})
 	m.updateFilter()
-	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", os.Getpid())), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","status":"busy","statusUpdatedAt":%d}`, time.Now().Add(-14*time.Second).UnixMilli())), 0o600)
+	os.WriteFile(filepath.Join(sessions.GetSessionsDir(), fmt.Sprintf("%d.json", os.Getpid())), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","status":"busy","statusUpdatedAt":%d}`, time.Now().Add(-14*time.Second).UnixMilli())), 0o600)
 	appendTo(t, path, `{"type":"assistant","message":{"content":[{"type":"text","text":"on it"}]},"timestamp":"2026-09-29T10:00:05Z"}`+"\n")
 	res := m.chatTickCmd()().(chatTickResult)
-	if res.stat.status != "busy" || res.conv == nil || len(res.conv.Messages) != 2 {
+	if res.stat.Status != "busy" || res.conv == nil || len(res.conv.Messages) != 2 {
 		t.Fatalf("tick result: %+v", res)
 	}
 	m.cursor = 0
@@ -196,11 +197,11 @@ func TestChatTickReadsStatusAndNewLines(t *testing.T) {
 func TestIdleLiveSelectionStaysStatic(t *testing.T) {
 	m := chatModel(t)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown}) // onto the live session
-	m.chatStatus = map[string]sessionStat{"live": {status: "idle", since: time.Now()}}
+	m.chatStatus = map[string]sessions.SessionStat{"live": {Status: "idle", Since: time.Now()}}
 	m.sortList() // as the tick that set the status would
 	first := m.View()
 	time.Sleep(1100 * time.Millisecond)
-	nm, _ := m.Update(chatTickResult{id: "live", stat: sessionStat{status: "idle", since: m.chatStatus["live"].since}})
+	nm, _ := m.Update(chatTickResult{id: "live", stat: sessions.SessionStat{Status: "idle", Since: m.chatStatus["live"].Since}})
 	if nm.(model).View() != first {
 		t.Error("an idle live session's screen changed; the fast refresh would redraw constantly")
 	}
@@ -208,9 +209,9 @@ func TestIdleLiveSelectionStaysStatic(t *testing.T) {
 
 func TestCtrlSReachesMessageBoxByKeyboard(t *testing.T) {
 	dir := t.TempDir()
-	old := getSessionsDir
-	getSessionsDir = func() string { return dir }
-	defer func() { getSessionsDir = old }()
+	old := sessions.GetSessionsDir
+	sessions.GetSessionsDir = func() string { return dir }
+	defer func() { sessions.GetSessionsDir = old }()
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}), "", nil)
 	m.width, m.height = 120, 30
 	m.live = map[string]bool{"s": true}
@@ -244,9 +245,9 @@ func TestChatPendingLine(t *testing.T) {
 		t.Errorf("pending message should read as sent on one line:\n%s", v)
 	}
 	if m.chatStatus == nil {
-		m.chatStatus = map[string]sessionStat{}
+		m.chatStatus = map[string]sessions.SessionStat{}
 	}
-	m.chatStatus[id] = sessionStat{status: "busy", since: time.Now()}
+	m.chatStatus[id] = sessions.SessionStat{Status: "busy", Since: time.Now()}
 	if v := strip2(m.View()); !strings.Contains(v, "Claude sees it after its current step") {
 		t.Errorf("busy recipient should say when Claude sees it:\n%s", v)
 	}
@@ -268,11 +269,11 @@ func TestChatPendingLine(t *testing.T) {
 }
 
 func TestDeliveryReceipts(t *testing.T) {
-	defer closeInboxes()
+	defer sessions.CloseInboxes()
 	m := chatModel(t)
 	sock, got := fakeSocket(t)
 	pid := os.Getpid()
-	os.WriteFile(filepath.Join(getSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","messagingSocketPath":%q}`, sock)), 0o600)
+	os.WriteFile(filepath.Join(sessions.GetSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","name":"busy","messagingSocketPath":%q}`, sock)), 0o600)
 	if _, err := deliverMessage(pid, "live", "busy", "hello", true); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +288,7 @@ func TestDeliveryReceipts(t *testing.T) {
 		t.Fatalf("message should carry a return address in the session's socket folder: %+v", msg)
 	}
 
-	receipt := func(line string) receiptMsg {
+	receipt := func(line string) sessions.ReceiptMsg {
 		t.Helper()
 		c, err := net.Dial("unix", inbox)
 		if err != nil {
@@ -296,12 +297,12 @@ func TestDeliveryReceipts(t *testing.T) {
 		c.Write([]byte(line + "\n"))
 		c.Close()
 		select {
-		case r := <-receiptsCh:
+		case r := <-sessions.ReceiptsCh:
 			return r
 		case <-time.After(2 * time.Second):
 			t.Fatal("no receipt came through")
 		}
-		return receiptMsg{}
+		return sessions.ReceiptMsg{}
 	}
 	m.pending = map[string]string{"live": "hello"}
 	m.sentAt = map[string]time.Time{"live": time.Now().Add(-time.Minute)}
@@ -319,13 +320,13 @@ func TestDeliveryReceipts(t *testing.T) {
 		t.Errorf("a refusal should say so:\n%s", v)
 	}
 	// Anything else on the inbox (an unknown id, a reply) is ignored.
-	if _, ok := parseReceipt([]byte(`{"type":"control","action":"peer_message_status","status":"held","orig_msg_id":"nope"}`)); ok {
+	if _, ok := sessions.ParseReceipt([]byte(`{"type":"control","action":"peer_message_status","status":"held","orig_msg_id":"nope"}`)); ok {
 		t.Error("a receipt for a message ccs didn't send should be ignored")
 	}
-	if _, ok := parseReceipt([]byte(`{"type":"user","message":{"content":"hi"}}`)); ok {
+	if _, ok := sessions.ParseReceipt([]byte(`{"type":"user","message":{"content":"hi"}}`)); ok {
 		t.Error("a reply isn't a receipt")
 	}
-	closeInboxes()
+	sessions.CloseInboxes()
 	if _, err := os.Stat(inbox); !os.IsNotExist(err) {
 		t.Errorf("the inbox socket should be removed on exit: %v", err)
 	}
@@ -396,7 +397,7 @@ func TestSentMessageDoesNotHideAQuestion(t *testing.T) {
 	c := transcript.Conversation{SessionID: "s", Messages: []transcript.Message{{Role: "assistant", Text: "Which one?"}, {Role: "sent", Text: "fyi", To: "x"}}}
 	m := initialModel(buildItems([]transcript.Conversation{c}), "", nil)
 	m.live = map[string]bool{"s": true}
-	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
+	m.chatStatus = map[string]sessions.SessionStat{"s": {Status: "idle"}}
 	if m.waitSignal(c) != waitAsked {
 		t.Error("a message it sent after asking doesn't hide the question")
 	}
@@ -409,7 +410,7 @@ func TestWorkingLine(t *testing.T) {
 	transcript.NoteOutput(conv, now.Add(-40*time.Second).Format(time.RFC3339), 2000)
 	transcript.NoteOutput(conv, now.Add(-10*time.Second).Format(time.RFC3339Nano), 500)
 	transcript.NoteOutput(conv, "not a time", 7)
-	line := workingLine(*conv, sessionStat{status: "busy", since: now.Add(-64 * time.Second)}, now)
+	line := workingLine(*conv, sessions.SessionStat{Status: "busy", Since: now.Add(-64 * time.Second)}, now)
 	if got := strip2(line); !strings.HasSuffix(got, " Working… (1m 4s · ↓ 2.5k tokens)") {
 		t.Errorf("got %q", got)
 	}
@@ -417,16 +418,16 @@ func TestWorkingLine(t *testing.T) {
 		t.Errorf("the word in Claude's colour, the facts dim: %q", line)
 	}
 	// No tokens yet: only the time. No clock: only the word, never a made-up time.
-	if got := strip2(workingLine(*conv, sessionStat{since: now}, now.Add(time.Second))); !strings.HasSuffix(got, " Working… (1s)") {
+	if got := strip2(workingLine(*conv, sessions.SessionStat{Since: now}, now.Add(time.Second))); !strings.HasSuffix(got, " Working… (1s)") {
 		t.Errorf("got %q", got)
 	}
-	if got := strip2(workingLine(*conv, sessionStat{}, now)); !strings.HasSuffix(got, " Working…") {
+	if got := strip2(workingLine(*conv, sessions.SessionStat{}, now)); !strings.HasSuffix(got, " Working…") {
 		t.Errorf("got %q", got)
 	}
 	// The glyph moves with each tick and comes back round.
 	seen := map[string]bool{}
 	for i := range spinnerFrames {
-		seen[strings.Fields(strip2(workingLine(*conv, sessionStat{}, now.Add(time.Duration(i)*chatFastRefresh))))[0]] = true
+		seen[strings.Fields(strip2(workingLine(*conv, sessions.SessionStat{}, now.Add(time.Duration(i)*chatFastRefresh))))[0]] = true
 	}
 	if len(seen) != 6 {
 		t.Errorf("frames seen: %v", seen)
@@ -436,7 +437,7 @@ func TestWorkingLine(t *testing.T) {
 func TestWorkingLineIsOnTheLeftBesideNotes(t *testing.T) {
 	m := chatModel(t)
 	conv := m.items[0].conv
-	m.chatStatus = map[string]sessionStat{conv.SessionID: {status: "busy", since: time.Now().Add(-5 * time.Second)}}
+	m.chatStatus = map[string]sessions.SessionStat{conv.SessionID: {Status: "busy", Since: time.Now().Add(-5 * time.Second)}}
 	first := func() string {
 		status, _, _ := strings.Cut(m.chatBox(conv, m.chatInput, false, 80), "\n")
 		return status
@@ -453,7 +454,7 @@ func TestWorkingLineIsOnTheLeftBesideNotes(t *testing.T) {
 	if !strings.Contains(got, "Working… (5s)") || !strings.Contains(got, "sent: check docs") || strings.Index(got, "Working") > strings.Index(got, "sent:") {
 		t.Errorf("a note follows it: %q", got)
 	}
-	m.chatStatus = map[string]sessionStat{conv.SessionID: {status: "idle"}}
+	m.chatStatus = map[string]sessions.SessionStat{conv.SessionID: {Status: "idle"}}
 	m.pending = nil
 	if got := strings.TrimSpace(strip2(first())); got != "" {
 		t.Errorf("idle says nothing: %q", got)

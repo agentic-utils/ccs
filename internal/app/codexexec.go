@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // A headless `codex exec` run records nothing about who started it, so its
@@ -17,14 +20,8 @@ import (
 // stays nested after it exits and after ccs restarts. Runs ccs never saw
 // alive keep the prompt match (findSpawnParent).
 
-// psTree is every process's pid, parent pid and command line. Stubbed in tests.
-var psTree = func() (string, error) {
-	out, err := runBounded(3*time.Second, nil, "ps", "-axww", "-o", "pid=,ppid=,command=")
-	return string(out), err
-}
-
 func execParentsPath() string {
-	return filepath.Join(filepath.Dir(marksPath), "codex-exec-parents.json")
+	return filepath.Join(filepath.Dir(state.MarksPath), "codex-exec-parents.json")
 }
 
 // execParents maps a codex exec thread to the Claude session that ran it.
@@ -102,7 +99,7 @@ func noteCodexExecs(sessions map[string]liveSession) {
 	if len(claude) == 0 {
 		return
 	}
-	out, err := psTree()
+	out, err := proc.PsTree()
 	if err != nil {
 		return
 	}
@@ -134,7 +131,7 @@ func noteCodexExecs(sessions map[string]liveSession) {
 	for _, r := range runs {
 		pids[strconv.Itoa(r.pid)] = r.pid
 	}
-	starts := processStartTimes(pids)
+	starts := proc.ProcessStartTimes(pids)
 
 	execParents.Lock()
 	defer execParents.Unlock()

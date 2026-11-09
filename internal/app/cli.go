@@ -2,17 +2,18 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"github.com/charmbracelet/x/ansi"
 	"os"
 	"os/exec"
 	"runtime/pprof"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/state"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -150,6 +151,7 @@ Key bindings:
 // Main runs ccs with the command line in os.Args, as release v.
 func Main(v string) {
 	version = v
+	state.Version = v
 	args := os.Args[1:]
 
 	if len(args) > 0 && args[0] == "prune" {
@@ -422,54 +424,6 @@ func Main(v string) {
 	}
 
 	syscall.Exec(claudePath, execArgs, os.Environ())
-}
-
-// runBounded runs an external command with a deadline, so a hung ps, tmux
-// server or unresponsive iTerm can't stall ccs indefinitely.
-func runBounded(timeout time.Duration, env []string, name string, args ...string) ([]byte, error) {
-	return runCommand(timeout, env, false, name, args...)
-}
-
-// errTimedOut marks a command that hit its deadline, as opposed to one that
-// failed: a timed-out tab open may still have opened, a failed one didn't.
-var errTimedOut = errors.New("timed out")
-
-// runCommand runs name with a deadline. detach puts it in its own session
-// with no controlling terminal, so it can't prompt (git credentials, ssh
-// passphrases) behind the TUI and swallow keystrokes. Output is stdout, or
-// stdout+stderr when detached (for error messages).
-func runCommand(timeout time.Duration, env []string, detach bool, name string, args ...string) ([]byte, error) {
-	return runCommandIn("", timeout, env, detach, name, args...)
-}
-
-// runCommandIn is runCommand in another folder.
-func runCommandIn(dir string, timeout time.Duration, env []string, detach bool, name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	// Without this, a child that inherits the output pipe keeps Output()
-	// waiting past the deadline.
-	cmd.WaitDelay = time.Second
-	if env != nil {
-		cmd.Env = append(os.Environ(), env...)
-	}
-	var out []byte
-	var err error
-	start := time.Now()
-	if detach {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		out, err = cmd.CombinedOutput()
-	} else {
-		out, err = cmd.Output()
-	}
-	if ctx.Err() == context.DeadlineExceeded {
-		err = fmt.Errorf("%s: %w after %s", name, errTimedOut, timeout)
-	}
-	if detach { // git/brew during self-update: keep a record to diagnose slow or failed updates
-		logUpdate("$ %s %s\n  -> %v in %s\n%s", name, strings.Join(args, " "), errOrOK(err), time.Since(start).Round(time.Millisecond), indent(out))
-	}
-	return out, err
 }
 
 // withEnvClaudeArgs puts CCS_CLAUDE_ARGS ahead of the -- flags, so the command line wins where claude takes the last value.

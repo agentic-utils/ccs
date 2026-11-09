@@ -13,6 +13,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 // codexFixture is a rollout in the real format with invented content.
@@ -141,9 +143,9 @@ func TestCodexSessionsInTheScan(t *testing.T) {
 func TestCodexLiveSessionsFromProcesses(t *testing.T) {
 	path := codexFixture(t, cxA, "/w/flux", "cli")
 	codexFixture(t, cxB, "/w/other", "cli")
-	oldPS, oldStart, oldCwd := psAll, processStartTimes, codexProcCwd
-	defer func() { psAll, processStartTimes, codexProcCwd = oldPS, oldStart, oldCwd }()
-	psAll = func() (string, error) {
+	oldPS, oldStart, oldCwd := proc.PsAll, proc.ProcessStartTimes, codexProcCwd
+	defer func() { proc.PsAll, proc.ProcessStartTimes, codexProcCwd = oldPS, oldStart, oldCwd }()
+	proc.PsAll = func() (string, error) {
 		return strings.Join([]string{
 			"100 ttys001  /opt/homebrew/bin/codex",                             // a TUI: its thread from its folder
 			"101 ttys002  codex resume " + cxB,                                 // a resume names its thread
@@ -155,7 +157,7 @@ func TestCodexLiveSessionsFromProcesses(t *testing.T) {
 	}
 	started := time.Now().Add(-time.Hour)
 	os.Chtimes(path, time.Now(), time.Now())
-	processStartTimes = func(pids map[string]int) map[int]time.Time {
+	proc.ProcessStartTimes = func(pids map[string]int) map[int]time.Time {
 		out := map[int]time.Time{}
 		for _, p := range pids {
 			out[p] = started

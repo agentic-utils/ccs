@@ -5,9 +5,6 @@ import (
 
 	"flag"
 	"fmt"
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
 	"io"
 	"os"
 	"os/exec"
@@ -17,6 +14,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/charmbracelet/bubbles/cursor"
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // ccs launch and ccs close: start a named claude (or codex) session in a new
@@ -67,19 +71,19 @@ var lookBin = exec.LookPath
 func launchScript(o launchOpts, bin, dir string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/zsh -l\n")
-	b.WriteString("cd " + shellQuote(o.cwd) + " || exit 1\n")
-	brief := `"$(cat ` + shellQuote(filepath.Join(dir, "brief.md")) + `)"`
+	b.WriteString("cd " + proc.ShellQuote(o.cwd) + " || exit 1\n")
+	brief := `"$(cat ` + proc.ShellQuote(filepath.Join(dir, "brief.md")) + `)"`
 	if o.codex {
-		args := []string{shellQuote(bin)}
+		args := []string{proc.ShellQuote(bin)}
 		if o.resume != "" {
-			args = append(args, "resume", shellQuote(o.resume))
+			args = append(args, "resume", proc.ShellQuote(o.resume))
 		}
 		// Its launch folder first among the writable ones: sessionsNamed finds
 		// it by that.
 		flags := codexSandboxArgs(dir)
 		for i, a := range flags {
 			if i > 0 && flags[i-1] == "--add-dir" { // the folders; the flags themselves are plain words
-				a = shellQuote(a)
+				a = proc.ShellQuote(a)
 			}
 			args = append(args, a)
 		}
@@ -90,17 +94,17 @@ func launchScript(o launchOpts, bin, dir string) string {
 		return b.String()
 	}
 	b.WriteString("[ -f ~/.claude.secret ] && source ~/.claude.secret\n")
-	args := []string{shellQuote(bin)}
+	args := []string{proc.ShellQuote(bin)}
 	if o.resume != "" {
-		args = append(args, "--resume", shellQuote(o.resume))
+		args = append(args, "--resume", proc.ShellQuote(o.resume))
 	}
 	if o.sessionID != "" {
-		args = append(args, "--session-id", shellQuote(o.sessionID))
+		args = append(args, "--session-id", proc.ShellQuote(o.sessionID))
 	}
 	if o.brief != "" {
 		args = append(args, brief)
 	}
-	args = append(args, "--name", shellQuote(o.name), "${=CCS_CLAUDE_ARGS}")
+	args = append(args, "--name", proc.ShellQuote(o.name), "${=CCS_CLAUDE_ARGS}")
 	b.WriteString("exec " + strings.Join(args, " ") + "\n")
 	return b.String()
 }
@@ -134,7 +138,7 @@ func launchSession(o launchOpts) (launched, error) {
 	if o.brief == "" && o.resume == "" {
 		return launched{}, errors.New("give a brief or a session to resume")
 	}
-	if o.resume != "" && !shellSafe(o.resume) {
+	if o.resume != "" && !proc.ShellSafe(o.resume) {
 		return launched{}, fmt.Errorf("bad session id %q", o.resume)
 	}
 	if o.resume != "" && !resumable(o.resume, o.codex) {
@@ -153,7 +157,7 @@ func launchSession(o launchOpts) (launched, error) {
 	if info, err := os.Stat(o.cwd); err != nil || !info.IsDir() {
 		return launched{}, fmt.Errorf("no folder %s", o.cwd)
 	}
-	if !shellSafe(o.cwd) {
+	if !proc.ShellSafe(o.cwd) {
 		return launched{}, fmt.Errorf("folder %q can't go into a shell command", o.cwd)
 	}
 	if !canOpenTabs() && !o.inPlace {
@@ -209,9 +213,9 @@ func launchSession(o launchOpts) (launched, error) {
 			// and what was typed then is lost: type it again, once, if
 			// nothing on the tab runs the launcher yet.
 			if !launcherRunning(tty, script) {
-				logActivity("launch %s: nothing ran the launcher on %s, typing it again", o.name, tty)
+				state.LogActivity("launch %s: nothing ran the launcher on %s, typing it again", o.name, tty)
 				if err := retypeLauncher(tty, script); err != nil {
-					logActivity("launch %s: couldn't type it again: %v", o.name, err)
+					state.LogActivity("launch %s: couldn't type it again: %v", o.name, err)
 				}
 			}
 		}
@@ -240,7 +244,7 @@ var launchRetype = 4 * time.Second
 // launcherRunning: a process on tty runs the launcher, or the claude or
 // codex it execs.
 var launcherRunning = func(tty, script string) bool {
-	out, err := psAll()
+	out, err := proc.PsAll()
 	if err != nil {
 		return true // can't tell: never type into what may be running
 	}
@@ -271,8 +275,8 @@ var retypeLauncher = func(tty, script string) error {
 			end repeat
 		end repeat
 	end repeat
-end tell`, tty, shellQuote(script))
-	out, err := runBounded(5*time.Second, nil, "osascript", "-e", as)
+end tell`, tty, proc.ShellQuote(script))
+	out, err := proc.RunBounded(5*time.Second, nil, "osascript", "-e", as)
 	if err == nil && strings.TrimSpace(string(out)) != "typed" {
 		err = errors.New("no iTerm session on " + tty)
 	}
@@ -317,7 +321,7 @@ var execScript = func(script string) error {
 // launcher. The tab that had focus keeps it. Returns the new tab's tty.
 var openLaunchTab = func(script string) (string, error) {
 	if os.Getenv("TMUX") != "" {
-		out, err := runBounded(5*time.Second, nil, "tmux", tmuxWindowArgs(script)...)
+		out, err := proc.RunBounded(5*time.Second, nil, "tmux", tmuxWindowArgs(script)...)
 		tty := strings.TrimSpace(string(out))
 		if err == nil && tty == "" {
 			err = errors.New("tmux returned no tty")
@@ -343,19 +347,13 @@ var openLaunchTab = func(script string) (string, error) {
 	delay 0.3
 	tell s to write text ((character id 21) & %q)
 	return tty of s
-end tell`, shellQuote(script))
-	out, err := runBounded(15*time.Second, nil, "osascript", "-e", as)
+end tell`, proc.ShellQuote(script))
+	out, err := proc.RunBounded(15*time.Second, nil, "osascript", "-e", as)
 	tty := strings.TrimSpace(string(out))
 	if err == nil && tty == "" {
 		err = errors.New("iTerm returned no tty")
 	}
 	return tty, err
-}
-
-// psAll is every process's pid, tty and command line. Stubbed in tests.
-var psAll = func() (string, error) {
-	out, err := runBounded(3*time.Second, nil, "ps", "-axww", "-o", "pid=,tty=,command=")
-	return string(out), err
 }
 
 // sessionsNamed is the pids of running sessions called name: claude sessions
@@ -369,7 +367,7 @@ func sessionsNamed(name string) ([]int, error) {
 			pids = append(pids, s.pid)
 		}
 	}
-	out, err := psAll()
+	out, err := proc.PsAll()
 	if err != nil {
 		return pids, nil // claude's sessions are still known
 	}
@@ -415,33 +413,20 @@ func closeByName(name string) (string, error) {
 	return closeSession(name, pids[0])
 }
 
-// ttyOf is pid's terminal, "" when it has none. Stubbed in tests.
-var ttyOf = func(pid int) string {
-	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
-	tty := strings.TrimSpace(string(out))
-	if err != nil || tty == "" || tty == "??" {
-		return ""
-	}
-	return "/dev/" + tty
-}
-
-// signalPID is syscall.Kill, stubbed in tests.
-var signalPID = syscall.Kill
-
 // closeSession stops pid (SIGTERM, as quitting does), confirms it exited,
 // then closes its tab: the tmux pane, or the iTerm session on its tty, one
 // osascript call per tab (closing several in one loop shifts the indexes).
 // Stopping first means iTerm never asks whether to close a running job.
 func closeSession(name string, pid int) (string, error) {
-	tty := ttyOf(pid)
+	tty := proc.TtyOf(pid)
 	if tty == "" {
 		return "", fmt.Errorf("%s (pid %d) has no terminal: an app or claude --bg started it, close it there", name, pid)
 	}
-	if err := signalPID(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := proc.SignalPID(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return "", fmt.Errorf("couldn't stop %s (pid %d): %v", name, pid, err)
 	}
 	deadline := time.Now().Add(closeWait)
-	for pidAlive(pid) {
+	for proc.PidAlive(pid) {
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("%s (pid %d) still running %s after SIGTERM; its tab on %s is left open", name, pid, closeWait, tty)
 		}
@@ -458,9 +443,9 @@ var closeTab = realCloseTab
 
 func realCloseTab(tty string) bool {
 	if os.Getenv("TMUX") != "" {
-		panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
+		panes, err := proc.RunBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
 		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
-			_, err := runBounded(5*time.Second, nil, "tmux", "kill-pane", "-t", target)
+			_, err := proc.RunBounded(5*time.Second, nil, "tmux", "kill-pane", "-t", target)
 			return err == nil
 		}
 		// A window launch opened runs the launcher itself, so it went with the session.
@@ -480,7 +465,7 @@ func realCloseTab(tty string) bool {
 		end repeat
 	end repeat
 end tell`, tty)
-	out, err := runBounded(5*time.Second, nil, "osascript", "-e", as)
+	out, err := proc.RunBounded(5*time.Second, nil, "osascript", "-e", as)
 	return err == nil && strings.TrimSpace(string(out)) == "closed"
 }
 

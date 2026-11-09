@@ -14,6 +14,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // waitModel adds two live sessions to chatModel's (idle, and live, which
@@ -79,9 +82,9 @@ func sessionFileFor(t *testing.T, body string) string {
 // it, as if the pid now belonged to another process.
 func fakeStart(t *testing.T) (move func(time.Duration)) {
 	me, start := os.Getpid(), time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC)
-	old := processStartTimes
-	t.Cleanup(func() { processStartTimes = old })
-	processStartTimes = func(map[string]int) map[int]time.Time { return map[int]time.Time{me: start} }
+	old := proc.ProcessStartTimes
+	t.Cleanup(func() { proc.ProcessStartTimes = old })
+	proc.ProcessStartTimes = func(map[string]int) map[int]time.Time { return map[int]time.Time{me: start} }
 	return func(d time.Duration) { start = start.Add(d) }
 }
 
@@ -1008,7 +1011,7 @@ func TestAutoFocus(t *testing.T) {
 	userIdle = func() (time.Duration, bool) { return idle, true }
 	autoFocusTab = func(pid int) bool { switched = append(switched, pid); return true }
 	os.Remove(focusRecordPath)
-	os.Remove(activityLogPath)
+	os.Remove(state.ActivityLogPath)
 
 	now := time.Now()
 	start := func() model {
@@ -1069,7 +1072,7 @@ func TestAutoFocus(t *testing.T) {
 	}
 
 	// Each step is in the activity log, once.
-	data, _ := os.ReadFile(activityLogPath)
+	data, _ := os.ReadFile(state.ActivityLogPath)
 	log := string(data)
 	for _, want := range []string{"switched to a", "b is waiting", "you're typing (last key 0.0s ago); switching to b", "switched to b", "c is waiting too; holding on b", "b answered, free to switch again", "switched to c", "switched to d"} {
 		if strings.Count(log, want) != 1 {

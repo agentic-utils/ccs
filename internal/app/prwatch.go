@@ -20,6 +20,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // watchedPR is what the watcher last saw of one PR.
@@ -134,21 +137,27 @@ func notNeededReason(p *watchedPR, asked string) string {
 func stillNeedsReview(p *watchedPR) bool {
 	f, err := reviewRecheck(*p)
 	if err != nil {
-		logActivity("pr watch: couldn't recheck %s before needs_review: %v", p.URL, err)
+		state.LogActivity("pr watch: couldn't recheck %s before needs_review: %v", p.URL, err)
 		return false
 	}
 	return f.Review != "approved" && f.Review != "changes_requested" && f.Head == p.Head && !f.Draft && f.Checks == "success"
 }
 
-func prWatchStatePath() string { return filepath.Join(filepath.Dir(settingsPath), "pr-watch.json") }
-func prWatchLockPath() string  { return filepath.Join(filepath.Dir(settingsPath), "pr-watch.lock") }
+func prWatchStatePath() string {
+	return filepath.Join(filepath.Dir(state.SettingsPath), "pr-watch.json")
+}
+func prWatchLockPath() string {
+	return filepath.Join(filepath.Dir(state.SettingsPath), "pr-watch.lock")
+}
 
 // prEventsPath is where events go, beside the update and activity logs.
-func prEventsPath() string { return filepath.Join(filepath.Dir(updateLogPath), "pr-events.jsonl") }
+func prEventsPath() string {
+	return filepath.Join(filepath.Dir(state.UpdateLogPath), "pr-events.jsonl")
+}
 
 // ghRun runs gh; tests stub it.
 var ghRun = func(args ...string) ([]byte, error) {
-	out, err := runBounded(30*time.Second, nil, "gh", args...)
+	out, err := proc.RunBounded(30*time.Second, nil, "gh", args...)
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
 		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exit.Stderr)))
@@ -253,7 +262,7 @@ func runWatch(args []string) int {
 	for {
 		if err := watchPass(*author, *owner, time.Now()); err != nil {
 			fmt.Fprintln(os.Stderr, "ccs watch:", err)
-			logActivity("pr watch: %v", err)
+			state.LogActivity("pr watch: %v", err)
 		} else {
 			afterPass(!*noNudge)
 		}
@@ -269,7 +278,7 @@ func afterPass(nudge bool) {
 	if nudge {
 		if err := nudgeTick(time.Now()); err != nil {
 			fmt.Fprintln(os.Stderr, "ccs watch:", err)
-			logActivity("nudge: %v", err)
+			state.LogActivity("nudge: %v", err)
 		}
 	}
 }
@@ -435,19 +444,19 @@ func watchPass(author, owner string, now time.Time) error {
 			}
 			continue
 		}
-		state, err := prEndState(o)
-		if err != nil || state == "open" { // unknown or still open (search lag): keep it as it was
+		ended, err := prEndState(o)
+		if err != nil || ended == "open" { // unknown or still open (search lag): keep it as it was
 			if err != nil {
-				logActivity("pr watch: %s: %v", url, err)
+				state.LogActivity("pr watch: %s: %v", url, err)
 			}
 			next.PRs[url] = o
 			continue
 		}
 		n := *o
-		n.State, n.Ended = state, now.UTC().Format(time.RFC3339)
+		n.State, n.Ended = ended, now.UTC().Format(time.RFC3339)
 		next.PRs[url] = &n
 		notNeeded(&n, o)
-		emit(&n, state)
+		emit(&n, ended)
 	}
 
 	if seeding {
@@ -684,7 +693,7 @@ func prDetails(p watchedPR) (*watchedPR, error) {
 	n.threadsUnknown = true
 	if n.Checks == "success" && !n.Draft { // only then could it be ready or need a review
 		if c, unanswered, err := unresolvedThreads(p); err != nil {
-			logActivity("pr watch: %s: counting review threads: %v", p.URL, err)
+			state.LogActivity("pr watch: %s: counting review threads: %v", p.URL, err)
 		} else {
 			n.Threads, n.Unanswered, n.threadsUnknown = &c, unanswered, false
 		}
@@ -830,7 +839,7 @@ func prDetailsAll(open []watchedPR) []*watchedPR {
 			defer func() { <-sem }()
 			d, err := prDetails(p)
 			if err != nil {
-				logActivity("pr watch: %s skipped this pass: %v", p.URL, err)
+				state.LogActivity("pr watch: %s skipped this pass: %v", p.URL, err)
 				return
 			}
 			details[i] = d

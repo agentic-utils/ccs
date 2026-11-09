@@ -22,6 +22,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 // ============================================================================
@@ -336,7 +338,7 @@ func keychainAccount() string {
 // when the Keychain is unusable, and on other platforms).
 func readClaudeCredential() ([]byte, error) {
 	if runtime.GOOS == "darwin" {
-		out, err := runBounded(5*time.Second, nil, "/usr/bin/security", "find-generic-password",
+		out, err := proc.RunBounded(5*time.Second, nil, "/usr/bin/security", "find-generic-password",
 			"-s", keychainService(), "-a", keychainAccount(), "-w")
 		if err == nil {
 			return out, nil
@@ -740,7 +742,7 @@ func (m *model) acctListCmd() tea.Cmd {
 				msg = acctListMsg{err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}
 			}
 		}()
-		out, err := runBounded(15*time.Second, nil, bin, "list", "--json")
+		out, err := proc.RunBounded(15*time.Second, nil, bin, "list", "--json")
 		if err != nil {
 			return acctListMsg{err: err}
 		}
@@ -772,8 +774,8 @@ func (m *model) cswapActionCmd(what, done string, args ...string) tea.Cmd {
 				msg = acctActionMsg{what: what, err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}
 			}
 		}()
-		out, err := runCommand(60*time.Second, nil, true, bin, args...)
-		if err != nil && !errors.Is(err, errTimedOut) {
+		out, err := proc.RunCommand(60*time.Second, nil, true, bin, args...)
+		if err != nil && !errors.Is(err, proc.ErrTimedOut) {
 			if lines := strings.Split(strings.TrimSpace(string(out)), "\n"); lines[len(lines)-1] != "" {
 				err = errors.New(ansiCodes.ReplaceAllString(lines[len(lines)-1], ""))
 			}

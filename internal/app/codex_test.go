@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 const (
@@ -77,13 +79,13 @@ func TestCodexLiveness(t *testing.T) {
 	codexEnv(t)
 	name := "codex-live"
 	path := writeRollout(t, threadA, "/w", filepath.Join(launchDir(), name))
-	oldPS := psAll
-	t.Cleanup(func() { psAll = oldPS })
-	psAll = func() (string, error) { return "", nil }
+	oldPS := proc.PsAll
+	t.Cleanup(func() { proc.PsAll = oldPS })
+	proc.PsAll = func() (string, error) { return "", nil }
 	if codexLive(threadA) {
 		t.Error("a thread ccs launched is live only while its codex process runs")
 	}
-	psAll = func() (string, error) {
+	proc.PsAll = func() (string, error) {
 		return "  101 ttys001 /bin/codex -s workspace-write --add-dir " + filepath.Join(launchDir(), name) + " --add-dir /s x\n", nil
 	}
 	if !codexLive(threadA) {

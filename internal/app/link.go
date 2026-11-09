@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // ccs://session/<name> switches to that session's tab. macOS delivers a URL as
@@ -69,7 +72,7 @@ func openLink(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("%d running sessions are named %s, so there's no telling which you meant", len(pids), name)
 	}
-	tty := ttyOf(pids[0])
+	tty := proc.TtyOf(pids[0])
 	if tty == "" {
 		return "", fmt.Errorf("%s has no terminal tab to switch to: an app or claude --bg started it", name)
 	}
@@ -83,7 +86,7 @@ func openLink(raw string) (string, error) {
 // the front. The handler app starts ccs with neither $TMUX nor $TERM_PROGRAM,
 // so unlike focusTTY this asks tmux and iTerm directly. It never starts iTerm.
 func realFocusLinkTTY(tty string) error {
-	panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
+	panes, err := proc.RunBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
 	if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
 		return focusTmuxTarget(target)
 	}
@@ -104,12 +107,12 @@ func realFocusLinkTTY(tty string) error {
 // raises that client's iTerm tab if it has one. A client in another terminal
 // switches but its window stays where it is.
 func focusTmuxTarget(target string) error {
-	out, err := runBounded(5*time.Second, nil, "tmux", "list-clients", "-F", "#{client_activity} #{client_tty}")
+	out, err := proc.RunBounded(5*time.Second, nil, "tmux", "list-clients", "-F", "#{client_activity} #{client_tty}")
 	client := latestTmuxClient(string(out))
 	if err != nil || client == "" {
 		return errors.New("its tmux session isn't attached to a terminal")
 	}
-	if _, err := runBounded(5*time.Second, nil, "tmux", "switch-client", "-c", client, "-t", target, ";", "select-window", "-t", target, ";", "select-pane", "-t", target); err != nil {
+	if _, err := proc.RunBounded(5*time.Second, nil, "tmux", "switch-client", "-c", client, "-t", target, ";", "select-window", "-t", target, ";", "select-pane", "-t", target); err != nil {
 		return fmt.Errorf("tmux wouldn't switch: %v", err)
 	}
 	if iTermRunning() {
@@ -143,7 +146,7 @@ func iTermError(err error) error {
 // realITermRunning looks in the process list, since naming iTerm in AppleScript
 // would start it, and opening a link must not start anything.
 func realITermRunning() bool {
-	out, err := runBounded(3*time.Second, nil, "ps", "-axo", "comm=")
+	out, err := proc.RunBounded(3*time.Second, nil, "ps", "-axo", "comm=")
 	if err != nil {
 		return false
 	}
@@ -160,7 +163,7 @@ func realURLHandlerApp() string {
 	script := `ObjC.import("AppKit");
 var app = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL($.NSURL.URLWithString("` + linkPrefix + `x"));
 app.isNil() ? "" : app.path.js`
-	out, err := runBounded(5*time.Second, nil, "osascript", "-l", "JavaScript", "-e", script)
+	out, err := proc.RunBounded(5*time.Second, nil, "osascript", "-l", "JavaScript", "-e", script)
 	if err != nil {
 		return ""
 	}
@@ -205,7 +208,7 @@ end run
 
 // linkPlistValue reads one key of the app's Info.plist, "" when it can't.
 func linkPlistValue(app, key string) string {
-	out, err := runBounded(5*time.Second, nil, "plutil", "-extract", key, "raw", "-o", "-", filepath.Join(app, "Contents", "Info.plist"))
+	out, err := proc.RunBounded(5*time.Second, nil, "plutil", "-extract", key, "raw", "-o", "-", filepath.Join(app, "Contents", "Info.plist"))
 	if err != nil {
 		return ""
 	}
@@ -220,7 +223,7 @@ func linkAppCurrent(app, target string) bool {
 // installLinkApp builds the handler app and registers it. An app already right
 // is only registered again: rebuilding would make macOS ask for permission again.
 func installLinkApp(target string) error {
-	if !shellSafe(target) {
+	if !proc.ShellSafe(target) {
 		return fmt.Errorf("can't use ccs at %q: the path has characters the handler can't quote", target)
 	}
 	app := linkAppPath()
@@ -258,7 +261,7 @@ func buildLinkApp(app, target string) error {
 	}
 	built := filepath.Join(tmp, filepath.Base(app))
 	run := func(name string, args ...string) error {
-		if _, err := runBounded(30*time.Second, nil, name, args...); err != nil {
+		if _, err := proc.RunBounded(30*time.Second, nil, name, args...); err != nil {
 			return fmt.Errorf("%s: %v", name, err)
 		}
 		return nil
@@ -295,7 +298,7 @@ func buildLinkApp(app, target string) error {
 }
 
 func registerLinkApp(app string) error {
-	if _, err := runBounded(30*time.Second, nil, lsregister, "-f", app); err != nil {
+	if _, err := proc.RunBounded(30*time.Second, nil, lsregister, "-f", app); err != nil {
 		return fmt.Errorf("couldn't register %s with macOS: %v", app, err)
 	}
 	return nil
@@ -319,7 +322,7 @@ func refreshLinkApp() {
 	if err == nil {
 		err = installLinkApp(linkTarget(exe))
 	}
-	logActivity("link handler refreshed: %v", errOrOK(err))
+	state.LogActivity("link handler refreshed: %v", state.ErrOrOK(err))
 }
 
 // runLink is `ccs link`: open is what the handler app runs, the others manage it.
@@ -396,7 +399,7 @@ func linkUninstall(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s isn't ccs's, so it was left alone\n", app)
 		return 1
 	}
-	if _, err := runBounded(30*time.Second, nil, lsregister, "-u", app); err != nil {
+	if _, err := proc.RunBounded(30*time.Second, nil, lsregister, "-u", app); err != nil {
 		fmt.Fprintf(stderr, "couldn't unregister %s: %v\n", app, err)
 		return 1
 	}

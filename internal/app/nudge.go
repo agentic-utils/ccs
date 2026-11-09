@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // Nudges: after each pass, ccs watch tells the session that claimed a PR
@@ -44,8 +46,8 @@ type nudgeState struct {
 	Sent map[string]*nudgeSent `json:"sent"`
 }
 
-func nudgesPath() string     { return filepath.Join(filepath.Dir(settingsPath), "nudges.json") }
-func nudgesLockPath() string { return filepath.Join(filepath.Dir(settingsPath), "nudges.lock") }
+func nudgesPath() string     { return filepath.Join(filepath.Dir(state.SettingsPath), "nudges.json") }
+func nudgesLockPath() string { return filepath.Join(filepath.Dir(state.SettingsPath), "nudges.lock") }
 
 // nudgeKey is one session's record for one PR.
 func nudgeKey(pr, session string) string { return pr + " " + session }
@@ -165,7 +167,7 @@ func nudgeTick(now time.Time) error {
 				e := nudgeEvent{At: now.UTC().Format(time.RFC3339), Event: "nudged", PR: u, Head: p.Head, Session: name, Reasons: reasons}
 				if err := sendNudge(c, nudgeText(p, reasons)); err != nil {
 					e.Event, e.Error = "nudge_failed", err.Error()
-					logActivity("nudge %s about %s: %v", name, u, err)
+					state.LogActivity("nudge %s about %s: %v", name, u, err)
 					events = append(events, e)
 					continue // not recorded: tried again next pass
 				}

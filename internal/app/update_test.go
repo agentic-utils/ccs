@@ -28,6 +28,9 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
+
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -436,20 +439,20 @@ func TestQuitBlockedDuringUpdate(t *testing.T) {
 }
 
 func TestUpdateLogRecordsCommandsAndDownloads(t *testing.T) {
-	old := updateLogPath
-	updateLogPath = filepath.Join(t.TempDir(), "logs", "update.log")
-	defer func() { updateLogPath = old }()
+	old := state.UpdateLogPath
+	state.UpdateLogPath = filepath.Join(t.TempDir(), "logs", "update.log")
+	defer func() { state.UpdateLogPath = old }()
 
-	if _, err := runCommand(5*time.Second, nil, true, "sh", "-c", "echo downloading; echo boom >&2; exit 3"); err == nil {
+	if _, err := proc.RunCommand(5*time.Second, nil, true, "sh", "-c", "echo downloading; echo boom >&2; exit 3"); err == nil {
 		t.Fatal("want failure")
 	}
 	fakeRelease(t, "v9.9.9", []byte("bin"), false)
 	if _, err := download(releaseDownloadURL + "/v9.9.9/checksums.txt"); err != nil {
 		t.Fatal(err)
 	}
-	logUpdate("install v9.9.9: %v in %s", errOrOK(nil), time.Second)
+	state.LogUpdate("install v9.9.9: %v in %s", state.ErrOrOK(nil), time.Second)
 
-	got, err := os.ReadFile(updateLogPath)
+	got, err := os.ReadFile(state.UpdateLogPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +468,7 @@ func TestFailedUpdatePopupPointsAtLog(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.updateTo, m.updateErr, m.updateOpen = "v9.9.9", "brew upgrade: curl: (35) Recv failure", true
 	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
-	if !strings.Contains(m.View(), updateLogPath) {
+	if !strings.Contains(m.View(), state.UpdateLogPath) {
 		t.Error("a failed update should point at the update log")
 	}
 }
@@ -808,20 +811,6 @@ func TestChangelogWidthSteady(t *testing.T) {
 	}
 }
 
-func TestLogsRotateAtOneMB(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "activity.log")
-	if err := os.WriteFile(path, make([]byte, 1<<20+1), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	appendLog(path, "after %d", 1)
-	if info, err := os.Stat(path + ".1"); err != nil || info.Size() != 1<<20+1 {
-		t.Errorf("the full log should move to .1: %v", err)
-	}
-	if data, _ := os.ReadFile(path); !strings.HasSuffix(string(data), "after 1\n") || len(data) > 200 {
-		t.Errorf("a fresh log should start: %q", data)
-	}
-}
-
 func TestAutoUpdateInstallsWhileAway(t *testing.T) {
 	defer func(v string) { version = v }(version)
 	version = "0.24.1"
@@ -926,8 +915,8 @@ func TestHeaderShowsAutoUpdate(t *testing.T) {
 }
 
 func TestAutoUpdateOptIn(t *testing.T) {
-	defer func(p string) { settingsPath = p }(settingsPath)
-	settingsPath = t.TempDir() + "/settings.json"
+	defer func(p string) { state.SettingsPath = p }(state.SettingsPath)
+	state.SettingsPath = t.TempDir() + "/settings.json"
 	for _, c := range []struct {
 		name, file string
 		missing    bool
@@ -939,9 +928,9 @@ func TestAutoUpdateOptIn(t *testing.T) {
 		{"chose on", `{"auto_update":true}`, false, true},
 		{"chose off", `{"auto_update":false}`, false, false},
 	} {
-		os.Remove(settingsPath)
+		os.Remove(state.SettingsPath)
 		if !c.missing {
-			os.WriteFile(settingsPath, []byte(c.file), 0o600)
+			os.WriteFile(state.SettingsPath, []byte(c.file), 0o600)
 		}
 		if got := loadSettings().autoUpdateOn(); got != c.want {
 			t.Errorf("%s: auto-update %v, want %v", c.name, got, c.want)
@@ -949,12 +938,12 @@ func TestAutoUpdateOptIn(t *testing.T) {
 	}
 	on := true
 	saveSettings(settings{AutoUpdate: &on})
-	if b, _ := os.ReadFile(settingsPath); !strings.Contains(string(b), `"auto_update":true`) {
+	if b, _ := os.ReadFile(state.SettingsPath); !strings.Contains(string(b), `"auto_update":true`) {
 		t.Errorf("the choice is saved explicitly: %s", b)
 	}
 	off := false
 	saveSettings(settings{AutoUpdate: &off})
-	if b, _ := os.ReadFile(settingsPath); !strings.Contains(string(b), `"auto_update":false`) {
+	if b, _ := os.ReadFile(state.SettingsPath); !strings.Contains(string(b), `"auto_update":false`) {
 		t.Errorf("off is saved too, so it isn't read as an older install: %s", b)
 	}
 }

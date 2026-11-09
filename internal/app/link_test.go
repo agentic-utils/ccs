@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 func TestParseSessionLink(t *testing.T) {
@@ -58,10 +60,10 @@ func TestParseSessionLink(t *testing.T) {
 func stubLink(t *testing.T, pids []int, tty string) (focused *[]string) {
 	t.Helper()
 	focused = &[]string{}
-	oldNamed, oldTTY, oldFocus := namedSessions, ttyOf, focusLinkTTY
-	t.Cleanup(func() { namedSessions, ttyOf, focusLinkTTY = oldNamed, oldTTY, oldFocus })
+	oldNamed, oldTTY, oldFocus := namedSessions, proc.TtyOf, focusLinkTTY
+	t.Cleanup(func() { namedSessions, proc.TtyOf, focusLinkTTY = oldNamed, oldTTY, oldFocus })
 	namedSessions = func(string) ([]int, error) { return pids, nil }
-	ttyOf = func(int) string { return tty }
+	proc.TtyOf = func(int) string { return tty }
 	focusLinkTTY = func(tty string) error { *focused = append(*focused, tty); return nil }
 	return focused
 }

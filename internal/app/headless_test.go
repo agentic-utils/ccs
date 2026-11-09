@@ -3,10 +3,11 @@ package app
 import (
 	"bytes"
 	"encoding/json"
-	tea "github.com/charmbracelet/bubbletea"
 	"slices"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // parsedSession is a Claude transcript of lines run through parseLine.

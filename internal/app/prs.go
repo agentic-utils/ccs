@@ -17,6 +17,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 // A session's PRs are the ones Claude Code itself links to it: a "pr-link"
@@ -578,7 +580,7 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision reviewThreads(first:100){totalCount nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
 	}
 	q.WriteString("}")
-	raw, runErr := runBounded(30*time.Second, []string{"GH_PROMPT_DISABLED=1"}, gh, "api", "graphql", "-f", "query="+q.String())
+	raw, runErr := proc.RunBounded(30*time.Second, []string{"GH_PROMPT_DISABLED=1"}, gh, "api", "graphql", "-f", "query="+q.String())
 	var resp struct {
 		Data map[string]*struct {
 			PullRequest *struct {

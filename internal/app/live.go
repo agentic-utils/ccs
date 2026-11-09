@@ -15,13 +15,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 // liveInterval is how often ccs re-reads which sessions are live and picks
@@ -262,12 +262,6 @@ type liveSession struct {
 // process's start time was never known, so a recycled pid can't be ruled out.
 const keepTicks = 3
 
-// pidAlive probes pid with signal 0; EPERM still means the process exists.
-func pidAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
-}
-
 // scanSessions reads ~/.claude/sessions once: each live SessionID's pid and
 // status. A session in prev (the last scan) whose file is missing or can't be
 // read this time isn't one that ended: it's kept, with no status so nothing
@@ -291,7 +285,7 @@ func scanSessions(prev map[string]liveSession) map[string]liveSession {
 		if err != nil || json.Unmarshal(data, &s) != nil || s.SessionID == "" || s.Pid <= 0 {
 			continue
 		}
-		if pidAlive(s.Pid) {
+		if proc.PidAlive(s.Pid) {
 			byPid[s.Pid] = append(byPid[s.Pid], candidate{s.SessionID, s.ProcStart, s.stat()})
 		}
 	}
@@ -304,7 +298,7 @@ func scanSessions(prev map[string]liveSession) map[string]liveSession {
 	for _, p := range prev {
 		pids[strconv.Itoa(p.pid)] = p.pid
 	}
-	actual := processStartTimes(pids)
+	actual := proc.ProcessStartTimes(pids)
 	live := make(map[string]liveSession)
 	for pid, cs := range byPid {
 		for _, c := range cs {
@@ -319,7 +313,7 @@ func scanSessions(prev map[string]liveSession) map[string]liveSession {
 		}
 	}
 	for id, p := range prev {
-		if _, ok := live[id]; ok || p.codex || len(byPid[p.pid]) > 0 || !pidAlive(p.pid) {
+		if _, ok := live[id]; ok || p.codex || len(byPid[p.pid]) > 0 || !proc.PidAlive(p.pid) {
 			continue
 		}
 		if match, checked := sameStart(p.start, actual[p.pid]); match && (checked || p.misses < keepTicks) {
@@ -327,33 +321,6 @@ func scanSessions(prev map[string]liveSession) map[string]liveSession {
 		}
 	}
 	return live
-}
-
-// processStartTimes returns each pid's start time from one ps call. Pids ps
-// can't report are left out.
-var processStartTimes = func(live map[string]int) map[int]time.Time {
-	out := make(map[int]time.Time)
-	if len(live) == 0 {
-		return out
-	}
-	pids := make([]string, 0, len(live))
-	for _, pid := range live {
-		pids = append(pids, strconv.Itoa(pid))
-	}
-	// Fixed lstart layout, in UTC like procStart: local time is ambiguous in
-	// the hour clocks go back.
-	raw, _ := runBounded(2*time.Second, []string{"LC_ALL=C", "TZ=UTC"}, "ps", "-o", "pid=,lstart=", "-p", strings.Join(pids, ","))
-	for _, line := range strings.Split(string(raw), "\n") {
-		pidStr, rest, ok := strings.Cut(strings.TrimSpace(line), " ")
-		pid, err := strconv.Atoi(pidStr)
-		if !ok || err != nil {
-			continue
-		}
-		if t, err := time.Parse(time.ANSIC, strings.Join(strings.Fields(rest), " ")); err == nil {
-			out[pid] = t
-		}
-	}
-	return out
 }
 
 // sameStart compares the session file's procStart (UTC) with the process's
@@ -419,7 +386,7 @@ func resumeInTmuxWindow(cwd string, args []string) (handled bool, err error) {
 	// -d leaves the current window (ccs) focused. tmux expands formats in -c,
 	// including #(command), so a '#' in the path must be escaped.
 	tmuxArgs := append([]string{"new-window", "-d", "-c", strings.ReplaceAll(cwd, "#", "##")}, args...)
-	return tabResult(runBounded(5*time.Second, nil, "tmux", tmuxArgs...))
+	return tabResult(proc.RunBounded(5*time.Second, nil, "tmux", tmuxArgs...))
 }
 
 // opening reports (and says why) when id mustn't be opened now: one at a
@@ -506,7 +473,7 @@ func inITerm() bool {
 }
 
 func focusSession(pid int, activate bool) bool {
-	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
+	out, err := proc.RunBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
 	tty := strings.TrimSpace(string(out))
 	if err != nil || tty == "" || tty == "??" {
 		return false
@@ -517,9 +484,9 @@ func focusSession(pid int, activate bool) bool {
 // focusTTY selects the tmux pane or iTerm tab on tty. Stubbed in tests.
 var focusTTY = func(tty string, activate bool) bool {
 	if os.Getenv("TMUX") != "" {
-		panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
+		panes, err := proc.RunBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
 		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
-			_, err := runBounded(5*time.Second, nil, "tmux", "switch-client", "-t", target, ";", "select-window", "-t", target, ";", "select-pane", "-t", target)
+			_, err := proc.RunBounded(5*time.Second, nil, "tmux", "switch-client", "-t", target, ";", "select-window", "-t", target, ";", "select-pane", "-t", target)
 			return err == nil
 		}
 	}
@@ -552,7 +519,7 @@ func iTermSelect(tty string, activate bool) ([]byte, error) {
 		end repeat
 	end repeat
 end tell`, tty, front)
-	return runBounded(5*time.Second, nil, "osascript", "-e", script)
+	return proc.RunBounded(5*time.Second, nil, "osascript", "-e", script)
 }
 
 // tmuxPaneForTTY picks the pane target whose tty matches from
@@ -566,23 +533,18 @@ func tmuxPaneForTTY(panes, tty string) string {
 	return ""
 }
 
-// shellQuote wraps s for /bin/sh single-quoted use.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // resumeInITermTab opens the resume command in a new iTerm tab. Returns false
 // if we're not in iTerm or osascript failed, so the caller can exec in place.
 // ponytail: osascript, not the iTerm python API - no deps, no daemon.
 func resumeInITermTab(cwd string, args []string) (handled bool, err error) {
-	if !inITerm() || !shellSafe(cwd) || slices.IndexFunc(args, func(a string) bool { return !shellSafe(a) }) >= 0 {
+	if !inITerm() || !proc.ShellSafe(cwd) || slices.IndexFunc(args, func(a string) bool { return !proc.ShellSafe(a) }) >= 0 {
 		return false, nil // exec in place instead: no shell involved
 	}
 	quoted := make([]string, len(args))
 	for i, a := range args {
-		quoted[i] = shellQuote(a)
+		quoted[i] = proc.ShellQuote(a)
 	}
-	cmd := "cd " + shellQuote(cwd) + " && exec " + strings.Join(quoted, " ")
+	cmd := "cd " + proc.ShellQuote(cwd) + " && exec " + strings.Join(quoted, " ")
 	// Focus stays on the ccs tab: creating a tab selects it, so select the old
 	// one back. No "activate", so iTerm doesn't jump to the front either.
 	script := fmt.Sprintf(`tell application "iTerm2"
@@ -593,7 +555,7 @@ func resumeInITermTab(cwd string, args []string) (handled bool, err error) {
 		select oldTab
 	end tell
 end tell`, cmd)
-	return tabResult(runBounded(5*time.Second, nil, "osascript", "-e", script))
+	return tabResult(proc.RunBounded(5*time.Second, nil, "osascript", "-e", script))
 }
 
 // tabResult maps a tab-open attempt to (handled, err): success is handled; a
@@ -601,17 +563,10 @@ end tell`, cmd)
 // could run two claudes on one transcript); any other failure (Automation
 // denied, stale $TMUX) is unhandled, so the caller resumes in place.
 func tabResult(_ []byte, err error) (bool, error) {
-	if err == nil || errors.Is(err, errTimedOut) {
+	if err == nil || errors.Is(err, proc.ErrTimedOut) {
 		return true, err
 	}
 	return false, nil
-}
-
-// shellSafe reports whether s can go through shellQuote into a shell safely
-// whatever that shell is: fish treats backslash as an escape even inside
-// single quotes, and control characters break the AppleScript string.
-func shellSafe(s string) bool {
-	return !strings.ContainsFunc(s, func(r rune) bool { return r == '\\' || r < 0x20 || r == 0x7f || r == utf8.RuneError })
 }
 
 // openRecordPath is where ccs notes which sessions are open and on which boot,
@@ -635,7 +590,7 @@ var bootID = func() string {
 	if b, err := os.ReadFile("/proc/sys/kernel/random/boot_id"); err == nil {
 		return strings.TrimSpace(string(b))
 	}
-	out, _ := runBounded(2*time.Second, nil, "sysctl", "-n", "kern.boottime")
+	out, _ := proc.RunBounded(2*time.Second, nil, "sysctl", "-n", "kern.boottime")
 	return strings.TrimSpace(string(out))
 }
 
@@ -770,14 +725,14 @@ var hosts sync.Map
 // findHost asks ps for pid's terminal and, without one, walks up its parents
 // to the first macOS app bundle, else names its parent command.
 func findHost(pid int) string {
-	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=,ppid=", "-p", strconv.Itoa(pid))
+	out, err := proc.RunBounded(2*time.Second, nil, "ps", "-o", "tty=,ppid=", "-p", strconv.Itoa(pid))
 	f := strings.Fields(string(out))
 	if err != nil || len(f) != 2 || f[0] != "??" {
 		return "" // a terminal, or unknown: treated as one
 	}
 	parent, first := f[1], ""
 	for range 6 {
-		out, err := runBounded(2*time.Second, nil, "ps", "-o", "ppid=,comm=", "-p", parent)
+		out, err := proc.RunBounded(2*time.Second, nil, "ps", "-o", "ppid=,comm=", "-p", parent)
 		pp, comm, ok := strings.Cut(strings.TrimSpace(string(out)), " ")
 		if err != nil || !ok {
 			break
@@ -840,7 +795,7 @@ type t3DoneMsg struct{ err error }
 // Code puts the thread's id and its CLI in the process's environment; the
 // CLI's link for the thread names its environment.
 var t3Link = func(pid int) (string, error) {
-	out, err := runBounded(2*time.Second, nil, "ps", "-E", "-ww", "-o", "command=", "-p", strconv.Itoa(pid))
+	out, err := proc.RunBounded(2*time.Second, nil, "ps", "-E", "-ww", "-o", "command=", "-p", strconv.Itoa(pid))
 	if err != nil {
 		return "", err
 	}
@@ -855,7 +810,7 @@ var t3Link = func(pid int) (string, error) {
 	if !t3ID(thread) || !filepath.IsAbs(cli) {
 		return "", errors.New("no T3 Code thread in its environment")
 	}
-	out, err = runBounded(5*time.Second, nil, cli, "thread", "show", "--json", thread)
+	out, err = proc.RunBounded(5*time.Second, nil, cli, "thread", "show", "--json", thread)
 	if err != nil {
 		return "", err
 	}
@@ -889,7 +844,7 @@ var openApp = func(link string) error {
 	if runtime.GOOS == "darwin" {
 		opener = "open"
 	}
-	_, err := runBounded(5*time.Second, nil, opener, link)
+	_, err := proc.RunBounded(5*time.Second, nil, opener, link)
 	return err
 }
 
@@ -916,7 +871,7 @@ const agentsInterval = 10 * time.Second
 var listAgents = realListAgents
 
 func realListAgents() (map[string]bgSession, error) {
-	out, err := runBounded(5*time.Second, nil, "claude", "agents", "--json")
+	out, err := proc.RunBounded(5*time.Second, nil, "claude", "agents", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -976,7 +931,7 @@ type stopDoneMsg struct {
 // claude attach with its id restarts it.
 func stopCmd(name string, b bgSession) tea.Cmd {
 	return func() tea.Msg {
-		_, err := runBounded(10*time.Second, nil, "claude", "stop", b.ID)
+		_, err := proc.RunBounded(10*time.Second, nil, "claude", "stop", b.ID)
 		return stopDoneMsg{name, err}
 	}
 }

@@ -12,6 +12,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 func TestLaunchScript(t *testing.T) {
@@ -27,8 +30,8 @@ func TestLaunchScript(t *testing.T) {
 		t.Errorf("resume, no brief:\n%s", got)
 	}
 	got = launchScript(launchOpts{name: "n", brief: "x", cwd: "/w", codex: true}, "/bin/codex", dir)
-	state := shellQuote(filepath.Dir(settingsPath))
-	if !strings.Contains(got, `exec '/bin/codex' -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir '/c/launch/n' --add-dir `+state+` "$(cat '/c/launch/n/brief.md')"`) || strings.Contains(got, "claude.secret") {
+	stateDir := proc.ShellQuote(filepath.Dir(state.SettingsPath))
+	if !strings.Contains(got, `exec '/bin/codex' -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir '/c/launch/n' --add-dir `+stateDir+` "$(cat '/c/launch/n/brief.md')"`) || strings.Contains(got, "claude.secret") {
 		t.Errorf("codex: the user's approval mode, network on, its launch folder (marking it) and ccs's state writable:\n%s", got)
 	}
 	got = launchScript(launchOpts{name: "n", resume: "r1", cwd: "/w", codex: true}, "/bin/codex", dir)
@@ -42,10 +45,10 @@ func TestLaunchScript(t *testing.T) {
 func sessionsFixture(t *testing.T) (write func(file string, pid int, name string)) {
 	t.Helper()
 	dir := t.TempDir()
-	old, oldStarts := getSessionsDir, processStartTimes
+	old, oldStarts := getSessionsDir, proc.ProcessStartTimes
 	getSessionsDir = func() string { return dir }
-	processStartTimes = func(map[string]int) map[int]time.Time { return nil } // unknown: not checked
-	t.Cleanup(func() { getSessionsDir, processStartTimes = old, oldStarts })
+	proc.ProcessStartTimes = func(map[string]int) map[int]time.Time { return nil } // unknown: not checked
+	t.Cleanup(func() { getSessionsDir, proc.ProcessStartTimes = old, oldStarts })
 	return func(file string, pid int, name string) {
 		os.WriteFile(filepath.Join(dir, file), []byte(fmt.Sprintf(`{"pid":%d,"sessionId":"id-%s-%d","name":%q}`, pid, name, pid, name)), 0o600)
 	}
@@ -151,10 +154,10 @@ func TestLaunchFailsLoudlyWhenNothingStarts(t *testing.T) {
 
 func TestCodexSessionsFoundByTheirLaunchFolder(t *testing.T) {
 	sessionsFixture(t)
-	old := psAll
-	t.Cleanup(func() { psAll = old })
+	old := proc.PsAll
+	t.Cleanup(func() { proc.PsAll = old })
 	d := filepath.Join(launchDir(), "cx")
-	psAll = func() (string, error) {
+	proc.PsAll = func() (string, error) {
 		return "  101 ttys001 /bin/codex -s workspace-write -a never --add-dir " + d + " do it\n" +
 			"  102 ttys002 /bin/codex --add-dir " + d + "-other x\n" + // another name's folder
 			"  103 ttys003 vim " + d + "/brief.md\n", nil
@@ -174,13 +177,16 @@ func TestCloseStopsThenClosesTheTab(t *testing.T) {
 	go func() { child.Wait(); close(exited) }()
 	pid := child.Process.Pid
 	write("a.json", pid, "worker")
-	oldTTY, oldSig, oldTab, oldWait := ttyOf, signalPID, closeTab, closeWait
-	t.Cleanup(func() { ttyOf, signalPID, closeTab, closeWait = oldTTY, oldSig, oldTab, oldWait; child.Process.Kill() })
-	ttyOf = func(int) string { return "/dev/ttys044" }
+	oldTTY, oldSig, oldTab, oldWait := proc.TtyOf, proc.SignalPID, closeTab, closeWait
+	t.Cleanup(func() {
+		proc.TtyOf, proc.SignalPID, closeTab, closeWait = oldTTY, oldSig, oldTab, oldWait
+		child.Process.Kill()
+	})
+	proc.TtyOf = func(int) string { return "/dev/ttys044" }
 	closeWait = 2 * time.Second
 	var closed []string
 	closeTab = func(tty string) bool {
-		if pidAlive(pid) {
+		if proc.PidAlive(pid) {
 			select {
 			case <-exited:
 			default:
@@ -190,7 +196,7 @@ func TestCloseStopsThenClosesTheTab(t *testing.T) {
 		closed = append(closed, tty)
 		return true
 	}
-	signalPID = func(p int, sig syscall.Signal) error {
+	proc.SignalPID = func(p int, sig syscall.Signal) error {
 		if p != pid {
 			t.Fatalf("signalled %d, not the session's %d", p, pid)
 		}
@@ -215,13 +221,13 @@ func TestCloseRefusals(t *testing.T) {
 		t.Errorf("two sessions with one name are left alone: %v", err)
 	}
 	write("c.json", os.Getpid(), "stuck")
-	oldTTY, oldSig, oldTab, oldWait := ttyOf, signalPID, closeTab, closeWait
-	t.Cleanup(func() { ttyOf, signalPID, closeTab, closeWait = oldTTY, oldSig, oldTab, oldWait })
+	oldTTY, oldSig, oldTab, oldWait := proc.TtyOf, proc.SignalPID, closeTab, closeWait
+	t.Cleanup(func() { proc.TtyOf, proc.SignalPID, closeTab, closeWait = oldTTY, oldSig, oldTab, oldWait })
 	if _, err := closeSession("stuck", os.Getpid()); err == nil || !strings.Contains(err.Error(), "no terminal") {
 		t.Errorf("no tty (an app or claude --bg): %v", err)
 	}
-	ttyOf = func(int) string { return "/dev/ttys045" }
-	signalPID = func(int, syscall.Signal) error { return nil } // ignores it
+	proc.TtyOf = func(int) string { return "/dev/ttys045" }
+	proc.SignalPID = func(int, syscall.Signal) error { return nil } // ignores it
 	closeWait = 200 * time.Millisecond
 	tabClosed := false
 	closeTab = func(string) bool { tabClosed = true; return true }

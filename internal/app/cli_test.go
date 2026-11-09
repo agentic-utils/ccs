@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 func TestPrintHelp(t *testing.T) {
@@ -67,7 +69,7 @@ func TestProfileChord(t *testing.T) {
 		t.Fatal("^X R starts recording and says so in the header")
 	}
 	path := m.profilePath
-	if filepath.Dir(path) != filepath.Dir(updateLogPath) {
+	if filepath.Dir(path) != filepath.Dir(state.UpdateLogPath) {
 		t.Errorf("the profile goes beside the logs: %s", path)
 	}
 	m, _ = chord(m, "r")

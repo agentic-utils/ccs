@@ -13,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // Codex sessions in the list: each transcript (a "rollout" under
@@ -348,7 +351,7 @@ var codexLiveCache struct {
 
 // codexProcCwd is a process's working folder. Stubbed in tests.
 var codexProcCwd = func(pid int) string {
-	out, err := runBounded(2*time.Second, nil, "lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn")
+	out, err := proc.RunBounded(2*time.Second, nil, "lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn")
 	if err != nil {
 		return ""
 	}
@@ -378,7 +381,7 @@ func codexLiveSessions() map[string]liveSession {
 		return codexLiveCache.out
 	}
 	out := map[string]liveSession{}
-	ps, err := psAll()
+	ps, err := proc.PsAll()
 	if err != nil {
 		codexLiveCache.at, codexLiveCache.out = time.Now(), out
 		return out
@@ -409,7 +412,7 @@ func codexLiveSessions() map[string]liveSession {
 		codexLiveCache.at, codexLiveCache.out = time.Now(), out
 		return out
 	}
-	starts := processStartTimes(pids)
+	starts := proc.ProcessStartTimes(pids)
 	rollouts := codexRollouts()
 	for _, t := range tuis {
 		start := starts[t.pid]
@@ -516,7 +519,7 @@ func codexSandboxArgs(dirs ...string) []string {
 	for _, d := range dirs {
 		args = append(args, "--add-dir", d)
 	}
-	return append(args, "--add-dir", filepath.Dir(settingsPath))
+	return append(args, "--add-dir", filepath.Dir(state.SettingsPath))
 }
 
 // deliverCodex sends the message box's text to a live Codex session: Codex

@@ -13,6 +13,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // The PR owner registry: a session runs `ccs claim <PR>` for each PR it
@@ -40,8 +43,8 @@ type claimsFile struct {
 	Checked map[string]time.Time `json:"checked,omitempty"`
 }
 
-func claimsPath() string     { return filepath.Join(filepath.Dir(settingsPath), "claims.json") }
-func claimsLockPath() string { return filepath.Join(filepath.Dir(settingsPath), "claims.lock") }
+func claimsPath() string     { return filepath.Join(filepath.Dir(state.SettingsPath), "claims.json") }
+func claimsLockPath() string { return filepath.Join(filepath.Dir(state.SettingsPath), "claims.lock") }
 
 // prsFresh is how old the watcher's state may be before ccs prs asks GitHub itself.
 const prsFresh = 10 * time.Minute
@@ -127,7 +130,7 @@ func loadClaims() claimsFile {
 
 // parentPID is pid's parent, 0 when unknown. Stubbed in tests.
 var parentPID = func(pid int) int {
-	out, err := runBounded(2*time.Second, nil, "ps", "-o", "ppid=", "-p", strconv.Itoa(pid))
+	out, err := proc.RunBounded(2*time.Second, nil, "ps", "-o", "ppid=", "-p", strconv.Itoa(pid))
 	if err != nil {
 		return 0
 	}
@@ -402,7 +405,7 @@ func prsList(author, owner string, offline bool, now time.Time) (prsReport, erro
 		}
 		due, err := dueEndChecks(unknown, now)
 		if err != nil {
-			logActivity("ccs prs: couldn't record PR checks: %v", err)
+			state.LogActivity("ccs prs: couldn't record PR checks: %v", err)
 		}
 		for _, u := range due {
 			if s, err := endState(u); err == nil && s != "open" {
@@ -433,7 +436,7 @@ func prsList(author, owner string, offline bool, now time.Time) (prsReport, erro
 	}
 	if prune(&claims) {
 		if err := withClaims(prune); err != nil {
-			logActivity("ccs prs: couldn't prune claims: %v", err)
+			state.LogActivity("ccs prs: couldn't prune claims: %v", err)
 		}
 	}
 

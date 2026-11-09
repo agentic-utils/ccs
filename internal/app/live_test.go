@@ -11,16 +11,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-)
 
-func TestShellQuote(t *testing.T) {
-	if got := shellQuote(`a b`); got != `'a b'` {
-		t.Errorf("got %s", got)
-	}
-	if got := shellQuote(`it's`); got != `'it'\''s'` {
-		t.Errorf("got %s", got)
-	}
-}
+	"github.com/agentic-utils/ccs/internal/proc"
+)
 
 func TestResumeInITermTabSkipsOutsideITerm(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
@@ -132,9 +125,9 @@ func TestLiveSessionsDropsRecycledPid(t *testing.T) {
 	old := getSessionsDir
 	getSessionsDir = func() string { return dir }
 	defer func() { getSessionsDir = old }()
-	oldPS := processStartTimes
-	defer func() { processStartTimes = oldPS }()
-	processStartTimes = func(map[string]int) map[int]time.Time {
+	oldPS := proc.ProcessStartTimes
+	defer func() { proc.ProcessStartTimes = oldPS }()
+	proc.ProcessStartTimes = func(map[string]int) map[int]time.Time {
 		return map[int]time.Time{os.Getpid(): time.Date(2026, 9, 23, 16, 52, 33, 0, time.UTC)}
 	}
 	write := func(name, id, start string) {
@@ -249,22 +242,14 @@ func TestTabResultOnlyTimeoutMeansMaybeOpened(t *testing.T) {
 	if h, err := tabResult(nil, nil); !h || err != nil {
 		t.Error("success is handled")
 	}
-	if h, err := tabResult(nil, fmt.Errorf("osascript: %w", errTimedOut)); !h || err == nil {
+	if h, err := tabResult(nil, fmt.Errorf("osascript: %w", proc.ErrTimedOut)); !h || err == nil {
 		t.Error("a timeout is handled with an error: it may have opened")
 	}
 	if h, _ := tabResult(nil, fmt.Errorf("exit status 1")); h {
 		t.Error("a plain failure must fall back to resuming in place")
 	}
-	if _, err := runBounded(50*time.Millisecond, nil, "sleep", "5"); !errors.Is(err, errTimedOut) {
+	if _, err := proc.RunBounded(50*time.Millisecond, nil, "sleep", "5"); !errors.Is(err, proc.ErrTimedOut) {
 		t.Errorf("runBounded should report its deadline, got %v", err)
-	}
-}
-
-func TestShellSafe(t *testing.T) {
-	for s, want := range map[string]bool{"/Users/me/proj": true, "/tmp/it's": true, `/r/a\`: false, "/tmp/a\x01b": false, "/tmp/\xff": false} {
-		if shellSafe(s) != want {
-			t.Errorf("shellSafe(%q) != %v", s, want)
-		}
 	}
 }
 
@@ -288,11 +273,11 @@ func TestStaleSessionFileWithOtherPidDoesNotHideLiveOne(t *testing.T) {
 	old := getSessionsDir
 	getSessionsDir = func() string { return dir }
 	defer func() { getSessionsDir = old }()
-	oldPS := processStartTimes
-	defer func() { processStartTimes = oldPS }()
+	oldPS := proc.ProcessStartTimes
+	defer func() { proc.ProcessStartTimes = oldPS }()
 	me := os.Getpid()
 	start := time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC)
-	processStartTimes = func(map[string]int) map[int]time.Time {
+	proc.ProcessStartTimes = func(map[string]int) map[int]time.Time {
 		return map[int]time.Time{me: start, 1: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	}
 	write := func(name string, pid int, when string) {
@@ -418,9 +403,9 @@ func TestT3SessionOpensInT3(t *testing.T) {
 	old := getSessionsDir
 	getSessionsDir = func() string { return dir }
 	defer func() { getSessionsDir = old }()
-	oldPS := processStartTimes
-	defer func() { processStartTimes = oldPS }()
-	processStartTimes = func(map[string]int) map[int]time.Time {
+	oldPS := proc.ProcessStartTimes
+	defer func() { proc.ProcessStartTimes = oldPS }()
+	proc.ProcessStartTimes = func(map[string]int) map[int]time.Time {
 		return map[int]time.Time{os.Getpid(): time.Date(2026, 9, 23, 16, 52, 33, 0, time.UTC)}
 	}
 	body := fmt.Sprintf(`{"pid":%d,"sessionId":"t3","procStart":"Wed Sep 23 16:52:33 2026"}`, os.Getpid())

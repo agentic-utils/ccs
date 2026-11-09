@@ -22,6 +22,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // The coordinator: one Claude Code session, in its own section atop the list, that starts a named session
@@ -72,12 +75,14 @@ type coordinatorRecord struct {
 	Released  bool   `json:"released,omitempty"` // --release: no looking for one by its name
 }
 
-func coordinatorPath() string { return filepath.Join(filepath.Dir(settingsPath), "coordinator.json") }
+func coordinatorPath() string {
+	return filepath.Join(filepath.Dir(state.SettingsPath), "coordinator.json")
+}
 
 // coordinatorDir is its working folder, holding its CLAUDE.md and settings, so
 // every way of resuming it (Enter, the restart popup, plain claude --resume)
 // gets them with nothing special.
-func coordinatorDir() string { return filepath.Join(filepath.Dir(settingsPath), coordinatorName) }
+func coordinatorDir() string { return filepath.Join(filepath.Dir(state.SettingsPath), coordinatorName) }
 
 func loadCoordinator() (r coordinatorRecord) {
 	if b, err := os.ReadFile(coordinatorPath()); err == nil {
@@ -256,7 +261,7 @@ func followLive(rec *coordinatorRecord, live map[string]liveSession) bool {
 // --resume: until any question it opens with is answered, it has no session
 // file to find it by.
 func startingProcess(id string) int {
-	out, err := psAll()
+	out, err := proc.PsAll()
 	if err != nil {
 		return 0
 	}
@@ -318,7 +323,7 @@ var mcpRun = realMCPRun
 
 func realMCPRun(bin string, args ...string) ([]byte, error) {
 	dir, _ := os.UserHomeDir()
-	return runCommandIn(dir, 30*time.Second, nil, true, bin, args...)
+	return proc.RunCommandIn(dir, 30*time.Second, nil, true, bin, args...)
 }
 
 // mcpFix is one CLI's missing ccs MCP server: the command that adds it.

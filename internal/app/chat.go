@@ -25,6 +25,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 // ============================================================================
@@ -436,7 +438,7 @@ func deliverMessage(pid int, id, name, text string, verified bool) (string, erro
 	switch {
 	case where == "":
 		return "✗ Couldn't reach " + name + ": its message socket isn't reachable and it isn't in iTerm or tmux", fmt.Errorf("%w: unreachable", errUnsent)
-	case errors.Is(err, errTimedOut):
+	case errors.Is(err, proc.ErrTimedOut):
 		return "⚠ Typing into " + name + "'s " + where + " timed out; it may have been typed", err
 	case err != nil:
 		return "✗ Couldn't type into " + name + "'s " + where + ": " + err.Error(), err
@@ -649,19 +651,19 @@ func typeKeys(pid int, text string, enter bool) (where string, err error) {
 	if strings.ContainsFunc(text, func(r rune) bool { return r < 0x20 || r == 0x7f || r == utf8.RuneError }) {
 		return "terminal", errors.New("the message contains control characters")
 	}
-	out, err := runBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
+	out, err := proc.RunBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
 	tty := strings.TrimSpace(string(out))
 	if err != nil || tty == "" || tty == "??" {
 		return "", nil
 	}
 	tty = "/dev/" + tty
 	if os.Getenv("TMUX") != "" {
-		panes, err := runBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
+		panes, err := proc.RunBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
 		if target := tmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
-			if _, err := runBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "-l", "--", text); err != nil || !enter {
+			if _, err := proc.RunBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "-l", "--", text); err != nil || !enter {
 				return "tmux pane", err
 			}
-			_, err := runBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "Enter")
+			_, err := proc.RunBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "Enter")
 			return "tmux pane", err
 		}
 	}
@@ -680,7 +682,7 @@ func typeKeys(pid int, text string, enter bool) (where string, err error) {
 		end repeat
 	end repeat
 end tell`, tty, text, enter)
-	out, err = runBounded(5*time.Second, nil, "osascript", "-e", script)
+	out, err = proc.RunBounded(5*time.Second, nil, "osascript", "-e", script)
 	if err != nil {
 		return "iTerm tab", err
 	}

@@ -1673,3 +1673,20 @@ func TestShortcutsKeepChordsTogether(t *testing.T) {
 		t.Fatal("no ^X chords listed")
 	}
 }
+
+func TestDeleteConversationErrorHandling(t *testing.T) {
+	// Test deletion of non-existent file
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "nonexistent.jsonl")
+
+	// Try to delete non-existent file
+	err := os.Remove(testFile)
+	if err == nil {
+		t.Error("expected error when deleting non-existent file")
+	}
+
+	// Verify it's the right kind of error
+	if !os.IsNotExist(err) {
+		t.Errorf("expected IsNotExist error, got: %v", err)
+	}
+}

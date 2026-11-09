@@ -2,6 +2,9 @@ package github
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -112,3 +115,33 @@ func TestRemovedReviewFlagsSayWhereReviewsWent(t *testing.T) {
 		}
 	}
 }
+
+// A fake gh answering one PR and failing another the way GitHub does: the
+// data for the rest, an error for that field, and a non-zero exit.
+func TestGhPRBatchReadsPartialAnswers(t *testing.T) {
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	os.WriteFile(gh, []byte(`#!/bin/sh
+case "$*" in *'repository(owner:"o",name:"r"){pullRequest(number:1)'*) ;; *) exit 3;; esac
+echo '{"data":{"p0":{"pullRequest":{"number":1,"title":"t","state":"OPEN","isDraft":false,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"nodes":[{"name":"test","conclusion":"FAILURE"},{"name":"lint","conclusion":"SUCCESS"},{"context":"ci/deploy","state":"ERROR"}]}}}}]}}},"p1":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND"}]}'
+exit 1
+`), 0o755)
+	got, err := GhPRBatch(gh, []string{prA, prB})
+	want := PrInfo{Number: 1, Title: "t", State: "OPEN", MergeState: "BLOCKED", Review: "APPROVED", Checks: "FAILURE", Failing: []string{"test", "ci/deploy"}}
+	if err != nil || !reflect.DeepEqual(got[prA], want) {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if _, why := got[prA].Status(); why != "checks failing: test, ci/deploy" {
+		t.Errorf("a PR with failing checks names them: %q", why)
+	}
+	if got[prB].State != "GONE" {
+		t.Errorf("a PR GitHub couldn't find says so instead of checking forever: %+v", got[prB])
+	}
+}
+
+const (
+	prA = "https://github.com/o/r/pull/1"
+	prB = "https://github.com/o/r/pull/2"
+	prC = "https://github.com/o/r/pull/3"
+	prD = "https://github.com/o/r/pull/4"
+)

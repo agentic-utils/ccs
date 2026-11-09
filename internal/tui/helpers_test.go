@@ -1,22 +1,14 @@
 package tui
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -33,47 +25,6 @@ import (
 
 // testReleaseKey stands in for CI's signing key: TestMain makes ccs trust it.
 var testReleaseKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
-
-// fakeRelease serves tag's checksums.txt, signed with testReleaseKey, and this
-// platform's archive holding binary as "ccs"; tamper corrupts the published
-// checksum, re-signed, as a release built outside CI can't be.
-func fakeRelease(t *testing.T, tag string, binary []byte, tamper bool) {
-	t.Helper()
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-	for name, body := range map[string][]byte{"README.md": []byte("readme"), "ccs": binary} {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
-			t.Fatal(err)
-		}
-		tw.Write(body)
-	}
-	tw.Close()
-	gz.Close()
-	asset := fmt.Sprintf("ccs_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
-	sum := sha256.Sum256(buf.Bytes())
-	sums := hex.EncodeToString(sum[:]) + "  " + asset + "\n"
-	if tamper {
-		sums = strings.Repeat("0", 64) + "  " + asset + "\n"
-	}
-	sig := ed25519.Sign(testReleaseKey, selfupdate.SignedMessage(tag, []byte(sums)))
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/" + tag + "/checksums.txt":
-			io.WriteString(w, sums)
-		case "/" + tag + "/checksums.txt.sig":
-			w.Write(sig)
-		case "/" + tag + "/" + asset:
-			w.Write(buf.Bytes())
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	old := selfupdate.ReleaseDownloadURL
-	selfupdate.ReleaseDownloadURL = srv.URL
-	t.Cleanup(func() { selfupdate.ReleaseDownloadURL = old })
-}
 
 // firstOfBatch runs the first command of a tea.Batch (the upgrade itself;
 // the rest is the 1s redraw tick, which would just sleep).
@@ -94,15 +45,6 @@ func appendTo(t *testing.T, path, s string) {
 	if _, err := f.WriteString(s); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func mustStat(t *testing.T, path string) os.FileInfo {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return info
 }
 
 func TestMain(m *testing.M) {

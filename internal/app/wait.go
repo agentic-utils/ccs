@@ -14,6 +14,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // ============================================================================
@@ -630,7 +633,7 @@ const autoFocusIdle = 2 * time.Second
 // kCGEventSourceStateHIDSystemState, kCGEventKeyDown); not ok when unknown,
 // and then auto-focus never switches.
 var userIdle = func() (time.Duration, bool) {
-	out, err := runBounded(2*time.Second, nil, "osascript", "-l", "JavaScript", "-e",
+	out, err := proc.RunBounded(2*time.Second, nil, "osascript", "-l", "JavaScript", "-e",
 		"ObjC.import('CoreGraphics'); $.CGEventSourceSecondsSinceLastEventType(1, 10)")
 	secs, perr := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 	if err != nil || perr != nil {
@@ -673,7 +676,7 @@ func (m *model) autoFocusCmd() tea.Cmd {
 			}
 			return nil
 		}
-		logActivity("auto-focus: %s answered, free to switch again", m.focusName(held))
+		state.LogActivity("auto-focus: %s answered, free to switch again", m.focusName(held))
 		m.focusHeld = ""
 	}
 	id := ""
@@ -719,9 +722,9 @@ func (m *model) applyAutoFocus(msg autoFocusMsg) {
 	case !msg.tried:
 		m.noteFocus(msg.id, "busy", "auto-focus: you're typing (last key %.1fs ago); switching to %s once you've stopped for %v", msg.idle.Seconds(), name, autoFocusIdle)
 	case msg.focused:
-		logActivity("auto-focus: switched to %s", name)
+		state.LogActivity("auto-focus: switched to %s", name)
 	default:
-		logActivity("auto-focus: couldn't find %s's tab or pane", name)
+		state.LogActivity("auto-focus: couldn't find %s's tab or pane", name)
 	}
 	if msg.tried {
 		m.focusHandled[msg.id] = msg.since
@@ -739,7 +742,7 @@ func (m *model) noteFocus(id, kind, format string, args ...any) {
 		return
 	}
 	m.focusNoted[key] = true
-	logActivity(format, args...)
+	state.LogActivity(format, args...)
 }
 
 // focusName names a session for the log.

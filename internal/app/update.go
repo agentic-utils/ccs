@@ -35,6 +35,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // How often ccs asks GitHub for a newer release (one ~5KB HEAD request to the
@@ -88,7 +91,7 @@ func (u *upgrader) Prepare(tag string) {
 		defer recoverWorker()
 		start := time.Now()
 		err := u.prepare(tag) // failures are retried by install
-		logUpdate("prepare %s: %v in %s", tag, errOrOK(err), time.Since(start).Round(time.Millisecond))
+		state.LogUpdate("prepare %s: %v in %s", tag, state.ErrOrOK(err), time.Since(start).Round(time.Millisecond))
 	}()
 }
 
@@ -167,7 +170,7 @@ func releaseChangelog(from, tag string) ([]string, error) {
 	if err == nil {
 		return lines, nil
 	}
-	logUpdate("changelog from the API: %v; trying the feed", err)
+	state.LogUpdate("changelog from the API: %v; trying the feed", err)
 	resp, err := client.Get("https://github.com/agentic-utils/ccs/releases.atom")
 	if err != nil {
 		return nil, err
@@ -384,11 +387,11 @@ func chooseUpgrader(exe string) *upgrader {
 // can take minutes. Falls back to it if the tap isn't a plain git checkout.
 func refreshTap(brew string, step func(string)) error {
 	step("refreshing tap")
-	tap, err := runCommand(30*time.Second, nil, true, brew, "--repository", "agentic-utils/tap")
+	tap, err := proc.RunCommand(30*time.Second, nil, true, brew, "--repository", "agentic-utils/tap")
 	if err == nil {
 		// Never prompt: a credential or passphrase request fails the pull
 		// (falling back to brew update) instead of waiting on a hidden prompt.
-		_, err = runCommand(time.Minute, []string{"GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes"}, true,
+		_, err = proc.RunCommand(time.Minute, []string{"GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes"}, true,
 			"git", "-C", strings.TrimSpace(string(tap)), "pull", "--ff-only", "--quiet")
 		if err == nil {
 			return nil
@@ -407,8 +410,8 @@ func runBrew(brew string, args ...string) error {
 		// update log (brew's own --verbose doesn't show that).
 		env = append(env, "HOMEBREW_CURL_VERBOSE=1")
 	}
-	if out, err := runCommand(10*time.Minute, env, true, brew, args...); err != nil {
-		if errors.Is(err, errTimedOut) {
+	if out, err := proc.RunCommand(10*time.Minute, env, true, brew, args...); err != nil {
+		if errors.Is(err, proc.ErrTimedOut) {
 			return fmt.Errorf("brew %s: %w", args[0], err)
 		}
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
@@ -481,7 +484,7 @@ func signedSums(tag string) ([]byte, error) {
 		return nil, err
 	}
 	if !ed25519.Verify(releaseKey, signedMessage(tag, sums), sig) {
-		logUpdate("signature check for %s failed", tag)
+		state.LogUpdate("signature check for %s failed", tag)
 		return nil, fmt.Errorf("%s isn't signed by ccs's CI", tag)
 	}
 	return sums, nil
@@ -529,7 +532,7 @@ func download(url string) (body []byte, err error) {
 	var remote string
 	trace := &httptrace.ClientTrace{GotConn: func(i httptrace.GotConnInfo) { remote = i.Conn.RemoteAddr().String() }}
 	defer func() {
-		logUpdate("GET %s\n  -> %v, %d bytes in %s (last connection %s)", url, errOrOK(err), len(body), time.Since(start).Round(time.Millisecond), remote)
+		state.LogUpdate("GET %s\n  -> %v, %d bytes in %s (last connection %s)", url, state.ErrOrOK(err), len(body), time.Since(start).Round(time.Millisecond), remote)
 	}()
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodGet, url, nil)
 	if err != nil {
@@ -558,13 +561,13 @@ func download(url string) (body []byte, err error) {
 // brew to download as usual.
 func preseedBrewCache(brew string) {
 	if err := preseed(brew); err != nil {
-		logUpdate("preseed skipped, brew will download itself: %v", err)
+		state.LogUpdate("preseed skipped, brew will download itself: %v", err)
 	}
 }
 
 // formulaDownload is the archive URL and sha256 the tap's formula installs.
 func formulaDownload(brew string) (url, sum string, err error) {
-	out, err := runCommand(30*time.Second, []string{"HOMEBREW_NO_AUTO_UPDATE=1"}, true, brew, "info", "--json=v2", "agentic-utils/tap/ccs")
+	out, err := proc.RunCommand(30*time.Second, []string{"HOMEBREW_NO_AUTO_UPDATE=1"}, true, brew, "info", "--json=v2", "agentic-utils/tap/ccs")
 	if err != nil {
 		return "", "", err
 	}
@@ -619,7 +622,7 @@ func preseed(brew string) error {
 		return fmt.Errorf("unexpected formula url %q", url)
 	}
 	env := []string{"HOMEBREW_NO_AUTO_UPDATE=1"}
-	cacheOut, err := runCommand(30*time.Second, env, true, brew, "--cache", "agentic-utils/tap/ccs")
+	cacheOut, err := proc.RunCommand(30*time.Second, env, true, brew, "--cache", "agentic-utils/tap/ccs")
 	if err != nil {
 		return err
 	}
@@ -701,11 +704,11 @@ func dialTLSAnyAddr(ctx context.Context, network, hostport string) (net.Conn, er
 		start := time.Now()
 		conn, err := tlsDialOne(ctx, network, net.JoinHostPort(a, port), host)
 		if err == nil {
-			logUpdate("connect %s via %s: ok in %s", host, a, time.Since(start).Round(time.Millisecond))
+			state.LogUpdate("connect %s via %s: ok in %s", host, a, time.Since(start).Round(time.Millisecond))
 			return conn, nil
 		}
 		failedAddrs.Store(a, true)
-		logUpdate("connect %s via %s: %v after %s, trying next address", host, a, err, time.Since(start).Round(time.Millisecond))
+		state.LogUpdate("connect %s via %s: %v after %s, trying next address", host, a, err, time.Since(start).Round(time.Millisecond))
 		lastErr = err
 	}
 	return nil, fmt.Errorf("no address for %s worked: %w", host, lastErr)
@@ -894,7 +897,7 @@ func (m model) updatePopup() string {
 		body += m.changelogBlock() + "\n\n"
 	}
 	if m.updateErr != "" {
-		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, truncate(m.updateErr, 60), updateLogPath)
+		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, truncate(m.updateErr, 60), state.UpdateLogPath)
 	}
 	if m.upgrade != nil && m.updateErr != "" {
 		body += hints(keyEnter, "retry", keyEsc, "later")
@@ -932,65 +935,6 @@ func (m model) changelogBlock() string {
 }
 
 const maxChangelogLines = 12
-
-// updateLogPath is where self-update steps are logged: each git/brew
-// command with its full output, exit and duration, and each download with
-// the address it connected to. Kept under 1MB (the previous file is .1).
-var updateLogPath = func() string {
-	home, _ := os.UserHomeDir()
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Logs", "ccs", "update.log")
-	}
-	if dir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(dir, "ccs", "update.log")
-	}
-	return filepath.Join(os.TempDir(), "ccs-update.log")
-}()
-
-var updateLogMu sync.Mutex
-
-func logUpdate(format string, args ...any) { appendLog(updateLogPath, format, args...) }
-
-// activityLogPath is beside the update log: what ccs did on its own, such as
-// auto-focus switching tabs (logActivity).
-var activityLogPath = filepath.Join(filepath.Dir(updateLogPath), "activity.log")
-
-func logActivity(format string, args ...any) { appendLog(activityLogPath, format, args...) }
-
-// appendLog adds a timestamped line to a log, capped at 1MB (the previous
-// 1MB kept as .1).
-func appendLog(path, format string, args ...any) {
-	updateLogMu.Lock()
-	defer updateLogMu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-	if info, err := os.Stat(path); err == nil && info.Size() > 1<<20 {
-		os.Rename(path, path+".1")
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	fmt.Fprintf(f, "%s ccs %s: %s\n", time.Now().Format(time.RFC3339), version, fmt.Sprintf(format, args...))
-}
-
-func errOrOK(err error) any {
-	if err == nil {
-		return "ok"
-	}
-	return err
-}
-
-// indent prefixes each line of command output for the log.
-func indent(out []byte) string {
-	text := strings.TrimRight(string(out), "\n")
-	if text == "" {
-		return ""
-	}
-	return "  | " + strings.ReplaceAll(text, "\n", "\n  | ")
-}
 
 // autoUpdateTickMsg checks whether you're away, so a prepared update can
 // install without interrupting you.

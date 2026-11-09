@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 // Codex sessions: ccs launch --codex starts one, ccs claim works inside one
@@ -186,7 +188,7 @@ const codexNudgeNote = "[Automatic status notice from ccs watch, the user's PR w
 // codexQueue queues text into a Codex thread; Codex delivers it to the
 // running session at its next turn. Stubbed in tests.
 var codexQueue = func(thread, text string) error {
-	out, err := runBounded(15*time.Second, nil, "codex", "queue", "--thread", thread, "--message", text)
+	out, err := proc.RunBounded(15*time.Second, nil, "codex", "queue", "--thread", thread, "--message", text)
 	if err != nil {
 		if s := strings.TrimSpace(string(out)); s != "" {
 			return errorString(s)

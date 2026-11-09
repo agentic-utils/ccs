@@ -19,6 +19,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // listItem holds display and search data for a conversation
@@ -801,7 +803,7 @@ func (m model) Init() tea.Cmd {
 		cmds = append(cmds, func() tea.Msg {
 			lines, err := releaseChangelog(from, "v"+version)
 			if err != nil {
-				logUpdate("changelog %s..%s: %v", from, version, err)
+				state.LogUpdate("changelog %s..%s: %v", from, version, err)
 			}
 			return updatedChangelogMsg{lines}
 		})
@@ -1012,7 +1014,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case t3DoneMsg:
 		m.resuming = false
 		if msg.err != nil {
-			logActivity("couldn't open in T3 Code: %v", msg.err)
+			state.LogActivity("couldn't open in T3 Code: %v", msg.err)
 			m.note("In T3 Code: open it there · ^S messages it")
 		}
 		return m, nil
@@ -1200,7 +1202,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					fetch = func() tea.Msg {
 						lines, err := f(tag)
 						if err != nil {
-							logUpdate("changelog %s: %v", tag, err)
+							state.LogUpdate("changelog %s: %v", tag, err)
 						}
 						return changelogMsg{tag, lines}
 					}
@@ -1221,7 +1223,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notesFetching = false
 		if msg.err != nil {
 			m.notesErr = msg.err.Error()
-			logUpdate("changelog: %v", msg.err)
+			state.LogUpdate("changelog: %v", msg.err)
 		} else {
 			m.notes = msg.lines
 		}
@@ -1240,7 +1242,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case !m.awayForUpdate():
 			return m, autoUpdateTick()
 		}
-		logUpdate("auto-update: installing %s while you're away", m.updateTo)
+		state.LogUpdate("auto-update: installing %s while you're away", m.updateTo)
 		m.autoInstalling = true
 		return m, m.startInstall()
 
@@ -1257,7 +1259,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case upgradeDoneMsg:
 		m.updating = false
 		if m.progress != nil {
-			logUpdate("install %s: %v in %s", m.updateTo, errOrOK(msg.err), time.Since(m.progress.started).Round(time.Millisecond))
+			state.LogUpdate("install %s: %v in %s", m.updateTo, state.ErrOrOK(msg.err), time.Since(m.progress.started).Round(time.Millisecond))
 		}
 		if msg.err != nil {
 			// Keep the offer open with the reason, so the failure can't vanish
@@ -1583,7 +1585,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.note("CPU profile saved: " + m.profilePath + " (go tool pprof -top it)")
 				return m, nil
 			}
-			path := filepath.Join(filepath.Dir(updateLogPath), "cpu-"+time.Now().Format("20060102-150405")+".pprof")
+			path := filepath.Join(filepath.Dir(state.UpdateLogPath), "cpu-"+time.Now().Format("20060102-150405")+".pprof")
 			stop, err := startProfile(path)
 			if err != nil {
 				m.errorMsg = "Couldn't record a profile: " + err.Error()
@@ -2907,16 +2909,6 @@ func (m *model) pruneConversation() {
 	m.errorMsg = ""
 }
 
-// settingsPath keeps the view ccs reopens in (^X T layout, ^X G grouping)
-// across restarts.
-var settingsPath = func() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		dir = os.TempDir()
-	}
-	return filepath.Join(dir, "ccs", "settings.json")
-}()
-
 type settings struct {
 	Table     bool `json:"table,omitempty"`
 	Grouped   bool `json:"grouped,omitempty"`
@@ -2948,7 +2940,7 @@ func (m model) settings() settings {
 
 // loadSettings reads them; a missing or unreadable file means the defaults.
 func loadSettings() (s settings) {
-	if b, err := os.ReadFile(settingsPath); err == nil {
+	if b, err := os.ReadFile(state.SettingsPath); err == nil {
 		json.Unmarshal(b, &s)
 		s.found = true
 	}
@@ -2959,12 +2951,12 @@ func loadSettings() (s settings) {
 // opens in the default view, so it isn't reported.
 func saveSettings(s settings) {
 	data, _ := json.Marshal(s)
-	if os.MkdirAll(filepath.Dir(settingsPath), 0o700) != nil {
+	if os.MkdirAll(filepath.Dir(state.SettingsPath), 0o700) != nil {
 		return
 	}
-	tmp := settingsPath + ".tmp"
+	tmp := state.SettingsPath + ".tmp"
 	if os.WriteFile(tmp, data, 0o600) == nil {
-		os.Rename(tmp, settingsPath)
+		os.Rename(tmp, state.SettingsPath)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 func TestDoneUntilSeen(t *testing.T) {
@@ -58,7 +60,7 @@ func TestDoneUntilSeen(t *testing.T) {
 }
 
 func TestMarksFirstRunAndPrune(t *testing.T) {
-	os.Remove(marksPath)
+	os.Remove(state.MarksPath)
 	s := loadMarks()
 	if s.Since.IsZero() || time.Since(s.Since) > time.Minute {
 		t.Fatalf("first run starts now: %v", s.Since)

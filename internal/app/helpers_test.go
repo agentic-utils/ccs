@@ -22,6 +22,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // testReleaseKey stands in for CI's signing key: TestMain makes ccs trust it.
@@ -106,13 +109,13 @@ func TestMain(m *testing.M) {
 	}
 	// Keep tests from writing into the real update log.
 	dir, _ := os.MkdirTemp("", "ccs-test-log")
-	updateLogPath = filepath.Join(dir, "update.log")
-	activityLogPath = filepath.Join(dir, "activity.log")
+	state.UpdateLogPath = filepath.Join(dir, "update.log")
+	state.ActivityLogPath = filepath.Join(dir, "activity.log")
 	focusRecordPath = filepath.Join(dir, "auto-focus.json")
 	openRecordPath = filepath.Join(dir, "open-sessions.json")
 	previewDebounce = 0 // tests check the preview right after moving
-	settingsPath = filepath.Join(dir, "settings.json")
-	marksPath = filepath.Join(dir, "sessions.json")
+	state.SettingsPath = filepath.Join(dir, "settings.json")
+	state.MarksPath = filepath.Join(dir, "sessions.json")
 	hostOf = func(int, string) string { return "" }                       // every session in a terminal, wherever the tests run
 	listAgents = func() (map[string]bgSession, error) { return nil, nil } // never the real claude agents
 	t3Link = func(int) (string, error) { return "", errors.New("no T3 Code in tests") }
@@ -136,15 +139,15 @@ func TestMain(m *testing.M) {
 	mcpRun = func(string, ...string) ([]byte, error) { return nil, errors.New("tests run no claude or codex") }
 	namedTranscript = func(string) string { return "" }
 	coordinatorProbe = func() tea.Msg { return nil }
-	psAll = func() (string, error) { return "", nil }
-	psTree = func() (string, error) { return "", nil } // never the machine's own processes
+	proc.PsAll = func() (string, error) { return "", nil }
+	proc.PsTree = func() (string, error) { return "", nil } // never the machine's own processes
 	// never the real Codex: its data folder is a temp one, and nothing is queued.
 	codexHome = func() string { return filepath.Join(dir, "codex") }
 	codexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	liveCodexSessions = func() map[string]liveSession { return nil } // never the machine's own Codex tabs
 	codexProcCwd = func(int) string { return "" }
-	ttyOf = func(int) string { return "" }
-	signalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
+	proc.TtyOf = func(int) string { return "" }
+	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	ghUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }
 	code := m.Run()
 	os.RemoveAll(dir)

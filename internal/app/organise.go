@@ -5,12 +5,15 @@ import (
 	"strings"
 
 	"encoding/json"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"os"
 	"path/filepath"
 	"slices"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // sessionMarks is what ccs remembers about sessions between runs: when each
@@ -30,19 +33,10 @@ type sessionMarks struct {
 	Settled map[string]string    `json:"settled,omitempty"`
 }
 
-// marksPath keeps sessionMarks beside the settings.
-var marksPath = func() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		dir = os.TempDir()
-	}
-	return filepath.Join(dir, "ccs", "sessions.json")
-}()
-
 // loadMarks reads them; with no file, everything so far counts as seen.
 func loadMarks() *sessionMarks {
 	s := &sessionMarks{}
-	if b, err := os.ReadFile(marksPath); err == nil {
+	if b, err := os.ReadFile(state.MarksPath); err == nil {
 		json.Unmarshal(b, s)
 	}
 	if s.Since.IsZero() {
@@ -75,12 +69,12 @@ func loadMarks() *sessionMarks {
 // done again after a restart, so it isn't reported.
 func (s *sessionMarks) save() {
 	data, _ := json.Marshal(s)
-	if os.MkdirAll(filepath.Dir(marksPath), 0o700) != nil {
+	if os.MkdirAll(filepath.Dir(state.MarksPath), 0o700) != nil {
 		return
 	}
-	tmp := marksPath + ".tmp"
+	tmp := state.MarksPath + ".tmp"
 	if os.WriteFile(tmp, data, 0o600) == nil {
-		os.Rename(tmp, marksPath)
+		os.Rename(tmp, state.MarksPath)
 	}
 }
 

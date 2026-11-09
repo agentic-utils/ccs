@@ -13,6 +13,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/state"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -1416,8 +1418,8 @@ func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
 }
 
 func TestViewIsRememberedAcrossRestarts(t *testing.T) {
-	defer func(p string) { settingsPath = p }(settingsPath)
-	settingsPath = filepath.Join(t.TempDir(), "ccs", "settings.json")
+	defer func(p string) { state.SettingsPath = p }(state.SettingsPath)
+	state.SettingsPath = filepath.Join(t.TempDir(), "ccs", "settings.json")
 	if (loadSettings() != settings{}) {
 		t.Fatal("no file: the defaults")
 	}

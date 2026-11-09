@@ -16,6 +16,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // coordinatorFixture is a clean state: no record, no folder, no sessions, tabs
@@ -24,9 +27,9 @@ import (
 func coordinatorFixture(t *testing.T) (ran *[]string) {
 	t.Helper()
 	dir := t.TempDir()
-	oldSettings, oldMarks, oldProjects, oldRun := settingsPath, marksPath, getProjectsDir, mcpRun
-	settingsPath = filepath.Join(dir, "ccs", "settings.json")
-	marksPath = filepath.Join(dir, "ccs", "sessions.json")
+	oldSettings, oldMarks, oldProjects, oldRun := state.SettingsPath, state.MarksPath, getProjectsDir, mcpRun
+	state.SettingsPath = filepath.Join(dir, "ccs", "settings.json")
+	state.MarksPath = filepath.Join(dir, "ccs", "sessions.json")
 	getProjectsDir = func() string { return filepath.Join(dir, "projects") }
 	sessionsFixture(t)
 	stubLaunch(t)
@@ -52,7 +55,7 @@ func coordinatorFixture(t *testing.T) (ran *[]string) {
 		return []byte(`No MCP server named "ccs".`), errors.New("exit status 1")
 	}
 	t.Cleanup(func() {
-		settingsPath, marksPath, getProjectsDir, mcpRun, lookBin = oldSettings, oldMarks, oldProjects, oldRun, oldBin
+		state.SettingsPath, state.MarksPath, getProjectsDir, mcpRun, lookBin = oldSettings, oldMarks, oldProjects, oldRun, oldBin
 	})
 	return ran
 }
@@ -308,13 +311,13 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		coordinatorFixture(t)
 		scripts := startsAs(t, coordinatorName)
 		coordinatorRecord{SessionID: "the-id"}.save()
-		oldPs, oldFocus := psAll, focusPID
-		psAll = func() (string, error) {
+		oldPs, oldFocus := proc.PsAll, focusPID
+		proc.PsAll = func() (string, error) {
 			return "4242 ttys1 /bin/claude hello --session-id the-id --name coordinator\n", nil
 		}
 		var pid int
 		focusPID = func(p int, _ bool) bool { pid = p; return true }
-		defer func() { psAll, focusPID = oldPs, oldFocus }()
+		defer func() { proc.PsAll, focusPID = oldPs, oldFocus }()
 		out, code := runCoord("--yes")
 		if code != 0 || pid != 4242 || !strings.Contains(out, "trust") || len(*scripts) > 0 {
 			t.Errorf("%d %s pid=%d %v", code, out, pid, *scripts)
@@ -327,24 +330,24 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		proj := filepath.Join(getProjectsDir(), "-w")
 		os.MkdirAll(proj, 0o700)
 		os.WriteFile(filepath.Join(proj, "the-id.jsonl"), []byte(`{"type":"user","cwd":"/tmp","sessionId":"the-id","message":{"role":"user","content":"hi"}}`+"\n"), 0o600)
-		oldPs, oldFocus := psAll, focusPID
-		psAll = func() (string, error) {
+		oldPs, oldFocus := proc.PsAll, focusPID
+		proc.PsAll = func() (string, error) {
 			return "4242 ttys1 /bin/claude --resume the-id --name coordinator\n", nil
 		}
 		var pid int
 		focusPID = func(p int, _ bool) bool { pid = p; return true }
-		defer func() { psAll, focusPID = oldPs, oldFocus }()
+		defer func() { proc.PsAll, focusPID = oldPs, oldFocus }()
 		if out, code := runCoord("--yes"); code != 0 || pid != 4242 || len(*scripts) > 0 {
 			t.Errorf("%d %s pid=%d %v", code, out, pid, *scripts)
 		}
 	})
 	t.Run("a ccs command naming the id is no claude", func(t *testing.T) {
 		coordinatorFixture(t)
-		old := psAll
-		psAll = func() (string, error) {
+		old := proc.PsAll
+		proc.PsAll = func() (string, error) {
 			return "4242 ttys1 /opt/homebrew/bin/ccs launch --name x --resume the-id\n", nil
 		}
-		defer func() { psAll = old }()
+		defer func() { proc.PsAll = old }()
 		if pid := startingProcess("the-id"); pid != 0 {
 			t.Errorf("pid %d", pid)
 		}
@@ -354,12 +357,12 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		scripts := startsAs(t, coordinatorName)
 		coordinatorRecord{SessionID: "before-clear"}.save()
 		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"coordinator"}`), 0o600)
-		oldPs, oldFocus := psAll, focusPID
-		psAll = func() (string, error) {
+		oldPs, oldFocus := proc.PsAll, focusPID
+		proc.PsAll = func() (string, error) {
 			return itoa(os.Getpid()) + " ttys1 /bin/claude hello --session-id before-clear --name coordinator\n", nil
 		}
 		focusPID = func(int, bool) bool { return true }
-		defer func() { psAll, focusPID = oldPs, oldFocus }()
+		defer func() { proc.PsAll, focusPID = oldPs, oldFocus }()
 		out, code := runCoord("--yes")
 		if code != 0 || strings.Contains(out, "trust") || len(*scripts) > 0 || loadCoordinator().SessionID != "after-clear" {
 			t.Errorf("%d %s %v %s", code, out, *scripts, loadCoordinator().SessionID)
@@ -369,11 +372,11 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		coordinatorFixture(t)
 		coordinatorRecord{SessionID: "before-clear"}.save()
 		os.WriteFile(filepath.Join(getSessionsDir(), "7.json"), []byte(`{"pid":`+itoa(os.Getpid())+`,"sessionId":"after-clear","name":"hub"}`), 0o600)
-		old := psAll
-		psAll = func() (string, error) {
+		old := proc.PsAll
+		proc.PsAll = func() (string, error) {
 			return itoa(os.Getpid()) + " ttys1 /bin/claude hello --session-id before-clear --name coordinator\n", nil
 		}
-		defer func() { psAll = old }()
+		defer func() { proc.PsAll = old }()
 		if s := findCoordinator(); s.kind != coordLive || s.rec.SessionID != "after-clear" {
 			t.Errorf("%+v", s)
 		}
@@ -383,13 +386,13 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		scripts := startsAs(t, coordinatorName)
 		p := planCoordinator(false) // both ccs windows made their offers here
 		coordinatorRecord{SessionID: "the-id"}.save()
-		oldPs, oldFocus := psAll, focusPID
-		psAll = func() (string, error) {
+		oldPs, oldFocus := proc.PsAll, focusPID
+		proc.PsAll = func() (string, error) {
 			return "4242 ttys1 /bin/claude hello --session-id the-id --name coordinator\n", nil
 		}
 		var pid int
 		focusPID = func(p int, _ bool) bool { pid = p; return true }
-		defer func() { psAll, focusPID = oldPs, oldFocus }()
+		defer func() { proc.PsAll, focusPID = oldPs, oldFocus }()
 		msg := coordinatorSetupCmd(p)().(coordinatorDoneMsg)
 		if msg.err != nil || pid != 4242 || len(*scripts) > 0 || loadCoordinator().SessionID != "the-id" {
 			t.Errorf("%+v pid=%d %v %s", msg, pid, *scripts, loadCoordinator().SessionID)
@@ -1048,7 +1051,7 @@ func TestMCPCommandsCaptureStderr(t *testing.T) {
 	bin := t.TempDir()
 	script := filepath.Join(bin, "fake-mcp")
 	os.WriteFile(script, []byte("#!/bin/sh\necho 'No MCP server named ccs' >&2\nexit 1\n"), 0o700)
-	out, err := runCommand(5*time.Second, nil, true, script)
+	out, err := proc.RunCommand(5*time.Second, nil, true, script)
 	if err == nil || !strings.Contains(string(out), "No MCP server") {
 		t.Errorf("how claude says it's missing: %v %q", err, out)
 	}

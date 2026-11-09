@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 const (
@@ -22,8 +24,8 @@ const (
 // the process tree: the test's parent pid runs under session "alpha".
 func claimEnv(t *testing.T) (live map[int]prClaim) {
 	t.Helper()
-	oldSettings, oldLive, oldParent, oldFetch, oldEnd := settingsPath, liveByPID, parentPID, fetchOpenPRs, endState
-	settingsPath = t.TempDir() + "/settings.json"
+	oldSettings, oldLive, oldParent, oldFetch, oldEnd := state.SettingsPath, liveByPID, parentPID, fetchOpenPRs, endState
+	state.SettingsPath = t.TempDir() + "/settings.json"
 	live = map[int]prClaim{
 		os.Getppid(): {Session: "s-alpha", Name: "alpha", PID: os.Getppid(), ProcStart: "Tue Nov  3 07:00:00 2026"},
 	}
@@ -32,7 +34,7 @@ func claimEnv(t *testing.T) (live map[int]prClaim) {
 	fetchOpenPRs = func(string, string) (map[string]*watchedPR, error) { return nil, errors.New("no network in tests") }
 	endState = func(string) (string, error) { return "", errors.New("no network in tests") }
 	t.Cleanup(func() {
-		settingsPath, liveByPID, parentPID, fetchOpenPRs, endState = oldSettings, oldLive, oldParent, oldFetch, oldEnd
+		state.SettingsPath, liveByPID, parentPID, fetchOpenPRs, endState = oldSettings, oldLive, oldParent, oldFetch, oldEnd
 	})
 	return live
 }

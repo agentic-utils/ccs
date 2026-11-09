@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/proc"
 )
 
 func TestCodexExecArgs(t *testing.T) {
@@ -35,13 +37,13 @@ func TestCodexExecNestsUnderItsParentProcess(t *testing.T) {
 	start := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
 	path := codexFixture(t, cxA, "/w/repo", "exec")
 	// the fixture's meta timestamp is 10:00:00, its file written now: after start
-	oldTree, oldStarts, oldCwd := psTree, processStartTimes, codexProcCwd
-	t.Cleanup(func() { psTree, processStartTimes, codexProcCwd = oldTree, oldStarts, oldCwd })
+	oldTree, oldStarts, oldCwd := proc.PsTree, proc.ProcessStartTimes, codexProcCwd
+	t.Cleanup(func() { proc.PsTree, proc.ProcessStartTimes, codexProcCwd = oldTree, oldStarts, oldCwd })
 	// claude 100 -> zsh 200 -> codex exec 300; another codex exec 400 under launchd
-	psTree = func() (string, error) {
+	proc.PsTree = func() (string, error) {
 		return "100 1 /bin/claude\n200 100 /bin/zsh -c codex exec x\n300 200 /usr/local/bin/codex exec x\n400 1 /usr/local/bin/codex exec y\n", nil
 	}
-	processStartTimes = func(pids map[string]int) map[int]time.Time {
+	proc.ProcessStartTimes = func(pids map[string]int) map[int]time.Time {
 		out := map[int]time.Time{}
 		for _, p := range pids {
 			out[p] = start

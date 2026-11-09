@@ -20,6 +20,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // A pasted image shows as [Image #N] in the message box and in the transcript.
@@ -58,7 +61,7 @@ type clipImageMsg struct {
 	err  error
 }
 
-func pastedDir() string { return filepath.Join(filepath.Dir(settingsPath), "pasted") }
+func pastedDir() string { return filepath.Join(filepath.Dir(state.SettingsPath), "pasted") }
 
 // stripImageNote is a sent message as it was typed, without the paths behind
 // its placeholders.
@@ -260,7 +263,7 @@ var clipboardImage = func() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_, err = runBounded(5*time.Second, nil, "osascript",
+	_, err = proc.RunBounded(5*time.Second, nil, "osascript",
 		"-e", "on run argv",
 		"-e", "set d to the clipboard as «class PNGf»",
 		"-e", "set f to open for access POSIX file (item 1 of argv) with write permission",

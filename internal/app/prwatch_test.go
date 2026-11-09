@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/state"
 )
 
 // fakePR is one PR in fakeGitHub.
@@ -179,10 +181,10 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 func watchWorld(t *testing.T) *fakeGitHub {
 	t.Helper()
 	g := &fakeGitHub{}
-	oldRun, oldSettings, oldLog := ghRun, settingsPath, updateLogPath
+	oldRun, oldSettings, oldLog := ghRun, state.SettingsPath, state.UpdateLogPath
 	dir := t.TempDir()
-	ghRun, settingsPath, updateLogPath = g.run, dir+"/settings.json", dir+"/update.log"
-	t.Cleanup(func() { ghRun, settingsPath, updateLogPath = oldRun, oldSettings, oldLog })
+	ghRun, state.SettingsPath, state.UpdateLogPath = g.run, dir+"/settings.json", dir+"/update.log"
+	t.Cleanup(func() { ghRun, state.SettingsPath, state.UpdateLogPath = oldRun, oldSettings, oldLog })
 	return g
 }
 

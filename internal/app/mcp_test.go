@@ -5,25 +5,27 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-func mcpConvs() []Conversation {
-	return []Conversation{
+func mcpConvs() []transcript.Conversation {
+	return []transcript.Conversation{
 		{SessionID: "aaaa-1111", Cwd: "/code/payments", Title: "Fix flaky checkout test", LastTimestamp: "2026-10-01T10:00:00Z",
-			Messages: []Message{
+			Messages: []transcript.Message{
 				{Role: "user", Text: "the checkout test is flaky", Ts: "2026-10-01T09:00:00Z"},
 				{Role: "assistant", Text: "It depends on dict order; flaky because of a set.", Ts: "2026-10-01T09:01:00Z"},
 				{Role: "user", Text: "<task-notification>\n<summary>CI passed</summary>\n</task-notification>", Ts: "2026-10-01T09:02:00Z"},
 			}},
 		{SessionID: "aaab-2222", Cwd: "/code/infra", Title: "Staging deploy", LastTimestamp: "2026-10-02T10:00:00Z",
-			Messages: []Message{{Role: "user", Text: "staging deploy timed out", Ts: "2026-10-02T09:00:00Z"}}},
+			Messages: []transcript.Message{{Role: "user", Text: "staging deploy timed out", Ts: "2026-10-02T09:00:00Z"}}},
 	}
 }
 
 func mcpRoundTrip(t *testing.T, reqs ...string) []map[string]any {
 	t.Helper()
 	var out bytes.Buffer
-	if err := runMCP(strings.NewReader(strings.Join(reqs, "\n")+"\n"), &out, func() ([]Conversation, error) { return mcpConvs(), nil }); err != nil {
+	if err := runMCP(strings.NewReader(strings.Join(reqs, "\n")+"\n"), &out, func() ([]transcript.Conversation, error) { return mcpConvs(), nil }); err != nil {
 		t.Fatal(err)
 	}
 	var resps []map[string]any
@@ -109,10 +111,10 @@ func TestMCPSearchListRead(t *testing.T) {
 }
 
 func TestMCPNameMatchIgnoresDashes(t *testing.T) {
-	convs := []Conversation{
-		{SessionID: "big", Title: "cycle-secrets", LastTimestamp: "2026-10-09T00:00:00Z", Messages: []Message{
+	convs := []transcript.Conversation{
+		{SessionID: "big", Title: "cycle-secrets", LastTimestamp: "2026-10-09T00:00:00Z", Messages: []transcript.Message{
 			{Role: "user", Text: "checkout pdf gate"}, {Role: "user", Text: "checkout pdf gate again"}}},
-		{SessionID: "named", Title: "checkout-pdf-gate", LastTimestamp: "2026-10-01T00:00:00Z", Messages: []Message{{Role: "user", Text: "hello"}}},
+		{SessionID: "named", Title: "checkout-pdf-gate", LastTimestamp: "2026-10-01T00:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hello"}}},
 	}
 	got, _ := mcpSearch(convs, "checkout pdf gate", 5)
 	if !strings.Contains(got, "1. checkout-pdf-gate") {

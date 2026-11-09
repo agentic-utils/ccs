@@ -15,6 +15,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func TestLaunchScript(t *testing.T) {
@@ -80,10 +81,10 @@ func TestLaunchWaitsForTheSession(t *testing.T) {
 	if err != nil || l.pid != os.Getpid() || l.tty != "/dev/ttys042" {
 		t.Fatalf("launched: %+v, %v", l, err)
 	}
-	if script != filepath.Join(launchDir(), "worker", "launch.sh") {
+	if script != filepath.Join(state.LaunchDir(), "worker", "launch.sh") {
 		t.Errorf("the tab runs the launcher in its own folder: %s", script)
 	}
-	brief, _ := os.ReadFile(filepath.Join(launchDir(), "worker", "brief.md"))
+	brief, _ := os.ReadFile(filepath.Join(state.LaunchDir(), "worker", "brief.md"))
 	body, _ := os.ReadFile(script)
 	if string(brief) != "fix the `thing` $NOW" || !strings.Contains(string(body), "cd '"+cwd+"'") {
 		t.Errorf("brief kept as written, launcher starts in cwd: %q\n%s", brief, body)
@@ -156,7 +157,7 @@ func TestCodexSessionsFoundByTheirLaunchFolder(t *testing.T) {
 	sessionsFixture(t)
 	old := proc.PsAll
 	t.Cleanup(func() { proc.PsAll = old })
-	d := filepath.Join(launchDir(), "cx")
+	d := filepath.Join(state.LaunchDir(), "cx")
 	proc.PsAll = func() (string, error) {
 		return "  101 ttys001 /bin/codex -s workspace-write -a never --add-dir " + d + " do it\n" +
 			"  102 ttys002 /bin/codex --add-dir " + d + "-other x\n" + // another name's folder
@@ -242,7 +243,7 @@ func TestLaunchAndCloseFromTheList(t *testing.T) {
 	var script string
 	openLaunchTab = func(s string) (string, error) { script = s; return "", errors.New("no tab in tests") }
 	cwd := t.TempDir()
-	m := initialModel(buildItems([]Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
 	m.width, m.height = 120, 30
 	m, _ = chord(m, "n")
 	if m.launchStep != 1 || m.launchCwd != cwd || !strings.Contains(strip2(m.View()), "New session name:") {
@@ -267,7 +268,7 @@ func TestLaunchAndCloseFromTheList(t *testing.T) {
 	}
 	res, _ := m.Update(cmd())
 	m = res.(model)
-	if !strings.Contains(m.errorMsg, "Couldn't start helper") || script != filepath.Join(launchDir(), "helper", "launch.sh") {
+	if !strings.Contains(m.errorMsg, "Couldn't start helper") || script != filepath.Join(state.LaunchDir(), "helper", "launch.sh") {
 		t.Errorf("the launch ran and its failure shows: %q, %q", m.errorMsg, script)
 	}
 
@@ -293,12 +294,12 @@ func TestLaunchResumeNeedsATranscript(t *testing.T) {
 	opened := false
 	openLaunchTab = func(string) (string, error) { opened = true; return "", errors.New("stop here") }
 	projects := t.TempDir()
-	old := getProjectsDir
-	getProjectsDir = func() string { return projects }
-	t.Cleanup(func() { getProjectsDir = old })
+	old := transcript.GetProjectsDir
+	transcript.GetProjectsDir = func() string { return projects }
+	t.Cleanup(func() { transcript.GetProjectsDir = old })
 	os.MkdirAll(filepath.Join(projects, "-w"), 0o755)
 	os.WriteFile(filepath.Join(projects, "-w", "known-id.jsonl"), []byte("{}\n"), 0o644)
-	day := filepath.Join(codexHome(), "sessions", "2026", "11", "03")
+	day := filepath.Join(transcript.CodexHome(), "sessions", "2026", "11", "03")
 	os.MkdirAll(day, 0o755)
 	thread := "01a1a197-6287-7f32-8eb6-6cea70678f3f"
 	os.WriteFile(filepath.Join(day, "rollout-2026-11-03T10-00-00-"+thread+".jsonl"), []byte("{}\n"), 0o644)

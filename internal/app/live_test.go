@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func TestResumeInITermTabSkipsOutsideITerm(t *testing.T) {
@@ -71,7 +72,7 @@ func TestEnterOnLiveSessionOpensItsTab(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TERM_PROGRAM", "") // no terminal to focus in the test
 
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.live = map[string]bool{"s": true}
 	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(model)
@@ -89,7 +90,7 @@ func TestCtrlFForksInPlaceOutsideTabbedTerminals(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "")
 	flags := make([]string, 1, 4) // spare capacity: fork must not write into it
 	flags[0] = "--plan"
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", flags)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", flags)
 	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	m = res.(model)
 	if cmd == nil {
@@ -145,14 +146,14 @@ func TestLiveSessionsDropsRecycledPid(t *testing.T) {
 }
 
 func TestLiveMsgUpdatesAndResortsKeepingCursor(t *testing.T) {
-	mk := func(id, ts string) Conversation {
-		return Conversation{SessionID: id, LastTimestamp: ts, Messages: []Message{{Role: "user", Text: id}}}
+	mk := func(id, ts string) transcript.Conversation {
+		return transcript.Conversation{SessionID: id, LastTimestamp: ts, Messages: []transcript.Message{{Role: "user", Text: id}}}
 	}
-	m := initialModel(buildItems([]Conversation{mk("a", "2026-09-25T10:00:00Z"), mk("b", "2026-09-25T09:00:00Z")}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{mk("a", "2026-09-25T10:00:00Z"), mk("b", "2026-09-25T09:00:00Z")}), "", nil)
 	m.cursor = 1 // on b
 	grown := mk("b", "2026-09-25T11:00:00Z")
-	grown.Messages = append(grown.Messages, Message{Role: "assistant", Text: "new"})
-	res, cmd := m.Update(liveMsg{live: map[string]bool{"b": true}, updated: []Conversation{grown}})
+	grown.Messages = append(grown.Messages, transcript.Message{Role: "assistant", Text: "new"})
+	res, cmd := m.Update(liveMsg{live: map[string]bool{"b": true}, updated: []transcript.Conversation{grown}})
 	m = res.(model)
 	if cmd == nil || !m.live["b"] {
 		t.Fatal("live tick should apply liveness and reschedule")
@@ -166,7 +167,7 @@ func TestLiveMsgUpdatesAndResortsKeepingCursor(t *testing.T) {
 
 	// Content updates wait while a prompt is open; liveness still applies.
 	m.confirmDelete = true
-	res, _ = m.Update(liveMsg{live: map[string]bool{}, updated: []Conversation{mk("a", "2026-09-25T12:00:00Z")}})
+	res, _ = m.Update(liveMsg{live: map[string]bool{}, updated: []transcript.Conversation{mk("a", "2026-09-25T12:00:00Z")}})
 	if m = res.(model); m.items[0].conv.SessionID != "b" || m.live["b"] {
 		t.Error("prompt open: no reshuffle, but liveness should update")
 	}
@@ -182,7 +183,7 @@ func TestUnknownLiveSessionTriggersEarlyScanOnce(t *testing.T) {
 		t.Fatal("an unlisted live session should start a scan now")
 	}
 	// The scheduled tick arriving mid-scan doesn't start a second scan.
-	res, _ = m.Update(refreshTickMsg{})
+	res, _ = m.Update(transcript.RefreshTickMsg{})
 	if m = res.(model); scans != 0 {
 		t.Error("tick during an early scan should only reschedule")
 	}
@@ -200,11 +201,11 @@ func TestUnknownLiveSessionTriggersEarlyScanOnce(t *testing.T) {
 
 func TestStaleLiveResultDoesNotRollBackScan(t *testing.T) {
 	now := time.Now()
-	scanned := Conversation{SessionID: "s", Size: 300, LastTimestamp: "2026-09-25T11:00:00Z", Messages: []Message{{Role: "user", Text: "new"}}, readAt: now}
+	scanned := transcript.Conversation{SessionID: "s", Size: 300, LastTimestamp: "2026-09-25T11:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "new"}}, ReadAt: now}
 	liveOld := scanned
-	liveOld.Size, liveOld.readAt = 200, now.Add(-time.Second)
-	m := initialModel(buildItems([]Conversation{scanned}), "", nil)
-	m.applyLive([]Conversation{liveOld})
+	liveOld.Size, liveOld.ReadAt = 200, now.Add(-time.Second)
+	m := initialModel(buildItems([]transcript.Conversation{scanned}), "", nil)
+	m.applyLive([]transcript.Conversation{liveOld})
 	if m.items[0].conv.Size != 300 {
 		t.Error("a live read older than the list's copy must be ignored")
 	}
@@ -229,7 +230,7 @@ func TestTmuxCwdHashIsEscaped(t *testing.T) {
 }
 
 func TestDoubleEnterOpensOnce(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	res, first := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(model)
 	_, second := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -254,8 +255,8 @@ func TestTabResultOnlyTimeoutMeansMaybeOpened(t *testing.T) {
 }
 
 func TestSecondEnterAfterTabOpenDoesNotLaunchAgain(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
-	res, _ := m.Update(resumeDoneMsg{conv: Conversation{SessionID: "s"}, opened: true})
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
+	res, _ := m.Update(resumeDoneMsg{conv: transcript.Conversation{SessionID: "s"}, opened: true})
 	m = res.(model)
 	// A live tick before claude writes its session file must keep it live.
 	res, _ = m.Update(liveMsg{live: map[string]bool{}})
@@ -326,7 +327,7 @@ func TestReopenAfterRestart(t *testing.T) {
 	}
 
 	// Only sessions still in the list are offered; esc dismisses.
-	m := initialModel(buildItems([]Conversation{{SessionID: "a", Cwd: "/x/proj"}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "a", Cwd: "/x/proj"}}), "", nil)
 	res, _ := m.Update(msg)
 	m = res.(model)
 	if len(m.reopen) != 1 || !m.reopenChecked || !strings.Contains(strip2(m.reopenPopup()), "Reopen the session open before the restart?") {
@@ -356,8 +357,8 @@ func TestInITermThroughTmux(t *testing.T) {
 }
 
 func TestHostedSessionIsNotSwitchable(t *testing.T) {
-	conv := Conversation{SessionID: "t3", Title: "from t3", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	conv := transcript.Conversation{SessionID: "t3", Title: "from t3", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.width, m.height = 140, 30
 	m.live = map[string]bool{"t3": true}
 	m.livePIDs = map[string]int{"t3": 99999}
@@ -390,8 +391,8 @@ func TestT3SessionOpensInT3(t *testing.T) {
 	var opened string
 	t3Link = func(pid int) (string, error) { asked = pid; return "t3code://threads/env/thread", nil }
 	openApp = func(link string) error { opened = link; return nil }
-	conv := Conversation{SessionID: "t3", Title: "from t3", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	conv := transcript.Conversation{SessionID: "t3", Title: "from t3", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.width, m.height = 140, 30
 	m.live = map[string]bool{"t3": true}
 	m.hosts = map[string]string{"t3": "T3 Code"}
@@ -449,8 +450,8 @@ func TestBackgroundSessionsOpenWithAttach(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\necho \"$@\" >> "+calls+"\n"), 0o755)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 
-	conv := Conversation{SessionID: "bg1", Title: "night job", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "user", Text: "go"}}}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	conv := transcript.Conversation{SessionID: "bg1", Title: "night job", Cwd: "/p", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "go"}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.width, m.height = 140, 30
 	m.live = map[string]bool{"bg1": true}
 	m.livePIDs = map[string]int{"bg1": 99999}
@@ -505,11 +506,5 @@ echo '[{"kind":"interactive","sessionId":"i1","pid":1},{"kind":"background","id"
 	got, err := listAgents()
 	if err != nil || len(got) != 1 || got["b1"] != (bgSession{"k3x9", "blocked"}) {
 		t.Errorf("only background sessions with a session id: %v %v", got, err)
-	}
-}
-
-func TestBgCommandIsASpawn(t *testing.T) {
-	if !isSpawn(`claude --bg "fix the flaky test"`) || !isSpawn("claude --background 'x'") {
-		t.Error("claude --bg starts a session, so it nests under its parent")
 	}
 }

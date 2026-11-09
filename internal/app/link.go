@@ -48,7 +48,7 @@ var (
 // fragment, user, extra path or percent-escapes. Errors don't repeat it.
 func parseSessionLink(raw string) (string, error) {
 	name, ok := strings.CutPrefix(raw, linkPrefix)
-	if !ok || !sessionName.MatchString(name) {
+	if !ok || !state.SessionName.MatchString(name) {
 		return "", errors.New("that isn't a valid ccs link, so nothing was opened")
 	}
 	return name, nil

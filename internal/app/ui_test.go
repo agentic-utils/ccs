@@ -14,16 +14,17 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestFormatListItemShowsSize(t *testing.T) {
-	item := listItem{conv: Conversation{
+	item := listItem{conv: transcript.Conversation{
 		SessionID:     "s1",
 		LastTimestamp: "2024-01-15T10:30:00Z",
 		Size:          75 * 1 << 20,
-		Messages:      []Message{{Role: "user", Text: "hi"}},
+		Messages:      []transcript.Message{{Role: "user", Text: "hi"}},
 	}}
 	m := initialModel([]listItem{item}, "", nil)
 	if got := m.formatListItem(item, false); !strings.Contains(got, "75MB") {
@@ -36,24 +37,24 @@ func TestDeleteConversation(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Override getProjectsDir for this test
-	origGetProjectsDir := getProjectsDir
+	origGetProjectsDir := transcript.GetProjectsDir
 	defer func() {
 		// Can't actually override without refactoring, so just test the logic
 	}()
 	_ = origGetProjectsDir
 
 	// Create test conversations
-	conv1 := Conversation{
+	conv1 := transcript.Conversation{
 		SessionID: "test-session-1",
 		Cwd:       "/test/project1",
-		Messages: []Message{
+		Messages: []transcript.Message{
 			{Role: "user", Text: "First message"},
 		},
 	}
-	conv2 := Conversation{
+	conv2 := transcript.Conversation{
 		SessionID: "test-session-2",
 		Cwd:       "/test/project2",
-		Messages: []Message{
+		Messages: []transcript.Message{
 			{Role: "user", Text: "Second message"},
 		},
 	}
@@ -123,28 +124,11 @@ func TestDeleteConversationInvalidIndex(t *testing.T) {
 	// (deleteConversation returns early for invalid index)
 }
 
-func TestDeleteConversationErrorHandling(t *testing.T) {
-	// Test deletion of non-existent file
-	tmpDir := t.TempDir()
-	testFile := filepath.Join(tmpDir, "nonexistent.jsonl")
-
-	// Try to delete non-existent file
-	err := os.Remove(testFile)
-	if err == nil {
-		t.Error("expected error when deleting non-existent file")
-	}
-
-	// Verify it's the right kind of error
-	if !os.IsNotExist(err) {
-		t.Errorf("expected IsNotExist error, got: %v", err)
-	}
-}
-
 func TestUpdateFilterIncrementalNarrowing(t *testing.T) {
 	items := []listItem{
-		{conv: Conversation{SessionID: "1"}, searchText: "auth gateway", searchLower: "auth gateway"},
-		{conv: Conversation{SessionID: "2"}, searchText: "auth service", searchLower: "auth service"},
-		{conv: Conversation{SessionID: "3"}, searchText: "billing", searchLower: "billing"},
+		{conv: transcript.Conversation{SessionID: "1"}, searchText: "auth gateway", searchLower: "auth gateway"},
+		{conv: transcript.Conversation{SessionID: "2"}, searchText: "auth service", searchLower: "auth service"},
+		{conv: transcript.Conversation{SessionID: "3"}, searchText: "billing", searchLower: "billing"},
 	}
 	m := initialModel(items, "", nil)
 
@@ -168,9 +152,9 @@ func TestUpdateFilterIncrementalNarrowing(t *testing.T) {
 
 func TestUpdateFilter(t *testing.T) {
 	items := []listItem{
-		{conv: Conversation{SessionID: "test-1"}, searchText: "Hello World foo", searchLower: "hello world foo"},
-		{conv: Conversation{SessionID: "test-2"}, searchText: "Goodbye World bar", searchLower: "goodbye world bar"},
-		{conv: Conversation{SessionID: "test-3"}, searchText: "Hello bar baz", searchLower: "hello bar baz"},
+		{conv: transcript.Conversation{SessionID: "test-1"}, searchText: "Hello World foo", searchLower: "hello world foo"},
+		{conv: transcript.Conversation{SessionID: "test-2"}, searchText: "Goodbye World bar", searchLower: "goodbye world bar"},
+		{conv: transcript.Conversation{SessionID: "test-3"}, searchText: "Hello bar baz", searchLower: "hello bar baz"},
 	}
 
 	m := initialModel(items, "", nil)
@@ -217,11 +201,11 @@ func TestFormatListItem(t *testing.T) {
 	defer func(l *time.Location) { time.Local = l }(time.Local)
 	time.Local = time.UTC
 
-	conv := Conversation{
+	conv := transcript.Conversation{
 		SessionID:     "test-123",
 		Cwd:           "/home/user/very-long-project-name-that-exceeds-column-width",
 		LastTimestamp: "2024-01-15T10:30:00Z",
-		Messages: []Message{
+		Messages: []transcript.Message{
 			{Role: "user", Text: "This is a very long first message that should be truncated to fit in the column"},
 			{Role: "assistant", Text: "Response"},
 			{Role: "user", Text: "Second message"},
@@ -256,25 +240,25 @@ func TestFormatListItem(t *testing.T) {
 }
 
 func TestFormatListItemNamedSessionMarker(t *testing.T) {
-	custom := listItem{conv: Conversation{
+	custom := listItem{conv: transcript.Conversation{
 		SessionID:     "s1",
 		Title:         "Refactor auth flow",
 		IsCustomTitle: true,
 		LastTimestamp: "2024-01-15T10:30:00Z",
-		Messages:      []Message{{Role: "user", Text: "hi"}},
+		Messages:      []transcript.Message{{Role: "user", Text: "hi"}},
 	}}
 	// ai-title: has a Title but it's auto-generated - must NOT get the marker.
-	aiTitled := listItem{conv: Conversation{
+	aiTitled := listItem{conv: transcript.Conversation{
 		SessionID:     "s2",
 		Title:         "Some auto generated title",
 		IsCustomTitle: false,
 		LastTimestamp: "2024-01-15T10:30:00Z",
-		Messages:      []Message{{Role: "user", Text: "hi"}},
+		Messages:      []transcript.Message{{Role: "user", Text: "hi"}},
 	}}
-	fallback := listItem{conv: Conversation{
+	fallback := listItem{conv: transcript.Conversation{
 		SessionID:     "s3",
 		LastTimestamp: "2024-01-15T10:30:00Z",
-		Messages:      []Message{{Role: "user", Text: "just a first message"}},
+		Messages:      []transcript.Message{{Role: "user", Text: "just a first message"}},
 	}}
 	m := initialModel([]listItem{custom, aiTitled, fallback}, "", nil)
 	m.width = 120 // give TOPIC room so the title isn't truncated
@@ -309,11 +293,11 @@ func TestTopicColWidthFlexes(t *testing.T) {
 }
 
 func TestFormatListItemFillsWidth(t *testing.T) {
-	item := listItem{conv: Conversation{
+	item := listItem{conv: transcript.Conversation{
 		SessionID:     "s",
 		LastTimestamp: "2024-01-15T10:30:00Z",
 		Size:          1 << 20,
-		Messages:      []Message{{Role: "user", Text: "hi"}},
+		Messages:      []transcript.Message{{Role: "user", Text: "hi"}},
 	}}
 	for _, w := range []int{110, 120, 200} {
 		m := initialModel([]listItem{item}, "", nil)
@@ -328,9 +312,9 @@ func TestFormatListItemFillsWidth(t *testing.T) {
 
 func TestUpdateKeyboardNavigation(t *testing.T) {
 	items := []listItem{
-		{conv: Conversation{SessionID: "test-1"}, searchText: "first"},
-		{conv: Conversation{SessionID: "test-2"}, searchText: "second"},
-		{conv: Conversation{SessionID: "test-3"}, searchText: "third"},
+		{conv: transcript.Conversation{SessionID: "test-1"}, searchText: "first"},
+		{conv: transcript.Conversation{SessionID: "test-2"}, searchText: "second"},
+		{conv: transcript.Conversation{SessionID: "test-3"}, searchText: "third"},
 	}
 
 	m := initialModel(items, "", nil)
@@ -387,7 +371,7 @@ func TestUpdateDeleteConfirmation(t *testing.T) {
 	}
 
 	// Override getProjectsDir temporarily
-	originalGetProjectsDir := getProjectsDir
+	originalGetProjectsDir := transcript.GetProjectsDir
 	defer func() {
 		// Can't easily override without refactoring, so we'll test the flow differently
 		_ = originalGetProjectsDir
@@ -395,18 +379,18 @@ func TestUpdateDeleteConfirmation(t *testing.T) {
 
 	items := []listItem{
 		{
-			conv: Conversation{
+			conv: transcript.Conversation{
 				SessionID: sessionID,
 				Cwd:       "/test",
-				Messages:  []Message{{Role: "user", Text: "test message"}},
+				Messages:  []transcript.Message{{Role: "user", Text: "test message"}},
 			},
 			searchText: "test",
 		},
 		{
-			conv: Conversation{
+			conv: transcript.Conversation{
 				SessionID: "keep-this",
 				Cwd:       "/test2",
-				Messages:  []Message{{Role: "user", Text: "keep message"}},
+				Messages:  []transcript.Message{{Role: "user", Text: "keep message"}},
 			},
 			searchText: "keep",
 		},
@@ -458,7 +442,7 @@ func TestUpdateDeleteConfirmation(t *testing.T) {
 
 func TestUpdateCtrlU(t *testing.T) {
 	items := []listItem{
-		{conv: Conversation{SessionID: "test-1"}, searchText: "hello"},
+		{conv: transcript.Conversation{SessionID: "test-1"}, searchText: "hello"},
 	}
 
 	m := initialModel(items, "initial query", nil)
@@ -479,11 +463,11 @@ func TestUpdateCtrlU(t *testing.T) {
 func TestViewRendering(t *testing.T) {
 	items := []listItem{
 		{
-			conv: Conversation{
+			conv: transcript.Conversation{
 				SessionID:     "test-1",
 				Cwd:           "/test/project",
 				LastTimestamp: "2024-01-15T10:00:00Z",
-				Messages: []Message{
+				Messages: []transcript.Message{
 					{Role: "user", Text: "test message", Ts: "2024-01-15T10:00:00Z"},
 				},
 			},
@@ -547,7 +531,7 @@ func TestIdleScreenDoesNotChange(t *testing.T) {
 	// An idle frame must be identical from one render to the next: the
 	// renderer skips identical frames, so ccs writes nothing and terminals
 	// don't show the tab as busy.
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", LastTimestamp: time.Now().Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", LastTimestamp: time.Now().Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}}}), "", nil)
 	m.width, m.height = 120, 30
 	m.reload = func() ([]listItem, error) { return nil, nil }
 	m.lastRefresh = time.Now()
@@ -578,25 +562,25 @@ func TestDeleteConversationFullFlow(t *testing.T) {
 	}
 
 	// Save and override getProjectsDir
-	oldGetProjectsDir := getProjectsDir
-	getProjectsDir = func() string { return tmpDir }
-	defer func() { getProjectsDir = oldGetProjectsDir }()
+	oldGetProjectsDir := transcript.GetProjectsDir
+	transcript.GetProjectsDir = func() string { return tmpDir }
+	defer func() { transcript.GetProjectsDir = oldGetProjectsDir }()
 
 	// Create items
 	items := []listItem{
 		{
-			conv: Conversation{
+			conv: transcript.Conversation{
 				SessionID: session1,
 				FilePath:  file1,
-				Messages:  []Message{{Role: "user", Text: "delete this"}},
+				Messages:  []transcript.Message{{Role: "user", Text: "delete this"}},
 			},
 			searchText: "delete",
 		},
 		{
-			conv: Conversation{
+			conv: transcript.Conversation{
 				SessionID: session2,
 				FilePath:  file2,
-				Messages:  []Message{{Role: "user", Text: "keep this"}},
+				Messages:  []transcript.Message{{Role: "user", Text: "keep this"}},
 			},
 			searchText: "keep",
 		},
@@ -659,8 +643,8 @@ func TestPruneConversationShrinksAndUpdatesSize(t *testing.T) {
 	}
 	info, _ := os.Stat(path)
 
-	item := listItem{conv: Conversation{SessionID: "s1", FilePath: path, Size: info.Size(),
-		Messages: []Message{{Role: "user", Text: "keep"}}}}
+	item := listItem{conv: transcript.Conversation{SessionID: "s1", FilePath: path, Size: info.Size(),
+		Messages: []transcript.Message{{Role: "user", Text: "keep"}}}}
 	m := initialModel([]listItem{item}, "", nil)
 	m.confirmPrune = true
 	m.pruneIndex = 0
@@ -698,8 +682,8 @@ func TestCtrlXEntersAndCancelsPruneConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(path)
-	item := listItem{conv: Conversation{SessionID: "s1", FilePath: path, Size: info.Size(),
-		Messages: []Message{{Role: "user", Text: "hi"}}}}
+	item := listItem{conv: transcript.Conversation{SessionID: "s1", FilePath: path, Size: info.Size(),
+		Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}
 	m := initialModel([]listItem{item}, "", nil)
 
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
@@ -719,7 +703,7 @@ func TestCtrlXEntersAndCancelsPruneConfirm(t *testing.T) {
 }
 
 func TestFormatListItemLiveMarker(t *testing.T) {
-	item := listItem{conv: Conversation{SessionID: "s1", Title: "Topic", Messages: []Message{{Role: "user", Text: "x"}}}}
+	item := listItem{conv: transcript.Conversation{SessionID: "s1", Title: "Topic", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}
 	m := initialModel([]listItem{item}, "", nil)
 	m.width = 120
 	if strings.Contains(m.formatListItem(item, false), "●") {
@@ -737,7 +721,7 @@ func TestFormatListItemLiveMarker(t *testing.T) {
 }
 
 func TestFormatListItemErrorAndLiveMarkers(t *testing.T) {
-	item := listItem{conv: Conversation{SessionID: "s1", Title: "Topic", Spawned: true, LastError: "429", Messages: []Message{{Role: "user", Text: "x"}}}}
+	item := listItem{conv: transcript.Conversation{SessionID: "s1", Title: "Topic", Spawned: true, LastError: "429", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}
 	m := initialModel([]listItem{item}, "", nil)
 	m.width = 120
 	m.live = map[string]bool{"s1": true}
@@ -749,7 +733,7 @@ func TestFormatListItemErrorAndLiveMarkers(t *testing.T) {
 		t.Errorf("unselected row = %q", got)
 	}
 	// Same visible width as an unmarked row.
-	plain := listItem{conv: Conversation{SessionID: "s2", Title: "Topic", Messages: item.conv.Messages}}
+	plain := listItem{conv: transcript.Conversation{SessionID: "s2", Title: "Topic", Messages: item.conv.Messages}}
 	strip := func(s string) int {
 		return utf8.RuneCountInString(regexp.MustCompile("\033\\[[0-9;]*m").ReplaceAllString(s, ""))
 	}
@@ -773,7 +757,7 @@ func TestRename(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"type":"user","cwd":"/p","message":{"content":"hi"},"timestamp":"t"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	item := buildItems([]Conversation{{SessionID: "s1", FilePath: path, Messages: []Message{{Role: "user", Text: "hi"}}}})[0]
+	item := buildItems([]transcript.Conversation{{SessionID: "s1", FilePath: path, Messages: []transcript.Message{{Role: "user", Text: "hi"}}}})[0]
 	m := initialModel([]listItem{item}, "", nil)
 
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
@@ -788,7 +772,7 @@ func TestRename(t *testing.T) {
 	if m.renaming || m.items[0].conv.Title != "new name" || !m.items[0].conv.IsCustomTitle {
 		t.Fatalf("rename not applied: %+v err=%q", m.items[0].conv, m.errorMsg)
 	}
-	conv, err := parseConversationFile(path, time.Time{}, 0)
+	conv, err := transcript.ParseConversationFile(path, time.Time{}, 0)
 	if err != nil || conv.Title != "new name" || !conv.IsCustomTitle || len(conv.Messages) != 1 {
 		t.Errorf("reparsed = %+v, %v", conv, err)
 	}
@@ -811,9 +795,9 @@ func TestRename(t *testing.T) {
 
 func TestRefreshTickRunsReloadAndCarriesGen(t *testing.T) {
 	m := initialModel(nil, "", nil)
-	m.reload = func() ([]listItem, error) { return []listItem{{conv: Conversation{SessionID: "x"}}}, nil }
+	m.reload = func() ([]listItem, error) { return []listItem{{conv: transcript.Conversation{SessionID: "x"}}}, nil }
 	m.gen = 3
-	_, cmd := m.Update(refreshTickMsg{})
+	_, cmd := m.Update(transcript.RefreshTickMsg{})
 	msg, ok := cmd().(refreshMsg)
 	if !ok || msg.gen != 3 || len(msg.items) != 1 {
 		t.Fatalf("tick should produce a refreshMsg from reload, got %+v", msg)
@@ -821,12 +805,12 @@ func TestRefreshTickRunsReloadAndCarriesGen(t *testing.T) {
 }
 
 func TestRefreshDroppedWhenStaleOrFailed(t *testing.T) {
-	a := listItem{conv: Conversation{SessionID: "a"}}
+	a := listItem{conv: transcript.Conversation{SessionID: "a"}}
 	m := initialModel([]listItem{a}, "", nil)
 
 	// A scan that started before a delete/prune/rename must not undo it.
 	m.gen = 1
-	res, cmd := m.Update(refreshMsg{gen: 0, items: []listItem{a, {conv: Conversation{SessionID: "deleted"}}}})
+	res, cmd := m.Update(refreshMsg{gen: 0, items: []listItem{a, {conv: transcript.Conversation{SessionID: "deleted"}}}})
 	if m = res.(model); len(m.items) != 1 || cmd == nil {
 		t.Errorf("stale refresh should be dropped but still reschedule, items=%d", len(m.items))
 	}
@@ -849,22 +833,22 @@ func TestDeleteBumpsGenAndEvictsCache(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hi"},"timestamp":"t"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parseConversationFile(path, time.Time{}, 0); err != nil {
+	if _, err := transcript.ParseConversationFile(path, time.Time{}, 0); err != nil {
 		t.Fatal(err)
 	}
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", FilePath: path}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s", FilePath: path}}}, "", nil)
 	m.deleteIndex = 0
 	m.deleteConversation()
-	parseCacheMu.Lock()
-	_, cached := parseCache[path]
-	parseCacheMu.Unlock()
+	transcript.ParseCacheMu.Lock()
+	_, cached := transcript.ParseCache[path]
+	transcript.ParseCacheMu.Unlock()
 	if m.gen != 1 || cached {
 		t.Errorf("delete should bump gen and evict cache: gen=%d cached=%v", m.gen, cached)
 	}
 }
 
 func TestPruneRefusedOnLiveSession(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.live = map[string]bool{"s": true}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
 	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
@@ -883,7 +867,7 @@ func TestLiveCheckedAtConfirmAndAlwaysApplied(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"content":"hi"}}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", FilePath: path}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s", FilePath: path}}}, "", nil)
 	m.confirmPrune = true
 
 	// Session becomes live between Ctrl+X and y: the confirm must re-check.
@@ -917,9 +901,9 @@ func TestRefreshStalledShowsInHeader(t *testing.T) {
 }
 
 func TestEscOnlyClearsSearch(t *testing.T) {
-	items := buildItems([]Conversation{
-		{SessionID: "a", Messages: []Message{{Role: "user", Text: "apple"}}},
-		{SessionID: "b", Messages: []Message{{Role: "user", Text: "banana"}}},
+	items := buildItems([]transcript.Conversation{
+		{SessionID: "a", Messages: []transcript.Message{{Role: "user", Text: "apple"}}},
+		{SessionID: "b", Messages: []transcript.Message{{Role: "user", Text: "banana"}}},
 	})
 	m := initialModel(items, "apple", nil)
 	if len(m.filtered) != 1 {
@@ -945,16 +929,16 @@ func TestCtrlCQuitsEvenWithSearch(t *testing.T) {
 }
 
 func TestSessionStatsAndErrorIcon(t *testing.T) {
-	conv := Conversation{SessionID: "s", Title: "T", Model: "claude-opus-5-5", ContextTokens: 281_000, PeakContext: 281_000,
-		Usage: tokenUsage{Input: 1000, Output: 1000, CacheRead: 1_000_000}, LastError: "429 rate_limit", LastErrorTs: time.Now().Format(time.RFC3339),
-		Messages: []Message{{Role: "user", Text: "x"}}}
+	conv := transcript.Conversation{SessionID: "s", Title: "T", Model: "claude-opus-5-5", ContextTokens: 281_000, PeakContext: 281_000,
+		Usage: transcript.TokenUsage{Input: 1000, Output: 1000, CacheRead: 1_000_000}, LastError: "429 rate_limit", LastErrorTs: time.Now().Format(time.RFC3339),
+		Messages: []transcript.Message{{Role: "user", Text: "x"}}}
 	stats := strings.Join(sessionStats(conv), "\n")
 	for _, want := range []string{"claude-opus-5-5", "281k", "of 1.0M", "28%", "effective 106k", "~$0.53 at API prices", "429 rate_limit"} {
 		if !strings.Contains(stats, want) {
 			t.Errorf("stats missing %q:\n%s", want, stats)
 		}
 	}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.width = 140
 	if !strings.Contains(m.formatListItem(m.items[0], true), "!✻ T") {
 		t.Error("a session whose last action errored should show ! in the list")
@@ -1011,21 +995,21 @@ func TestLeakedMouseReportNeverReachesSearch(t *testing.T) {
 }
 
 func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
-	mk := func(n int) Conversation {
-		c := Conversation{SessionID: "s", Cwd: "/p", Size: int64(n), readAt: time.Now()}
+	mk := func(n int) transcript.Conversation {
+		c := transcript.Conversation{SessionID: "s", Cwd: "/p", Size: int64(n), ReadAt: time.Now()}
 		for i := 0; i < n; i++ {
-			c.Messages = append(c.Messages, Message{Role: "user", Text: fmt.Sprint("line-", i)})
+			c.Messages = append(c.Messages, transcript.Message{Role: "user", Text: fmt.Sprint("line-", i)})
 		}
 		return c
 	}
-	m := initialModel(buildItems([]Conversation{mk(60)}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{mk(60)}), "", nil)
 	m.width, m.height = 120, 40
 	m.table = true       // the sidebar's Size line changes with the messages
 	m.previewScroll = 20 // reading back in the history
 	before := m.View()
 	grown := mk(62) // two new messages arrive
-	grown.readAt = time.Now().Add(time.Second)
-	m.applyLive([]Conversation{grown})
+	grown.ReadAt = time.Now().Add(time.Second)
+	m.applyLive([]transcript.Conversation{grown})
 	b, a := strings.Split(strip2(before), "\n"), strings.Split(strip2(m.View()), "\n")
 	_, _, previewTop := m.listLayout()
 	for i := previewTop; i < len(b) && i < len(a); i++ {
@@ -1034,14 +1018,14 @@ func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
 		}
 	}
 	m.previewScroll = 0 // at the newest: follow new messages
-	m.applyLive([]Conversation{func() Conversation { c := mk(64); c.readAt = time.Now().Add(2 * time.Second); return c }()})
+	m.applyLive([]transcript.Conversation{func() transcript.Conversation { c := mk(64); c.ReadAt = time.Now().Add(2 * time.Second); return c }()})
 	if !strings.Contains(strip2(m.View()), "line-63") {
 		t.Error("at the newest message, new ones should come into view")
 	}
 }
 
 func TestHelpPopup(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 120, 40
 	v := strip2(m.View())
 	if !strings.Contains(v, "? help  ^C quit") || strings.Contains(v, "HITS") || strings.Contains(v, "prune") {
@@ -1082,7 +1066,7 @@ func TestHelpPopup(t *testing.T) {
 }
 
 func TestMouseFragmentsDropped(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("["), Alt: true})
 	nm, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
 	m = nm.(model)
@@ -1100,7 +1084,7 @@ func TestMouseFragmentsDropped(t *testing.T) {
 }
 
 func TestHeaderNeverWraps(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.height = 30
 	for _, w := range []int{140, 90, 70, 50, 30, 12} {
 		m.width = w
@@ -1116,7 +1100,7 @@ func TestHeaderNeverWraps(t *testing.T) {
 }
 
 func TestPrunePromptHints(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", Size: 4096}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s", Size: 4096}}}, "", nil)
 	m.width, m.height = 140, 30
 	m.confirmPrune, m.pruneIndex, m.pruneSaved = true, 0, 1024
 	if v := strip2(m.View()); !strings.Contains(v, "y prune  n/esc cancel") || strings.Contains(v, "[y/N]") {
@@ -1125,10 +1109,10 @@ func TestPrunePromptHints(t *testing.T) {
 }
 
 func TestSearchMatchesWordsAndDashedNames(t *testing.T) {
-	convs := []Conversation{
-		{SessionID: "a", Title: "self-revoke-access", Messages: []Message{{Role: "user", Text: "let people drop their own access"}}},
-		{SessionID: "b", Title: "other", Messages: []Message{{Role: "user", Text: "revoke the token, then the self check"}}},
-		{SessionID: "c", Title: "unrelated", Messages: []Message{{Role: "user", Text: "nothing here"}}},
+	convs := []transcript.Conversation{
+		{SessionID: "a", Title: "self-revoke-access", Messages: []transcript.Message{{Role: "user", Text: "let people drop their own access"}}},
+		{SessionID: "b", Title: "other", Messages: []transcript.Message{{Role: "user", Text: "revoke the token, then the self check"}}},
+		{SessionID: "c", Title: "unrelated", Messages: []transcript.Message{{Role: "user", Text: "nothing here"}}},
 	}
 	m := initialModel(buildItems(convs), "self revoke", nil)
 	var got []string
@@ -1147,9 +1131,9 @@ func TestSearchMatchesWordsAndDashedNames(t *testing.T) {
 }
 
 func TestWordsMustShareAMessage(t *testing.T) {
-	convs := []Conversation{
-		{SessionID: "split", Title: "x", Messages: []Message{{Role: "user", Text: "self check"}, {Role: "user", Text: "revoke it"}}},
-		{SessionID: "together", Title: "y", Messages: []Message{{Role: "user", Text: "revoke your own access, self service"}}},
+	convs := []transcript.Conversation{
+		{SessionID: "split", Title: "x", Messages: []transcript.Message{{Role: "user", Text: "self check"}, {Role: "user", Text: "revoke it"}}},
+		{SessionID: "together", Title: "y", Messages: []transcript.Message{{Role: "user", Text: "revoke your own access, self service"}}},
 	}
 	m := initialModel(buildItems(convs), "self revoke", nil)
 	if len(m.filtered) != 1 || m.filtered[0].conv.SessionID != "together" {
@@ -1162,11 +1146,11 @@ func TestWordsMustShareAMessage(t *testing.T) {
 }
 
 func TestSearchWordStartsAndRanking(t *testing.T) {
-	convs := []Conversation{
-		{SessionID: "inside", LastTimestamp: "2026-10-09T03:00:00Z", Messages: []Message{{Role: "user", Text: "it fixed itself, then we revoked the key"}}},
-		{SessionID: "apart", LastTimestamp: "2026-10-09T02:00:00Z", Messages: []Message{{Role: "user", Text: "self service: revoke your own access"}}},
-		{SessionID: "phrase", LastTimestamp: "2026-10-08T00:00:00Z", Messages: []Message{{Role: "user", Text: "add a self-revoke button"}}},
-		{SessionID: "named", Title: "self-revoke-access", LastTimestamp: "2026-10-01T00:00:00Z", Messages: []Message{{Role: "user", Text: "hello"}}},
+	convs := []transcript.Conversation{
+		{SessionID: "inside", LastTimestamp: "2026-10-09T03:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "it fixed itself, then we revoked the key"}}},
+		{SessionID: "apart", LastTimestamp: "2026-10-09T02:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "self service: revoke your own access"}}},
+		{SessionID: "phrase", LastTimestamp: "2026-10-08T00:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "add a self-revoke button"}}},
+		{SessionID: "named", Title: "self-revoke-access", LastTimestamp: "2026-10-01T00:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hello"}}},
 	}
 	m := initialModel(buildItems(convs), "self revoke", nil)
 	var got []string
@@ -1189,8 +1173,8 @@ func TestSearchWordStartsAndRanking(t *testing.T) {
 }
 
 func TestLiveMarkerColours(t *testing.T) {
-	conv := Conversation{SessionID: "s", Messages: []Message{{Role: "assistant", Text: "done."}}}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	conv := transcript.Conversation{SessionID: "s", Messages: []transcript.Message{{Role: "assistant", Text: "done."}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.width = 140
 	m.live = map[string]bool{"s": true}
 	row := func(status string) string {
@@ -1226,12 +1210,12 @@ func TestScrollThumb(t *testing.T) {
 }
 
 func TestSidebarAndTable(t *testing.T) {
-	var convs []Conversation
+	var convs []transcript.Conversation
 	for i := range 40 {
-		c := Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p", Size: 2048,
+		c := transcript.Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p", Size: 2048,
 			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)}
 		for j := range 80 {
-			c.Messages = append(c.Messages, Message{Role: "user", Text: fmt.Sprint("line-", j)})
+			c.Messages = append(c.Messages, transcript.Message{Role: "user", Text: fmt.Sprint("line-", j)})
 		}
 		convs = append(convs, c)
 	}
@@ -1280,10 +1264,10 @@ func TestSidebarAndTable(t *testing.T) {
 }
 
 func TestGroupByFolder(t *testing.T) {
-	conv := func(id, cwd, ts string) Conversation {
-		return Conversation{SessionID: id, Title: id, Cwd: cwd, LastTimestamp: ts, Messages: []Message{{Role: "user", Text: "hi"}}}
+	conv := func(id, cwd, ts string) transcript.Conversation {
+		return transcript.Conversation{SessionID: id, Title: id, Cwd: cwd, LastTimestamp: ts, Messages: []transcript.Message{{Role: "user", Text: "hi"}}}
 	}
-	m := initialModel(buildItems([]Conversation{
+	m := initialModel(buildItems([]transcript.Conversation{
 		conv("api-new", "/c/api", "2026-10-23T12:00:00Z"),
 		conv("ccs-tree", "/c/ccs/.claude/worktrees/x", "2026-10-23T11:00:00Z"),
 		conv("api-old", "/c/api", "2026-10-23T10:00:00Z"),
@@ -1336,9 +1320,9 @@ func TestGroupByFolder(t *testing.T) {
 }
 
 func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
-	convs := []Conversation{
-		{SessionID: "a", Title: "🚀 漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字 a long wide title", IsCustomTitle: true, Cwd: "/p/漢字漢字漢字漢字漢字漢字漢字", LastTimestamp: "2026-10-23T00:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}},
-		{SessionID: "b", Title: "plain", Cwd: "/p", LastTimestamp: "2026-10-22T00:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}},
+	convs := []transcript.Conversation{
+		{SessionID: "a", Title: "🚀 漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字 a long wide title", IsCustomTitle: true, Cwd: "/p/漢字漢字漢字漢字漢字漢字漢字", LastTimestamp: "2026-10-23T00:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hi"}}},
+		{SessionID: "b", Title: "plain", Cwd: "/p", LastTimestamp: "2026-10-22T00:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hi"}}},
 	}
 	for _, table := range []bool{false, true} {
 		for _, msg := range []string{"", strings.Repeat("long error ", 40), "two\nlines"} {
@@ -1359,9 +1343,9 @@ func TestFrameNeverOutgrowsTheTerminal(t *testing.T) {
 }
 
 func TestSidebarNeverOpensOnHalfASession(t *testing.T) {
-	var convs []Conversation
+	var convs []transcript.Conversation
 	for i := range 20 {
-		convs = append(convs, Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p",
+		convs = append(convs, transcript.Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p",
 			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)})
 	}
 	m := initialModel(buildItems(convs), "", nil)
@@ -1381,7 +1365,7 @@ func TestSidebarNeverOpensOnHalfASession(t *testing.T) {
 }
 
 func TestLastColumnStaysEmpty(t *testing.T) {
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", Title: "t", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Title: "t", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)
 	res, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = res.(model)
 	for i, l := range strings.Split(m.View(), "\n") {
@@ -1392,14 +1376,14 @@ func TestLastColumnStaysEmpty(t *testing.T) {
 }
 
 func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
-	parent := Conversation{SessionID: "parent", Title: "parent", LastTimestamp: "2026-10-23T10:00:00Z",
-		spawns: []spawnCmd{{"2026-10-23T09:00:00Z", spawnText(`claude -p "Test of a skill's exit step, then report back" --output-format json`)}}}
-	child := Conversation{SessionID: "child", Spawned: true, FirstTimestamp: "2026-10-23T09:00:05Z", LastTimestamp: "2026-10-23T09:01:00Z",
-		Messages: []Message{{Role: "user", Text: "Test of a skill's exit step, then report back"}}}
+	parent := transcript.Conversation{SessionID: "parent", Title: "parent", LastTimestamp: "2026-10-23T10:00:00Z",
+		Spawns: []transcript.SpawnCmd{{Ts: "2026-10-23T09:00:00Z", Text: transcript.SpawnText(`claude -p "Test of a skill's exit step, then report back" --output-format json`)}}}
+	child := transcript.Conversation{SessionID: "child", Spawned: true, FirstTimestamp: "2026-10-23T09:00:05Z", LastTimestamp: "2026-10-23T09:01:00Z",
+		Messages: []transcript.Message{{Role: "user", Text: "Test of a skill's exit step, then report back"}}}
 	late := child // the same prompt an hour later: not started by that command
 	late.SessionID, late.FirstTimestamp, late.LastTimestamp = "late", "2026-10-23T10:30:00Z", "2026-10-23T10:31:00Z"
-	other := Conversation{SessionID: "other", Title: "other", LastTimestamp: "2026-10-23T09:30:00Z"}
-	m := initialModel(buildItems([]Conversation{child, other, parent, late}), "", nil)
+	other := transcript.Conversation{SessionID: "other", Title: "other", LastTimestamp: "2026-10-23T09:30:00Z"}
+	m := initialModel(buildItems([]transcript.Conversation{child, other, parent, late}), "", nil)
 	m.width, m.height = 120, 30
 	m.live = map[string]bool{"child": true}
 	m.chatStatus = map[string]sessionStat{"child": {status: "waiting"}}
@@ -1423,7 +1407,7 @@ func TestViewIsRememberedAcrossRestarts(t *testing.T) {
 	if (loadSettings() != settings{}) {
 		t.Fatal("no file: the defaults")
 	}
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)
 	m, _ = chord(m, "g")
 	m, _ = chord(m, "t")
 	if got := loadSettings(); !got.Grouped || !got.Table {
@@ -1472,7 +1456,7 @@ func TestHeaderShowsAutoFocusKey(t *testing.T) {
 }
 
 func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)
 	m.width, m.height = 120, 30
 	q := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
 	if m, _ = key(m, q); !m.helpOpen {
@@ -1491,7 +1475,7 @@ func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
 }
 
 func TestCtrlRRefreshesNowAndChecksForUpdates(t *testing.T) {
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)
 	m.width, m.height = 120, 30
 	scanned, checked := false, false
 	m.reload = func() ([]listItem, error) { scanned = true; return m.items, nil }
@@ -1520,7 +1504,7 @@ func TestCtrlRRefreshesNowAndChecksForUpdates(t *testing.T) {
 }
 
 func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)
 	m.width, m.height = 120, 30
 	m.textInput.SetValue("fix the login flow")
 	m.textInput.CursorEnd()
@@ -1557,9 +1541,9 @@ func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
 }
 
 func TestEscGoesBackToTheTop(t *testing.T) {
-	var convs []Conversation
+	var convs []transcript.Conversation
 	for i := range 5 {
-		convs = append(convs, Conversation{SessionID: fmt.Sprint("s", i), Messages: []Message{{Role: "user", Text: "hi"}},
+		convs = append(convs, transcript.Conversation{SessionID: fmt.Sprint("s", i), Messages: []transcript.Message{{Role: "user", Text: "hi"}},
 			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)})
 	}
 	m := initialModel(buildItems(convs), "", nil)
@@ -1604,7 +1588,7 @@ func TestSortItems(t *testing.T) {
 }
 
 func TestScrollingDoesntSort(t *testing.T) {
-	m := initialModel(buildItems([]Conversation{
+	m := initialModel(buildItems([]transcript.Conversation{
 		{SessionID: "a", LastTimestamp: "2026-01-02"}, {SessionID: "b", LastTimestamp: "2026-01-01"},
 	}), "", nil)
 	m.width, m.height = 120, 30
@@ -1622,11 +1606,11 @@ func TestScrollingDoesntSort(t *testing.T) {
 }
 
 func TestDotOnlyWhenItAdds(t *testing.T) {
-	convs := []Conversation{
-		{SessionID: "idle", Title: "idle one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
-		{SessionID: "done", Title: "done one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok.", Ts: "2026-09-29T11:00:00Z"}}},
-		{SessionID: "app", Title: "app one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
-		{SessionID: "pin", Title: "pin one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "assistant", Text: "ok."}}},
+	convs := []transcript.Conversation{
+		{SessionID: "idle", Title: "idle one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "assistant", Text: "ok."}}},
+		{SessionID: "done", Title: "done one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "assistant", Text: "ok.", Ts: "2026-09-29T11:00:00Z"}}},
+		{SessionID: "app", Title: "app one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "assistant", Text: "ok."}}},
+		{SessionID: "pin", Title: "pin one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "assistant", Text: "ok."}}},
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 140, 30
@@ -1664,7 +1648,7 @@ func TestDotOnlyWhenItAdds(t *testing.T) {
 }
 
 func TestShortcutsKeepChordsTogether(t *testing.T) {
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)
 	m.width, m.height = 120, 40
 	first, last, n := -1, -1, 0
 	for i, s := range m.shortcuts() {

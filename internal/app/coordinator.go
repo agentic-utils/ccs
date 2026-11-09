@@ -25,6 +25,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // The coordinator: one Claude Code session, in its own section atop the list, that starts a named session
@@ -279,10 +280,10 @@ func startingProcess(id string) int {
 
 // namedTranscript is the newest Claude session named name, "" if none.
 var namedTranscript = func(name string) string {
-	convs, _ := getConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, nil)
+	convs, _ := transcript.GetConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, nil)
 	id, newest := "", ""
 	for _, c := range convs {
-		if c.Kind != kindCodex && c.IsCustomTitle && c.Title == name && c.LastTimestamp >= newest {
+		if c.Kind != transcript.KindCodex && c.IsCustomTitle && c.Title == name && c.LastTimestamp >= newest {
 			id, newest = c.SessionID, c.LastTimestamp
 		}
 	}
@@ -291,11 +292,11 @@ var namedTranscript = func(name string) string {
 
 // sessionCwd is the folder a session ran in.
 func sessionCwd(id string) string {
-	paths, _ := filepath.Glob(filepath.Join(getProjectsDir(), "*", id+".jsonl"))
+	paths, _ := filepath.Glob(filepath.Join(transcript.GetProjectsDir(), "*", id+".jsonl"))
 	if len(paths) == 0 {
 		return ""
 	}
-	c, err := parseConversationFile(paths[0], time.Time{}, 0)
+	c, err := transcript.ParseConversationFile(paths[0], time.Time{}, 0)
 	if err != nil || c == nil || c.Cwd == "unknown" {
 		return ""
 	}
@@ -304,11 +305,11 @@ func sessionCwd(id string) string {
 
 // sessionTitle is the name a session was given, "" if none.
 func sessionTitle(id string) string {
-	paths, _ := filepath.Glob(filepath.Join(getProjectsDir(), "*", id+".jsonl"))
+	paths, _ := filepath.Glob(filepath.Join(transcript.GetProjectsDir(), "*", id+".jsonl"))
 	if len(paths) == 0 {
 		return ""
 	}
-	c, err := parseConversationFile(paths[0], time.Time{}, 0)
+	c, err := transcript.ParseConversationFile(paths[0], time.Time{}, 0)
 	if err != nil || c == nil || !c.IsCustomTitle {
 		return ""
 	}
@@ -539,7 +540,7 @@ func adoptCoordinator(who string) (string, error) {
 		return "", fmt.Errorf("no Claude Code session named %q, and no session with that id", who)
 	}
 	// Coming back goes through launch, which takes only names like these.
-	if name != "" && !sessionName.MatchString(name) {
+	if name != "" && !state.SessionName.MatchString(name) {
 		return "", fmt.Errorf("ccs couldn't reopen a session named %q: rename it with letters, digits, '.', '_' and '-' first (/rename there, or Ctrl+X E in the list)", name)
 	}
 	replaced := rec.SessionID != "" && rec.SessionID != id

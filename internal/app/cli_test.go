@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func TestPrintHelp(t *testing.T) {
@@ -62,7 +63,7 @@ func TestEraseSavedLinesAfterClear(t *testing.T) {
 }
 
 func TestProfileChord(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 200, 30
 	m, _ = chord(m, "r")
 	if m.profileStop == nil || !strings.Contains(m.View(), "recording profile") {

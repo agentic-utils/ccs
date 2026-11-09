@@ -17,6 +17,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // waitModel adds two live sessions to chatModel's (idle, and live, which
@@ -25,13 +26,13 @@ import (
 func waitModel(t *testing.T) model {
 	t.Helper()
 	m := chatModel(t)
-	var convs []Conversation
+	var convs []transcript.Conversation
 	for _, item := range m.items {
 		convs = append(convs, item.conv)
 	}
 	m.items = buildItems(append(convs,
-		Conversation{SessionID: "menu", Title: "Menu one", LastTimestamp: "2026-09-29T09:00:00Z", Messages: []Message{{Role: "user", Text: "go"}}},
-		Conversation{SessionID: "asks", Title: "Asking one", LastTimestamp: "2026-09-29T08:00:00Z", Messages: []Message{{Role: "assistant", Text: "Which fruit do you prefer? "}}},
+		transcript.Conversation{SessionID: "menu", Title: "Menu one", LastTimestamp: "2026-09-29T09:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "go"}}},
+		transcript.Conversation{SessionID: "asks", Title: "Asking one", LastTimestamp: "2026-09-29T08:00:00Z", Messages: []transcript.Message{{Role: "assistant", Text: "Which fruit do you prefer? "}}},
 	))
 	m.updateFilter()
 	m.live = map[string]bool{"live": true, "menu": true, "asks": true}
@@ -101,7 +102,7 @@ func TestWaitQueueOrderAndSignals(t *testing.T) {
 		"menu": waiting(now.Add(-time.Hour), "input needed"),
 		"asks": {status: "idle", since: now},
 	})
-	ids := func(q []Conversation) string {
+	ids := func(q []transcript.Conversation) string {
 		var s []string
 		for _, c := range q {
 			s = append(s, c.SessionID)
@@ -531,9 +532,9 @@ func TestWaitNeverTypesIntoAMenuOrAnUncheckedPid(t *testing.T) {
 
 func TestWaitOwnsTheKeyboardAndMouse(t *testing.T) {
 	m := waitModel(t)
-	var msgs []Message
+	var msgs []transcript.Message
 	for i := 0; i < 100; i++ {
-		msgs = append(msgs, Message{Role: "user", Text: fmt.Sprint("line ", i)})
+		msgs = append(msgs, transcript.Message{Role: "user", Text: fmt.Sprint("line ", i)})
 	}
 	for i := range m.items {
 		if m.items[i].conv.SessionID == "live" {
@@ -594,7 +595,7 @@ func TestChatStatusLineFitsItsWidth(t *testing.T) {
 	m := waitModel(t)
 	m.pending = map[string]string{"live": strings.Repeat("word ", 40)}
 	m.sentAt = map[string]time.Time{"live": time.Now().Add(-time.Minute)}
-	var conv Conversation
+	var conv transcript.Conversation
 	for _, it := range m.items {
 		if it.conv.SessionID == "live" {
 			conv = it.conv
@@ -714,7 +715,7 @@ func TestWaitAskedHeuristic(t *testing.T) {
 	} {
 		m := waitModel(t)
 		m.chatStatus = map[string]sessionStat{"asks": {status: "idle"}}
-		if got := m.waitSignal(Conversation{SessionID: "asks", Messages: []Message{{Role: "assistant", Text: txt}}}); got != want {
+		if got := m.waitSignal(transcript.Conversation{SessionID: "asks", Messages: []transcript.Message{{Role: "assistant", Text: txt}}}); got != want {
 			t.Errorf("%q: got %d, want %d", txt, got, want)
 		}
 	}
@@ -854,8 +855,8 @@ func TestWaitingQuestionShownAndAnswered(t *testing.T) {
 		}
 	}
 	ask := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Pick a colour","options":[{"label":"red"},{"label":"green","description":"calm"}]}]}}]}}`
-	if !parseLine(conv, []byte(ask)) || answerable(*conv) != 2 {
-		t.Fatalf("pending = %+v", conv.pending)
+	if !transcript.ParseLine(conv, []byte(ask)) || answerable(*conv) != 2 {
+		t.Fatalf("pending = %+v", conv.Pending)
 	}
 	m.filtered = m.items
 	m = openByHand(m, map[string]sessionStat{"live": waiting(time.Now(), "input needed")})
@@ -874,8 +875,8 @@ func TestWaitingQuestionShownAndAnswered(t *testing.T) {
 		t.Error("a digit past the options is typed")
 	}
 	// Its result clears it.
-	parseLine(conv, []byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"green"}]}}`))
-	if conv.pending != nil {
+	transcript.ParseLine(conv, []byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"green"}]}}`))
+	if conv.Pending != nil {
 		t.Error("the tool result should clear the pending question")
 	}
 }
@@ -886,7 +887,7 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 	ask := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Which checks?","multiSelect":true,"options":[{"label":"lint"},{"label":"tests"}]}]}}]}}`
 	for i := range m.items {
 		if m.items[i].conv.SessionID == "live" {
-			parseLine(&m.items[i].conv, []byte(ask))
+			transcript.ParseLine(&m.items[i].conv, []byte(ask))
 		}
 	}
 	m.updateFilter()
@@ -929,9 +930,9 @@ func TestListOrdersWaitingThenIdleThenBusy(t *testing.T) {
 func TestLongQuestionWrapsInFull(t *testing.T) {
 	long := strings.Repeat("the question goes on ", 12) + "END"
 	desc := strings.Repeat("a long description ", 10) + "TAIL"
-	var conv Conversation
+	var conv transcript.Conversation
 	in := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":%q,"options":[{"label":"yes","description":%q}]}]}}]}}`, long, desc)
-	if !parseLine(&conv, []byte(in)) {
+	if !transcript.ParseLine(&conv, []byte(in)) {
 		t.Fatal("not parsed")
 	}
 	lines := askLines(conv, 60)
@@ -970,8 +971,8 @@ func TestStatusChangeKeepsTheSelectionOnItsSession(t *testing.T) {
 }
 
 func TestQuestionMarkColours(t *testing.T) {
-	conv := Conversation{SessionID: "s", Messages: []Message{{Role: "assistant", Text: "Want me to add that?"}}}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	conv := transcript.Conversation{SessionID: "s", Messages: []transcript.Message{{Role: "assistant", Text: "Want me to add that?"}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s": true}
 	m.chatStatus = map[string]sessionStat{"s": {status: "idle"}}
 	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+askedColour+"m●") {
@@ -988,10 +989,10 @@ func TestQuestionMarkColours(t *testing.T) {
 }
 
 func TestAskedSortsBetweenWaitingAndIdle(t *testing.T) {
-	mk := func(id, last string) Conversation {
-		return Conversation{SessionID: id, LastTimestamp: "2026-10-23T10:00:00Z", Messages: []Message{{Role: "assistant", Text: last}}}
+	mk := func(id, last string) transcript.Conversation {
+		return transcript.Conversation{SessionID: id, LastTimestamp: "2026-10-23T10:00:00Z", Messages: []transcript.Message{{Role: "assistant", Text: last}}}
 	}
-	m := initialModel(buildItems([]Conversation{mk("busy", "working"), mk("idle", "done."), mk("asked", "Want that?"), mk("menu", "pick one")}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{mk("busy", "working"), mk("idle", "done."), mk("asked", "Want that?"), mk("menu", "pick one")}), "", nil)
 	m.live = map[string]bool{"busy": true, "idle": true, "asked": true, "menu": true}
 	m.chatStatus = map[string]sessionStat{"busy": {status: "busy"}, "idle": {status: "idle"}, "asked": {status: "idle"}, "menu": {status: "waiting"}}
 	m.sortList()

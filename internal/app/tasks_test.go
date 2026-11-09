@@ -7,10 +7,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func TestBackgroundTasks(t *testing.T) {
-	var conv Conversation
+	var conv transcript.Conversation
 	ts := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
 	use := func(id, name, input string) string {
 		return fmt.Sprintf(`{"type":"assistant","timestamp":%q,"message":{"content":[{"type":"tool_use","id":%q,"name":%q,"input":%s}]}}`, ts, id, name, input)
@@ -31,7 +33,7 @@ func TestBackgroundTasks(t *testing.T) {
 		result("m1", "Monitor started (task m, expires in 1m unless the source ends first)"),
 		`{"type":"user","message":{"content":"<task-notification>\n<task-id>bx1</task-id>\n<tool-use-id>b1</tool-use-id>\n<status>completed</status>\n</task-notification>"}}`,
 	} {
-		if !parseLine(&conv, []byte(l)) {
+		if !transcript.ParseLine(&conv, []byte(l)) {
 			t.Fatalf("not parsed: %s", l)
 		}
 	}
@@ -44,7 +46,7 @@ func TestBackgroundTasks(t *testing.T) {
 	m.lastScan = map[string]liveSession{"s": {start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
 	var running []string
 	for _, task := range m.runningTasks(conv) {
-		running = append(running, task.kind+":"+task.desc)
+		running = append(running, task.Kind+":"+task.Desc)
 	}
 	// b1 completed, b2 was never a task, a1 is a subagent, m1's minute is up: only b3 runs.
 	if strings.Join(running, ",") != "bash:Review the diff" {
@@ -68,13 +70,13 @@ func TestBackgroundTasks(t *testing.T) {
 }
 
 func TestTaskCountOnTheTitleRow(t *testing.T) {
-	conv := Conversation{SessionID: "s", Title: "work", PRs: []string{"https://github.com/o/r/pull/1"},
-		tasks: []bgTask{{id: "b1", kind: "bash", desc: "watch", started: time.Now().UTC().Format(time.RFC3339)}}}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	conv := transcript.Conversation{SessionID: "s", Title: "work", PRs: []string{"https://github.com/o/r/pull/1"},
+		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s": true}
 	m.prs = map[string]prInfo{"https://github.com/o/r/pull/1": {State: "OPEN", MergeState: "CLEAN"}}
 	row := m.sidebarRow(m.filtered[0], false, 40)
-	if !strings.Contains(row[0], "\033["+taskColour+"m⧗1") {
+	if !strings.Contains(row[0], "\033["+transcript.TaskColour+"m⧗1") {
 		t.Errorf("the task count goes on the title row, in its own colour: %q", row[0])
 	}
 	if strings.Contains(row[1], "⧗") || !strings.Contains(strip2(row[1]), "✓1") {
@@ -83,9 +85,9 @@ func TestTaskCountOnTheTitleRow(t *testing.T) {
 }
 
 func TestTasksBeforeHits(t *testing.T) {
-	conv := Conversation{SessionID: "s", Title: "work", Messages: []Message{{Role: "user", Text: "needle"}},
-		tasks: []bgTask{{id: "b1", kind: "bash", desc: "watch", started: time.Now().UTC().Format(time.RFC3339)}}}
-	m := initialModel(buildItems([]Conversation{conv}), "needle", nil)
+	conv := transcript.Conversation{SessionID: "s", Title: "work", Messages: []transcript.Message{{Role: "user", Text: "needle"}},
+		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "needle", nil)
 	m.live = map[string]bool{"s": true}
 	if row := strip2(m.sidebarRow(m.filtered[0], false, 40)[0]); !strings.HasSuffix(strings.TrimRight(row, " "), "⧗1 1") {
 		t.Errorf("tasks first, then the hits at the edge: %q", row)
@@ -116,9 +118,9 @@ func TestSubagentsInThePreviewAndTheList(t *testing.T) {
 	os.Chtimes(filepath.Join(subs, "agent-resumed.meta.json"), time.Now().Add(-time.Minute), time.Now().Add(-time.Minute))
 	os.WriteFile(filepath.Join(subs, "agent-resumed.jsonl"), []byte(fmt.Sprintf(`{"timestamp":%q}`+"\n", started)), 0o600)
 	write("before-resume", time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339), time.Now().Add(-2*time.Hour))
-	conv := Conversation{SessionID: "s1", FilePath: path,
-		tasks: []bgTask{{id: "b1", kind: "bash", desc: "watch", started: time.Now().UTC().Format(time.RFC3339)}}}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	conv := transcript.Conversation{SessionID: "s1", FilePath: path,
+		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s1": true}
 	m.lastScan = map[string]liveSession{"s1": {start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
 	if got := m.taskCell(conv, false); got != "⧗1 ◆3" {

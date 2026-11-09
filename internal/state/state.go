@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -92,4 +93,19 @@ func Indent(out []byte) string {
 		return ""
 	}
 	return "  | " + strings.ReplaceAll(text, "\n", "\n  | ")
+}
+
+// SessionName is what a launched session may be called: it goes into a
+// shell command, a process's arguments and a folder name.
+var SessionName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// LaunchDir holds each launched session's launcher and brief, in a folder of
+// its own (<LaunchDir>/<name>), which a codex session may also write to.
+// Not a temp dir: a launcher deleted before the tab runs it fails silently.
+var LaunchDir = func() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "ccs", "launch")
 }

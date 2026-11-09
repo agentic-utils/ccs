@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -97,7 +98,7 @@ Key bindings:
  This session
   Enter           Resume it in claude, in a new tab in tmux or iTerm; on one
                   open in claude, go to its tab
-  Ctrl+S          Message it: type into a box, sent into its conversation
+  Ctrl+S          transcript.Message it: type into a box, sent into its conversation
   Ctrl+V          Paste a screenshot from the clipboard into a message to it
   Ctrl+F          Fork it: a new session with the same history, in a new tab
   Ctrl+O          Open a link in view or one of its PRs
@@ -155,7 +156,7 @@ func Main(v string) {
 	args := os.Args[1:]
 
 	if len(args) > 0 && args[0] == "prune" {
-		runPrune(args[1:])
+		transcript.RunPrune(args[1:])
 		return
 	}
 	if len(args) > 0 && args[0] == "launch" {
@@ -237,10 +238,10 @@ func Main(v string) {
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				filter = args[i+1]
 			}
-			conversations, _ := getConversations(cutoff, maxSize, excludeDirs)
+			conversations, _ := transcript.GetConversations(cutoff, maxSize, excludeDirs)
 			items := buildItems(conversations)
 			for _, item := range items {
-				line := strings.ReplaceAll(item.searchText, searchSep, " ")
+				line := strings.ReplaceAll(item.searchText, transcript.SearchSep, " ")
 				if filter != "" {
 					line = highlight(line, filter)
 				}
@@ -268,11 +269,11 @@ func Main(v string) {
 	}
 	claudeFlags = withEnvClaudeArgs(os.Getenv("CCS_CLAUDE_ARGS"), claudeFlags)
 
-	projectsDir := getProjectsDir()
-	var conversations []Conversation
+	projectsDir := transcript.GetProjectsDir()
+	var conversations []transcript.Conversation
 	if _, err := os.Stat(projectsDir); !os.IsNotExist(err) {
 		fmt.Fprint(os.Stderr, "Loading conversations...")
-		conversations, err = getConversations(cutoff, maxSize, excludeDirs)
+		conversations, err = transcript.GetConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\rError loading conversations: %v\n", err)
 			os.Exit(1)
@@ -336,7 +337,7 @@ func Main(v string) {
 	m.usageExclude = excludeDirs
 	m.fetchPRs = ghFetchPRs()
 	m.reload = func() ([]listItem, error) {
-		convs, err := getConversations(cutoff, maxSize, excludeDirs)
+		convs, err := transcript.GetConversations(cutoff, maxSize, excludeDirs)
 		if err != nil {
 			return nil, err
 		}
@@ -400,13 +401,13 @@ func Main(v string) {
 	}
 	fmt.Println()
 
-	if conv.Kind == kindCodex {
+	if conv.Kind == transcript.KindCodex {
 		codexPath, err := exec.LookPath("codex")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "codex not found in PATH\n")
 			os.Exit(1)
 		}
-		args := codexResumeArgs("codex", *conv, final.fork)
+		args := transcript.CodexResumeArgs("codex", *conv, final.fork)
 		syscall.Exec(codexPath, args, os.Environ())
 		return
 	}

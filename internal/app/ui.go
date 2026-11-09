@@ -21,11 +21,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // listItem holds display and search data for a conversation
 type listItem struct {
-	conv        Conversation
+	conv        transcript.Conversation
 	searchText  string // All searchable content
 	searchLower string // searchText lowercased once, for case-insensitive filtering
 	rank        int    // matchRank for the current search, 0 without one
@@ -72,7 +73,7 @@ type model struct {
 	focusNoted      map[string]bool      // auto-focus steps logged, by session, step and wait
 	height          int
 	listHeight      int // Calculated visible list height
-	selected        *Conversation
+	selected        *transcript.Conversation
 	fork            bool // exec the selected conversation with --fork-session
 	quitting        bool
 	claudeFlags     []string
@@ -103,7 +104,7 @@ type model struct {
 	stopArmed       string               // ^X K pressed once on this session: again stops it
 	stopArmedAt     time.Time
 
-	// Message box for the selected live session (see chat*).
+	// transcript.Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
 	chatInput  textinput.Model
 	chatFor    string                    // the session chatInput's draft belongs to
@@ -188,8 +189,8 @@ type model struct {
 	acctOpen bool
 	helpOpen bool // ? shortcut list
 
-	reopen        []Conversation // sessions open before a restart, offered for reopening
-	reopenChecked bool           // the last boot's record has been read, so it may be overwritten
+	reopen        []transcript.Conversation // sessions open before a restart, offered for reopening
+	reopenChecked bool                      // the last boot's record has been read, so it may be overwritten
 
 	coordOffer *coordinatorPlan // the set-up popup is open, with what it will change
 	coordBusy  bool             // opening or setting it up: never twice at once
@@ -429,12 +430,12 @@ func (m *model) updateFilter() {
 		terms := strings.Fields(queryLower)
 		next := make([]listItem, 0, len(source))
 		for _, item := range source {
-			if queryMatches(item.searchLower, item.conv.Title, terms) {
+			if transcript.QueryMatches(item.searchLower, item.conv.Title, terms) {
 				next = append(next, item)
 			}
 		}
 		for i := range next {
-			next[i].rank = matchRank(next[i].searchLower, next[i].conv.Title, terms)
+			next[i].rank = transcript.MatchRank(next[i].searchLower, next[i].conv.Title, terms)
 		}
 		m.filtered = next
 	}
@@ -448,7 +449,7 @@ func (m *model) updateFilter() {
 	m.previewScroll = 0
 }
 
-// showHeadless (--all) lists headless runs (Conversation.headless) too.
+// showHeadless (--all) lists headless runs (transcript.Conversation.headless) too.
 var showHeadless bool
 
 // hideHeadless drops headless runs from m.filtered unless --all, or the run
@@ -460,8 +461,8 @@ func (m *model) hideHeadless() {
 	if showHeadless {
 		return
 	}
-	shown := func(c Conversation) bool {
-		return !c.headless() || m.pinIndex(c.SessionID) >= 0 || m.revealed[c.SessionID]
+	shown := func(c transcript.Conversation) bool {
+		return !c.Headless() || m.pinIndex(c.SessionID) >= 0 || m.revealed[c.SessionID]
 	}
 	kept := m.filtered[:0]
 	for _, it := range m.filtered {
@@ -476,7 +477,7 @@ func (m *model) hideHeadless() {
 // prompt, then idle with a question in its last message, then idle (done
 // ones too, marked only by colour, so opening one never moves it), then
 // busy, then not open in claude.
-func (m model) liveGroup(c Conversation) int {
+func (m model) liveGroup(c transcript.Conversation) int {
 	switch {
 	case m.putAway(c) != awake: // the bottom sections: settled, snoozed
 		return 4 + m.putAway(c)
@@ -542,7 +543,7 @@ func (m *model) sortList() {
 }
 
 // sortItems stable-sorts items by less through an index, so a comparison
-// never copies a listItem (each holds a whole Conversation).
+// never copies a listItem (each holds a whole transcript.Conversation).
 func sortItems(items []listItem, less func(a, b *listItem) bool) {
 	idx := make([]int, len(items))
 	for i := range idx {
@@ -717,11 +718,11 @@ var stateSections = [...]struct{ name, colour string }{
 
 // spawnParent is the session whose claude -p started c, "" if none is known.
 // Found once and kept; a miss is retried when the list grows.
-func (m *model) spawnParent(c Conversation) string {
+func (m *model) spawnParent(c transcript.Conversation) string {
 	if c.ParentID != "" { // a Codex subagent names its parent thread
 		return c.ParentID
 	}
-	if c.Kind == kindCodex {
+	if c.Kind == transcript.KindCodex {
 		if p := execParentOf(c.SessionID); p != "" { // a codex exec seen running under that session
 			return p
 		}
@@ -749,11 +750,11 @@ func (m *model) spawnParent(c Conversation) string {
 // Code records no parent.
 // ponytail: matched on the prompt's start, so two sessions sending the same
 // prompt at the same moment can't be told apart.
-func findSpawnParent(c Conversation, items []listItem) string {
+func findSpawnParent(c transcript.Conversation, items []listItem) string {
 	first := ""
 	for _, msg := range c.Messages {
 		if msg.Role == "user" {
-			first = spawnText(msg.Text)
+			first = transcript.SpawnText(msg.Text)
 			break
 		}
 	}
@@ -774,9 +775,9 @@ func findSpawnParent(c Conversation, items []listItem) string {
 		if it.conv.SessionID == c.SessionID {
 			continue
 		}
-		for _, s := range it.conv.spawns {
-			t, err := time.Parse(time.RFC3339, s.ts)
-			if gap := start.Sub(t); err == nil && gap > -time.Minute && gap < bestGap && strings.Contains(s.text, first) {
+		for _, s := range it.conv.Spawns {
+			t, err := time.Parse(time.RFC3339, s.Ts)
+			if gap := start.Sub(t); err == nil && gap > -time.Minute && gap < bestGap && strings.Contains(s.Text, first) {
 				best, bestGap = it.conv.SessionID, max(gap, -gap)
 			}
 		}
@@ -787,7 +788,7 @@ func findSpawnParent(c Conversation, items []listItem) string {
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.reload != nil {
-		cmds = append(cmds, refreshTick(), liveTick(), waitReceipt, reopenCheckCmd, coordinatorProbe)
+		cmds = append(cmds, transcript.RefreshTick(), liveTick(), waitReceipt, reopenCheckCmd, coordinatorProbe)
 	}
 	if m.checkLatest != nil {
 		cmds = append(cmds, m.checkUpdateCmd())
@@ -881,9 +882,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear so a shrink doesn't leave wider stale rows behind.
 		return m, tea.ClearScreen
 
-	case refreshTickMsg:
+	case transcript.RefreshTickMsg:
 		if !m.refreshStarted.IsZero() { // an early scan is running; keep the schedule
-			return m, refreshTick()
+			return m, transcript.RefreshTick()
 		}
 		return m, m.startRefresh(false)
 
@@ -1122,7 +1123,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.early {
 			return m, tea.Batch(usageCmds...) // the one-minute chain is still ticking on its own
 		}
-		return m, tea.Batch(append(usageCmds, refreshTick())...)
+		return m, tea.Batch(append(usageCmds, transcript.RefreshTick())...)
 
 	case usageMsg:
 		m.usageLoading = false
@@ -1300,7 +1301,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chatTickOn = false // rescheduled by Update while its session stays live
 		m.setStat(msg.id, msg.stat)
 		if msg.conv != nil && msg.gen == m.gen && !m.prompting() {
-			m.applyLive([]Conversation{*msg.conv})
+			m.applyLive([]transcript.Conversation{*msg.conv})
 		}
 		m.checkDelivered(msg.id)
 		return m, nil
@@ -1704,7 +1705,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				v := strings.TrimSpace(m.launchInput.Value())
 				if m.launchStep == 1 {
-					if !sessionName.MatchString(v) {
+					if !state.SessionName.MatchString(v) {
 						m.errorMsg = "A session name is letters, digits, '.', '_' and '-'"
 						return m, nil
 					}
@@ -1872,7 +1873,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, true)
 
 		case "ctrl+d":
-			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == kindCodex {
+			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindCodex {
 				m.note("A Codex session: ccs leaves Codex's files alone (codex delete removes one)")
 				return m, nil
 			}
@@ -1888,7 +1889,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "^x e":
 			if len(m.filtered) > 0 {
 				conv := m.filtered[m.cursor].conv
-				if conv.Kind == kindCodex {
+				if conv.Kind == transcript.KindCodex {
 					m.note("A Codex session: rename it in Codex")
 					return m, nil
 				}
@@ -1910,7 +1911,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "^x x":
-			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == kindCodex {
+			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindCodex {
 				m.note("A Codex session: ccs only prunes Claude's transcripts")
 				return m, nil
 			}
@@ -1924,14 +1925,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Measure the projected saving so the prompt can show it.
 				// ponytail: reads the file once now (and again on confirm) - a
 				// multi-GB file briefly blocks, acceptable for a manual action.
-				st, err := pruneFile(m.filtered[m.cursor].conv.FilePath, false, pruneOpts{dropSnapshots: true, stripToolResults: true})
+				st, err := transcript.PruneFile(m.filtered[m.cursor].conv.FilePath, false, transcript.PruneOpts{DropSnapshots: true, StripToolResults: true})
 				if err != nil {
 					m.errorMsg = fmt.Sprintf("Prune preview failed: %v", err)
 					return m, nil
 				}
 				m.confirmPrune = true
 				m.pruneIndex = m.cursor
-				m.pruneSaved = st.bytesIn - st.bytesOut
+				m.pruneSaved = st.BytesIn - st.BytesOut
 			}
 			return m, nil
 
@@ -2271,8 +2272,8 @@ func (m model) viewScreen() string {
 
 	// Title line with help right-aligned
 	note := m.refreshNote()
-	if workerPanicked.Load() {
-		note += " · internal error, logged to " + workerPanicLog
+	if transcript.WorkerPanicked.Load() {
+		note += " · internal error, logged to " + transcript.WorkerPanicLog
 	}
 	if m.updateCheckFailed && m.updateTo == "" {
 		note += " · update check failed"
@@ -2331,19 +2332,19 @@ func (m model) viewScreen() string {
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214")). // Amber
 			Render(fmt.Sprintf("Prune \"%s\"? %s -> %s, saves %s (keeps dialogue).",
-				truncate(getTopic(conv), 32), formatBytes(conv.Size), formatBytes(conv.Size-m.pruneSaved), formatBytes(m.pruneSaved))) +
+				transcript.Truncate(transcript.GetTopic(conv), 32), transcript.FormatBytes(conv.Size), transcript.FormatBytes(conv.Size-m.pruneSaved), transcript.FormatBytes(m.pruneSaved))) +
 			"  \033[90m" + hints("y", "prune", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if m.confirmDelete {
 		conv := m.filtered[m.deleteIndex].conv
-		topic := getTopic(conv)
+		topic := transcript.GetTopic(conv)
 		liveWarning := ""
 		if m.live[conv.SessionID] {
 			liveWarning = " It is open in claude."
 		}
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")). // Red
-			Render(fmt.Sprintf("Delete conversation \"%s\"?%s", truncate(topic, 50), liveWarning)) +
+			Render(fmt.Sprintf("Delete conversation \"%s\"?%s", transcript.Truncate(topic, 50), liveWarning)) +
 			"  \033[90m" + hints("y", "delete", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if m.showUsage {
@@ -2471,7 +2472,7 @@ func (m model) topicColWidth() int {
 }
 
 func (m model) formatListItem(item listItem, selected bool) string {
-	project := truncate(projectName(item.conv.Cwd), colProject)
+	project := transcript.Truncate(projectName(item.conv.Cwd), colProject)
 
 	marks, colouredMarks := m.listMarks(item)
 	mw := colMarks // the marks' width, and with ^X G an indent under the folder's header
@@ -2488,7 +2489,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		topic = nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest)-ansi.StringWidth(tasks)-1) + " " + tasks
 	}
 
-	// Message count
+	// transcript.Message count
 	msgs := len(item.conv.Messages)
 
 	// Number of messages containing the query (memoised per query).
@@ -2497,12 +2498,12 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		hits = fmt.Sprintf("  %*d", colHits, m.hitCount(item))
 	}
 
-	size := formatBytes(item.conv.Size)
+	size := transcript.FormatBytes(item.conv.Size)
 
-	when := formatAgo(item.conv.LastTimestamp, time.Now())
+	when := transcript.FormatAgo(item.conv.LastTimestamp, time.Now())
 
-	ctx := formatTokens(item.conv.ContextTokens)
-	model := truncate(shortModel(item.conv), colModel)
+	ctx := transcript.FormatTokens(item.conv.ContextTokens)
+	model := transcript.Truncate(transcript.ShortModel(item.conv), colModel)
 
 	// Format: when | project | topic | model | size | ctx | msgs | hits | prs (aligned columns)
 	if selected {
@@ -2512,7 +2513,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// Pad before colouring so the escape codes don't eat into the column width.
 	topic = colouredMarks + padRight(topic, tw-mw)
 	// CTX is coloured by how full the context is (see ctxColour).
-	ctxCode, flash := ctxColour(item.conv.ContextTokens, item.conv.window())
+	ctxCode, flash := transcript.CtxColour(item.conv.ContextTokens, item.conv.WindowSize())
 	if flash && time.Now().Unix()%2 == 1 {
 		ctxCode = "2;31" // flashing: dim every other second
 	}
@@ -2530,11 +2531,11 @@ func nestPrefix(depth int) string {
 	return strings.Repeat("  ", depth-1) + "└ "
 }
 
-func listTopic(conv Conversation, w int) string {
+func listTopic(conv transcript.Conversation, w int) string {
 	if conv.IsCustomTitle {
-		return truncate(getTopic(conv), w-2) + " ✎"
+		return transcript.Truncate(transcript.GetTopic(conv), w-2) + " ✎"
 	}
-	return truncate(getTopic(conv), w)
+	return transcript.Truncate(transcript.GetTopic(conv), w)
 }
 
 // listMarks is a row's colMarks-wide status column, plain and coloured.
@@ -2588,7 +2589,7 @@ func (m model) listMarks(item listItem) (string, string) {
 		icons += s.glyph
 		colouredIcons += "\033[" + s.color + "m" + s.glyph + "\033[0m"
 	}
-	glyph, colour := agentGlyph(conv) // every row: which agent it is
+	glyph, colour := transcript.AgentGlyph(conv) // every row: which agent it is
 	pad := strings.Repeat(" ", colMarks-2-n)
 	return pad + icons + glyph + " ", pad + colouredIcons + "\033[" + colour + "m" + glyph + "\033[0m "
 }
@@ -2737,12 +2738,12 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	nest := nestPrefix(item.depth)
 	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
-	stats := strings.TrimSuffix(formatAgo(conv.LastTimestamp, time.Now()), " ago")
+	stats := strings.TrimSuffix(transcript.FormatAgo(conv.LastTimestamp, time.Now()), " ago")
 	if conv.Kind != "" {
 		stats = conv.Kind + " · " + stats
 	}
 	if conv.ContextTokens > 0 {
-		stats += " · " + formatTokens(conv.ContextTokens) + " ctx"
+		stats += " · " + transcript.FormatTokens(conv.ContextTokens) + " ctx"
 	}
 	if b, ok := m.bg[conv.SessionID]; ok && m.live[conv.SessionID] {
 		stats += " · bg"
@@ -2754,7 +2755,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	}
 	stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
 	sw := w - len(lead) - colMarks - ansi.StringWidth(prs) - 1
-	stats = padRight(truncate(stats, sw), sw)
+	stats = padRight(transcript.Truncate(stats, sw), sw)
 	indent := strings.Repeat(" ", len(lead)+colMarks)
 	if selected { // the highlight marks it, no >
 		return [2]string{
@@ -2792,13 +2793,13 @@ func (m *model) renameConversation(name string) {
 	m.gen++
 	// The file grew, so the next live tick or scan reparses it; drop the
 	// cached copy rather than let anything build on it.
-	parseCacheMu.Lock()
-	delete(parseCache, conv.FilePath)
-	parseCacheMu.Unlock()
+	transcript.ParseCacheMu.Lock()
+	delete(transcript.ParseCache, conv.FilePath)
+	transcript.ParseCacheMu.Unlock()
 	c := conv
 	c.Title, c.IsCustomTitle = name, true
-	c.searchText = "" // rebuilt by buildItems, exactly as a full parse would
-	renamed := buildItems([]Conversation{c})[0]
+	c.SearchText = "" // rebuilt by buildItems, exactly as a full parse would
+	renamed := buildItems([]transcript.Conversation{c})[0]
 	for _, items := range [][]listItem{m.items, m.filtered} {
 		for i := range items {
 			if items[i].conv.SessionID == conv.SessionID {
@@ -2842,9 +2843,9 @@ func (m *model) deleteConversation() {
 		return
 	}
 	m.gen++
-	parseCacheMu.Lock()
-	delete(parseCache, conv.FilePath)
-	parseCacheMu.Unlock()
+	transcript.ParseCacheMu.Lock()
+	delete(transcript.ParseCache, conv.FilePath)
+	transcript.ParseCacheMu.Unlock()
 
 	// Remove from filtered slice
 	m.filtered = append(m.filtered[:m.deleteIndex], m.filtered[m.deleteIndex+1:]...)
@@ -2880,7 +2881,7 @@ func (m *model) pruneConversation() {
 	}
 	conv := m.filtered[m.pruneIndex].conv
 
-	_, err := pruneFile(conv.FilePath, true, pruneOpts{dropSnapshots: true, stripToolResults: true})
+	_, err := transcript.PruneFile(conv.FilePath, true, transcript.PruneOpts{DropSnapshots: true, StripToolResults: true})
 	if err != nil {
 		m.errorMsg = fmt.Sprintf("Prune failed: %v", err)
 		return
@@ -2890,9 +2891,9 @@ func (m *model) pruneConversation() {
 	// Its parse state (read position) no longer matches the file. Rather than
 	// re-read it here on the UI goroutine, mark it so the next read is a full
 	// one (off the UI goroutine), and so the next scan's copy wins.
-	parseCacheMu.Lock()
-	delete(parseCache, conv.FilePath)
-	parseCacheMu.Unlock()
+	transcript.ParseCacheMu.Lock()
+	delete(transcript.ParseCache, conv.FilePath)
+	transcript.ParseCacheMu.Unlock()
 	newSize := conv.Size
 	if info, e := os.Stat(conv.FilePath); e == nil {
 		newSize = info.Size()
@@ -2901,8 +2902,8 @@ func (m *model) pruneConversation() {
 		for i := range items {
 			if items[i].conv.SessionID == conv.SessionID {
 				items[i].conv.Size = newSize
-				items[i].conv.tailApplied = true
-				items[i].conv.readAt = time.Time{}
+				items[i].conv.TailApplied = true
+				items[i].conv.ReadAt = time.Time{}
 			}
 		}
 	}

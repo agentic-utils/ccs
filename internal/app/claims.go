@@ -16,6 +16,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // The PR owner registry: a session runs `ccs claim <PR>` for each PR it
@@ -190,7 +191,7 @@ func ownerName(c prClaim, live map[int]prClaim) string {
 // claim records (or with release, drops) the calling session's claim on pr.
 // Another session's claim on it stays: two owners is something to flag.
 func claim(pr string, release bool, now time.Time) (string, error) {
-	if !prURL.MatchString(pr) {
+	if !transcript.PrURL.MatchString(pr) {
 		return "", fmt.Errorf("not a GitHub PR address: %s", pr)
 	}
 	me, err := callingSession()
@@ -358,7 +359,7 @@ var fetchOpenPRs = func(author, owner string) (map[string]*watchedPR, error) {
 
 // endState is prEndState for a claimed PR the open list doesn't have. Stubbed in tests.
 var endState = func(pr string) (string, error) {
-	p := prURL.FindStringSubmatch(pr)
+	p := transcript.PrURL.FindStringSubmatch(pr)
 	n, _ := strconv.Atoi(p[3])
 	return prEndState(&watchedPR{Repo: p[1] + "/" + p[2], Number: n})
 }

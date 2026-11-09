@@ -13,6 +13,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func writePNG(t *testing.T, path string) {
@@ -70,7 +72,7 @@ func TestWithImagesAndStrip(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 	// through the socket's wrapper, as peerParts sees it
-	from, body, ok := peerParts("<cross-session-message from-name=\"" + ccsSender + "\">\n" + ccsNote + wire + "\n</cross-session-message>")
+	from, body, ok := peerParts("<cross-session-message from-name=\"" + ccsSender + "\">\n" + transcript.CcsNote + wire + "\n</cross-session-message>")
 	if !ok || from != ccsSender || body != text {
 		t.Errorf("peerParts: %q %q %v", from, body, ok)
 	}
@@ -227,11 +229,11 @@ func TestCtrlVClipboard(t *testing.T) {
 // reads back as the placeholder, and the pending message clears.
 func TestImageNoteReachesSocketAndClearsPending(t *testing.T) {
 	wire := withImages("[Image #1] look", []pastedImage{{1, "/p/a.png"}})
-	line, _ := json.Marshal("<cross-session-message from-name=\"" + ccsSender + "\">\n" + ccsNote + wire + "\n</cross-session-message>")
+	line, _ := json.Marshal("<cross-session-message from-name=\"" + ccsSender + "\">\n" + transcript.CcsNote + wire + "\n</cross-session-message>")
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	body := `{"type":"user","isMeta":true,"cwd":"/p","message":{"content":` + string(line) + `},"timestamp":"2026-09-29T10:01:00Z"}` + "\n"
 	os.WriteFile(path, []byte(body), 0o600)
-	c, err := parseConversationFile(path, time.Time{}, 0)
+	c, err := transcript.ParseConversationFile(path, time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +241,7 @@ func TestImageNoteReachesSocketAndClearsPending(t *testing.T) {
 	if !strings.Contains(plain, "[Image #1] look") || strings.Contains(plain, "/p/a.png") {
 		t.Errorf("preview:\n%s", plain)
 	}
-	typed := Conversation{Messages: []Message{{Role: "user", Text: wire}}}
+	typed := transcript.Conversation{Messages: []transcript.Message{{Role: "user", Text: wire}}}
 	plain = strip2(strings.Join(buildPreviewLines(typed, "", 80), "\n"))
 	if strings.Contains(plain, "/p/a.png") {
 		t.Errorf("a typed one hides it too:\n%s", plain)

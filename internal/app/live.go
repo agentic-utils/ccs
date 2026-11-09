@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // liveInterval is how often ccs re-reads which sessions are live and picks
@@ -41,7 +42,7 @@ type focusDoneMsg struct {
 // resumeDoneMsg reports how Enter/Ctrl+F opened a conversation: in a new
 // tab/window (ccs stays up), or not at all (exec in place after quitting).
 type resumeDoneMsg struct {
-	conv   Conversation
+	conv   transcript.Conversation
 	fork   bool
 	opened bool
 	err    error
@@ -50,13 +51,13 @@ type resumeDoneMsg struct {
 type liveMsg struct {
 	live       map[string]bool
 	pids       map[string]int
-	updated    []Conversation         // live conversations whose transcript grew
-	unknown    []string               // live sessions not in the list yet
-	stats      map[string]sessionStat // each live session's status, from its session file
-	unverified map[string]bool        // live sessions whose pid couldn't be checked against the file's procStart
-	scan       map[string]liveSession // this tick's sessions, the next tick's prev
-	hosts      map[string]string      // live sessions run by an app, not in a terminal: the app's name
-	bg         map[string]bgSession   // background sessions (claude --bg); nil when not asked this tick
+	updated    []transcript.Conversation // live conversations whose transcript grew
+	unknown    []string                  // live sessions not in the list yet
+	stats      map[string]sessionStat    // each live session's status, from its session file
+	unverified map[string]bool           // live sessions whose pid couldn't be checked against the file's procStart
+	scan       map[string]liveSession    // this tick's sessions, the next tick's prev
+	hosts      map[string]string         // live sessions run by an app, not in a terminal: the app's name
+	bg         map[string]bgSession      // background sessions (claude --bg); nil when not asked this tick
 	gen        int
 }
 
@@ -75,7 +76,7 @@ func liveTick() tea.Cmd {
 // goroutine. Sessions that were live last tick are checked too, so a
 // session's final lines land promptly after claude exits.
 func (m model) liveCmd(askAgents bool) tea.Cmd {
-	byID := make(map[string]Conversation, len(m.live))
+	byID := make(map[string]transcript.Conversation, len(m.live))
 	for _, item := range m.items {
 		byID[item.conv.SessionID] = item.conv
 	}
@@ -128,8 +129,8 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 			go func() {
 				defer wg.Done()
 				defer liveReads.Delete(conv.FilePath)
-				defer recoverWorker()
-				if c, err := parseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
+				defer transcript.RecoverWorker()
+				if c, err := transcript.ParseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
 					mu.Lock()
 					msg.updated = append(msg.updated, *c)
 					mu.Unlock()
@@ -153,7 +154,7 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 // activity, keeping the cursor on the same conversation. Unlike a full
 // refresh it only re-matches and re-counts the changed rows, so a streaming
 // session doesn't rebuild every cache on the UI goroutine each tick.
-func (m *model) applyLive(updated []Conversation) {
+func (m *model) applyLive(updated []transcript.Conversation) {
 	byID := make(map[string]listItem, len(updated))
 	for _, item := range buildItems(updated) {
 		byID[item.conv.SessionID] = item
@@ -162,7 +163,7 @@ func (m *model) applyLive(updated []Conversation) {
 	newMessages := make(map[string]bool, len(updated))
 	for i, item := range m.items {
 		// A full scan may have read this file after the live tick did.
-		if u, ok := byID[item.conv.SessionID]; ok && !item.conv.readAt.After(u.conv.readAt) {
+		if u, ok := byID[item.conv.SessionID]; ok && !item.conv.ReadAt.After(u.conv.ReadAt) {
 			newMessages[item.conv.SessionID] = len(u.conv.Messages) != len(item.conv.Messages)
 			u.rank = item.rank
 			item = u
@@ -350,18 +351,18 @@ func (m *model) isLive(id string) bool {
 
 // openResumeTab tries to resume conv in a new tmux window or iTerm tab. Returns
 // false when that isn't possible, leaving the caller to exec claude in place.
-func openResumeTab(conv Conversation, claudeFlags []string) (bool, error) {
+func openResumeTab(conv transcript.Conversation, claudeFlags []string) (bool, error) {
 	cwd := conv.Cwd
 	if cwd == "" || cwd == "unknown" {
 		cwd = "."
 	}
 	var args []string
-	if conv.Kind == kindCodex { // claude's flags don't apply; a fork asks for one
+	if conv.Kind == transcript.KindCodex { // claude's flags don't apply; a fork asks for one
 		codexPath, err := exec.LookPath("codex")
 		if err != nil {
 			return false, nil
 		}
-		args = codexResumeArgs(codexPath, conv, slices.Contains(claudeFlags, "--fork-session"))
+		args = transcript.CodexResumeArgs(codexPath, conv, slices.Contains(claudeFlags, "--fork-session"))
 	} else {
 		claudePath, err := exec.LookPath("claude")
 		if err != nil {
@@ -409,7 +410,7 @@ func (m *model) opening(id string, fork bool) bool {
 // message box). Unlike resumeCmd it never starts claude: a session that just
 // exited, or whose file can't be read right now, is reported instead of
 // resumed a second time.
-func (m *model) focusCmd(conv Conversation) tea.Cmd {
+func (m *model) focusCmd(conv transcript.Conversation) tea.Cmd {
 	if m.inT3(conv.SessionID) {
 		return m.openT3Cmd(conv)
 	}
@@ -434,7 +435,7 @@ func (m *model) focusCmd(conv Conversation) tea.Cmd {
 // resumeCmd opens conv off the UI goroutine. Liveness is checked afresh, so
 // a session resumed elsewhere since the last live tick is focused, not
 // resumed a second time. Forks always open a new session.
-func (m *model) resumeCmd(conv Conversation, fork bool) tea.Cmd {
+func (m *model) resumeCmd(conv transcript.Conversation, fork bool) tea.Cmd {
 	if !fork && m.inT3(conv.SessionID) {
 		return m.openT3Cmd(conv)
 	}
@@ -651,7 +652,7 @@ type reopenDoneMsg struct {
 
 // reopenCmd resumes each session in its own tab, skipping any open again by
 // now. It stops at the first failure rather than resuming in place.
-func (m *model) reopenCmd(convs []Conversation) tea.Cmd {
+func (m *model) reopenCmd(convs []transcript.Conversation) tea.Cmd {
 	m.resuming = true
 	flags := slices.Clone(m.claudeFlags)
 	return func() tea.Msg {
@@ -689,10 +690,10 @@ func (m model) reopenPopup() string {
 	fmt.Fprintf(&b, "\033[1mReopen %s open before the restart?\033[0m\n\n", what)
 	nameW := 0
 	for _, c := range m.reopen[:min(n, maxReopenRows)] {
-		nameW = max(nameW, ansi.StringWidth(truncate(m.sessionName(c), 40)))
+		nameW = max(nameW, ansi.StringWidth(transcript.Truncate(m.sessionName(c), 40)))
 	}
 	for _, c := range m.reopen[:min(n, maxReopenRows)] {
-		b.WriteString(padRight(truncate(m.sessionName(c), 40), nameW) + "  \033[90m" + filepath.Base(c.Cwd) + "\033[0m\n")
+		b.WriteString(padRight(transcript.Truncate(m.sessionName(c), 40), nameW) + "  \033[90m" + filepath.Base(c.Cwd) + "\033[0m\n")
 	}
 	if n > maxReopenRows {
 		fmt.Fprintf(&b, "\033[90m+%d more\033[0m\n", n-maxReopenRows)
@@ -771,7 +772,7 @@ func (m model) inT3(id string) bool { return m.live[id] && m.hostedApp(id) == t3
 
 // openT3Cmd opens a session's thread in T3 Code, off the UI goroutine;
 // without a link it says to open it there, as for other apps.
-func (m *model) openT3Cmd(conv Conversation) tea.Cmd {
+func (m *model) openT3Cmd(conv transcript.Conversation) tea.Cmd {
 	m.resuming = true
 	m.markSeen(conv.SessionID) // you're going to look at it
 	name := m.sessionName(conv)
@@ -901,7 +902,7 @@ type attachDoneMsg struct {
 
 // attachCmd opens a background session with claude attach in a new tmux
 // window or iTerm tab. Never in place: ccs would be gone.
-func (m *model) attachCmd(conv Conversation, b bgSession) tea.Cmd {
+func (m *model) attachCmd(conv transcript.Conversation, b bgSession) tea.Cmd {
 	m.resuming = true
 	m.markSeen(conv.SessionID)
 	cwd := conv.Cwd

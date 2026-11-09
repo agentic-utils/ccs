@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // ccs launch and ccs close: start a named claude (or codex) session in a new
@@ -36,21 +36,6 @@ type launchOpts struct {
 	focus                    bool          // bring its tab to the front: it needs an answer there
 	wait                     time.Duration // how long it may take to start; launchWait if zero
 	inPlace                  bool          // no tab: replace this process with it
-}
-
-// sessionName is what a launched session may be called: it goes into a
-// shell command, a process's arguments and a folder name.
-var sessionName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-
-// launchDir holds each launched session's launcher and brief, in a folder of
-// its own (<launchDir>/<name>), which a codex session may also write to.
-// Not a temp dir: a launcher deleted before the tab runs it fails silently.
-var launchDir = func() string {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		dir = os.TempDir()
-	}
-	return filepath.Join(dir, "ccs", "launch")
 }
 
 // launchWait is how long launch waits for the session to show up, and
@@ -80,7 +65,7 @@ func launchScript(o launchOpts, bin, dir string) string {
 		}
 		// Its launch folder first among the writable ones: sessionsNamed finds
 		// it by that.
-		flags := codexSandboxArgs(dir)
+		flags := transcript.CodexSandboxArgs(dir)
 		for i, a := range flags {
 			if i > 0 && flags[i-1] == "--add-dir" { // the folders; the flags themselves are plain words
 				a = proc.ShellQuote(a)
@@ -121,18 +106,18 @@ type launched struct {
 // the projects folder or, with codex, a Codex thread's rollout.
 func resumable(id string, codex bool) bool {
 	if codex {
-		return codexRollout(id) != ""
+		return transcript.CodexRollout(id) != ""
 	}
 	if strings.ContainsAny(id, `/\*?[`) {
 		return false
 	}
-	paths, _ := filepath.Glob(filepath.Join(getProjectsDir(), "*", id+".jsonl"))
+	paths, _ := filepath.Glob(filepath.Join(transcript.GetProjectsDir(), "*", id+".jsonl"))
 	return len(paths) > 0
 }
 
 // launchSession starts o in a new iTerm tab and waits until it's running.
 func launchSession(o launchOpts) (launched, error) {
-	if !sessionName.MatchString(o.name) {
+	if !state.SessionName.MatchString(o.name) {
 		return launched{}, fmt.Errorf("name %q: use letters, digits, '.', '_' and '-' (at most 64)", o.name)
 	}
 	if o.brief == "" && o.resume == "" {
@@ -179,7 +164,7 @@ func launchSession(o launchOpts) (launched, error) {
 	if err != nil {
 		return launched{}, fmt.Errorf("%s isn't installed: %v", binName, err)
 	}
-	dir := filepath.Join(launchDir(), o.name)
+	dir := filepath.Join(state.LaunchDir(), o.name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return launched{}, err
 	}
@@ -371,7 +356,7 @@ func sessionsNamed(name string) ([]int, error) {
 	if err != nil {
 		return pids, nil // claude's sessions are still known
 	}
-	marker := "--add-dir " + filepath.Join(launchDir(), name) + " " // ps shows arguments unquoted
+	marker := "--add-dir " + filepath.Join(state.LaunchDir(), name) + " " // ps shows arguments unquoted
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 3 {

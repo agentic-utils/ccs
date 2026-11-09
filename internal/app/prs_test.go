@@ -12,6 +12,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 const (
@@ -22,7 +24,7 @@ const (
 )
 
 func TestPRLinksParsed(t *testing.T) {
-	var c Conversation
+	var c transcript.Conversation
 	for _, l := range []string{
 		`{"type":"pr-link","prUrl":"` + prA + `"}`,
 		`{"type":"pr-link","prUrl":"` + prB + `"}`,
@@ -30,7 +32,7 @@ func TestPRLinksParsed(t *testing.T) {
 		`{"type":"pr-link","prUrl":"https://github.com/o/r\")}{x/pull/5"}`, // not a PR address
 		`{"type":"pr-link","prUrl":"https://gitlab.com/o/r/pull/6"}`,       // not github.com
 	} {
-		parseLine(&c, []byte(l))
+		transcript.ParseLine(&c, []byte(l))
 	}
 	if !slices.Equal(c.PRs, []string{prA, prB}) {
 		t.Errorf("each github.com PR once, first touched first: %v", c.PRs)
@@ -51,21 +53,21 @@ func TestPRsFromGhOutput(t *testing.T) {
 	lines = append(lines, ghLines("t1", `for r in a b; do gh pr create --repo o/$r --fill; done`, "a | "+prA+" | ok\nb | "+prB)...)
 	lines = append(lines, ghLines("t2", `gh pr merge $n -R o/$r --merge`, "✓ Merged pull request o/r#3 (title)")...)
 	lines = append(lines, ghLines("t3", `gh search prs --owner o`, prD)...) // only mentions a PR
-	var c Conversation
+	var c transcript.Conversation
 	for _, l := range lines {
-		parseLine(&c, []byte(l))
+		transcript.ParseLine(&c, []byte(l))
 	}
 	if !slices.Equal(c.PRs, []string{prA, prB, prC}) {
 		t.Errorf("PRs gh pr create and merge printed, not ones other output mentions: %v", c.PRs)
 	}
-	if len(c.ghCalls) != 0 {
-		t.Errorf("answered calls are dropped: %v", c.ghCalls)
+	if len(c.GhCalls) != 0 {
+		t.Errorf("answered calls are dropped: %v", c.GhCalls)
 	}
 }
 
 func TestSubagentPRs(t *testing.T) {
 	dir := t.TempDir()
-	conv := Conversation{FilePath: filepath.Join(dir, "s.jsonl"), PRs: []string{prA}}
+	conv := transcript.Conversation{FilePath: filepath.Join(dir, "s.jsonl"), PRs: []string{prA}}
 	sub := filepath.Join(dir, "s", "subagents")
 	os.MkdirAll(filepath.Join(sub, "workflows", "wf_1"), 0o755)
 	write := func(path string, lines []string) {
@@ -95,7 +97,7 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 		prC: {State: "OPEN", MergeState: "CLEAN", Title: "go"},
 		prD: {State: "OPEN", MergeState: "BLOCKED", Checks: "FAILURE", Title: "broken"},
 	}, width: 100}
-	conv := Conversation{PRs: []string{prA, prB, prC, prD}}
+	conv := transcript.Conversation{PRs: []string{prA, prB, prC, prD}}
 	if got := m.sessionPRs(conv); !slices.Equal(got, []string{prC, prD, prB, prA}) {
 		t.Errorf("ready, needs you, waiting, merged: %v", got)
 	}
@@ -110,10 +112,10 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 	}
 	m.prs["https://github.com/o/r/pull/5"] = prInfo{State: "CLOSED"}
 	m.prs["https://github.com/o/r/pull/6"] = prInfo{State: "GONE"}
-	if got := strings.TrimSpace(m.prCell(Conversation{PRs: []string{prA, "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/6"}}, false)); got != "●1" {
+	if got := strings.TrimSpace(m.prCell(transcript.Conversation{PRs: []string{prA, "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/6"}}, false)); got != "●1" {
 		t.Errorf("merged counted, closed and not found left out: %q", got)
 	}
-	if got := m.prCell(Conversation{PRs: []string{"https://github.com/o/r/pull/6"}}, false); strings.TrimSpace(got) != "" {
+	if got := m.prCell(transcript.Conversation{PRs: []string{"https://github.com/o/r/pull/6"}}, false); strings.TrimSpace(got) != "" {
 		t.Errorf("nothing found, nothing shown: %q", got)
 	}
 	m.prs[prB] = prInfo{State: "OPEN", Draft: true, MergeState: "CLEAN"}
@@ -124,7 +126,7 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 
 func TestPRFetchScope(t *testing.T) {
 	var asked [][]string
-	m := initialModel(buildItems([]Conversation{
+	m := initialModel(buildItems([]transcript.Conversation{
 		{SessionID: "new", LastTimestamp: time.Now().UTC().Format(time.RFC3339), PRs: []string{prA, prB}},
 		{SessionID: "old", LastTimestamp: "2020-01-01T00:00:00Z", PRs: []string{prC}},
 	}), "", nil)
@@ -188,7 +190,7 @@ func TestPRFetchScope(t *testing.T) {
 func TestSelectingASessionRefreshesItsOpenPRs(t *testing.T) {
 	var asked [][]string
 	now := time.Now().UTC().Format(time.RFC3339)
-	m := initialModel(buildItems([]Conversation{
+	m := initialModel(buildItems([]transcript.Conversation{
 		{SessionID: "a", LastTimestamp: now, PRs: []string{prA, prB}},
 		{SessionID: "b", LastTimestamp: now, PRs: []string{prC}},
 	}), "", nil)
@@ -259,8 +261,8 @@ exit 1
 
 func TestPRColoursMatchGitHub(t *testing.T) {
 	u := func(n int) string { return fmt.Sprint("https://github.com/o/r/pull/", n) }
-	conv := Conversation{SessionID: "s", PRs: []string{u(1), u(2), u(3), u(4), u(5)}}
-	m := initialModel(buildItems([]Conversation{conv}), "", nil)
+	conv := transcript.Conversation{SessionID: "s", PRs: []string{u(1), u(2), u(3), u(4), u(5)}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.prs = map[string]prInfo{
 		u(1): {State: "OPEN", MergeState: "CLEAN"},
 		u(2): {State: "OPEN", Checks: "PENDING", MergeState: "BLOCKED"},

@@ -23,6 +23,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // watchedPR is what the watcher last saw of one PR.
@@ -554,12 +555,12 @@ func searchPRs(author, owner string, filters ...string) ([]watchedPR, error) {
 	}
 	var prs []watchedPR
 	for _, r := range rows {
-		if strings.TrimSpace(r.URL) == "" || !prURL.MatchString(r.URL) {
+		if strings.TrimSpace(r.URL) == "" || !transcript.PrURL.MatchString(r.URL) {
 			continue
 		}
 		repo := r.Repository.NameWithOwner
 		if repo == "" {
-			p := prURL.FindStringSubmatch(r.URL)
+			p := transcript.PrURL.FindStringSubmatch(r.URL)
 			repo = p[1] + "/" + p[2]
 		}
 		prs = append(prs, watchedPR{URL: r.URL, Repo: repo, Number: r.Number, Title: r.Title, Draft: r.IsDraft, UpdatedAt: r.UpdatedAt, State: "open"})

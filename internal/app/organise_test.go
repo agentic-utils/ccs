@@ -9,14 +9,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func TestDoneUntilSeen(t *testing.T) {
 	now := time.Now().UTC()
 	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
-	convs := []Conversation{
-		{SessionID: "old", Title: "finished before ccs ran", LastTimestamp: at(-2 * time.Hour), Messages: []Message{{Role: "assistant", Text: "x"}}},
-		{SessionID: "new", Title: "finished while away", LastTimestamp: at(-time.Minute), Messages: []Message{{Role: "assistant", Text: "y"}}},
+	convs := []transcript.Conversation{
+		{SessionID: "old", Title: "finished before ccs ran", LastTimestamp: at(-2 * time.Hour), Messages: []transcript.Message{{Role: "assistant", Text: "x"}}},
+		{SessionID: "new", Title: "finished while away", LastTimestamp: at(-time.Minute), Messages: []transcript.Message{{Role: "assistant", Text: "y"}}},
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 140, 30
@@ -79,9 +80,9 @@ func TestMarksFirstRunAndPrune(t *testing.T) {
 
 func TestPinnedSectionKeepsOrder(t *testing.T) {
 	now := time.Now().UTC()
-	var convs []Conversation
+	var convs []transcript.Conversation
 	for i, id := range []string{"a", "b", "c"} {
-		convs = append(convs, Conversation{SessionID: id, Title: "session " + id, LastTimestamp: now.Add(time.Duration(-i) * time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: id}}})
+		convs = append(convs, transcript.Conversation{SessionID: id, Title: "session " + id, LastTimestamp: now.Add(time.Duration(-i) * time.Hour).Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: id}}})
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 140, 30
@@ -123,11 +124,11 @@ func TestPinnedSectionKeepsOrder(t *testing.T) {
 
 func TestCollapsedFolderShowsItsFirst(t *testing.T) {
 	now := time.Now().UTC()
-	convs := []Conversation{
-		{SessionID: "a1", Title: "api one", Cwd: "/r/api", LastTimestamp: now.Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
-		{SessionID: "a2", Title: "api two", Cwd: "/r/api/.claude/worktrees/w", LastTimestamp: now.Add(-time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
-		{SessionID: "a3", Title: "api three", Cwd: "/r/api", LastTimestamp: now.Add(-2 * time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
-		{SessionID: "w1", Title: "web one", Cwd: "/r/web", LastTimestamp: now.Add(-3 * time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
+	convs := []transcript.Conversation{
+		{SessionID: "a1", Title: "api one", Cwd: "/r/api", LastTimestamp: now.Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}},
+		{SessionID: "a2", Title: "api two", Cwd: "/r/api/.claude/worktrees/w", LastTimestamp: now.Add(-time.Hour).Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}},
+		{SessionID: "a3", Title: "api three", Cwd: "/r/api", LastTimestamp: now.Add(-2 * time.Hour).Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}},
+		{SessionID: "w1", Title: "web one", Cwd: "/r/web", LastTimestamp: now.Add(-3 * time.Hour).Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}},
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 140, 30
@@ -161,9 +162,9 @@ func TestCollapsedFolderShowsItsFirst(t *testing.T) {
 
 func TestSnoozeAndSettle(t *testing.T) {
 	now := time.Now().UTC()
-	convs := []Conversation{
-		{SessionID: "s", Title: "sleepy", LastTimestamp: now.Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
-		{SessionID: "o", Title: "other", LastTimestamp: now.Add(-time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}},
+	convs := []transcript.Conversation{
+		{SessionID: "s", Title: "sleepy", LastTimestamp: now.Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}},
+		{SessionID: "o", Title: "other", LastTimestamp: now.Add(-time.Hour).Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}},
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 140, 30

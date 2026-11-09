@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // nudgeEnv is claimEnv plus a stubbed sendNudge recording what each session got.
@@ -196,7 +198,7 @@ func TestNudgeEnvelopeIsNotTheUser(t *testing.T) {
 		t.Fatalf("auth then message: %q", lines)
 	}
 	c := msg.Message.Content
-	if !strings.HasPrefix(c, `<cross-session-message from-name="ccs watch">`+"\n"+nudgeNote+"checks failing") || strings.Contains(c, ccsSender) || strings.Contains(c, ccsNote) || msg.From != "" {
+	if !strings.HasPrefix(c, `<cross-session-message from-name="ccs watch">`+"\n"+nudgeNote+"checks failing") || strings.Contains(c, ccsSender) || strings.Contains(c, transcript.CcsNote) || msg.From != "" {
 		t.Errorf("an automatic notice from ccs watch, never the user, with no return address: %q from=%q", c, msg.From)
 	}
 	if !strings.Contains(nudgeNote, "Not typed by the user") {

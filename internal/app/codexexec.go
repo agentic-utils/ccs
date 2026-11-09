@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // A headless `codex exec` run records nothing about who started it, so its
@@ -160,9 +161,9 @@ func noteCodexExecs(sessions map[string]liveSession) {
 		}
 		cwd := r.cd
 		if cwd == "" {
-			cwd = codexProcCwd(r.pid)
+			cwd = transcript.CodexProcCwd(r.pid)
 		} else if !filepath.IsAbs(cwd) {
-			if base := codexProcCwd(r.pid); base != "" {
+			if base := transcript.CodexProcCwd(r.pid); base != "" {
 				cwd = filepath.Join(base, cwd)
 			}
 		}
@@ -170,7 +171,7 @@ func noteCodexExecs(sessions map[string]liveSession) {
 			continue
 		}
 		if rollouts == nil {
-			rollouts = codexRollouts()
+			rollouts = transcript.CodexRollouts()
 		}
 		thread := execThread(rollouts, cwd, start)
 		if thread == "" {
@@ -196,7 +197,7 @@ func execThread(rollouts []string, cwd string, start time.Time) string {
 		if err != nil || info.ModTime().Before(start) {
 			continue
 		}
-		m, ok := readCodexMeta(p)
+		m, ok := transcript.ReadCodexMeta(p)
 		if !ok || m.Cwd != cwd || codexSourceName(m.Source) != "exec" {
 			continue
 		}

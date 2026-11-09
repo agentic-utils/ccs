@@ -38,6 +38,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // How often ccs asks GitHub for a newer release (one ~5KB HEAD request to the
@@ -88,7 +89,7 @@ func (u *upgrader) Prepare(tag string) {
 	u.pending[tag] = done
 	go func() {
 		defer close(done)
-		defer recoverWorker()
+		defer transcript.RecoverWorker()
 		start := time.Now()
 		err := u.prepare(tag) // failures are retried by install
 		state.LogUpdate("prepare %s: %v in %s", tag, state.ErrOrOK(err), time.Since(start).Round(time.Millisecond))
@@ -854,7 +855,7 @@ func (m model) notesPopup() string {
 	var body []string
 	switch {
 	case m.notesErr != "":
-		body = []string{"couldn't fetch the changelog: " + truncate(m.notesErr, width-30), "", "\033[90m" + hints(keyEnter, "retry") + "\033[0m"}
+		body = []string{"couldn't fetch the changelog: " + transcript.Truncate(m.notesErr, width-30), "", "\033[90m" + hints(keyEnter, "retry") + "\033[0m"}
 	case m.notes == nil:
 		body = []string{"fetching…"}
 	default:
@@ -897,7 +898,7 @@ func (m model) updatePopup() string {
 		body += m.changelogBlock() + "\n\n"
 	}
 	if m.updateErr != "" {
-		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, truncate(m.updateErr, 60), state.UpdateLogPath)
+		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, transcript.Truncate(m.updateErr, 60), state.UpdateLogPath)
 	}
 	if m.upgrade != nil && m.updateErr != "" {
 		body += hints(keyEnter, "retry", keyEsc, "later")

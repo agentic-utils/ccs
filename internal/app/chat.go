@@ -477,10 +477,10 @@ func (m *model) checkDelivered(id string) {
 		msgs := item.conv.Messages
 		for i := len(msgs) - 1; i >= 0 && i >= len(msgs)-20; i-- {
 			body := msgs[i].Text
-			if _, b, ok := peerParts(body); ok {
+			if _, b, ok := transcript.PeerParts(body); ok {
 				body = b
 			}
-			if msgs[i].Role == "user" && strings.TrimSpace(stripImageNote(body)) == text {
+			if msgs[i].Role == "user" && strings.TrimSpace(transcript.StripImageNote(body)) == text {
 				delete(m.pending, id)
 				delete(m.sentAt, id)
 				delete(m.held, id)
@@ -493,7 +493,7 @@ func (m *model) checkDelivered(id string) {
 		// Claude Code logs a socket message as queued the moment it arrives,
 		// then hands it to Claude at the next step (or at once when idle).
 		for _, q := range item.conv.PeerQueued {
-			if _, b, ok := peerParts(q); ok && strings.TrimSpace(b) == text {
+			if _, b, ok := transcript.PeerParts(q); ok && strings.TrimSpace(b) == text {
 				delete(m.sentAt, id)
 			}
 		}
@@ -548,18 +548,6 @@ const heldTimeout = 5 * time.Second
 // there. The sender name and a leading note say it's the user; peerParts
 // drops the note again for the preview.
 const ccsSender = "the user, via ccs"
-
-func peerParts(text string) (from, body string, ok bool) {
-	m := transcript.PeerMessage.FindStringSubmatch(text)
-	if m == nil {
-		return "", "", false
-	}
-	from = "another session"
-	if f := transcript.PeerFrom.FindStringSubmatch(m[1]); f != nil {
-		from = f[1]
-	}
-	return from, stripImageNote(strings.TrimPrefix(m[2], transcript.CcsNote)), true
-}
 
 // peerEnds maps message keys to the sessions that sent and received them,
 // across every session ccs has.
@@ -640,7 +628,7 @@ func (m model) peerLabels(conv transcript.Conversation) map[int]string {
 		case p.Sent && name != "":
 			out[p.Idx] = name
 		case p.Sent:
-			out[p.Idx] = shortAddr(p.Addr)
+			out[p.Idx] = transcript.ShortAddr(p.Addr)
 		case name != "":
 			out[p.Idx] = name
 		}
@@ -655,15 +643,6 @@ func (m model) convByID() map[string]transcript.Conversation {
 		out[it.conv.SessionID] = it.conv
 	}
 	return out
-}
-
-// shortAddr is a SendMessage address for show: "session 123" for a socket,
-// an agent's id as it is.
-func shortAddr(a string) string {
-	if strings.HasPrefix(a, "uds:") {
-		return "session " + strings.TrimSuffix(filepath.Base(a), ".sock")
-	}
-	return a
 }
 
 // sessionLinks are the ^O popup's jumps to the sessions conv messaged or

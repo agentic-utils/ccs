@@ -700,5 +700,5 @@ func binaryFromTarGz(archive []byte, name string) ([]byte, error) {
 const MaxChangelogLines = 12
 
 // anyTag matches an HTML tag; the release notes are HTML. A copy of the
-// preview's pattern of the same name.
+// pattern of the same name in internal/transcript (where HarnessNote uses it).
 var anyTag = regexp.MustCompile(`</?[a-z][a-z0-9-]*[^>]*>`)

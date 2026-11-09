@@ -488,15 +488,15 @@ func askLines(conv transcript.Conversation, width int) []string {
 	if qs := conv.Questions(); len(qs) > 0 {
 		var out []string
 		for _, q := range qs {
-			question := cleanText(q.Question)
+			question := transcript.CleanText(q.Question)
 			if q.MultiSelect {
 				question += "  (pick any)"
 			}
 			out = append(append(out, ""), wrapped("\033[1;"+waitColour+"m? ", "\033[1;"+waitColour+"m", question)...)
 			for i, o := range q.Options {
-				out = append(out, wrapped(fmt.Sprintf("  \033[1m%d\033[0m  ", i+1), "", cleanText(o.Label))...)
+				out = append(out, wrapped(fmt.Sprintf("  \033[1m%d\033[0m  ", i+1), "", transcript.CleanText(o.Label))...)
 				if o.Description != "" {
-					out = append(out, wrapped("     ", "\033[90m", cleanText(o.Description))...)
+					out = append(out, wrapped("     ", "\033[90m", transcript.CleanText(o.Description))...)
 				}
 			}
 		}
@@ -524,7 +524,7 @@ func toolSummary(input json.RawMessage) string {
 	json.Unmarshal(input, &in)
 	for _, k := range []string{"command", "file_path", "url", "pattern", "description"} {
 		if v, ok := in[k].(string); ok && v != "" {
-			return cleanText(strings.Join(strings.Fields(v), " "))
+			return transcript.CleanText(strings.Join(strings.Fields(v), " "))
 		}
 	}
 	return ""

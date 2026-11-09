@@ -1,4 +1,4 @@
-package app
+package mcp
 
 import (
 	"bytes"
@@ -25,7 +25,7 @@ func mcpConvs() []transcript.Conversation {
 func mcpRoundTrip(t *testing.T, reqs ...string) []map[string]any {
 	t.Helper()
 	var out bytes.Buffer
-	if err := runMCP(strings.NewReader(strings.Join(reqs, "\n")+"\n"), &out, func() ([]transcript.Conversation, error) { return mcpConvs(), nil }); err != nil {
+	if err := RunMCP(strings.NewReader(strings.Join(reqs, "\n")+"\n"), &out, func() ([]transcript.Conversation, error) { return mcpConvs(), nil }); err != nil {
 		t.Fatal(err)
 	}
 	var resps []map[string]any

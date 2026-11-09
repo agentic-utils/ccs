@@ -1370,7 +1370,7 @@ func codexHarness(text string) bool {
 }
 
 // Codex sessions in the list: each transcript (a "rollout" under
-// $CODEX_HOME/sessions/YYYY/MM/DD) parses into a transcript.Conversation with Kind
+// $CODEX_HOME/sessions/YYYY/MM/DD) parses into a Conversation with Kind
 // "codex", sorted, searched and previewed with Claude's. A Codex rollout is
 // small next to a Claude transcript and isn't appended to in place by a
 // resume, so a changed one is simply parsed again (ParseCache keeps the
@@ -2261,4 +2261,124 @@ Examples:
   ccs prune --apply --min-size=200 Prune files >= 200MB
   ccs prune --apply --no-tool-results -y   Only drop snapshot backups, no prompt
 `)
+}
+
+// CleanText drops terminal control codes that transcripts can carry (coloured
+// command output, carriage returns): printed raw they'd move the cursor or
+// leave stray "[" on screen.
+func CleanText(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 && r != '\n' && r != '\t' || r == 0x7f }) {
+		return s
+	}
+	s = ansi.Strip(s)
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+var (
+	harnessTag  = regexp.MustCompile(`^<([a-z][a-z0-9-]*)[ >]`)
+	harnessSumm = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
+	anyTag      = regexp.MustCompile(`</?[a-z][a-z0-9-]*[^>]*>`)
+)
+
+// HarnessNote recognises a user-role message that the harness injected
+// (starts with a tag like <task-notification> or <system-reminder>) and
+// returns its tag and a one-line summary: its <summary> if it has one, else
+// its text with the tags removed.
+func HarnessNote(text string) (tag, summary string, ok bool) {
+	m := harnessTag.FindStringSubmatch(text)
+	if m == nil {
+		return "", "", false
+	}
+	if sm := harnessSumm.FindStringSubmatch(text); sm != nil {
+		summary = sm[1]
+	} else {
+		summary = anyTag.ReplaceAllString(text, " ")
+	}
+	return m[1], strings.Join(strings.Fields(summary), " "), true
+}
+
+// channelEvent is one event a channel plugin pushed into a session:
+// <channel source="plugin:name:server" event="…" …>, then a line saying what
+// happened, usually its address, then any body (a comment, a review).
+type channelEvent struct {
+	source, summary, Link, Detail string
+}
+
+var (
+	channelAttr = regexp.MustCompile(`\b(source|event)="([^"]*)"`)
+	bareURL     = regexp.MustCompile(`^https?://\S+$`)
+)
+
+func ChannelParts(text string) (channelEvent, bool) {
+	m := ChannelMessage.FindStringSubmatch(text)
+	if m == nil {
+		return channelEvent{}, false
+	}
+	var ev channelEvent
+	event := ""
+	for _, a := range channelAttr.FindAllStringSubmatch(m[1], -1) {
+		if a[1] == "source" {
+			ev.source = a[2][strings.LastIndex(a[2], ":")+1:] // plugin:agentic-utils-github:pr-events
+		} else {
+			event = a[2]
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(m[2]), "\n")
+	ev.summary = strings.TrimPrefix(lines[0], ev.source+": ")
+	lines = lines[1:]
+	if len(lines) > 0 && bareURL.MatchString(strings.TrimSpace(lines[0])) {
+		ev.Link = strings.TrimSpace(lines[0])
+		lines = lines[1:]
+	}
+	ev.Detail = strings.TrimSpace(strings.Join(lines, "\n"))
+	if ev.summary == "" {
+		ev.summary = event
+	}
+	return ev, true
+}
+
+// Line is the event as Claude Code's terminal shows it.
+func (ev channelEvent) Line() string {
+	return "← " + ev.source + ": " + ev.summary
+}
+
+// ImageNoteStart begins the note listing a message's pasted images.
+const ImageNoteStart = "[Pasted images, read each file to see it: "
+
+// imageNote matches that note at the end of a message.
+var imageNote = regexp.MustCompile(`(?s)\s*` + regexp.QuoteMeta(ImageNoteStart) + `.*\]\s*$`)
+
+// StripImageNote is a sent message as it was typed, without the paths behind
+// its placeholders.
+func StripImageNote(text string) string {
+	if !strings.Contains(text, ImageNoteStart) {
+		return text
+	}
+	return imageNote.ReplaceAllString(text, "")
+}
+
+func PeerParts(text string) (from, body string, ok bool) {
+	m := PeerMessage.FindStringSubmatch(text)
+	if m == nil {
+		return "", "", false
+	}
+	from = "another session"
+	if f := PeerFrom.FindStringSubmatch(m[1]); f != nil {
+		from = f[1]
+	}
+	return from, StripImageNote(strings.TrimPrefix(m[2], CcsNote)), true
+}
+
+// ShortAddr is a SendMessage address for show: "session 123" for a socket,
+// an agent's id as it is.
+func ShortAddr(a string) string {
+	if strings.HasPrefix(a, "uds:") {
+		return "session " + strings.TrimSuffix(filepath.Base(a), ".sock")
+	}
+	return a
 }

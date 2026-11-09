@@ -23,6 +23,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // A pasted image shows as [Image #N] in the message box and in the transcript.
@@ -33,12 +34,10 @@ import (
 const (
 	maxPastedImage = 30 << 20
 	pastedImageAge = 30 * 24 * time.Hour
-	imageNoteStart = "[Pasted images, read each file to see it: "
 )
 
 var (
 	imagePlaceholder = regexp.MustCompile(`\[Image #(\d+)\]`)
-	imageNote        = regexp.MustCompile(`(?s)\s*` + regexp.QuoteMeta(imageNoteStart) + `.*\]\s*$`)
 	imageExt         = regexp.MustCompile(`(?i)\.(png|jpe?g|gif|webp)$`)
 	sweepPasted      sync.Once
 )
@@ -63,15 +62,6 @@ type clipImageMsg struct {
 
 func pastedDir() string { return filepath.Join(filepath.Dir(state.SettingsPath), "pasted") }
 
-// stripImageNote is a sent message as it was typed, without the paths behind
-// its placeholders.
-func stripImageNote(text string) string {
-	if !strings.Contains(text, imageNoteStart) {
-		return text
-	}
-	return imageNote.ReplaceAllString(text, "")
-}
-
 // withImages adds the note naming the files behind text's placeholders. It
 // stays on one line: a message typed into a terminal can't hold a newline.
 func withImages(text string, images []pastedImage) string {
@@ -84,7 +74,7 @@ func withImages(text string, images []pastedImage) string {
 	if len(named) == 0 {
 		return text
 	}
-	return text + " " + imageNoteStart + strings.Join(named, ", ") + "]"
+	return text + " " + transcript.ImageNoteStart + strings.Join(named, ", ") + "]"
 }
 
 func placeholderNumbers(text string) []int {

@@ -317,7 +317,7 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 
 		drawTools(i)
 		msg := conv.Messages[i]
-		msg.Text = cleanText(msg.Text)
+		msg.Text = transcript.CleanText(msg.Text)
 		newDay := stamp(msg.Ts)
 		marker := " " // ▶ marks a search match; hitLinesIn looks for it
 		if matchSet[i] {
@@ -348,11 +348,11 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 			// whether it shows in their transcript (peerLabels).
 			to := conv.PeerNotes[i]
 			if to == "" {
-				to = shortAddr(msg.To)
+				to = transcript.ShortAddr(msg.To)
 			}
 			head := fmt.Sprintf("\033[36m%s To %s\033[0m", marker, to)
 			if msg.Note != "" {
-				head += " \033[90m· " + highlight(cleanText(msg.Note), query) + "\033[0m"
+				head += " \033[90m· " + highlight(transcript.CleanText(msg.Note), query) + "\033[0m"
 			}
 			msgLines = append(msgLines, head)
 			msgLines = append(msgLines, renderBody(msg.Text, query, width)...)
@@ -360,7 +360,7 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 			lastShown, lastRole = i, ""
 			continue
 		}
-		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
+		if from, body, ok := transcript.PeerParts(msg.Text); ok && msg.Role == "user" {
 			// A message sent from another session or ccs, not typed here.
 			if n := conv.PeerNotes[i]; n != "" {
 				from = n // the sending session as listed, found by its copy
@@ -382,26 +382,26 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 			msgLines = append(msgLines, "\033[90m"+marker+" "+line+"\033[0m", "")
 			lastShown, lastRole = i, "harness"
 		}
-		if ev, ok := channelParts(msg.Text); ok && msg.Role == "channel" {
+		if ev, ok := transcript.ChannelParts(msg.Text); ok && msg.Role == "channel" {
 			// Pushed in by a channel plugin (PR events, Slack): one dim line
 			// as Claude Code draws it, its body shown only if a search hit it.
-			line := ev.line()
+			line := ev.Line()
 			if width > 0 {
 				line = transcript.Truncate(line, width-2)
 			}
 			line = highlight(line, query)
-			if ev.link != "" {
-				line = hyperlink(ev.link, line)
+			if ev.Link != "" {
+				line = hyperlink(ev.Link, line)
 			}
 			note(line)
-			if ev.detail != "" && containsFold(ev.detail, query) {
-				msgLines = append(msgLines[:len(msgLines)-1], renderBody(ev.detail, query, width)...)
+			if ev.Detail != "" && containsFold(ev.Detail, query) {
+				msgLines = append(msgLines[:len(msgLines)-1], renderBody(ev.Detail, query, width)...)
 				msgLines = append(msgLines, "")
 				lastRole = ""
 			}
 			continue
 		}
-		if tag, summary, ok := harnessNote(msg.Text); ok && msg.Role == "user" {
+		if tag, summary, ok := transcript.HarnessNote(msg.Text); ok && msg.Role == "user" {
 			// Injected by the harness (task notifications, reminders, command
 			// output): one dim line, so the real conversation stays readable.
 			line := "▸ " + tag
@@ -417,7 +417,7 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 		mark := "●"
 		if msg.Role == "user" {
 			mark = "❯"
-			msg.Text = stripImageNote(msg.Text)
+			msg.Text = transcript.StripImageNote(msg.Text)
 		}
 		if matchSet[i] {
 			mark = "\033[1m▶\033[22m"
@@ -754,22 +754,6 @@ func linkAt(line string, x int) string {
 	return ""
 }
 
-// cleanText drops terminal control codes that transcripts can carry (coloured
-// command output, carriage returns): printed raw they'd move the cursor or
-// leave stray "[" on screen.
-func cleanText(s string) string {
-	if !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 && r != '\n' && r != '\t' || r == 0x7f }) {
-		return s
-	}
-	s = ansi.Strip(s)
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
-			return -1
-		}
-		return r
-	}, s)
-}
-
 // humanWhen is a stamp's date ("2026-09-29 21:45", or the date alone) laid out
 // as format, with the year when it isn't this one.
 func humanWhen(when, format string) string {
@@ -865,7 +849,7 @@ func userRows(lines []string, width int) []string {
 // a command's lines kept as they are and indented under it.
 func renderTool(t transcript.ToolUse, width int) []string {
 	text := t.Name
-	if arg := cleanText(t.Arg); arg != "" {
+	if arg := transcript.CleanText(t.Arg); arg != "" {
 		text += "(" + strings.ReplaceAll(arg, "\t", "    ") + ")"
 	}
 	var out []string
@@ -1068,74 +1052,6 @@ func sessionStats(conv transcript.Conversation) []string {
 		lines = append(lines, fmt.Sprintf("\033[1;33mError:\033[0m   \033[1;31m%s\033[0m %s", conv.LastError, transcript.FormatAgo(conv.LastErrorTs, time.Now())))
 	}
 	return lines
-}
-
-var (
-	harnessTag  = regexp.MustCompile(`^<([a-z][a-z0-9-]*)[ >]`)
-	harnessSumm = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
-	anyTag      = regexp.MustCompile(`</?[a-z][a-z0-9-]*[^>]*>`)
-)
-
-// harnessNote recognises a user-role message that the harness injected
-// (starts with a tag like <task-notification> or <system-reminder>) and
-// returns its tag and a one-line summary: its <summary> if it has one, else
-// its text with the tags removed.
-func harnessNote(text string) (tag, summary string, ok bool) {
-	m := harnessTag.FindStringSubmatch(text)
-	if m == nil {
-		return "", "", false
-	}
-	if sm := harnessSumm.FindStringSubmatch(text); sm != nil {
-		summary = sm[1]
-	} else {
-		summary = anyTag.ReplaceAllString(text, " ")
-	}
-	return m[1], strings.Join(strings.Fields(summary), " "), true
-}
-
-// channelEvent is one event a channel plugin pushed into a session:
-// <channel source="plugin:name:server" event="…" …>, then a line saying what
-// happened, usually its address, then any body (a comment, a review).
-type channelEvent struct {
-	source, summary, link, detail string
-}
-
-var (
-	channelAttr = regexp.MustCompile(`\b(source|event)="([^"]*)"`)
-	bareURL     = regexp.MustCompile(`^https?://\S+$`)
-)
-
-func channelParts(text string) (channelEvent, bool) {
-	m := transcript.ChannelMessage.FindStringSubmatch(text)
-	if m == nil {
-		return channelEvent{}, false
-	}
-	var ev channelEvent
-	event := ""
-	for _, a := range channelAttr.FindAllStringSubmatch(m[1], -1) {
-		if a[1] == "source" {
-			ev.source = a[2][strings.LastIndex(a[2], ":")+1:] // plugin:agentic-utils-github:pr-events
-		} else {
-			event = a[2]
-		}
-	}
-	lines := strings.Split(strings.TrimSpace(m[2]), "\n")
-	ev.summary = strings.TrimPrefix(lines[0], ev.source+": ")
-	lines = lines[1:]
-	if len(lines) > 0 && bareURL.MatchString(strings.TrimSpace(lines[0])) {
-		ev.link = strings.TrimSpace(lines[0])
-		lines = lines[1:]
-	}
-	ev.detail = strings.TrimSpace(strings.Join(lines, "\n"))
-	if ev.summary == "" {
-		ev.summary = event
-	}
-	return ev, true
-}
-
-// line is the event as Claude Code's terminal shows it.
-func (ev channelEvent) line() string {
-	return "← " + ev.source + ": " + ev.summary
 }
 
 // maxCodeLines is the longest fenced code block (a diff, a log) shown inline;

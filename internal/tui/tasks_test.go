@@ -1,0 +1,140 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/sessions"
+	"github.com/agentic-utils/ccs/internal/transcript"
+)
+
+func TestBackgroundTasks(t *testing.T) {
+	var conv transcript.Conversation
+	ts := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	use := func(id, name, input string) string {
+		return fmt.Sprintf(`{"type":"assistant","timestamp":%q,"message":{"content":[{"type":"tool_use","id":%q,"name":%q,"input":%s}]}}`, ts, id, name, input)
+	}
+	result := func(id, text string) string {
+		return fmt.Sprintf(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":%q,"content":%q}]}}`, id, text)
+	}
+	for _, l := range []string{
+		use("b1", "Bash", `{"command":"sleep 99","description":"Watch PR 139","run_in_background":true}`),
+		result("b1", "Command running in background with ID: bx1. Output is being written to: /tmp/bx1.output"),
+		use("b2", "Bash", `{"command":"grep x log"}`), // only its output mentions it
+		result("b2", "found: Command running in background with ID: bx9"),
+		use("a1", "Agent", `{"description":"An async agent","prompt":"…"}`), // a subagent: counted from its meta.json, not as a task
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":[{"type":"text","text":"Async agent launched. agentId: x"}]}]}}`,
+		use("b3", "Bash", `{"command":"sleep 99","description":"Review the diff","run_in_background":true}`),
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b3","content":[{"type":"text","text":"Command running in background with ID: bx3."}]}]}}`,
+		use("m1", "Monitor", `{"description":"Tail the deploy"}`),
+		result("m1", "Monitor started (task m, expires in 1m unless the source ends first)"),
+		`{"type":"user","message":{"content":"<task-notification>\n<task-id>bx1</task-id>\n<tool-use-id>b1</tool-use-id>\n<status>completed</status>\n</task-notification>"}}`,
+	} {
+		if !transcript.ParseLine(&conv, []byte(l)) {
+			t.Fatalf("not parsed: %s", l)
+		}
+	}
+	m := initialModel(nil, "", nil)
+	if len(m.runningTasks(conv)) != 0 {
+		t.Error("a session not open in claude has no running tasks")
+	}
+	conv.SessionID = "s"
+	m.live = map[string]bool{"s": true}
+	m.lastScan = map[string]sessions.LiveSession{"s": {Start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
+	var running []string
+	for _, task := range m.runningTasks(conv) {
+		running = append(running, task.Kind+":"+task.Desc)
+	}
+	// b1 completed, b2 was never a task, a1 is a subagent, m1's minute is up: only b3 runs.
+	if strings.Join(running, ",") != "bash:Review the diff" {
+		t.Errorf("running = %v", running)
+	}
+	if got := m.taskCell(conv, false); got != "⧗1" {
+		t.Errorf("list count = %q", got)
+	}
+	lines := strip2(strings.Join(m.taskLines(conv, 100), "\n"))
+	for _, want := range []string{"Tasks:", "⧗ Review the diff · bash · 5m", "1 completed", "1 ended with the session"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("preview should show %q:\n%s", want, lines)
+		}
+	}
+	// A task from before the session's current claude process (say it was
+	// resumed) died with the old one.
+	m.lastScan = map[string]sessions.LiveSession{"s": {Start: time.Now().UTC().Format(time.ANSIC)}}
+	if len(m.runningTasks(conv)) != 0 {
+		t.Error("tasks started before the current process aren't running")
+	}
+}
+
+func TestTaskCountOnTheTitleRow(t *testing.T) {
+	conv := transcript.Conversation{SessionID: "s", Title: "work", PRs: []string{"https://github.com/o/r/pull/1"},
+		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
+	m.live = map[string]bool{"s": true}
+	m.prs = map[string]github.PrInfo{"https://github.com/o/r/pull/1": {State: "OPEN", MergeState: "CLEAN"}}
+	row := m.sidebarRow(m.filtered[0], false, 40)
+	if !strings.Contains(row[0], "\033["+transcript.TaskColour+"m⧗1") {
+		t.Errorf("the task count goes on the title row, in its own colour: %q", row[0])
+	}
+	if strings.Contains(row[1], "⧗") || !strings.Contains(strip2(row[1]), "✓1") {
+		t.Errorf("the grey row keeps the PRs to itself: %q", strip2(row[1]))
+	}
+}
+
+func TestTasksBeforeHits(t *testing.T) {
+	conv := transcript.Conversation{SessionID: "s", Title: "work", Messages: []transcript.Message{{Role: "user", Text: "needle"}},
+		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "needle", nil)
+	m.live = map[string]bool{"s": true}
+	if row := strip2(m.sidebarRow(m.filtered[0], false, 40)[0]); !strings.HasSuffix(strings.TrimRight(row, " "), "⧗1 1") {
+		t.Errorf("tasks first, then the hits at the edge: %q", row)
+	}
+}
+
+func TestSubagentsInThePreviewAndTheList(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s1.jsonl")
+	os.WriteFile(path, []byte("{}\n"), 0o600)
+	subs := filepath.Join(dir, "s1", "subagents")
+	os.MkdirAll(subs, 0o755)
+	started := time.Now().Add(-3 * time.Minute).UTC().Format(time.RFC3339)
+	for name, finished := range map[string]bool{"otel-bumps": false, "filelock-floor": false, "aries-mlflow": true} {
+		os.WriteFile(filepath.Join(subs, "agent-"+name+".meta.json"), []byte(fmt.Sprintf(`{"name":%q,"finished":%v}`, name, finished)), 0o600)
+		os.WriteFile(filepath.Join(subs, "agent-"+name+".jsonl"), []byte(fmt.Sprintf(`{"timestamp":%q}`+"\n", started)), 0o600)
+	}
+	// An idle teammate (no write for an hour) and one from before a resume.
+	write := func(name, started string, last time.Time) {
+		os.WriteFile(filepath.Join(subs, "agent-"+name+".meta.json"), []byte(fmt.Sprintf(`{"name":%q}`, name)), 0o600)
+		tr := filepath.Join(subs, "agent-"+name+".jsonl")
+		os.WriteFile(tr, []byte(fmt.Sprintf(`{"timestamp":%q}`+"\n", started)), 0o600)
+		os.Chtimes(tr, last, last)
+	}
+	write("waiting-teammate", started, time.Now().Add(-time.Hour))
+	// Finished, then given more work: its transcript goes on after meta.json said finished.
+	os.WriteFile(filepath.Join(subs, "agent-resumed.meta.json"), []byte(`{"name":"resumed","finished":true}`), 0o600)
+	os.Chtimes(filepath.Join(subs, "agent-resumed.meta.json"), time.Now().Add(-time.Minute), time.Now().Add(-time.Minute))
+	os.WriteFile(filepath.Join(subs, "agent-resumed.jsonl"), []byte(fmt.Sprintf(`{"timestamp":%q}`+"\n", started)), 0o600)
+	write("before-resume", time.Now().Add(-2*time.Hour).UTC().Format(time.RFC3339), time.Now().Add(-2*time.Hour))
+	conv := transcript.Conversation{SessionID: "s1", FilePath: path,
+		Tasks: []transcript.BgTask{{Id: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
+	m.live = map[string]bool{"s1": true}
+	m.lastScan = map[string]sessions.LiveSession{"s1": {Start: time.Now().Add(-time.Hour).UTC().Format(time.ANSIC)}}
+	if got := m.taskCell(conv, false); got != "⧗1 ◆3" {
+		t.Errorf("background tasks and subagents are counted apart: %q", got)
+	}
+	lines := strip2(strings.Join(m.subagentLines(conv, 100), "\n"))
+	for _, want := range []string{"Subagents:", "◆ otel-bumps · 3m", "◆ filelock-floor · 3m", "◆ resumed · 3m", "1 idle · 1 finished · 1 ended with the session"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("preview should show %q:\n%s", want, lines)
+		}
+	}
+	if strings.Contains(lines, "aries-mlflow") {
+		t.Errorf("a finished subagent is only counted:\n%s", lines)
+	}
+}

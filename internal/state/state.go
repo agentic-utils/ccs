@@ -14,7 +14,7 @@ import (
 )
 
 // Version is the running ccs release ("dev" in a local build), set by
-// app.Main: --version, the update checks and every log line read it.
+// tui.Main: --version, the update checks and every log line read it.
 var Version = "dev"
 
 // SettingsPath keeps the view ccs reopens in (^X T layout, ^X G grouping)

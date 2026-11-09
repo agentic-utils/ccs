@@ -13,7 +13,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-// TestMain keeps tests off the machine, as in app's TestMain: launch_session
+// TestMain keeps tests off the machine, as in tui's TestMain: launch_session
 // and close_session reach sessions' tab and process hooks, so those are
 // stubbed, and logs, settings and Codex's folder go to a temp folder.
 func TestMain(m *testing.M) {

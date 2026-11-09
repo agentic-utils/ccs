@@ -14,16 +14,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
-
-// version is the running release, set by Main from the root package's
-// build-time version.
-var version = "dev"
 
 // startProfile records a CPU profile to path (CCS_CPUPROFILE, or ^X R),
 // for chasing slowness: go tool pprof -top it. Returns the stop.
@@ -148,12 +145,11 @@ Key bindings:
 
   Click a row to select it, click a link in the preview to open it.
 
-`, version)
+`, state.Version)
 }
 
 // Main runs ccs with the command line in os.Args, as release v.
 func Main(v string) {
-	version = v
 	state.Version = v
 	args := os.Args[1:]
 
@@ -193,7 +189,7 @@ func Main(v string) {
 			return
 		}
 		if arg == "-v" || arg == "--version" {
-			fmt.Printf("ccs v%s\n", version)
+			fmt.Printf("ccs v%s\n", state.Version)
 			return
 		}
 	}
@@ -326,14 +322,14 @@ func Main(v string) {
 		m.live[id] = true
 	}
 	m.lastRefresh = time.Now()
-	if version != "dev" {
-		m.checkLatest = latestRelease
-		m.fetchChangelog = func(tag string) ([]string, error) { return releaseChangelog(version, tag) }
-		m.fetchNotes = func() ([]string, error) { return releaseChangelog("0.0.0", "v99999.0.0") }
+	if state.Version != "dev" {
+		m.checkLatest = selfupdate.LatestRelease
+		m.fetchChangelog = func(tag string) ([]string, error) { return selfupdate.ReleaseChangelog(state.Version, tag) }
+		m.fetchNotes = func() ([]string, error) { return selfupdate.ReleaseChangelog("0.0.0", "v99999.0.0") }
 		m.notesFetching = true // Init starts it
 		m.allowanceEnabled = true
 		if exe, err := os.Executable(); err == nil {
-			m.upgrade = chooseUpgrader(exe)
+			m.upgrade = selfupdate.ChooseUpgrader(exe)
 		}
 	}
 	m.usageExclude = excludeDirs
@@ -373,7 +369,7 @@ func Main(v string) {
 			env = append(env, restoreEnv+"="+string(state))
 		}
 		if final.autoInstalling { // the new ccs says it updated itself
-			env = append(env, updatedEnv+"="+version)
+			env = append(env, updatedEnv+"="+state.Version)
 		}
 		err := syscall.Exec(final.restart, append([]string{"ccs"}, os.Args[1:]...), env)
 		fmt.Fprintf(os.Stderr, "Updated; run ccs again (%v)\n", err)

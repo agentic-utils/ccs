@@ -6,7 +6,7 @@
 
 Launch, watch, search and resume your coding CLI sessions: [Claude Code](https://claude.ai/claude-code) conversations and the Codex sessions beside them.
 
-![Demo: searching, jumping between hits, the usage screen, help and the changelog](demo.gif)
+![Demo: the coordinator and its sessions, a session waiting on a question, PRs and their links, searching, help and the usage screen](demo.gif)
 
 ## Features
 

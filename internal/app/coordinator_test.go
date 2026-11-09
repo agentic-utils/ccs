@@ -19,6 +19,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // coordinatorFixture is a clean state: no record, no folder, no sessions, tabs
@@ -27,10 +28,10 @@ import (
 func coordinatorFixture(t *testing.T) (ran *[]string) {
 	t.Helper()
 	dir := t.TempDir()
-	oldSettings, oldMarks, oldProjects, oldRun := state.SettingsPath, state.MarksPath, getProjectsDir, mcpRun
+	oldSettings, oldMarks, oldProjects, oldRun := state.SettingsPath, state.MarksPath, transcript.GetProjectsDir, mcpRun
 	state.SettingsPath = filepath.Join(dir, "ccs", "settings.json")
 	state.MarksPath = filepath.Join(dir, "ccs", "sessions.json")
-	getProjectsDir = func() string { return filepath.Join(dir, "projects") }
+	transcript.GetProjectsDir = func() string { return filepath.Join(dir, "projects") }
 	sessionsFixture(t)
 	stubLaunch(t)
 	oldBin := lookBin
@@ -55,7 +56,7 @@ func coordinatorFixture(t *testing.T) (ran *[]string) {
 		return []byte(`No MCP server named "ccs".`), errors.New("exit status 1")
 	}
 	t.Cleanup(func() {
-		state.SettingsPath, state.MarksPath, getProjectsDir, mcpRun, lookBin = oldSettings, oldMarks, oldProjects, oldRun, oldBin
+		state.SettingsPath, state.MarksPath, transcript.GetProjectsDir, mcpRun, lookBin = oldSettings, oldMarks, oldProjects, oldRun, oldBin
 	})
 	return ran
 }
@@ -327,7 +328,7 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 		coordinatorFixture(t)
 		scripts := startsAs(t, coordinatorName)
 		coordinatorRecord{SessionID: "the-id"}.save()
-		proj := filepath.Join(getProjectsDir(), "-w")
+		proj := filepath.Join(transcript.GetProjectsDir(), "-w")
 		os.MkdirAll(proj, 0o700)
 		os.WriteFile(filepath.Join(proj, "the-id.jsonl"), []byte(`{"type":"user","cwd":"/tmp","sessionId":"the-id","message":{"role":"user","content":"hi"}}`+"\n"), 0o600)
 		oldPs, oldFocus := proc.PsAll, focusPID
@@ -426,7 +427,7 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 	t.Run("named transcript, not running", func(t *testing.T) {
 		coordinatorFixture(t)
 		scripts := startsAs(t, coordinatorName)
-		proj := filepath.Join(getProjectsDir(), "-w")
+		proj := filepath.Join(transcript.GetProjectsDir(), "-w")
 		os.MkdirAll(proj, 0o700)
 		os.WriteFile(filepath.Join(proj, "old-id.jsonl"), []byte(`{"type":"user","cwd":"/tmp","sessionId":"old-id","message":{"role":"user","content":"hi"}}`+"\n"), 0o600)
 		old := namedTranscript
@@ -451,7 +452,7 @@ func TestCoordinatorNeverMakesASecond(t *testing.T) {
 func TestCoordinatorListFollowsClear(t *testing.T) {
 	coordinatorFixture(t)
 	coordinatorRecord{SessionID: "before-clear", Offered: true}.save()
-	m := initialModel(buildItems([]Conversation{{SessionID: "before-clear", Title: "coordinator"}, {SessionID: "after-clear", Title: "coordinator"}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "before-clear", Title: "coordinator"}, {SessionID: "after-clear", Title: "coordinator"}}), "", nil)
 	m.coordID = "before-clear"
 	res, _ := m.Update(liveMsg{pids: map[string]int{"after-clear": 7}, scan: map[string]liveSession{"after-clear": {pid: 7, stat: sessionStat{name: "coordinator"}}}})
 	m = res.(model)
@@ -486,7 +487,7 @@ func TestCoordinatorComesBackInItsOwnFolder(t *testing.T) {
 	coordinatorFixture(t)
 	scripts := startsAs(t, coordinatorName)
 	coordinatorRecord{SessionID: "the-id"}.save()
-	proj := filepath.Join(getProjectsDir(), "-w")
+	proj := filepath.Join(transcript.GetProjectsDir(), "-w")
 	os.MkdirAll(proj, 0o700)
 	cwd := t.TempDir()
 	os.WriteFile(filepath.Join(proj, "the-id.jsonl"), []byte(`{"type":"user","cwd":"`+cwd+`","sessionId":"the-id","message":{"role":"user","content":"hi"}}`+"\n"), 0o600)
@@ -546,7 +547,7 @@ func TestCoordinatorAdopt(t *testing.T) {
 func TestCoordinatorAdoptOnlyWhatItCanBringBack(t *testing.T) {
 	session := func(t *testing.T, id, title string) {
 		t.Helper()
-		proj := filepath.Join(getProjectsDir(), "-w")
+		proj := filepath.Join(transcript.GetProjectsDir(), "-w")
 		os.MkdirAll(proj, 0o700)
 		os.WriteFile(filepath.Join(proj, id+".jsonl"), []byte(`{"type":"user","cwd":"/tmp","sessionId":"`+id+`","timestamp":"2026-11-04T10:00:00Z","message":{"role":"user","content":"hi"}}`+"\n"+`{"type":"custom-title","customTitle":"`+title+`","sessionId":"`+id+`"}`+"\n"), 0o600)
 	}
@@ -641,7 +642,7 @@ func TestCoordinatorRelease(t *testing.T) {
 		if coordinatorOfferable() {
 			t.Error("the offer came back")
 		}
-		m := initialModel(buildItems([]Conversation{{SessionID: "the-id", Title: "coordinator"}}), "", nil)
+		m := initialModel(buildItems([]transcript.Conversation{{SessionID: "the-id", Title: "coordinator"}}), "", nil)
 		m.coordID = "the-id"
 		res, _ := m.Update(liveMsg{pids: map[string]int{"the-id": 7}, scan: map[string]liveSession{"the-id": {pid: 7, stat: sessionStat{name: "coordinator"}}}})
 		if m = res.(model); m.coordID != "" || sectionOf(m.filtered[0].familyState) == coordinatorSec {
@@ -732,10 +733,10 @@ func TestCoordinatorHasItsOwnSectionAbovePinned(t *testing.T) {
 	coordinatorFixture(t)
 	now := time.Now().UTC()
 	at := now.Format(time.RFC3339)
-	convs := []Conversation{
-		{SessionID: "a", Title: "a pinned one", LastTimestamp: at, Messages: []Message{{Role: "user", Text: "x"}}},
-		{SessionID: "b", Title: "another", LastTimestamp: at, Messages: []Message{{Role: "user", Text: "x"}}},
-		{SessionID: "c", Title: coordinatorName, LastTimestamp: now.Add(-time.Hour).Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "y"}}},
+	convs := []transcript.Conversation{
+		{SessionID: "a", Title: "a pinned one", LastTimestamp: at, Messages: []transcript.Message{{Role: "user", Text: "x"}}},
+		{SessionID: "b", Title: "another", LastTimestamp: at, Messages: []transcript.Message{{Role: "user", Text: "x"}}},
+		{SessionID: "c", Title: coordinatorName, LastTimestamp: now.Add(-time.Hour).Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "y"}}},
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 140, 30
@@ -768,7 +769,7 @@ func TestCoordinatorOfferNeedsADeliberateAnswer(t *testing.T) {
 	newList := func(t *testing.T) model {
 		coordinatorFixture(t)
 		startsAs(t, coordinatorName)
-		m := initialModel(buildItems([]Conversation{{SessionID: "a", Title: "other", LastTimestamp: time.Now().UTC().Format(time.RFC3339)}}), "", nil)
+		m := initialModel(buildItems([]transcript.Conversation{{SessionID: "a", Title: "other", LastTimestamp: time.Now().UTC().Format(time.RFC3339)}}), "", nil)
 		m.width, m.height = 140, 40
 		return m
 	}
@@ -897,7 +898,7 @@ func TestCoordinatorPromptNoAndCtrlD(t *testing.T) {
 func TestCoordinatorPopupAndKey(t *testing.T) {
 	coordinatorFixture(t)
 	startsAs(t, coordinatorName)
-	m := initialModel(buildItems([]Conversation{{SessionID: "a", Title: "other", LastTimestamp: time.Now().UTC().Format(time.RFC3339)}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "a", Title: "other", LastTimestamp: time.Now().UTC().Format(time.RFC3339)}}), "", nil)
 	m.width, m.height = 140, 40
 
 	res, _ := m.Update(coordinatorOfferMsg{plan: coordinatorPlan{fixes: []mcpFix{{"claude", []string{"mcp", "add", "--scope", "user", "ccs", "--", "ccs", "mcp"}}}}})
@@ -1010,7 +1011,7 @@ func TestFirstRunRefreshIsNoFailure(t *testing.T) {
 	if res.(model).refreshFailed {
 		t.Error("no folder yet, nothing to list: not a failure")
 	}
-	m = initialModel(buildItems([]Conversation{{SessionID: "a", Title: "x"}}), "", nil)
+	m = initialModel(buildItems([]transcript.Conversation{{SessionID: "a", Title: "x"}}), "", nil)
 	if res, _ := m.Update(refreshMsg{err: fmt.Errorf("scan: %w", fs.ErrNotExist)}); !res.(model).refreshFailed {
 		t.Error("a folder that vanished under a list still is")
 	}

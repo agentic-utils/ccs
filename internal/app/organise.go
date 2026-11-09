@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // sessionMarks is what ccs remembers about sessions between runs: when each
@@ -80,7 +81,7 @@ func (s *sessionMarks) save() {
 
 // unseen: c's last message came after you last looked at it in ccs (or
 // after ccs first ran, for one never looked at).
-func (m model) unseen(c Conversation) bool {
+func (m model) unseen(c transcript.Conversation) bool {
 	if m.marks == nil {
 		return false
 	}
@@ -204,7 +205,7 @@ const (
 
 // putAway is whether c is settled or snoozed now. A session waiting on a
 // menu or prompt is always awake: a question is never put away.
-func (m model) putAway(c Conversation) int {
+func (m model) putAway(c transcript.Conversation) int {
 	if m.marks == nil || m.live[c.SessionID] && m.waitSignal(c) == waitPrompt {
 		return awake
 	}

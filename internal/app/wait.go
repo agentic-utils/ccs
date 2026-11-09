@@ -17,6 +17,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // ============================================================================
@@ -64,7 +65,7 @@ const (
 	waitAsked  // idle, and its last message ends in "?": a guess, so it never gets the banner
 )
 
-func (m model) waitSignal(conv Conversation) int {
+func (m model) waitSignal(conv transcript.Conversation) int {
 	if !m.live[conv.SessionID] {
 		return waitNone
 	}
@@ -96,8 +97,8 @@ func (m model) snoozedNow(id string) bool {
 // coming back can't be starved by newer ones (an unknown wait time goes
 // last). all (the overlay's list) adds the snoozed ones and, after the
 // prompts, the waitAsked ones.
-func (m model) waitQueue(all bool) []Conversation {
-	var prompts, asked []Conversation
+func (m model) waitQueue(all bool) []transcript.Conversation {
+	var prompts, asked []transcript.Conversation
 	for _, item := range m.items {
 		if !all && m.snoozedNow(item.conv.SessionID) {
 			continue
@@ -111,7 +112,7 @@ func (m model) waitQueue(all bool) []Conversation {
 			}
 		}
 	}
-	for _, q := range [][]Conversation{prompts, asked} {
+	for _, q := range [][]transcript.Conversation{prompts, asked} {
 		sort.SliceStable(q, func(i, j int) bool {
 			a, b := m.chatStatus[q[i].SessionID].since, m.chatStatus[q[j].SessionID].since
 			if a.IsZero() != b.IsZero() {
@@ -124,8 +125,8 @@ func (m model) waitQueue(all bool) []Conversation {
 }
 
 // waitPos is where the overlay's session is in q, or -1.
-func (m model) waitPos(q []Conversation) int {
-	return slices.IndexFunc(q, func(c Conversation) bool { return c.SessionID == m.waitID })
+func (m model) waitPos(q []transcript.Conversation) int {
+	return slices.IndexFunc(q, func(c transcript.Conversation) bool { return c.SessionID == m.waitID })
 }
 
 // setStat records a live session's status; it's the only place statuses are
@@ -206,7 +207,7 @@ func (m *model) markDue(id string) {
 // banner is the wait the one-row banner shows: the oldest not yet seen in the
 // overlay (or whose snooze ran out), and how many more there are. None while
 // the overlay is open: it lists them.
-func (m model) banner() (conv Conversation, more int, ok bool) {
+func (m model) banner() (conv transcript.Conversation, more int, ok bool) {
 	if m.waitOpen {
 		return
 	}
@@ -345,13 +346,13 @@ func joinDraft(draft, text string) string {
 }
 
 // waitConv is the session the overlay shows, as last read.
-func (m model) waitConv() (Conversation, bool) {
+func (m model) waitConv() (transcript.Conversation, bool) {
 	for _, item := range m.items {
 		if item.conv.SessionID == m.waitID {
 			return item.conv, true
 		}
 	}
-	return Conversation{}, false
+	return transcript.Conversation{}, false
 }
 
 // waitStep shows the session by places away in the queue (clamped); a
@@ -386,7 +387,7 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.snoozed[m.waitID] = snoozeRec{Since: m.chatStatus[m.waitID].since, Until: time.Now().Add(m.snooze)}
 		}
 		q := m.waitQueue(true)
-		if i := slices.IndexFunc(q, func(c Conversation) bool {
+		if i := slices.IndexFunc(q, func(c transcript.Conversation) bool {
 			return c.SessionID != m.waitID && m.waitSignal(c) == waitPrompt && !m.snoozedNow(c.SessionID)
 		}); i >= 0 {
 			m.showWait(q[i].SessionID)
@@ -467,7 +468,7 @@ func (m model) waitAsk() []string {
 // askLines shows a waiting session's question menu, numbered as claude shows
 // it, or the tool call its permission prompt is about. Neither is in the
 // transcript as text until answered.
-func askLines(conv Conversation, width int) []string {
+func askLines(conv transcript.Conversation, width int) []string {
 	cut := func(s string) string { return ansi.Truncate(s, width, "…") + "\033[0m" }
 	// wrapped is s wrapped to width after prefix, its other lines indented
 	// to match and each line in style, so a long question reads in full.
@@ -483,7 +484,7 @@ func askLines(conv Conversation, width int) []string {
 		}
 		return out
 	}
-	if qs := conv.questions(); len(qs) > 0 {
+	if qs := conv.Questions(); len(qs) > 0 {
 		var out []string
 		for _, q := range qs {
 			question := cleanText(q.Question)
@@ -500,16 +501,16 @@ func askLines(conv Conversation, width int) []string {
 		}
 		return out
 	}
-	if conv.pending == nil {
+	if conv.Pending == nil {
 		return nil
 	}
-	return []string{"", cut("\033[1;" + amber + "m? wants to use " + conv.pending.Name + "\033[0m " + toolSummary(conv.pending.Input))}
+	return []string{"", cut("\033[1;" + amber + "m? wants to use " + conv.Pending.Name + "\033[0m " + toolSummary(conv.Pending.Input))}
 }
 
 // answerable is how many options a digit can pick: only a single
 // single-choice question, where claude takes the digit as the answer.
-func answerable(conv Conversation) int {
-	qs := conv.questions()
+func answerable(conv transcript.Conversation) int {
+	qs := conv.Questions()
 	if len(qs) != 1 || qs[0].MultiSelect {
 		return 0
 	}
@@ -535,7 +536,7 @@ type answerDoneMsg struct {
 
 // answerCmd picks option n of a waiting session's question by pressing the
 // digit in its terminal, as typing it there would.
-func (m model) answerCmd(conv Conversation, n int) tea.Cmd {
+func (m model) answerCmd(conv transcript.Conversation, n int) tea.Cmd {
 	pid, name := m.livePIDs[conv.SessionID], m.sessionName(conv)
 	return func() tea.Msg {
 		where, err := typeKeys(pid, strconv.Itoa(n), false)
@@ -794,7 +795,7 @@ func (m *model) saveFocusRecord() {
 
 // lastSaid is the index of the last message said in the session itself, past
 // any it sent to other sessions and any channel events; -1 if none.
-func lastSaid(msgs []Message) int {
+func lastSaid(msgs []transcript.Message) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role != "sent" && msgs[i].Role != "channel" {
 			return i

@@ -8,15 +8,17 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // parsedSession is a Claude transcript of lines run through parseLine.
-func parsedSession(id string, lines ...string) Conversation {
-	c := Conversation{SessionID: id}
+func parsedSession(id string, lines ...string) transcript.Conversation {
+	c := transcript.Conversation{SessionID: id}
 	for _, l := range lines {
-		parseLine(&c, []byte(l))
+		transcript.ParseLine(&c, []byte(l))
 	}
-	finishParse(&c)
+	transcript.FinishParse(&c)
 	return c
 }
 
@@ -32,7 +34,7 @@ func TestHeadlessRule(t *testing.T) {
 	title := `{"type":"custom-title","customTitle":"kept"}`
 	for _, c := range []struct {
 		name  string
-		conv  Conversation
+		conv  transcript.Conversation
 		gone  bool
 		about string
 	}{
@@ -42,18 +44,18 @@ func TestHeadlessRule(t *testing.T) {
 		{"titled", parsedSession("d", userLine("sdk-cli", "p1", "x"), title), false, "a name the user gave"},
 		{"interactive", parsedSession("e", userLine("cli", "p1", "x")), false, "typed in a terminal"},
 		{"T3 Code", parsedSession("f", userLine("sdk-ts", "p1", "x")), false, "an app you type in"},
-		{"codex exec", Conversation{SessionID: "g", Kind: kindCodex, codexExec: true}, true, "codex exec"},
-		{"codex tui", Conversation{SessionID: "h", Kind: kindCodex}, false, "an interactive codex"},
+		{"codex exec", transcript.Conversation{SessionID: "g", Kind: transcript.KindCodex, CodexExec: true}, true, "codex exec"},
+		{"codex tui", transcript.Conversation{SessionID: "h", Kind: transcript.KindCodex}, false, "an interactive codex"},
 	} {
-		if got := c.conv.headless(); got != c.gone {
+		if got := c.conv.Headless(); got != c.gone {
 			t.Errorf("%s (%s): headless %v, want %v", c.name, c.about, got, c.gone)
 		}
 	}
 }
 
-func headlessModel(convs ...Conversation) model {
+func headlessModel(convs ...transcript.Conversation) model {
 	for i := range convs {
-		convs[i].Messages = append(convs[i].Messages, Message{Role: "user", Text: "word " + convs[i].SessionID, Ts: "2026-11-03T10:00:00Z"})
+		convs[i].Messages = append(convs[i].Messages, transcript.Message{Role: "user", Text: "word " + convs[i].SessionID, Ts: "2026-11-03T10:00:00Z"})
 		convs[i].LastTimestamp = "2026-11-03T10:00:00Z"
 	}
 	return initialModel(buildItems(convs), "", nil)
@@ -120,13 +122,13 @@ func TestHeadlessChildHiddenUnderItsParent(t *testing.T) {
 }
 
 func TestMCPSkipsHeadless(t *testing.T) {
-	convs := []Conversation{
+	convs := []transcript.Conversation{
 		parsedSession("aaaa-run", userLine("sdk-cli", "p1", "backtest grant")),
 		parsedSession("bbbb-chat", userLine("cli", "p1", "backtest by hand")),
 	}
 	call := func(req string) string {
 		var out bytes.Buffer
-		if err := runMCP(strings.NewReader(req+"\n"), &out, func() ([]Conversation, error) { return slices.Clone(convs), nil }); err != nil {
+		if err := runMCP(strings.NewReader(req+"\n"), &out, func() ([]transcript.Conversation, error) { return slices.Clone(convs), nil }); err != nil {
 			t.Fatal(err)
 		}
 		var r map[string]any

@@ -30,6 +30,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -59,7 +60,7 @@ func TestUpdatePopupFlow(t *testing.T) {
 	defer func(v string) { version = v }(version)
 	version = "0.24.1"
 	upgraded := false
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
 	m.upgrade = &upgrader{install: func(_ string, step func(string)) (string, error) {
 		step("brew upgrade")
@@ -385,7 +386,7 @@ func TestUpdatingHeaderShowsStep(t *testing.T) {
 func TestUpdatePopupWaitsBehindPrompts(t *testing.T) {
 	defer func(v string) { version = v }(version)
 	version = "0.27.1"
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s", Title: "old"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s", Title: "old"}}}, "", nil)
 	m.width, m.height = 100, 30
 	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
 	m.renaming = true
@@ -569,7 +570,7 @@ func TestSeedFile(t *testing.T) {
 func TestUpdatePopupOverlaysEveryScreen(t *testing.T) {
 	defer func(v string) { version = v }(version)
 	version = "0.36.0"
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", Title: "Some session", Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Title: "Some session", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}), "", nil)
 	m.width, m.height = 140, 40
 	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { return "", nil }}
 	m.usage = usageData{now: time.Now(), buckets: make([]usageBucketTotals, usageBuckets)}
@@ -597,14 +598,14 @@ func TestUpdatePopupOverlaysEveryScreen(t *testing.T) {
 }
 
 func TestUIStateSurvivesRestart(t *testing.T) {
-	mk := func(id, text string) Conversation {
-		c := Conversation{SessionID: id, LastTimestamp: "2026-09-29T10:00:00Z"}
+	mk := func(id, text string) transcript.Conversation {
+		c := transcript.Conversation{SessionID: id, LastTimestamp: "2026-09-29T10:00:00Z"}
 		for i := 0; i < 50; i++ {
-			c.Messages = append(c.Messages, Message{Role: "user", Text: text + fmt.Sprint(i)})
+			c.Messages = append(c.Messages, transcript.Message{Role: "user", Text: text + fmt.Sprint(i)})
 		}
 		return c
 	}
-	before := initialModel(buildItems([]Conversation{mk("a", "apple"), mk("b", "banana"), mk("c", "bandana")}), "", nil)
+	before := initialModel(buildItems([]transcript.Conversation{mk("a", "apple"), mk("b", "banana"), mk("c", "bandana")}), "", nil)
 	before.width, before.height = 120, 40
 	before.textInput.SetValue("band")
 	before.textInput.SetCursor(2)
@@ -618,7 +619,7 @@ func TestUIStateSurvivesRestart(t *testing.T) {
 	}
 
 	// The new version's list comes back in a different order.
-	after := initialModel(buildItems([]Conversation{mk("c", "bandana"), mk("b", "banana"), mk("a", "apple")}), "", nil)
+	after := initialModel(buildItems([]transcript.Conversation{mk("c", "bandana"), mk("b", "banana"), mk("a", "apple")}), "", nil)
 	var state uiState
 	if err := json.Unmarshal(saved, &state); err != nil {
 		t.Fatal(err)
@@ -638,7 +639,7 @@ func TestUIStateSurvivesRestart(t *testing.T) {
 	}
 
 	// A conversation that no longer exists is skipped, not an error.
-	gone := initialModel(buildItems([]Conversation{mk("z", "zebra")}), "", nil)
+	gone := initialModel(buildItems([]transcript.Conversation{mk("z", "zebra")}), "", nil)
 	gone.restore(uiState{Screen: "list", Selected: "missing"})
 	if gone.cursor != 0 || gone.showUsage {
 		t.Error("restoring a missing selection should leave a sane default")
@@ -699,7 +700,7 @@ func TestChangelogPopup(t *testing.T) {
 	for v := 30; v > 0; v-- {
 		lines = append(lines, fmt.Sprintf("v0.%d.0", v), fmt.Sprintf("  feat: thing %d", v))
 	}
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
 	m.fetchNotes = func() ([]string, error) { return lines, nil }
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyCtrlL})
@@ -739,7 +740,7 @@ func TestChangelogPopup(t *testing.T) {
 
 func TestChangelogRetry(t *testing.T) {
 	calls := 0
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
 	m.fetchNotes = func() ([]string, error) {
 		calls++
@@ -815,7 +816,7 @@ func TestAutoUpdateInstallsWhileAway(t *testing.T) {
 	defer func(v string) { version = v }(version)
 	version = "0.24.1"
 	installs := 0
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
 	m.autoUpdate = true
 	m.upgrade = &upgrader{install: func(string, func(string)) (string, error) { installs++; return "/bin/ccs", nil }}
@@ -873,7 +874,7 @@ func TestAutoUpdateFailureIsOffered(t *testing.T) {
 func TestUpdatedPopupAfterRestart(t *testing.T) {
 	defer func(v string) { version = v }(version)
 	version = "0.25.0"
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 100, 30
 	m.updatedFrom, m.updatedOpen = "0.24.1", true
 	res, _ := m.Update(updatedChangelogMsg{[]string{"v0.25.0", "  feat: something new"}})
@@ -888,7 +889,7 @@ func TestUpdatedPopupAfterRestart(t *testing.T) {
 }
 
 func TestAutoUpdateToggle(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.autoUpdate = true
 	m, _ = chord(m, "i")
 	if m.autoUpdate || loadSettings().autoUpdateOn() {
@@ -901,7 +902,7 @@ func TestAutoUpdateToggle(t *testing.T) {
 }
 
 func TestHeaderShowsAutoUpdate(t *testing.T) {
-	m := initialModel([]listItem{{conv: Conversation{SessionID: "s"}}}, "", nil)
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 200, 30
 	m.checkLatest = func() (string, error) { return "", nil }
 	m.autoUpdate = true

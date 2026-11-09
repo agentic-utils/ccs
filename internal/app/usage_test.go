@@ -17,13 +17,15 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func TestCollectUsageBucketsAndDedupes(t *testing.T) {
 	dir := t.TempDir()
-	old := getProjectsDir
-	getProjectsDir = func() string { return dir }
-	defer func() { getProjectsDir = old }()
+	old := transcript.GetProjectsDir
+	transcript.GetProjectsDir = func() string { return dir }
+	defer func() { transcript.GetProjectsDir = old }()
 	usageFilesMu.Lock()
 	usageFiles = make(map[string]usageFile)
 	usageFilesMu.Unlock()
@@ -71,9 +73,9 @@ func TestCollectUsageBucketsAndDedupes(t *testing.T) {
 	if last := d.buckets[usageBuckets-6]; last.Responses != 2 { // 30 minutes ago = 6 buckets from the end
 		t.Errorf("recent replies should land in the bucket 30m ago, got %+v", last)
 	}
-	eff1h := tokenUsage{Input: 10, Cache5m: 100, Cache1h: 200, CacheRead: 1000, Output: 50}.effective() +
-		tokenUsage{Input: 1, Cache5m: 40, CacheRead: 500, Output: 3}.effective()
-	eff12h := eff1h + tokenUsage{Input: 5, Cache5m: 20, Output: 7}.effective()
+	eff1h := transcript.TokenUsage{Input: 10, Cache5m: 100, Cache1h: 200, CacheRead: 1000, Output: 50}.Effective() +
+		transcript.TokenUsage{Input: 1, Cache5m: 40, CacheRead: 500, Output: 3}.Effective()
+	eff12h := eff1h + transcript.TokenUsage{Input: 5, Cache5m: 20, Output: 7}.Effective()
 	if d.eff1h != eff1h || d.eff12h != eff12h {
 		t.Errorf("effective 1h=%v 12h=%v", d.eff1h, d.eff12h)
 	}
@@ -170,7 +172,7 @@ func TestKeychainServiceName(t *testing.T) {
 }
 
 func TestUsageScreenToggleAndPanels(t *testing.T) {
-	m := initialModel(buildItems([]Conversation{{SessionID: "a", Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "a", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}), "", nil)
 	m.width, m.height = 170, 50
 	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = res.(model)
@@ -205,7 +207,7 @@ func TestUsageScreenToggleAndPanels(t *testing.T) {
 }
 
 func TestAllowanceInSearchRowAndUsageScreenHidesSearch(t *testing.T) {
-	m := initialModel(buildItems([]Conversation{{SessionID: "s", Messages: []Message{{Role: "user", Text: "x"}}}}), "", nil)
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}), "", nil)
 	m.width, m.height = 160, 40
 	res, _ := m.Update(allowanceMsg{account: "me@example.com", limits: []allowanceLimit{
 		{Kind: "session", Percent: 14, ResetsAt: time.Now().Add(2 * time.Hour).Format(time.RFC3339)},

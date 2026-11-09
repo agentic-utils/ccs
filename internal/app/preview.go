@@ -18,6 +18,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 var (
@@ -105,11 +107,11 @@ type hitCounter struct {
 }
 
 // countHits is the number of a conversation's messages containing query.
-func countHits(conv Conversation, query string) int {
+func countHits(conv transcript.Conversation, query string) int {
 	terms := strings.Fields(strings.ToLower(query))
 	n := 0
 	for _, msg := range conv.Messages {
-		if len(terms) > 0 && containsAll(strings.ToLower(msg.Text), terms) {
+		if len(terms) > 0 && transcript.ContainsAll(strings.ToLower(msg.Text), terms) {
 			n++
 		}
 	}
@@ -146,7 +148,7 @@ func (m model) previewLines() []string {
 		return nil // still scrolling through the list: the header alone
 	}
 	conv := m.filtered[m.cursor].conv
-	conv.peerNotes = m.peerLabels(conv)                                         // the other ends, which other sessions' transcripts show
+	conv.PeerNotes = m.peerLabels(conv)                                         // the other ends, which other sessions' transcripts show
 	return cachedPreview(m.preview, conv, m.textInput.Value(), m.paneWidth()-1) // the last column is the scrollbar
 }
 
@@ -180,13 +182,13 @@ func (m *model) noteSelection() tea.Cmd {
 
 // cachedPreview is buildPreviewLines memoised in c; a nil c (a model built
 // without initialModel, e.g. tests) isn't memoised.
-func cachedPreview(c *previewCache, conv Conversation, query string, width int) []string {
+func cachedPreview(c *previewCache, conv transcript.Conversation, query string, width int) []string {
 	if c == nil {
 		return buildPreviewLines(conv, query, width)
 	}
 	// Preview lines depend only on the messages and tool calls, and on the
 	// width they're wrapped to.
-	key := fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%s\x00%v", conv.SessionID, len(conv.Messages), len(conv.tools), width, query, conv.peerNotes) // %v sorts map keys
+	key := fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%s\x00%v", conv.SessionID, len(conv.Messages), len(conv.Tools), width, query, conv.PeerNotes) // %v sorts map keys
 	if c.key != key {
 		c.key = key
 		c.lines, c.stamps = buildPreview(conv, query, width)
@@ -206,13 +208,13 @@ func scrollWindow(n, rows, back int) (start, end int) {
 // preview (everything below the fixed header). Shared by renderPreview and
 // maxPreviewScroll so the render and the scroll-clamp can never disagree on how
 // far the preview can scroll.
-func buildPreviewLines(conv Conversation, query string, width int) []string {
+func buildPreviewLines(conv transcript.Conversation, query string, width int) []string {
 	lines, _ := buildPreview(conv, query, width)
 	return lines
 }
 
 // buildPreview is buildPreviewLines with when each message's lines happened.
-func buildPreview(conv Conversation, query string, width int) ([]string, []previewStamp) {
+func buildPreview(conv transcript.Conversation, query string, width int) ([]string, []previewStamp) {
 	var msgLines []string
 
 	// Find messages containing the query
@@ -220,7 +222,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 	matchSet := make(map[int]bool)
 	if query != "" {
 		for i, msg := range conv.Messages {
-			if len(terms) > 0 && containsAll(strings.ToLower(msg.Text), terms) {
+			if len(terms) > 0 && transcript.ContainsAll(strings.ToLower(msg.Text), terms) {
 				matchSet[i] = true
 			}
 		}
@@ -261,7 +263,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 	var stamps []previewStamp
 	lastDay := ""
 	stamp := func(ts string) bool {
-		when := formatTimestamp(ts)
+		when := transcript.FormatTimestamp(ts)
 		if when == "" {
 			return false
 		}
@@ -283,10 +285,10 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 	lastRole := ""
 	nextTool := 0
 	drawTools := func(upTo int) {
-		for query == "" && nextTool < len(conv.tools) && conv.tools[nextTool].at <= upTo {
-			t := conv.tools[nextTool]
-			stamp(t.ts)
-			if t.took > 0 {
+		for query == "" && nextTool < len(conv.Tools) && conv.Tools[nextTool].At <= upTo {
+			t := conv.Tools[nextTool]
+			stamp(t.Ts)
+			if t.Took > 0 {
 				msgLines = append(msgLines, turnEnd(conv, t), "")
 			} else {
 				msgLines = append(msgLines, renderTool(t, width)...)
@@ -326,7 +328,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 			// JSON status reports unpacked; bare status pings are one dim line.
 			for _, b := range blocks {
 				if b.body == "" {
-					line := truncate("▸ "+b.from+" · "+b.note, max(width-2, 20))
+					line := transcript.Truncate("▸ "+b.from+" · "+b.note, max(width-2, 20))
 					msgLines = append(msgLines, "\033[90m"+marker+" "+highlight(line, query)+"\033[0m", "")
 					continue
 				}
@@ -344,7 +346,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 		if msg.Role == "sent" {
 			// A message this session sent another (SendMessage): to whom, and
 			// whether it shows in their transcript (peerLabels).
-			to := conv.peerNotes[i]
+			to := conv.PeerNotes[i]
 			if to == "" {
 				to = shortAddr(msg.To)
 			}
@@ -360,7 +362,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 		}
 		if from, body, ok := peerParts(msg.Text); ok && msg.Role == "user" {
 			// A message sent from another session or ccs, not typed here.
-			if n := conv.peerNotes[i]; n != "" {
+			if n := conv.PeerNotes[i]; n != "" {
 				from = n // the sending session as listed, found by its copy
 			}
 			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s From %s\033[0m", marker, from))
@@ -385,7 +387,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 			// as Claude Code draws it, its body shown only if a search hit it.
 			line := ev.line()
 			if width > 0 {
-				line = truncate(line, width-2)
+				line = transcript.Truncate(line, width-2)
 			}
 			line = highlight(line, query)
 			if ev.link != "" {
@@ -407,7 +409,7 @@ func buildPreview(conv Conversation, query string, width int) ([]string, []previ
 				line += " · " + summary
 			}
 			if width > 0 {
-				line = truncate(line, width-2) // truncate squeezes spaces, so add the indent after
+				line = transcript.Truncate(line, width-2) // truncate squeezes spaces, so add the indent after
 			}
 			note(highlight(line, query))
 			continue
@@ -651,7 +653,7 @@ func (m model) linksShown() []linkItem {
 	}
 	var out []linkItem
 	for _, l := range m.links {
-		if queryMatches(strings.ToLower(ansi.Strip(m.linkText(l))+" "+l.url), "", terms) {
+		if transcript.QueryMatches(strings.ToLower(ansi.Strip(m.linkText(l))+" "+l.url), "", terms) {
 			out = append(out, l)
 		}
 	}
@@ -688,7 +690,7 @@ func (m model) linksPopup() string {
 		text := m.linkText(l)
 		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
 		row := text
-		if ansi.Strip(text) != addr && !prURL.MatchString(l.url) && !strings.HasPrefix(l.url, sessionLink) {
+		if ansi.Strip(text) != addr && !transcript.PrURL.MatchString(l.url) && !strings.HasPrefix(l.url, sessionLink) {
 			row += " \033[90m" + addr + "\033[39m"
 		}
 		row = ansi.Truncate(row, rowW-2, "…")
@@ -718,7 +720,7 @@ func (m model) linksPopup() string {
 // comes from transcripts.
 var openURL = func(u string) error {
 	if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
-		return fmt.Errorf("not a web address: %s", truncate(u, 40))
+		return fmt.Errorf("not a web address: %s", transcript.Truncate(u, 40))
 	}
 	opener := "xdg-open"
 	if runtime.GOOS == "darwin" {
@@ -799,10 +801,10 @@ func formatTook(d time.Duration) string {
 
 // turnEnd is the dim line after a finished turn: how long it took and when it
 // ended, as Claude Code's terminal says it worked for.
-func turnEnd(conv Conversation, t toolUse) string {
-	glyph, _ := agentGlyph(conv)
-	took := formatTook(t.took)
-	if _, clock, ok := strings.Cut(formatTimestamp(t.ts), " "); ok {
+func turnEnd(conv transcript.Conversation, t transcript.ToolUse) string {
+	glyph, _ := transcript.AgentGlyph(conv)
+	took := formatTook(t.Took)
+	if _, clock, ok := strings.Cut(transcript.FormatTimestamp(t.Ts), " "); ok {
 		took += " · " + clock
 	}
 	return "\033[90m  " + glyph + " " + took + "\033[0m"
@@ -861,9 +863,9 @@ func userRows(lines []string, width int) []string {
 
 // renderTool draws a tool call as Claude Code's terminal does: "● Bash(cmd)",
 // a command's lines kept as they are and indented under it.
-func renderTool(t toolUse, width int) []string {
-	text := t.name
-	if arg := cleanText(t.arg); arg != "" {
+func renderTool(t transcript.ToolUse, width int) []string {
+	text := t.Name
+	if arg := cleanText(t.Arg); arg != "" {
 		text += "(" + strings.ReplaceAll(arg, "\t", "    ") + ")"
 	}
 	var out []string
@@ -879,8 +881,8 @@ func renderTool(t toolUse, width int) []string {
 			out = append(out, "  "+w)
 		}
 	}
-	if rest, ok := strings.CutPrefix(out[0], "  "+t.name); ok {
-		out[0] = "● \033[1m" + t.name + "\033[22m" + rest
+	if rest, ok := strings.CutPrefix(out[0], "  "+t.Name); ok {
+		out[0] = "● \033[1m" + t.Name + "\033[22m" + rest
 	} else { // a name too long for the line, wrapped
 		out[0] = "● " + strings.TrimPrefix(out[0], "  ")
 	}
@@ -900,14 +902,14 @@ func (m model) maxPreviewScroll() int {
 
 // previewMessageRows is how many message lines fit below the preview's fixed
 // header, matching what View gives renderPreview.
-func (m model) previewMessageRows(conv Conversation) int {
+func (m model) previewMessageRows(conv transcript.Conversation) int {
 	_, _, previewTop := m.listLayout()
 	return max(m.height-previewTop-m.chatRows()-len(m.previewHeader(conv, m.textInput.Value())), 1)
 }
 
 // previewHeader is the preview's fixed header (always visible above the
 // scrolling messages).
-func (m model) previewHeader(conv Conversation, query string) []string {
+func (m model) previewHeader(conv transcript.Conversation, query string) []string {
 	if m.headerCollapsed {
 		return []string{m.headerSummary(conv, query), ""}
 	}
@@ -918,7 +920,7 @@ func (m model) previewHeader(conv Conversation, query string) []string {
 	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
 	header = append(header, sessionStats(conv)...)
 	if !m.table { // the list's columns aren't beside it
-		header = append(header, fmt.Sprintf("\033[1;33mSize:\033[0m    %s · %d messages · %s", formatBytes(conv.Size), len(conv.Messages), formatAgo(conv.LastTimestamp, time.Now())))
+		header = append(header, fmt.Sprintf("\033[1;33mSize:\033[0m    %s · %d messages · %s", transcript.FormatBytes(conv.Size), len(conv.Messages), transcript.FormatAgo(conv.LastTimestamp, time.Now())))
 	}
 	header = append(header, m.prLines(conv, m.paneWidth())...)
 	header = append(header, m.taskLines(conv, m.paneWidth())...)
@@ -929,38 +931,38 @@ func (m model) previewHeader(conv Conversation, query string) []string {
 // headerSummary is the header as one line (^X D): the session's name and where
 // it is, then what the full header would make you look for: an API error, its
 // model and context, its PRs, running tasks and subagents, and its size.
-func (m model) headerSummary(conv Conversation, query string) string {
-	parts := []string{highlight(truncate(filepath.Base(conv.Cwd), 24), query)}
-	if conv.Kind == kindCodex {
-		glyph, colour := agentGlyph(conv)
+func (m model) headerSummary(conv transcript.Conversation, query string) string {
+	parts := []string{highlight(transcript.Truncate(filepath.Base(conv.Cwd), 24), query)}
+	if conv.Kind == transcript.KindCodex {
+		glyph, colour := transcript.AgentGlyph(conv)
 		parts = append(parts, "\033["+colour+"m"+glyph+"\033[0m codex")
 	}
 	if conv.LastError != "" {
 		parts = append(parts, "\033[1;31m! "+conv.LastError+"\033[0m")
 	}
-	if s := shortModel(conv); s != "" {
+	if s := transcript.ShortModel(conv); s != "" {
 		parts = append(parts, s)
 	}
 	if conv.ContextTokens > 0 {
-		window := conv.window()
-		code, _ := ctxColour(conv.ContextTokens, window)
+		window := conv.WindowSize()
+		code, _ := transcript.CtxColour(conv.ContextTokens, window)
 		parts = append(parts, fmt.Sprintf("\033[%sm%d%%\033[0m ctx", code, conv.ContextTokens*100/window))
 	}
 	if cell := strings.TrimSpace(m.prCell(conv, true)); ansi.Strip(cell) != "" {
 		parts = append(parts, "PRs "+cell)
 	}
 	if n := len(m.runningTasks(conv)); n > 0 {
-		parts = append(parts, fmt.Sprintf("\033[%sm⧗%d\033[0m", taskColour, n))
+		parts = append(parts, fmt.Sprintf("\033[%sm⧗%d\033[0m", transcript.TaskColour, n))
 	}
 	if n := m.runningSubagents(conv); n > 0 {
-		parts = append(parts, fmt.Sprintf("\033[%sm◆%d\033[0m", subagentColour, n))
+		parts = append(parts, fmt.Sprintf("\033[%sm◆%d\033[0m", transcript.SubagentColour, n))
 	}
-	parts = append(parts, fmt.Sprintf("%s · %d msgs", formatBytes(conv.Size), len(conv.Messages)))
+	parts = append(parts, fmt.Sprintf("%s · %d msgs", transcript.FormatBytes(conv.Size), len(conv.Messages)))
 	// The topic gets what's left beside the facts and the time (whenWidth), so
 	// a long one or a narrow pane can't push the counts off the line.
 	const sep, hint, lead = " \033[90m·\033[0m ", " \033[90m^X D\033[0m", "\033[90m▸\033[0m "
 	rest := strings.Join(parts, sep)
-	topic := truncate(getTopic(conv), min(max(m.paneWidth()-1-whenWidth-ansi.StringWidth(lead+sep+rest+hint), 12), 40))
+	topic := transcript.Truncate(transcript.GetTopic(conv), min(max(m.paneWidth()-1-whenWidth-ansi.StringWidth(lead+sep+rest+hint), 12), 40))
 	return ansi.Truncate(lead+highlight(topic, query)+sep+rest+hint, max(m.paneWidth()-1, 20), "…") + "\033[0m"
 }
 
@@ -1018,15 +1020,15 @@ func (m model) renderPreview(item listItem, height int) string {
 }
 
 // sessionStats is the preview header's model, token and error lines.
-func sessionStats(conv Conversation) []string {
+func sessionStats(conv transcript.Conversation) []string {
 	var lines []string
-	if conv.Kind == kindCodex {
-		glyph, colour := agentGlyph(conv)
+	if conv.Kind == transcript.KindCodex {
+		glyph, colour := transcript.AgentGlyph(conv)
 		lines = append(lines, "\033[1;33mAgent:\033[0m   \033["+colour+"m"+glyph+"\033[0m codex")
 	}
 	if conv.ActiveModel != "" || conv.ContextTokens > 0 {
-		window := conv.window()
-		code, _ := ctxColour(conv.ContextTokens, window)
+		window := conv.WindowSize()
+		code, _ := transcript.CtxColour(conv.ContextTokens, window)
 		model := conv.ActiveModel
 		if model == "" {
 			model = "unknown"
@@ -1035,15 +1037,15 @@ func sessionStats(conv Conversation) []string {
 			model += " \033[90m(switched; last reply " + conv.Model + ")\033[0m"
 		}
 		lines = append(lines, fmt.Sprintf("\033[1;33mModel:\033[0m   %s · context \033[%sm%s\033[0m of %s (%d%%)",
-			model, code, formatTokens(conv.ContextTokens), formatTokens(window), conv.ContextTokens*100/window))
+			model, code, transcript.FormatTokens(conv.ContextTokens), transcript.FormatTokens(window), conv.ContextTokens*100/window))
 	}
 	tok := func(n int64) string { // formatTokens leaves 0 blank, for the list
 		if n <= 0 {
 			return "0"
 		}
-		return formatTokens(int(n))
+		return transcript.FormatTokens(int(n))
 	}
-	if u := conv.Usage; u != (tokenUsage{}) && conv.Kind == kindCodex {
+	if u := conv.Usage; u != (transcript.TokenUsage{}) && conv.Kind == transcript.KindCodex {
 		out := tok(u.Output)
 		if conv.Reasoning > 0 {
 			out += " (reasoning " + tok(conv.Reasoning) + ")"
@@ -1057,13 +1059,13 @@ func sessionStats(conv Conversation) []string {
 		}
 		lines = append(lines, fmt.Sprintf("\033[1;33mTokens:\033[0m  in %s · out %s · cache read %s · cache write %s%s",
 			tok(u.Input), out, tok(u.CacheRead), tok(u.Cache5m), cost))
-	} else if u != (tokenUsage{}) {
-		eff := u.effective()
+	} else if u != (transcript.TokenUsage{}) {
+		eff := u.Effective()
 		lines = append(lines, fmt.Sprintf("\033[1;33mTokens:\033[0m  in %s · out %s · cache read %s · cache write %s · effective %s (~$%.2f at API prices)",
-			tok(u.Input), tok(u.Output), tok(u.CacheRead), tok(u.Cache5m+u.Cache1h), tok(int64(eff)), eff*pricePerMTok/1e6))
+			tok(u.Input), tok(u.Output), tok(u.CacheRead), tok(u.Cache5m+u.Cache1h), tok(int64(eff)), eff*transcript.PricePerMTok/1e6))
 	}
 	if conv.LastError != "" {
-		lines = append(lines, fmt.Sprintf("\033[1;33mError:\033[0m   \033[1;31m%s\033[0m %s", conv.LastError, formatAgo(conv.LastErrorTs, time.Now())))
+		lines = append(lines, fmt.Sprintf("\033[1;33mError:\033[0m   \033[1;31m%s\033[0m %s", conv.LastError, transcript.FormatAgo(conv.LastErrorTs, time.Now())))
 	}
 	return lines
 }
@@ -1099,17 +1101,12 @@ type channelEvent struct {
 }
 
 var (
-	channelMessage = regexp.MustCompile(`(?s)^<channel\s([^>]*)>\n?(.*?)\n?</channel>\s*$`)
-	channelAttr    = regexp.MustCompile(`\b(source|event)="([^"]*)"`)
-	bareURL        = regexp.MustCompile(`^https?://\S+$`)
+	channelAttr = regexp.MustCompile(`\b(source|event)="([^"]*)"`)
+	bareURL     = regexp.MustCompile(`^https?://\S+$`)
 )
 
-func isChannelEvent(text string) bool {
-	return strings.HasPrefix(text, "<channel ") && channelMessage.MatchString(text)
-}
-
 func channelParts(text string) (channelEvent, bool) {
-	m := channelMessage.FindStringSubmatch(text)
+	m := transcript.ChannelMessage.FindStringSubmatch(text)
 	if m == nil {
 		return channelEvent{}, false
 	}
@@ -1147,12 +1144,8 @@ const maxCodeLines = 8
 
 func containsFold(s, query string) bool {
 	terms := strings.Fields(strings.ToLower(query))
-	return len(terms) > 0 && containsAll(strings.ToLower(s), terms)
+	return len(terms) > 0 && transcript.ContainsAll(strings.ToLower(s), terms)
 }
-
-// maxMessageRunes caps one message in the preview; beyond it the rest is
-// summarised, so a pasted log can't swamp the conversation.
-const maxMessageRunes = 20000
 
 var (
 	mdBold   = regexp.MustCompile(`\*\*([^*\n]+?)\*\*`)
@@ -1169,8 +1162,8 @@ var (
 // highlighted, and every line wrapped to width with a hanging indent so
 // nothing runs off the screen. width 0 means don't wrap.
 func renderBody(text, query string, width int) []string {
-	if r := []rune(text); len(r) > maxMessageRunes {
-		text = string(r[:maxMessageRunes]) + fmt.Sprintf("\n… (%d more characters)", len(r)-maxMessageRunes)
+	if r := []rune(text); len(r) > transcript.MaxMessageRunes {
+		text = string(r[:transcript.MaxMessageRunes]) + fmt.Sprintf("\n… (%d more characters)", len(r)-transcript.MaxMessageRunes)
 	}
 	const indent = "  "
 	var out []string

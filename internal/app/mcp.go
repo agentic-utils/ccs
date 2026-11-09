@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // `ccs mcp`: an MCP server on stdin/stdout (newline-delimited JSON-RPC 2.0)
@@ -23,7 +25,7 @@ const mcpProtocol = "2025-06-18"
 
 // mcpSource loads the conversations to search; each call rescans, and
 // parseCache makes unchanged files free.
-type mcpSource func() ([]Conversation, error)
+type mcpSource func() ([]transcript.Conversation, error)
 
 func runMCP(in io.Reader, out io.Writer, load mcpSource) error {
 	sc := bufio.NewScanner(in)
@@ -236,7 +238,7 @@ func mcpCall(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	if name != "read_session" && !a.Headless { // read_session reads any session by id
 		kept := convs[:0:0]
 		for _, c := range convs {
-			if !c.headless() {
+			if !c.Headless() {
 				kept = append(kept, c)
 			}
 		}
@@ -261,39 +263,39 @@ func clampInt(v, def, hi int) int {
 }
 
 // mcpHeader is one session's summary line for search and list results.
-func mcpHeader(c Conversation) string {
+func mcpHeader(c transcript.Conversation) string {
 	kind, resume := "claude", "claude --resume "
-	if c.Kind == kindCodex {
-		kind, resume = kindCodex, "codex resume "
+	if c.Kind == transcript.KindCodex {
+		kind, resume = transcript.KindCodex, "codex resume "
 	}
 	return fmt.Sprintf("%s · %s\n  kind %s · session %s · project %s · last active %s (%s) · %d messages\n  resume: cd %s && %s%s",
-		getTopic(c), shortModel(c), kind, c.SessionID, c.Cwd, formatTimestamp(c.LastTimestamp), formatAgo(c.LastTimestamp, time.Now()),
+		transcript.GetTopic(c), transcript.ShortModel(c), kind, c.SessionID, c.Cwd, transcript.FormatTimestamp(c.LastTimestamp), transcript.FormatAgo(c.LastTimestamp, time.Now()),
 		len(c.Messages), c.Cwd, resume, c.SessionID)
 }
 
-func mcpSearch(convs []Conversation, query string, n int) (string, error) {
+func mcpSearch(convs []transcript.Conversation, query string, n int) (string, error) {
 	terms := strings.Fields(strings.ToLower(query))
 	if len(terms) == 0 {
 		return "", fmt.Errorf("query is empty")
 	}
 	type hit struct {
-		c       Conversation
+		c       transcript.Conversation
 		rank    int // matchRank: named after the query, then the words as a phrase, then the rest
 		hits    int
 		snippet string
 	}
 	var found []hit
 	for _, c := range convs {
-		lower := c.searchLower
+		lower := c.SearchLower
 		if lower == "" {
-			lower = strings.ToLower(searchTextOf(c))
+			lower = strings.ToLower(transcript.SearchTextOf(c))
 		}
-		if !queryMatches(lower, getTopic(c), terms) {
+		if !transcript.QueryMatches(lower, transcript.GetTopic(c), terms) {
 			continue
 		}
-		h := hit{c: c, rank: matchRank(lower, getTopic(c), terms)}
+		h := hit{c: c, rank: transcript.MatchRank(lower, transcript.GetTopic(c), terms)}
 		for _, m := range c.Messages {
-			if containsAll(strings.ToLower(m.Text), terms) {
+			if transcript.ContainsAll(strings.ToLower(m.Text), terms) {
 				h.hits++
 				if h.snippet == "" {
 					h.snippet = snippetAround(cleanText(m.Text), terms[0], 240)
@@ -330,7 +332,7 @@ func mcpSearch(convs []Conversation, query string, n int) (string, error) {
 	return b.String(), nil
 }
 
-func mcpList(convs []Conversation, n int) string {
+func mcpList(convs []transcript.Conversation, n int) string {
 	sort.SliceStable(convs, func(i, j int) bool { return convs[i].LastTimestamp > convs[j].LastTimestamp })
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d sessions", len(convs))
@@ -346,14 +348,14 @@ func mcpList(convs []Conversation, n int) string {
 
 const mcpMessageRunes = 4000
 
-func mcpRead(convs []Conversation, id, query string, offset, limit int) (string, error) {
+func mcpRead(convs []transcript.Conversation, id, query string, offset, limit int) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
-	var match []Conversation
+	var match []transcript.Conversation
 	for _, c := range convs {
 		if c.SessionID == id {
-			match = []Conversation{c}
+			match = []transcript.Conversation{c}
 			break
 		}
 		if strings.HasPrefix(c.SessionID, id) {
@@ -427,7 +429,7 @@ func mcpRead(convs []Conversation, id, query string, offset, limit int) (string,
 		if r := []rune(text); len(r) > mcpMessageRunes {
 			text = string(r[:mcpMessageRunes]) + fmt.Sprintf("… (%d more characters)", len(r)-mcpMessageRunes)
 		}
-		fmt.Fprintf(&b, "\n[%d] %s %s:\n%s\n", i, formatTimestamp(m.Ts), who, text)
+		fmt.Fprintf(&b, "\n[%d] %s %s:\n%s\n", i, transcript.FormatTimestamp(m.Ts), who, text)
 	}
 	return b.String(), nil
 }
@@ -439,7 +441,7 @@ func snippetAround(s, term string, width int) string {
 	r := []rune(s)
 	at := strings.Index(strings.ToLower(s), term)
 	if at < 0 {
-		return truncate(s, width)
+		return transcript.Truncate(s, width)
 	}
 	pos := len([]rune(s[:at]))
 	start := max(pos-width/2, 0)
@@ -457,7 +459,9 @@ func snippetAround(s, term string, width int) string {
 // mcpMain is `ccs mcp`: serve until stdin closes. Logs go to stderr, which
 // Claude Code keeps out of the protocol stream.
 func mcpMain(cutoff time.Time, maxSize int64, excludeDirs []string) {
-	load := func() ([]Conversation, error) { return getConversations(cutoff, maxSize, excludeDirs) }
+	load := func() ([]transcript.Conversation, error) {
+		return transcript.GetConversations(cutoff, maxSize, excludeDirs)
+	}
 	if err := runMCP(os.Stdin, os.Stdout, load); err != nil {
 		fmt.Fprintln(os.Stderr, "ccs mcp:", err)
 		os.Exit(1)

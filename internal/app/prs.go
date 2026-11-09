@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // A session's PRs are the ones Claude Code itself links to it: a "pr-link"
@@ -28,39 +28,8 @@ import (
 // loop over repos) or for its subagents, so the PRs gh pr create and merge
 // print count too, in the session and its subagents (prsOf).
 
-// prURL is a github.com PR address; anything else in a pr-link is ignored,
-// since its parts go into a GraphQL query.
-var prURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)$`)
-
-var (
-	prInOutput  = regexp.MustCompile(`https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+\b`)
-	prMergedOut = regexp.MustCompile(`(?:Merged pull request|Pull request) ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([0-9]+)`)
-)
-
-// addPR adds u to conv's PRs once, if it's a PR address.
-func addPR(conv *Conversation, u string) {
-	if prURL.MatchString(u) && !slices.Contains(conv.PRs, u) {
-		conv.PRs = append(slices.Clone(conv.PRs), u)
-	}
-}
-
-// ghPRCall: a Bash command whose output names the PRs it opened or merged.
-func ghPRCall(cmd string) bool {
-	return strings.Contains(cmd, "gh pr create") || strings.Contains(cmd, "gh pr merge")
-}
-
-// ghOutputPRs is the PRs a ghPRCall printed: create prints the new PR's
-// address, merge "Merged pull request owner/repo#N".
-func ghOutputPRs(out string) []string {
-	urls := prInOutput.FindAllString(out, -1)
-	for _, m := range prMergedOut.FindAllStringSubmatch(out, -1) {
-		urls = append(urls, "https://github.com/"+m[1]+"/pull/"+m[2])
-	}
-	return urls
-}
-
 // prsOf is conv's PRs and then its subagents' not among them.
-func prsOf(conv Conversation) []string {
+func prsOf(conv transcript.Conversation) []string {
 	sub := subagentPRs(conv)
 	if len(sub) == 0 {
 		return conv.PRs
@@ -99,7 +68,7 @@ type subPRFile struct {
 // subagentPRs is the PRs conv's subagents opened or merged (ghPRCall),
 // reread at most every subagentPRsTTL and then only what each transcript
 // appended (the list asks on every frame).
-func subagentPRs(conv Conversation) []string {
+func subagentPRs(conv transcript.Conversation) []string {
 	dir := filepath.Join(strings.TrimSuffix(conv.FilePath, ".jsonl"), "subagents")
 	subPRCache.Lock()
 	defer subPRCache.Unlock()
@@ -178,12 +147,12 @@ func (f *subPRFile) line(line []byte) {
 	}
 	for _, b := range blocks {
 		switch {
-		case b.Type == "tool_use" && b.Name == "Bash" && ghPRCall(b.Input.Command):
+		case b.Type == "tool_use" && b.Name == "Bash" && transcript.GhPRCall(b.Input.Command):
 			f.pending = append(f.pending, b.ID)
 		case b.Type == "tool_result" && slices.Contains(f.pending, b.ToolUseID):
 			f.pending = slices.DeleteFunc(f.pending, func(id string) bool { return id == b.ToolUseID })
-			for _, u := range ghOutputPRs(resultText(b.Content)) {
-				if prURL.MatchString(u) && !slices.Contains(f.prs, u) {
+			for _, u := range transcript.GhOutputPRs(transcript.ResultText(b.Content)) {
+				if transcript.PrURL.MatchString(u) && !slices.Contains(f.prs, u) {
 					f.prs = append(f.prs, u)
 				}
 			}
@@ -309,7 +278,7 @@ func prMark(group int) (string, string) {
 
 // sessionPRs is conv's PRs, ready first, merged and closed last, otherwise
 // in the order the session first touched them.
-func (m model) sessionPRs(conv Conversation) []string {
+func (m model) sessionPRs(conv transcript.Conversation) []string {
 	urls := slices.Clone(prsOf(conv))
 	slices.SortStableFunc(urls, func(a, b string) int {
 		ga, _ := m.prs[a].status()
@@ -321,7 +290,7 @@ func (m model) sessionPRs(conv Conversation) []string {
 
 // prCounts is how many of conv's PRs are in each group (prReady…prClosed);
 // one GitHub can't find isn't counted.
-func (m model) prCounts(conv Conversation) (n [prClosed + 1]int) {
+func (m model) prCounts(conv transcript.Conversation) (n [prClosed + 1]int) {
 	for _, u := range prsOf(conv) {
 		if s := m.prs[u].State; s == "" || s == "GONE" { // not looked up yet, or not found
 			continue
@@ -335,7 +304,7 @@ func (m model) prCounts(conv Conversation) (n [prClosed + 1]int) {
 // prCell is the PRS column: "✓1 ✗1 2 ●3" (ready, needing you, waiting,
 // merged; closed ones left out), blank when there are none. Plain for the
 // selected row, else coloured.
-func (m model) prCell(conv Conversation, coloured bool) string {
+func (m model) prCell(conv transcript.Conversation, coloured bool) string {
 	n := m.prCounts(conv)
 	var parts []string
 	add := func(n int, glyph, colour string) {
@@ -361,7 +330,7 @@ const maxPRLines = 5
 
 // prLines is the preview header's PRs, width wide: one line, a link, for each
 // open PR (at most maxPRLines), then one line counting the merged and closed.
-func (m model) prLines(conv Conversation, width int) []string {
+func (m model) prLines(conv transcript.Conversation, width int) []string {
 	urls := m.sessionPRs(conv)
 	if len(urls) == 0 {
 		return nil
@@ -427,7 +396,7 @@ func (m model) prLine(u string) string {
 
 // prName is "repo#N" from a PR address.
 func prName(u string) string {
-	if p := prURL.FindStringSubmatch(u); p != nil {
+	if p := transcript.PrURL.FindStringSubmatch(u); p != nil {
 		return p[2] + "#" + p[3]
 	}
 	return u
@@ -436,7 +405,7 @@ func prName(u string) string {
 // prLinks is conv's PRs for the ^O popup, in the order the header lists them.
 // Their text is filled in as the popup draws (prLinkText), so a lookup that
 // lands while it's open shows.
-func (m model) prLinks(conv Conversation) []linkItem {
+func (m model) prLinks(conv transcript.Conversation) []linkItem {
 	var out []linkItem
 	for _, u := range m.sessionPRs(conv) {
 		out = append(out, linkItem{u, ""})
@@ -489,7 +458,7 @@ func (m *model) prCmd() tea.Cmd {
 		}
 	}
 	if m.prRound == 0 && len(m.prQueue) == 0 && time.Now().After(m.prNext) {
-		m.prNext, m.prSelAsked = time.Now().Add(refreshInterval), map[string]bool{} // failures are retried once a round
+		m.prNext, m.prSelAsked = time.Now().Add(transcript.RefreshInterval), map[string]bool{} // failures are retried once a round
 		cutoff := time.Now().Add(-prScope).UTC().Format(time.RFC3339)
 		selected := ""
 		if len(m.filtered) > 0 {
@@ -546,7 +515,7 @@ func (m *model) applyPRs(msg prDoneMsg) {
 	}
 	m.prErr = ""
 	if msg.err != nil {
-		m.prErr = truncate(strings.TrimSpace(msg.err.Error()), 80)
+		m.prErr = transcript.Truncate(strings.TrimSpace(msg.err.Error()), 80)
 	}
 	for u, p := range msg.infos {
 		m.prs[u] = p
@@ -576,7 +545,7 @@ func ghPRBatch(gh string, urls []string) (map[string]prInfo, error) {
 	var q strings.Builder
 	q.WriteString("query{")
 	for i, u := range urls {
-		p := prURL.FindStringSubmatch(u) // validated when parsed; owner and repo are [A-Za-z0-9_.-]
+		p := transcript.PrURL.FindStringSubmatch(u) // validated when parsed; owner and repo are [A-Za-z0-9_.-]
 		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision reviewThreads(first:100){totalCount nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
 	}
 	q.WriteString("}")

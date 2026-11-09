@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // ============================================================================
@@ -156,7 +157,7 @@ func collectUsage(now time.Time, excludeDirs []string) usageData {
 	d := usageData{now: now, buckets: make([]usageBucketTotals, usageBuckets)}
 	seen := make(map[string]bool)
 	live := make(map[string]bool)
-	err := filepath.WalkDir(getProjectsDir(), func(path string, e os.DirEntry, err error) error {
+	err := filepath.WalkDir(transcript.GetProjectsDir(), func(path string, e os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -201,7 +202,7 @@ func collectUsage(now time.Time, excludeDirs []string) usageData {
 			}
 			idx := min(max(int(r.ts.Sub(cutoff)/usageBucket), 0), usageBuckets-1)
 			d.buckets[idx].add(r)
-			eff := tokenUsage{Input: r.inp, Cache5m: r.c5, Cache1h: r.c1, CacheRead: r.read, Output: r.out}.effective()
+			eff := transcript.TokenUsage{Input: r.inp, Cache5m: r.c5, Cache1h: r.c1, CacheRead: r.read, Output: r.out}.Effective()
 			d.eff12h += eff
 			if !r.ts.Before(lastHour) {
 				d.eff1h += eff
@@ -230,8 +231,8 @@ func (m *model) usageCmd() tea.Cmd {
 	return func() (msg tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
-				recoverWorkerValue(r)
-				msg = usageMsg{usageData{now: time.Now(), err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}}
+				transcript.RecoverWorkerValue(r)
+				msg = usageMsg{usageData{now: time.Now(), err: fmt.Errorf("internal error, logged to %s", transcript.WorkerPanicLog)}}
 			}
 		}()
 		return usageMsg{collectUsage(time.Now(), exclude)}
@@ -418,8 +419,8 @@ func (m *model) allowanceCmd() tea.Cmd {
 	return func() (msg tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
-				recoverWorkerValue(r)
-				msg = allowanceMsg{err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}
+				transcript.RecoverWorkerValue(r)
+				msg = allowanceMsg{err: fmt.Errorf("internal error, logged to %s", transcript.WorkerPanicLog)}
 			}
 		}()
 		limits, err := fetchAllowance(time.Now())
@@ -518,7 +519,7 @@ func renderUsageChart(title string, series []usageSeries, buckets []usageBucketT
 	for row := height - 1; row >= 0; row-- {
 		label := strings.Repeat(" ", usageMargin)
 		if row%2 == 1 && maxT > 0 {
-			label = "\033[90m" + fmt.Sprintf("%*s", usageMargin-2, formatTokens(int(maxT*int64(row+1)/int64(height)))) + "\033[0m  "
+			label = "\033[90m" + fmt.Sprintf("%*s", usageMargin-2, transcript.FormatTokens(int(maxT*int64(row+1)/int64(height)))) + "\033[0m  "
 		}
 		var cells strings.Builder
 		for i, b := range buckets {
@@ -609,7 +610,7 @@ func usageSummary(d usageData, width int) (summary, cache []string) {
 		row("\033[90minput\033[0m", formatCount(totalIn)),
 		row("\033[90moutput\033[0m", formatCount(agg.Output)),
 		row("\033[90mresponses\033[0m", formatCount(agg.Responses)),
-		row("\033[90meffective 1h / 12h\033[0m", formatTokens(int(d.eff1h))+" / "+formatTokens(int(d.eff12h))),
+		row("\033[90meffective 1h / 12h\033[0m", transcript.FormatTokens(int(d.eff1h))+" / "+transcript.FormatTokens(int(d.eff12h))),
 	}
 	cache = []string{
 		"\033[1;36mCACHE MIX\033[0m \033[90m(share of input)\033[0m",
@@ -738,8 +739,8 @@ func (m *model) acctListCmd() tea.Cmd {
 	return func() (msg tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
-				recoverWorkerValue(r)
-				msg = acctListMsg{err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}
+				transcript.RecoverWorkerValue(r)
+				msg = acctListMsg{err: fmt.Errorf("internal error, logged to %s", transcript.WorkerPanicLog)}
 			}
 		}()
 		out, err := proc.RunBounded(15*time.Second, nil, bin, "list", "--json")
@@ -770,14 +771,14 @@ func (m *model) cswapActionCmd(what, done string, args ...string) tea.Cmd {
 	return func() (msg tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
-				recoverWorkerValue(r)
-				msg = acctActionMsg{what: what, err: fmt.Errorf("internal error, logged to %s", workerPanicLog)}
+				transcript.RecoverWorkerValue(r)
+				msg = acctActionMsg{what: what, err: fmt.Errorf("internal error, logged to %s", transcript.WorkerPanicLog)}
 			}
 		}()
 		out, err := proc.RunCommand(60*time.Second, nil, true, bin, args...)
 		if err != nil && !errors.Is(err, proc.ErrTimedOut) {
 			if lines := strings.Split(strings.TrimSpace(string(out)), "\n"); lines[len(lines)-1] != "" {
-				err = errors.New(ansiCodes.ReplaceAllString(lines[len(lines)-1], ""))
+				err = errors.New(transcript.AnsiCodes.ReplaceAllString(lines[len(lines)-1], ""))
 			}
 		}
 		return acctActionMsg{what: what, done: done, err: err}
@@ -834,7 +835,7 @@ func (m model) acctPopup() string {
 	emailW, orgW := 0, 0
 	for _, a := range m.accts {
 		emailW = max(emailW, lipgloss.Width(a.Email))
-		orgW = max(orgW, lipgloss.Width(truncate(a.OrganizationName, 30)))
+		orgW = max(orgW, lipgloss.Width(transcript.Truncate(a.OrganizationName, 30)))
 	}
 	for i, a := range m.accts {
 		mark := "  "
@@ -842,9 +843,9 @@ func (m model) acctPopup() string {
 			mark = "\033[32m●\033[0m "
 		}
 		row := fmt.Sprintf("%s%d  %s  \033[90m%s\033[0m  %s", mark, a.Number,
-			padRight(a.Email, emailW), padRight(truncate(a.OrganizationName, 30), orgW), cswapUsageLabel(a))
+			padRight(a.Email, emailW), padRight(transcript.Truncate(a.OrganizationName, 30), orgW), cswapUsageLabel(a))
 		if i == m.acctCursor {
-			row = "\033[7m" + ansiCodes.ReplaceAllString(row, "") + "\033[0m"
+			row = "\033[7m" + transcript.AnsiCodes.ReplaceAllString(row, "") + "\033[0m"
 		}
 		b.WriteString(row + "\n")
 	}
@@ -938,7 +939,7 @@ func (m model) allowancePanel(width int) []string {
 		if errors.Is(m.allowanceErr, errAllowanceLogin) {
 			colour = "33"
 		}
-		return append(lines, "\033["+colour+"m"+truncate(m.allowanceErr.Error(), width)+"\033[0m")
+		return append(lines, "\033["+colour+"m"+transcript.Truncate(m.allowanceErr.Error(), width)+"\033[0m")
 	case len(m.allowance) == 0:
 		return append(lines, "\033[90mloading…\033[0m")
 	}
@@ -965,7 +966,7 @@ func (m model) allowancePanel(width int) []string {
 			"\033[90m"+resetLabel(l.ResetsAt, now)+"\033[0m")
 	}
 	if m.allowanceErr != nil { // showing last-good gauges, but the latest fetch failed
-		lines = append(lines, "\033[31m⚠ "+truncate(m.allowanceErr.Error(), width-2)+"\033[0m")
+		lines = append(lines, "\033[31m⚠ "+transcript.Truncate(m.allowanceErr.Error(), width-2)+"\033[0m")
 	}
 	return lines
 }

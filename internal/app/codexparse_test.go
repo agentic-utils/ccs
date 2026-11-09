@@ -15,6 +15,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // codexFixture is a rollout in the real format with invented content.
@@ -36,15 +38,15 @@ func codexFixture(t *testing.T, thread, cwd string, source any, extra ...string)
 		`{"timestamp":"2026-11-03T10:00:05.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}`,
 	}
 	lines = append(lines, extra...)
-	dir := filepath.Join(codexHome(), "sessions", "2026", "11", "03")
+	dir := filepath.Join(transcript.CodexHome(), "sessions", "2026", "11", "03")
 	os.MkdirAll(dir, 0o755)
 	path := filepath.Join(dir, "rollout-2026-11-03T10-00-00-"+thread+".jsonl")
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		os.RemoveAll(filepath.Join(codexHome(), "sessions"))
-		os.Remove(filepath.Join(codexHome(), "session_index.jsonl"))
+		os.RemoveAll(filepath.Join(transcript.CodexHome(), "sessions"))
+		os.Remove(filepath.Join(transcript.CodexHome(), "session_index.jsonl"))
 	})
 	return path
 }
@@ -56,27 +58,27 @@ const (
 
 func TestCodexRolloutParses(t *testing.T) {
 	path := codexFixture(t, cxA, "/w/flux", "cli")
-	os.WriteFile(filepath.Join(codexHome(), "session_index.jsonl"), []byte(`{"id":"`+cxA+`","thread_name":"Old name"}`+"\n"+`{"id":"`+cxA+`","thread_name":"Flux PR"}`+"\n"), 0o644)
-	c, err := parseCodexFile(path, time.Time{}, 0)
+	os.WriteFile(filepath.Join(transcript.CodexHome(), "session_index.jsonl"), []byte(`{"id":"`+cxA+`","thread_name":"Old name"}`+"\n"+`{"id":"`+cxA+`","thread_name":"Flux PR"}`+"\n"), 0o644)
+	c, err := transcript.ParseCodexFile(path, time.Time{}, 0)
 	if err != nil || c == nil {
 		t.Fatalf("parse: %v %v", c, err)
 	}
-	if c.Kind != kindCodex || c.SessionID != cxA || c.Cwd != "/w/flux" || c.ActiveModel != "gpt-6.1-sol" {
+	if c.Kind != transcript.KindCodex || c.SessionID != cxA || c.Cwd != "/w/flux" || c.ActiveModel != "gpt-6.1-sol" {
 		t.Errorf("identity: %+v", c)
 	}
 	if len(c.Messages) != 2 || c.Messages[0].Text != "open a pull request for the flux capacitor" || c.Messages[1].Role != "assistant" {
 		t.Errorf("only typed and replied text, harness blocks left out: %+v", c.Messages)
 	}
-	if c.ContextTokens != 42000 || c.window() != 475000 {
-		t.Errorf("context from the last token count, window as stated: %d of %d", c.ContextTokens, c.window())
+	if c.ContextTokens != 42000 || c.WindowSize() != 475000 {
+		t.Errorf("context from the last token count, window as stated: %d of %d", c.ContextTokens, c.WindowSize())
 	}
 	if !slices.Equal(c.PRs, []string{"https://github.com/o/r/pull/7"}) {
 		t.Errorf("a PR gh pr create printed, not one a search mentioned: %v", c.PRs)
 	}
-	if c.Title != "Flux PR" || c.IsCustomTitle || c.Spawned || c.codexBusy {
+	if c.Title != "Flux PR" || c.IsCustomTitle || c.Spawned || c.CodexBusy {
 		t.Errorf("title from the index (latest wins), interactive, turn finished: %+v", c)
 	}
-	if !strings.Contains(c.searchLower, "codex") {
+	if !strings.Contains(c.SearchLower, "codex") {
 		t.Error("searching codex finds every Codex session")
 	}
 	if st := codexStat(path); st.status != "idle" {
@@ -89,23 +91,23 @@ func TestCodexRolloutParses(t *testing.T) {
 	if st := codexStat(path); st.status != "busy" {
 		t.Errorf("an unfinished turn is busy: %+v", st)
 	}
-	if c, _ := parseCodexFile(path, time.Time{}, 0); c == nil || !c.codexBusy {
+	if c, _ := transcript.ParseCodexFile(path, time.Time{}, 0); c == nil || !c.CodexBusy {
 		t.Error("the parse sees the unfinished turn too")
 	}
 }
 
 func TestCodexLaunchNameAndNesting(t *testing.T) {
 	// ccs launch's folder among the workspace roots names the session.
-	dir := filepath.Join(launchDir(), "flux-fixer")
+	dir := filepath.Join(state.LaunchDir(), "flux-fixer")
 	path := codexFixture(t, cxA, "/w", "cli")
 	data, _ := os.ReadFile(path)
 	os.WriteFile(path, []byte(strings.Replace(string(data), `"source":"cli"`, `"source":"cli","runtime_workspace_roots":["/w","`+dir+`"]`, 1)), 0o644)
-	if c, _ := parseCodexFile(path, time.Time{}, 0); c == nil || c.Title != "flux-fixer" || !c.IsCustomTitle {
+	if c, _ := transcript.ParseCodexFile(path, time.Time{}, 0); c == nil || c.Title != "flux-fixer" || !c.IsCustomTitle {
 		t.Errorf("a launched session goes by its launch name: %+v", c)
 	}
 	// A subagent nests under its parent thread; an exec run is spawned.
 	sub := codexFixture(t, cxB, "/w", map[string]any{"subagent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": cxA, "depth": 1}}})
-	c, _ := parseCodexFile(sub, time.Time{}, 0)
+	c, _ := transcript.ParseCodexFile(sub, time.Time{}, 0)
 	if c == nil || !c.Spawned || c.ParentID != cxA {
 		t.Fatalf("subagent: %+v", c)
 	}
@@ -117,25 +119,25 @@ func TestCodexLaunchNameAndNesting(t *testing.T) {
 
 func TestCodexExecNestsUnderTheClaudeSessionThatRanIt(t *testing.T) {
 	start := time.Now().Add(-time.Hour).UTC()
-	child := Conversation{SessionID: cxA, Kind: kindCodex, Spawned: true, FirstTimestamp: start.Format(time.RFC3339),
-		Messages: []Message{{Role: "user", Text: "Review the flux capacitor diff for safety problems please"}}}
-	if !isSpawn(`codex exec -s read-only "Review the flux capacitor diff for safety problems please"`) {
+	child := transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, Spawned: true, FirstTimestamp: start.Format(time.RFC3339),
+		Messages: []transcript.Message{{Role: "user", Text: "Review the flux capacitor diff for safety problems please"}}}
+	if !transcript.IsSpawn(`codex exec -s read-only "Review the flux capacitor diff for safety problems please"`) {
 		t.Fatal("codex exec is a spawn")
 	}
-	parent := Conversation{SessionID: "claude1", spawns: []spawnCmd{{start.Add(-30 * time.Second).Format(time.RFC3339), spawnText(`codex exec -s read-only "Review the flux capacitor diff for safety problems please"`)}}}
-	if p := findSpawnParent(child, buildItems([]Conversation{parent, child})); p != "claude1" {
+	parent := transcript.Conversation{SessionID: "claude1", Spawns: []transcript.SpawnCmd{{Ts: start.Add(-30 * time.Second).Format(time.RFC3339), Text: transcript.SpawnText(`codex exec -s read-only "Review the flux capacitor diff for safety problems please"`)}}}
+	if p := findSpawnParent(child, buildItems([]transcript.Conversation{parent, child})); p != "claude1" {
 		t.Errorf("an exec run nests under the session whose Bash ran it: %q", p)
 	}
 }
 
 func TestCodexSessionsInTheScan(t *testing.T) {
 	codexFixture(t, cxA, "/w", "cli")
-	old := getProjectsDir
+	old := transcript.GetProjectsDir
 	projects := t.TempDir()
-	getProjectsDir = func() string { return projects }
-	defer func() { getProjectsDir = old }()
-	convs, err := getConversations(time.Time{}, 0, nil)
-	if err != nil || len(convs) != 1 || convs[0].Kind != kindCodex {
+	transcript.GetProjectsDir = func() string { return projects }
+	defer func() { transcript.GetProjectsDir = old }()
+	convs, err := transcript.GetConversations(time.Time{}, 0, nil)
+	if err != nil || len(convs) != 1 || convs[0].Kind != transcript.KindCodex {
 		t.Fatalf("Codex sessions are listed with Claude's: %v %+v", err, convs)
 	}
 }
@@ -143,8 +145,8 @@ func TestCodexSessionsInTheScan(t *testing.T) {
 func TestCodexLiveSessionsFromProcesses(t *testing.T) {
 	path := codexFixture(t, cxA, "/w/flux", "cli")
 	codexFixture(t, cxB, "/w/other", "cli")
-	oldPS, oldStart, oldCwd := proc.PsAll, proc.ProcessStartTimes, codexProcCwd
-	defer func() { proc.PsAll, proc.ProcessStartTimes, codexProcCwd = oldPS, oldStart, oldCwd }()
+	oldPS, oldStart, oldCwd := proc.PsAll, proc.ProcessStartTimes, transcript.CodexProcCwd
+	defer func() { proc.PsAll, proc.ProcessStartTimes, transcript.CodexProcCwd = oldPS, oldStart, oldCwd }()
 	proc.PsAll = func() (string, error) {
 		return strings.Join([]string{
 			"100 ttys001  /opt/homebrew/bin/codex",                             // a TUI: its thread from its folder
@@ -164,7 +166,7 @@ func TestCodexLiveSessionsFromProcesses(t *testing.T) {
 		}
 		return out
 	}
-	codexProcCwd = func(pid int) string {
+	transcript.CodexProcCwd = func(pid int) string {
 		if pid == 100 {
 			return "/w/flux"
 		}
@@ -183,9 +185,9 @@ func TestCodexLiveSessionsFromProcesses(t *testing.T) {
 }
 
 func TestCodexRowsAndPreview(t *testing.T) {
-	conv := Conversation{SessionID: cxA, Kind: kindCodex, Title: "flux", Cwd: "/w/flux", ActiveModel: "gpt-6.1-sol", ContextTokens: 1000, Window: 475000,
-		LastTimestamp: time.Now().UTC().Format(time.RFC3339), Messages: []Message{{Role: "user", Text: "x"}}}
-	m := initialModel(buildItems([]Conversation{conv, {SessionID: "c1", Title: "claude one", Messages: []Message{{Role: "user", Text: "y"}}}}), "", nil)
+	conv := transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, Title: "flux", Cwd: "/w/flux", ActiveModel: "gpt-6.1-sol", ContextTokens: 1000, Window: 475000,
+		LastTimestamp: time.Now().UTC().Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv, {SessionID: "c1", Title: "claude one", Messages: []transcript.Message{{Role: "user", Text: "y"}}}}), "", nil)
 	m.width, m.height = 140, 30
 	m.live = map[string]bool{cxA: true}
 	v := strip2(m.View())
@@ -209,16 +211,16 @@ func TestCodexRowsAndPreview(t *testing.T) {
 }
 
 func TestCodexSessionsRefuseRenameDeletePrune(t *testing.T) {
-	conv := Conversation{SessionID: cxA, Kind: kindCodex, FilePath: "/nowhere", Messages: []Message{{Role: "user", Text: "x"}}}
+	conv := transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, FilePath: "/nowhere", Messages: []transcript.Message{{Role: "user", Text: "x"}}}
 	for _, k := range []tea.KeyMsg{{Type: tea.KeyCtrlD}} {
-		m := initialModel(buildItems([]Conversation{conv}), "", nil)
+		m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 		m, _ = key(m, k)
 		if m.confirmDelete || !strings.Contains(m.errorMsg, "Codex") {
 			t.Errorf("delete: %q", m.errorMsg)
 		}
 	}
 	for _, letter := range []rune{'e', 'x'} {
-		m := initialModel(buildItems([]Conversation{conv}), "", nil)
+		m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{letter}})
 		if m.renaming || m.confirmPrune || !strings.Contains(m.errorMsg, "Codex") {
@@ -228,12 +230,12 @@ func TestCodexSessionsRefuseRenameDeletePrune(t *testing.T) {
 }
 
 func TestCodexResumeAndSend(t *testing.T) {
-	conv := Conversation{SessionID: cxA, Kind: kindCodex}
-	args := strings.Join(codexResumeArgs("codex", conv, false), " ")
+	conv := transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex}
+	args := strings.Join(transcript.CodexResumeArgs("codex", conv, false), " ")
 	if !strings.HasPrefix(args, "codex resume "+cxA+" -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir ") {
 		t.Errorf("resume with ccs launch's sandbox: %s", args)
 	}
-	if args := codexResumeArgs("codex", conv, true); args[1] != "fork" {
+	if args := transcript.CodexResumeArgs("codex", conv, true); args[1] != "fork" {
 		t.Errorf("a fork: %v", args)
 	}
 	var got []string
@@ -244,7 +246,7 @@ func TestCodexResumeAndSend(t *testing.T) {
 	if err != nil || !slices.Equal(got, []string{cxA, "carry on"}) || !strings.Contains(note, "codex queue") {
 		t.Errorf("the message box queues into the thread: %v %q %v", got, note, err)
 	}
-	if h := mcpHeader(Conversation{SessionID: cxA, Kind: kindCodex, Cwd: "/w"}); !strings.Contains(h, "kind codex") || !strings.Contains(h, "codex resume "+cxA) {
+	if h := mcpHeader(transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, Cwd: "/w"}); !strings.Contains(h, "kind codex") || !strings.Contains(h, "codex resume "+cxA) {
 		t.Errorf("MCP says it's Codex and how to resume it:\n%s", h)
 	}
 }
@@ -260,7 +262,7 @@ func TestCodexUsageIsPricedPerRequest(t *testing.T) {
 		`{"timestamp":"2026-11-03T10:00:07.000Z","type":"turn_context","payload":{"model":"gpt-unknown","cwd":"/w"}}`,
 		tc(1_000, 0, 0, 10, 0), // a model with no price: tokens, no cost
 	)
-	c, err := parseCodexFile(path, time.Time{}, 0)
+	c, err := transcript.ParseCodexFile(path, time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +303,7 @@ func TestCodexToolCallsInPreview(t *testing.T) {
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	conv, err := parseCodexFile(path, time.Time{}, 0)
+	conv, err := transcript.ParseCodexFile(path, time.Time{}, 0)
 	if err != nil || conv == nil {
 		t.Fatalf("parse: %v %v", conv, err)
 	}
@@ -309,7 +311,7 @@ func TestCodexToolCallsInPreview(t *testing.T) {
 		t.Errorf("tool calls must stay out of Messages: %+v", conv.Messages)
 	}
 	plain := strip2(strings.Join(buildPreviewLines(*conv, "", 80), "\n"))
-	for _, want := range []string{"❯ go", "● Shell(pwd\n    git status)", "● ccs - list_prs (MCP)(mine)", "● Edit(/code/x/a.go)", "● WebSearch(go wrap)", "● done", "  ⬡ 48s · " + formatTimestamp("2026-11-03T10:00:08Z")[11:]} {
+	for _, want := range []string{"❯ go", "● Shell(pwd\n    git status)", "● ccs - list_prs (MCP)(mine)", "● Edit(/code/x/a.go)", "● WebSearch(go wrap)", "● done", "  ⬡ 48s · " + transcript.FormatTimestamp("2026-11-03T10:00:08Z")[11:]} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("missing %q:\n%s", want, plain)
 		}

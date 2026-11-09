@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,10 +26,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // ============================================================================
-// Message box: talk to the selected live session from ccs
+// transcript.Message box: talk to the selected live session from ccs
 // ============================================================================
 
 // chatFastRefresh is how often the selected live session's transcript and
@@ -41,7 +41,7 @@ type chatTickMsg struct{}
 
 type chatTickResult struct {
 	id   string
-	conv *Conversation // set when the transcript grew
+	conv *transcript.Conversation // set when the transcript grew
 	stat sessionStat
 	gen  int
 }
@@ -165,13 +165,13 @@ func (m model) chatAsk() []string {
 
 // chatTarget is the live session the fast refresh follows: the overlay's
 // while it's open, else the selected one.
-func (m model) chatTarget() (Conversation, bool) {
+func (m model) chatTarget() (transcript.Conversation, bool) {
 	if m.waitOpen {
 		c, ok := m.waitConv()
 		return c, ok && m.live[c.SessionID]
 	}
 	if m.showUsage || !m.selectedLive() {
-		return Conversation{}, false
+		return transcript.Conversation{}, false
 	}
 	return m.filtered[m.cursor].conv, true
 }
@@ -199,18 +199,18 @@ func (m model) chatTickCmd() tea.Cmd {
 		res := chatTickResult{id: conv.SessionID, gen: gen}
 		defer func() {
 			if r := recover(); r != nil {
-				recoverWorkerValue(r)
+				transcript.RecoverWorkerValue(r)
 				msg = res
 			}
 		}()
-		if conv.Kind == kindCodex {
+		if conv.Kind == transcript.KindCodex {
 			res.stat = codexStat(conv.FilePath)
 		} else if f, err := readSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
 			res.stat = f.stat()
 		}
 		if _, busy := liveReads.LoadOrStore(conv.FilePath, true); !busy {
 			defer liveReads.Delete(conv.FilePath)
-			if c, err := parseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
+			if c, err := transcript.ParseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
 				res.conv = c
 			}
 		}
@@ -220,25 +220,25 @@ func (m model) chatTickCmd() tea.Cmd {
 
 // sessionName is how the status line names a session: its Claude Code name,
 // else its title, else its topic.
-func (m model) sessionName(conv Conversation) string {
+func (m model) sessionName(conv transcript.Conversation) string {
 	if st, ok := m.chatStatus[conv.SessionID]; ok && st.name != "" {
 		return st.name
 	}
 	if conv.Title != "" {
-		return truncate(conv.Title, 30)
+		return transcript.Truncate(conv.Title, 30)
 	}
-	return truncate(getTopic(conv), 30)
+	return transcript.Truncate(transcript.GetTopic(conv), 30)
 }
 
 // waitingLine says what a waiting session asks and where to answer it.
-func waitingLine(conv Conversation) string {
+func waitingLine(conv transcript.Conversation) string {
 	// The question itself is drawn just above (askLines).
 	switch {
 	case answerable(conv) > 0:
 		return "waiting on you · ^X W answers it by number, " + keyEnter + " opens its tab"
-	case len(conv.questions()) > 0:
+	case len(conv.Questions()) > 0:
 		return "waiting on you · answer it in its tab: " + keyEnter + " opens it"
-	case conv.pending != nil:
+	case conv.Pending != nil:
 		return "waiting on you · approve it in its tab: " + keyEnter + " opens it"
 	}
 	return "its question is only shown in its own tab: " + keyEnter + " opens it"
@@ -261,14 +261,14 @@ var spinnerFrames = []string{"·", "✢", "✳", "✶", "✻", "✽", "✻", "�
 // does: its glyph and word in the agent's colour, then how long this turn has
 // run and its output tokens so far. Claude Code keeps its verb and tip to
 // itself, so the word is always the same and there's no tip.
-func workingLine(conv Conversation, st sessionStat, now time.Time) string {
-	_, colour := agentGlyph(conv)
+func workingLine(conv transcript.Conversation, st sessionStat, now time.Time) string {
+	_, colour := transcript.AgentGlyph(conv)
 	frame := spinnerFrames[int(now.UnixMilli()/int64(chatFastRefresh/time.Millisecond))%len(spinnerFrames)]
 	var facts []string
 	if !st.since.IsZero() { // the status clock starts with the turn; steps don't reset it
 		facts = append(facts, formatTook(now.Sub(st.since)))
-		if n := conv.outputSince(st.since); n > 0 {
-			count := formatTokens(int(n))
+		if n := conv.OutputSince(st.since); n > 0 {
+			count := transcript.FormatTokens(int(n))
 			if n >= 1000 && n < 10000 { // the 2.5k Claude Code would say, not 2k
 				count = fmt.Sprintf("%.1fk", float64(n)/1000)
 			}
@@ -283,7 +283,7 @@ func workingLine(conv Conversation, st sessionStat, now time.Time) string {
 }
 
 // chatBox draws conv's status line and the message box in, width wide.
-func (m model) chatBox(conv Conversation, in textinput.Model, focus bool, width int) string {
+func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus bool, width int) string {
 	id, name := conv.SessionID, m.sessionName(conv)
 	working := ""
 	if st := m.chatStatus[id]; st.status == "busy" {
@@ -348,7 +348,7 @@ func (m *model) sendCmd() tea.Cmd {
 
 // sendTo sends the text in the overlay's box (or the main one) to conv, a
 // live session, and empties the box.
-func (m *model) sendTo(conv Conversation, overlay bool) tea.Cmd {
+func (m *model) sendTo(conv transcript.Conversation, overlay bool) tea.Cmd {
 	in := &m.chatInput
 	if overlay {
 		in = &m.waitInput
@@ -380,12 +380,12 @@ func (m *model) sendTo(conv Conversation, overlay bool) tea.Cmd {
 	return func() (msg tea.Msg) {
 		defer func() {
 			if r := recover(); r != nil {
-				recoverWorkerValue(r)
-				msg = sendDoneMsg{id: id, note: "✗ Internal error, logged to " + workerPanicLog, err: errors.New("panic")}
+				transcript.RecoverWorkerValue(r)
+				msg = sendDoneMsg{id: id, note: "✗ Internal error, logged to " + transcript.WorkerPanicLog, err: errors.New("panic")}
 			}
 		}()
 		deliver := deliverMessage
-		if kind == kindCodex {
+		if kind == transcript.KindCodex {
 			deliver = func(_ int, id, name, text string, _ bool) (string, error) { return deliverCodex(id, name, text) }
 		}
 		note, err := deliver(pid, id, name, wire, verified)
@@ -450,7 +450,7 @@ func deliverMessage(pid int, id, name, text string, verified bool) (string, erro
 // socket: newline-delimited JSON, an auth line with the session's peer token
 // first, then the message wrapped so the session sees it came from ccs.
 func sendViaSocket(path, token, text string) (string, error) {
-	return sendEnvelope(path, token, ccsSender, ccsNote, text, true)
+	return sendEnvelope(path, token, ccsSender, transcript.CcsNote, text, true)
 }
 
 // sendEnvelope is sendViaSocket with its own sender name and leading note;
@@ -721,7 +721,7 @@ func (m *model) checkDelivered(id string) {
 		}
 		// Claude Code logs a socket message as queued the moment it arrives,
 		// then hands it to Claude at the next step (or at once when idle).
-		for _, q := range item.conv.peerQueued {
+		for _, q := range item.conv.PeerQueued {
 			if _, b, ok := peerParts(q); ok && strings.TrimSpace(b) == text {
 				delete(m.sentAt, id)
 			}
@@ -776,29 +776,18 @@ const heldTimeout = 5 * time.Second
 // recipient can take one from ccs for another Claude and try to answer it
 // there. The sender name and a leading note say it's the user; peerParts
 // drops the note again for the preview.
-const (
-	ccsSender = "the user, via ccs"
-	ccsNote   = "[Typed by the user in ccs, their session browser. Not from another Claude session: reply here as you would to any message from the user; there is no session to send a reply to.]\n\n"
-)
-
-// peerMessage matches a message another session (or ccs) sent through the
-// message socket; peerParts pulls out who it's from and the text.
-// Claude Code may add its own paragraph after the closing tag (a note that
-// peers can't grant permissions), so anything after it is allowed.
-var peerMessage = regexp.MustCompile(`(?s)^(?:Another Claude session sent a message:\n)?<cross-session-message([^>]*)>\n(.*?)\n</cross-session-message>(?:\s.*)?$`)
-
-var peerFrom = regexp.MustCompile(`from-name="([^"]*)"`)
+const ccsSender = "the user, via ccs"
 
 func peerParts(text string) (from, body string, ok bool) {
-	m := peerMessage.FindStringSubmatch(text)
+	m := transcript.PeerMessage.FindStringSubmatch(text)
 	if m == nil {
 		return "", "", false
 	}
 	from = "another session"
-	if f := peerFrom.FindStringSubmatch(m[1]); f != nil {
+	if f := transcript.PeerFrom.FindStringSubmatch(m[1]); f != nil {
 		from = f[1]
 	}
-	return from, stripImageNote(strings.TrimPrefix(m[2], ccsNote)), true
+	return from, stripImageNote(strings.TrimPrefix(m[2], transcript.CcsNote)), true
 }
 
 func newUUID() string {
@@ -809,71 +798,6 @@ func newUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
-// peerRef is one of a session's messages to or from another session: which
-// message, the start of its text (to find the other end's copy), and the
-// address it went to or came from.
-type peerRef struct {
-	idx  int    // in conv.Messages
-	key  string // peerKey of its text
-	sent bool
-	addr string // sent: SendMessage's to; received: the sender's from="uds:…"
-	name string // received: the sender's from-name
-}
-
-// peerKey is the start of a message's text, whitespace evened out, so the
-// sender's copy and the recipient's match.
-func peerKey(text string) string {
-	k := strings.Join(strings.Fields(text), " ")
-	if r := []rune(k); len(r) > 120 {
-		k = string(r[:120])
-	}
-	return k
-}
-
-// peerAddr is a cross-session message's from="…" attribute.
-var peerAddr = regexp.MustCompile(`\bfrom="([^"]*)"`)
-
-// noteSent records a SendMessage call as a "sent" message.
-func noteSent(conv *Conversation, input json.RawMessage, ts string) {
-	var in struct {
-		To      string `json:"to"`
-		Summary string `json:"summary"`
-		Message any    `json:"message"`
-	}
-	if json.Unmarshal(input, &in) != nil || in.To == "" {
-		return
-	}
-	text, ok := in.Message.(string)
-	if !ok { // a structured message (shutdown, plan approval): its JSON
-		b, _ := json.Marshal(in.Message)
-		text = string(b)
-	}
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	conv.Messages = append(conv.Messages, Message{Role: "sent", Text: text, Ts: ts, To: in.To, Note: in.Summary})
-	conv.peers = append(conv.peers, peerRef{idx: len(conv.Messages) - 1, key: peerKey(text), sent: true, addr: in.To})
-}
-
-// noteReceived records the message just appended when another session sent it.
-func noteReceived(conv *Conversation, text string) {
-	if !strings.Contains(text[:min(len(text), 200)], "<cross-session-message") {
-		return
-	}
-	m := peerMessage.FindStringSubmatch(text)
-	if m == nil {
-		return
-	}
-	ref := peerRef{idx: len(conv.Messages) - 1, key: peerKey(strings.TrimPrefix(m[2], ccsNote))}
-	if f := peerAddr.FindStringSubmatch(m[1]); f != nil {
-		ref.addr = f[1]
-	}
-	if f := peerFrom.FindStringSubmatch(m[1]); f != nil {
-		ref.name = f[1]
-	}
-	conv.peers = append(conv.peers, ref)
-}
-
 // peerEnds maps message keys to the sessions that sent and received them,
 // across every session ccs has.
 type peerEnds struct{ senders, recipients map[string]string }
@@ -881,11 +805,11 @@ type peerEnds struct{ senders, recipients map[string]string }
 func (m model) peerEnds() peerEnds {
 	e := peerEnds{map[string]string{}, map[string]string{}}
 	for _, it := range m.items {
-		for _, p := range it.conv.peers {
-			if p.sent {
-				e.senders[p.key] = it.conv.SessionID
+		for _, p := range it.conv.Peers {
+			if p.Sent {
+				e.senders[p.Key] = it.conv.SessionID
 			} else {
-				e.recipients[p.key] = it.conv.SessionID
+				e.recipients[p.Key] = it.conv.SessionID
 			}
 		}
 	}
@@ -911,21 +835,21 @@ func (m model) sessionAt(addr string) string {
 // one whose transcript holds the same message, else (live) the one on its
 // socket, else for a received one the session named as its sender. arrived:
 // a sent message found in the recipient's transcript.
-func (m model) peerOther(e peerEnds, conv Conversation, p peerRef) (id string, arrived bool) {
-	if p.sent {
-		if id := e.recipients[p.key]; id != "" && id != conv.SessionID {
+func (m model) peerOther(e peerEnds, conv transcript.Conversation, p transcript.PeerRef) (id string, arrived bool) {
+	if p.Sent {
+		if id := e.recipients[p.Key]; id != "" && id != conv.SessionID {
 			return id, true
 		}
-		return m.sessionAt(p.addr), false
+		return m.sessionAt(p.Addr), false
 	}
-	if id := e.senders[p.key]; id != "" && id != conv.SessionID {
+	if id := e.senders[p.Key]; id != "" && id != conv.SessionID {
 		return id, true
 	}
-	if id := m.sessionAt(p.addr); id != "" {
+	if id := m.sessionAt(p.Addr); id != "" {
 		return id, true
 	}
 	for _, it := range m.items {
-		if p.name != "" && it.conv.Title == p.name && it.conv.SessionID != conv.SessionID {
+		if p.Name != "" && it.conv.Title == p.Name && it.conv.SessionID != conv.SessionID {
 			return it.conv.SessionID, true
 		}
 	}
@@ -934,36 +858,36 @@ func (m model) peerOther(e peerEnds, conv Conversation, p peerRef) (id string, a
 
 // peerLabels is what the preview says about each of conv's peer messages'
 // other ends, by message index: "To name ✓ arrived" or "From name".
-func (m model) peerLabels(conv Conversation) map[int]string {
-	if len(conv.peers) == 0 {
+func (m model) peerLabels(conv transcript.Conversation) map[int]string {
+	if len(conv.Peers) == 0 {
 		return nil
 	}
 	e := m.peerEnds()
 	byID := m.convByID()
-	out := make(map[int]string, len(conv.peers))
-	for _, p := range conv.peers {
+	out := make(map[int]string, len(conv.Peers))
+	for _, p := range conv.Peers {
 		id, arrived := m.peerOther(e, conv, p)
 		name := ""
 		if c, ok := byID[id]; ok {
 			name = m.sessionName(c)
 		}
 		switch {
-		case p.sent && name != "" && arrived:
-			out[p.idx] = name + " \033[32m✓ arrived\033[0m"
-		case p.sent && name != "":
-			out[p.idx] = name
-		case p.sent:
-			out[p.idx] = shortAddr(p.addr)
+		case p.Sent && name != "" && arrived:
+			out[p.Idx] = name + " \033[32m✓ arrived\033[0m"
+		case p.Sent && name != "":
+			out[p.Idx] = name
+		case p.Sent:
+			out[p.Idx] = shortAddr(p.Addr)
 		case name != "":
-			out[p.idx] = name
+			out[p.Idx] = name
 		}
 	}
 	return out
 }
 
 // convByID indexes the listed sessions.
-func (m model) convByID() map[string]Conversation {
-	out := make(map[string]Conversation, len(m.items))
+func (m model) convByID() map[string]transcript.Conversation {
+	out := make(map[string]transcript.Conversation, len(m.items))
 	for _, it := range m.items {
 		out[it.conv.SessionID] = it.conv
 	}
@@ -981,13 +905,13 @@ func shortAddr(a string) string {
 
 // sessionLinks are the ^O popup's jumps to the sessions conv messaged or
 // heard from, each once, newest first.
-func (m model) sessionLinks(conv Conversation) []linkItem {
+func (m model) sessionLinks(conv transcript.Conversation) []linkItem {
 	e := m.peerEnds()
 	byID := m.convByID()
 	seen := map[string]bool{}
 	var out []linkItem
-	for i := len(conv.peers) - 1; i >= 0; i-- {
-		p := conv.peers[i]
+	for i := len(conv.Peers) - 1; i >= 0; i-- {
+		p := conv.Peers[i]
 		id, _ := m.peerOther(e, conv, p)
 		c, ok := byID[id]
 		if !ok || seen[id] {
@@ -995,7 +919,7 @@ func (m model) sessionLinks(conv Conversation) []linkItem {
 		}
 		seen[id] = true
 		dir := "← from "
-		if p.sent {
+		if p.Sent {
 			dir = "→ to "
 		}
 		out = append(out, linkItem{sessionLink + id, "\033[36m" + dir + m.sessionName(c) + "\033[39m"})

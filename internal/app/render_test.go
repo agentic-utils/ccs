@@ -8,6 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // richText is a reply with everything that makes a rendered line hard to fit:
@@ -28,20 +30,20 @@ const richText = "Yes, and there's more context than I'd found before. The most 
 func richModel(t *testing.T, w, h int) model {
 	t.Helper()
 	m := waitModel(t)
-	var convs []Conversation
+	var convs []transcript.Conversation
 	for _, item := range m.items {
 		c := item.conv
 		if c.SessionID == "live" || c.SessionID == "menu" {
 			for j := 0; j < 6; j++ {
 				c.Messages = append(c.Messages,
-					Message{Role: "user", Text: fmt.Sprintf("question %d about the roster and the rota, with a long line that goes on and on past any sensible width", j), Ts: fmt.Sprintf("2026-10-19T09:%02d:00Z", 30+j)},
-					Message{Role: "assistant", Text: richText, Ts: fmt.Sprintf("2026-10-19T09:%02d:30Z", 30+j)})
+					transcript.Message{Role: "user", Text: fmt.Sprintf("question %d about the roster and the rota, with a long line that goes on and on past any sensible width", j), Ts: fmt.Sprintf("2026-10-19T09:%02d:00Z", 30+j)},
+					transcript.Message{Role: "assistant", Text: richText, Ts: fmt.Sprintf("2026-10-19T09:%02d:30Z", 30+j)})
 			}
 		}
 		convs = append(convs, c)
 	}
 	for i := 0; i < 60; i++ { // enough sessions to fill the list
-		convs = append(convs, Conversation{SessionID: fmt.Sprintf("filler-%d", i), Title: fmt.Sprintf("filler session %d", i), LastTimestamp: "2026-09-20T09:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}})
+		convs = append(convs, transcript.Conversation{SessionID: fmt.Sprintf("filler-%d", i), Title: fmt.Sprintf("filler session %d", i), LastTimestamp: "2026-09-20T09:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hi"}}})
 	}
 	m.items = buildItems(convs)
 	m.updateFilter()

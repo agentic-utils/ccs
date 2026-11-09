@@ -25,6 +25,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // testReleaseKey stands in for CI's signing key: TestMain makes ccs trust it.
@@ -128,7 +129,7 @@ func TestMain(m *testing.M) {
 	iTermRunning = func() bool { return false }
 	urlHandlerApp = func() string { return "" }
 	// launch and close never touch real tabs or processes unless a test stubs them.
-	launchDir = func() string { return filepath.Join(dir, "launch") }
+	state.LaunchDir = func() string { return filepath.Join(dir, "launch") }
 	openLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
 	retypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
 	checkLaunchShell = func() error { return nil }
@@ -142,10 +143,10 @@ func TestMain(m *testing.M) {
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil } // never the machine's own processes
 	// never the real Codex: its data folder is a temp one, and nothing is queued.
-	codexHome = func() string { return filepath.Join(dir, "codex") }
+	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }
 	codexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	liveCodexSessions = func() map[string]liveSession { return nil } // never the machine's own Codex tabs
-	codexProcCwd = func(int) string { return "" }
+	transcript.CodexProcCwd = func(int) string { return "" }
 	proc.TtyOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	ghUser = func() (string, error) { return "", errors.New("tests ask gh nothing") }
@@ -161,11 +162,11 @@ func usageTestLine(id, reqID string, ts time.Time, in, create, c5, c1, read, out
 
 func mouseModel(t *testing.T) model {
 	t.Helper()
-	var convs []Conversation
+	var convs []transcript.Conversation
 	for i := 0; i < 10; i++ {
-		c := Conversation{SessionID: fmt.Sprint("s", i), LastTimestamp: fmt.Sprintf("2026-09-29T10:%02d:00Z", 59-i)}
+		c := transcript.Conversation{SessionID: fmt.Sprint("s", i), LastTimestamp: fmt.Sprintf("2026-09-29T10:%02d:00Z", 59-i)}
 		for j := 0; j < 40; j++ {
-			c.Messages = append(c.Messages, Message{Role: "user", Text: fmt.Sprintf("message %d", j)})
+			c.Messages = append(c.Messages, transcript.Message{Role: "user", Text: fmt.Sprintf("message %d", j)})
 		}
 		convs = append(convs, c)
 	}
@@ -183,9 +184,9 @@ func chatModel(t *testing.T) model {
 	old := getSessionsDir
 	getSessionsDir = func() string { return dir }
 	t.Cleanup(func() { getSessionsDir = old })
-	items := buildItems([]Conversation{
-		{SessionID: "idle", Title: "Quiet one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []Message{{Role: "user", Text: "hello"}}},
-		{SessionID: "live", Title: "Busy one", LastTimestamp: "2026-09-29T10:00:00Z", Messages: []Message{{Role: "user", Text: "hi"}}},
+	items := buildItems([]transcript.Conversation{
+		{SessionID: "idle", Title: "Quiet one", LastTimestamp: "2026-09-29T11:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hello"}}},
+		{SessionID: "live", Title: "Busy one", LastTimestamp: "2026-09-29T10:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "hi"}}},
 	})
 	m := initialModel(items, "", nil)
 	m.width, m.height = 120, 40

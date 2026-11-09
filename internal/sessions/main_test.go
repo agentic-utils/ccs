@@ -13,7 +13,7 @@ import (
 )
 
 // TestMain keeps tests off the machine: no real logs, settings, tabs,
-// processes, Codex or link handler, as in app's TestMain. A test that needs
+// processes, Codex or link handler, as in tui's TestMain. A test that needs
 // one of these stubs it itself.
 func TestMain(m *testing.M) {
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID"} {

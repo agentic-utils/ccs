@@ -9,7 +9,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/state"
 )
 
-// TestMain keeps tests off the machine's own files and gh, as in app's
+// TestMain keeps tests off the machine's own files and gh, as in tui's
 // TestMain: logs, settings and the watcher's state go to a temp folder.
 func TestMain(m *testing.M) {
 	dir, _ := os.MkdirTemp("", "ccs-test-github")

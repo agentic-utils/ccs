@@ -9,7 +9,7 @@ import (
 )
 
 // TestMain keeps tests off the machine's own files: logs, settings and
-// Codex's data folder go to a temp folder, as in app's TestMain.
+// Codex's data folder go to a temp folder, as in tui's TestMain.
 func TestMain(m *testing.M) {
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID"} {
 		os.Unsetenv(k)

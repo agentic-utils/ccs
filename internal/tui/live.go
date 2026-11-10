@@ -455,7 +455,7 @@ type stopDoneMsg struct {
 	err  error
 }
 
-// stopCmd stops a background session (^X K, pressed twice): claude stop.
+// stopCmd stops a background session (^X K, after y): claude stop.
 // claude attach with its id restarts it.
 func stopCmd(name string, b sessions.BgSession) tea.Cmd {
 	return func() tea.Msg {

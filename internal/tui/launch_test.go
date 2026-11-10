@@ -78,16 +78,21 @@ func TestLaunchAndCloseFromTheList(t *testing.T) {
 		t.Errorf("the launch ran and its failure shows: %q, %q", m.errorMsg, script)
 	}
 
-	// ^X K on a live session in a terminal tab: twice to stop it and close the tab.
+	// ^X K on a live session in a terminal tab asks, then y stops it and closes the tab.
 	m.live = map[string]bool{"s1": true}
 	m.livePIDs = map[string]int{"s1": 999999}
 	m, cmd = chord(m, "k")
-	if cmd != nil || !strings.Contains(m.errorMsg, "again to stop one and close its tab") {
-		t.Fatalf("first ^X K asks again: %q", m.errorMsg)
+	if cmd != nil || m.confirmStop != "s1" || !strings.Contains(m.View(), "Stop \"one\" and close its tab?") {
+		t.Fatalf("^X K asks first: %q", m.confirmStop)
 	}
-	m, cmd = chord(m, "k")
-	if cmd == nil {
-		t.Fatal("second ^X K closes it")
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil || m.confirmStop != "" {
+		t.Fatal("esc cancels the stop")
+	}
+	m, _ = chord(m, "k")
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil || m.confirmStop != "" {
+		t.Fatal("y closes it")
 	}
 	if msg := cmd().(closeDoneMsg); msg.err == nil || !strings.Contains(msg.err.Error(), "no terminal") {
 		t.Errorf("closeSession ran on its pid (no tty in tests): %+v", msg)

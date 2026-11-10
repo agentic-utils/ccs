@@ -511,12 +511,12 @@ func TestHeaderCollapses(t *testing.T) {
 	m.width, m.height = 140, 30
 	full := len(m.previewHeader(conv, ""))
 
-	// ^X D folds it to one line that still has the key facts, and more rows for messages.
+	// ^X F folds it to one line that still has the key facts, and more rows for messages.
 	rows := m.previewMessageRows(conv)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
 	if !m.headerCollapsed {
-		t.Fatal("^X D should fold the header")
+		t.Fatal("^X F should fold the header")
 	}
 	if loadSettings().HeaderOpen {
 		t.Error("the choice should be saved")
@@ -526,7 +526,7 @@ func TestHeaderCollapses(t *testing.T) {
 		t.Errorf("should be one line and a blank row, got %d of %d", len(head), full)
 	}
 	s := strip2(head[0])
-	for _, want := range []string{"fix login", "api", "35% ctx", "^X D"} {
+	for _, want := range []string{"fix login", "api", "35% ctx", "^X F"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary should say %q: %q", want, s)
 		}
@@ -550,8 +550,8 @@ func TestHeaderCollapses(t *testing.T) {
 	if !m.headerCollapsed {
 		t.Error("a click below the header shouldn't toggle it")
 	}
-	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^X D" }) {
-		t.Error("^X D should be in the help popup")
+	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^X F" }) {
+		t.Error("^X F should be in the help popup")
 	}
 }
 

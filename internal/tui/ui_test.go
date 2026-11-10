@@ -402,26 +402,30 @@ func TestUpdateDeleteConfirmation(t *testing.T) {
 	m.width = 100
 	m.height = 30
 
-	// Trigger delete mode with Ctrl+D
-	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
-	m = result.(model)
+	// Ctrl+D alone deletes nothing: it edits the search box, as in Claude Code's prompt.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if m.confirmDelete {
+		t.Error("Ctrl+D no longer deletes; ^X D does")
+	}
+
+	// Trigger delete mode with ^X D
+	m, _ = chord(m, "d")
 	if !m.confirmDelete {
-		t.Error("Ctrl+D should enter delete confirmation mode")
+		t.Error("^X D should enter delete confirmation mode")
 	}
 	if m.deleteIndex != 0 {
 		t.Errorf("deleteIndex should be 0, got %d", m.deleteIndex)
 	}
 
 	// Test cancellation with 'n'
-	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	m = result.(model)
 	if m.confirmDelete {
 		t.Error("'n' should exit delete confirmation mode")
 	}
 
 	// Test cancellation with Esc
-	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
-	m = result.(model)
+	m, _ = chord(m, "d")
 	if !m.confirmDelete {
 		t.Error("should be in delete confirmation mode")
 	}
@@ -432,8 +436,7 @@ func TestUpdateDeleteConfirmation(t *testing.T) {
 	}
 
 	// Test that other keys are ignored in delete mode
-	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
-	m = result.(model)
+	m, _ = chord(m, "d")
 	originalCursor := m.cursor
 	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = result.(model)
@@ -1743,6 +1746,86 @@ func TestShortcutsKeepChordsTogether(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatal("no ^X chords listed")
+	}
+}
+
+func TestCtrlDEditsTheBoxes(t *testing.T) {
+	m := chatModel(t)
+	m.textInput.SetValue("abc")
+	m.textInput.SetCursor(1)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if m.confirmDelete || m.textInput.Value() != "ac" {
+		t.Errorf("^D deletes forward in the search box, never the transcript: %q, confirm=%v", m.textInput.Value(), m.confirmDelete)
+	}
+
+	m.textInput.SetValue("")
+	m.updateFilter()
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
+	m.chatFocus = true
+	m.chatInput.SetValue("xyz")
+	m.chatInput.SetCursor(0)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if m.confirmDelete || m.chatInput.Value() != "yz" {
+		t.Errorf("^D deletes forward in the message box: %q, confirm=%v", m.chatInput.Value(), m.confirmDelete)
+	}
+}
+
+func TestStopAsksFirstAndRefusesWhatItCantStop(t *testing.T) {
+	m := chatModel(t)
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "idle" })
+	m, cmd := chord(m, "k")
+	if cmd != nil || m.confirmStop != "" || !strings.Contains(m.errorMsg, "isn't") {
+		t.Errorf("^X K on a session not running asks nothing: %q", m.errorMsg)
+	}
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
+	m, _ = chord(m, "k")
+	if m.confirmStop != "live" || !m.prompting() {
+		t.Fatal("^X K on a live session in a tab asks first")
+	}
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyDown}, {Type: tea.KeyRunes, Runes: []rune("x")}} {
+		if m, cmd = key(m, k); cmd != nil || m.confirmStop != "live" {
+			t.Errorf("%v neither stops it nor cancels", k)
+		}
+	}
+	if m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}); cmd != nil || m.confirmStop != "" {
+		t.Error("n cancels")
+	}
+}
+
+func TestHelpStatesTheRule(t *testing.T) {
+	m := chatModel(t)
+	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
+	help := strip2(m.helpPopup())
+	for _, l := range keyRule {
+		if !strings.Contains(help, l) {
+			t.Errorf("the ? popup states the rule: missing %q", l)
+		}
+	}
+	// Which group each key sits in: anything that stays, or can't be undone, is a chord.
+	group, in := "", map[string]string{}
+	for _, s := range m.shortcuts() {
+		if s[0] == "" {
+			group = s[1]
+			continue
+		}
+		in[s[0]] = group
+	}
+	for k, g := range map[string]string{
+		"^F": "this session", "^O": "", "^S": "this session",
+		"^X D": "^X then a letter: this session", "^X K": "^X then a letter: this session", "^X X": "^X then a letter: this session", "^X F": "^X then a letter: this session",
+		"^X C": "^X then a letter: view and tools", "^X L": "^X then a letter: view and tools",
+	} {
+		if g != "" && in[k] != g {
+			t.Errorf("%s is under %q, want %q", k, in[k], g)
+		}
+	}
+	if _, ok := in["^D"]; ok {
+		t.Error("^D is no longer a key of its own")
+	}
+	for _, s := range m.shortcuts() {
+		if (s[0] == "^X D" || s[0] == "^X K" || s[0] == "^X X") && !strings.Contains(s[1], "asks first") {
+			t.Errorf("%s can't be undone, so its help says it asks first: %q", s[0], s[1])
+		}
 	}
 }
 

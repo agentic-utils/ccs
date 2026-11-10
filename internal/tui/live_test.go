@@ -318,12 +318,12 @@ func TestBackgroundSessionsOpenWithAttach(t *testing.T) {
 
 	m.resuming = false
 	m, _ = chord(m, "k")
-	if !strings.Contains(m.errorMsg, "again to stop night job") {
-		t.Fatalf("^X K asks for a second press: %q", m.errorMsg)
+	if !strings.Contains(m.View(), "Stop background session \"night job\"?") {
+		t.Fatalf("^X K asks first:\n%s", m.View())
 	}
-	m, cmd = chord(m, "k")
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	if cmd == nil {
-		t.Fatal("the second ^X K stops it")
+		t.Fatal("y stops it")
 	}
 	res, _ := m.Update(cmd())
 	m = res.(model)

@@ -28,7 +28,7 @@ func TestHelpTextListsEveryKey(t *testing.T) {
 	w.Close()
 	os.Stdout = old
 	buf.ReadFrom(r)
-	for _, k := range []string{"Ctrl+S", "Ctrl+X U", "Ctrl+L", "?", "Tab", "Ctrl+X", "Ctrl+R", "Ctrl+X E", "Ctrl+F"} {
+	for _, k := range []string{"Ctrl+S", "Ctrl+X U", "Ctrl+L", "?", "Tab", "Ctrl+X", "Ctrl+R", "Ctrl+X E", "Ctrl+F", "Ctrl+X D", "Ctrl+X F", "Single keys act now and leave nothing behind"} {
 		if !strings.Contains(buf.String(), k) {
 			t.Errorf("--help should list %s", k)
 		}

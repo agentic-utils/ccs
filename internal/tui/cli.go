@@ -102,6 +102,10 @@ Examples:
   ccs buyer -- --plan                Search "buyer", resume with plan mode
 
 Key bindings:
+  Single keys act now and leave nothing behind; Ctrl+X then a letter changes
+  something that stays (a mark, a setting, a file, whether it runs), and the
+  ones that can't be undone ask first.
+
  Moving around
   ↑/↓, Ctrl+P/N   Move through the list
   PgUp/PgDn       Scroll the conversation (the mouse wheel too)
@@ -111,22 +115,23 @@ Key bindings:
  This session
   Enter           Resume it in claude, in a new tab in tmux or iTerm; on one
                   open in claude, go to its tab
-  Ctrl+S          transcript.Message it: type into a box, sent into its conversation
+  Ctrl+S          Message it: type into a box, sent into its conversation
   Ctrl+V          Paste a screenshot from the clipboard into a message to it
   Ctrl+F          Fork it: a new session with the same history, in a new tab
   Ctrl+O          Open a link in view or one of its PRs
-  Ctrl+D          Delete its transcript file; asks first, can't be undone
-  Alt+Up/Down     Move it among the pinned sessions
 
  Ctrl+X then a letter: this session
-  Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
   Ctrl+X P        Pin it to the top of the list (again to unpin)
+  Alt+Up/Down     Move it among the pinned sessions
   Ctrl+X S        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
-  Ctrl+X C        Hide or show the coordinator and the offer to set one up
-  Ctrl+X K        Stop it and close its tab, or stop a background session
-                  (press twice)
-  Ctrl+X X        Shrink its file, keeping the dialogue; loses rewind history
+  Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
+  Ctrl+X F        Its full details, or one line (clicking does too)
+  Ctrl+X X        Shrink its file, keeping the dialogue; asks first, loses
+                  rewind history
+  Ctrl+X K        Stop it and close its tab, or stop a background session;
+                  asks first
+  Ctrl+X D        Delete its transcript file; asks first, can't be undone
 
  Ctrl+X then a letter: view and tools
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
@@ -134,8 +139,8 @@ Key bindings:
   Ctrl+X O        Open the coordinator, setting one up if there is none
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X T        The full table, every column, instead of the sidebar
-  Ctrl+X L        Hide or show the sidebar list, the preview taking its place
-  Ctrl+X D        A session's full details, or one line (clicking does too)
+  Ctrl+X L        Hide or show the session list, the preview taking its place
+  Ctrl+X C        Hide or show the coordinator and the offer to set one up
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
   Ctrl+X A        Switch to a session's tab when it starts waiting on you

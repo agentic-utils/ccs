@@ -60,7 +60,7 @@ type model struct {
 	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
 	grouped         bool              // ^X X G: sessions grouped by folder
 	chordX          bool              // ^X pressed: the next key picks a ccs action
-	headerCollapsed bool              // ^X D or a click: the preview's header is one line
+	headerCollapsed bool              // ^X F or a click: the preview's header is one line
 	selectedID      string            // the selected session, to see when it changes
 	selectedAt      time.Time         // when it was selected: its preview waits previewDebounce
 	marks           *sessionMarks     // when each session was last looked at (done)
@@ -103,8 +103,7 @@ type model struct {
 	hosts           map[string]string             // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
 	bg              map[string]sessions.BgSession // background sessions (claude --bg), opened with claude attach
 	agentsAt        time.Time                     // when claude agents was last asked
-	stopArmed       string                        // ^X K pressed once on this session: again stops it
-	stopArmedAt     time.Time
+	confirmStop     string                        // ^X K asked whether to stop this session: y stops it
 
 	// transcript.Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
@@ -367,9 +366,22 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 	return m
 }
 
-// prompting reports an open rename, delete or prune prompt.
+// stoppable reports whether ^X K can stop the session: a background one, or
+// a live one in a terminal tab (an app's has no tab to close).
+func (m model) stoppable(id string) bool {
+	if !m.live[id] {
+		return false
+	}
+	if _, bg := m.bg[id]; bg {
+		return true
+	}
+	_, live := m.livePIDs[id]
+	return live && m.hostedApp(id) == ""
+}
+
+// prompting reports an open rename, delete, prune or stop prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune || m.launchStep > 0
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.launchStep > 0
 }
 
 func initialModel(items []listItem, filterQuery string, claudeFlags []string) model {
@@ -1504,7 +1516,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
-		if k == "^x d" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x f" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			m.toggleHeader()
 			return m, nil
@@ -1535,25 +1547,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
-			conv := m.filtered[m.cursor].conv
-			b, bg := m.bg[conv.SessionID]
-			pid, live := m.livePIDs[conv.SessionID]
-			switch {
-			case !m.live[conv.SessionID] || !bg && (!live || m.hostedApp(conv.SessionID) != ""):
+			if conv := m.filtered[m.cursor].conv; m.stoppable(conv.SessionID) {
+				m.confirmStop = conv.SessionID
+			} else {
 				m.errorMsg = "^X K stops a live session in a terminal tab, or a background one; this one isn't"
-			case m.stopArmed != conv.SessionID || time.Since(m.stopArmedAt) > 5*time.Second:
-				m.stopArmed, m.stopArmedAt = conv.SessionID, time.Now()
-				if bg {
-					m.errorMsg = "^X K again to stop " + m.sessionName(conv)
-				} else {
-					m.errorMsg = "^X K again to stop " + m.sessionName(conv) + " and close its tab"
-				}
-			case bg:
-				m.stopArmed = ""
-				return m, stopCmd(m.sessionName(conv), b)
-			default:
-				m.stopArmed = ""
-				return m, closeCmd(m.sessionName(conv), pid)
 			}
 			return m, nil
 		}
@@ -1769,6 +1766,28 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // Ignore all other keys
 		}
 
+		// Handle stop confirmation mode
+		if id := m.confirmStop; id != "" {
+			switch msg.String() {
+			case "y", "Y":
+				m.confirmStop = ""
+				i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+				if i < 0 || !m.stoppable(id) { // it ended, or went, while asking
+					m.errorMsg = "It isn't running any more"
+					return m, nil
+				}
+				conv := m.filtered[i].conv
+				if b, bg := m.bg[id]; bg {
+					return m, stopCmd(m.sessionName(conv), b)
+				}
+				return m, closeCmd(m.sessionName(conv), m.livePIDs[id])
+			case "n", "N", "esc":
+				m.confirmStop = ""
+				return m, nil
+			}
+			return m, nil // Ignore all other keys
+		}
+
 		// Handle prune confirmation mode
 		if m.confirmPrune {
 			switch msg.String() {
@@ -1815,7 +1834,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.focusCmd(m.filtered[m.cursor].conv)
 				}
 				return m, m.sendCmd()
-			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+c", "ctrl+f", "ctrl+d", "ctrl+r", "ctrl+]", "ctrl+\\":
+			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+c", "ctrl+f", "ctrl+r", "ctrl+]", "ctrl+\\":
 				// fall through to the list's handling below
 			default:
 				var cmd tea.Cmd
@@ -1880,7 +1899,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, true)
 
-		case "ctrl+d":
+		case "^x d":
 			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindCodex {
 				m.note("A Codex session: ccs leaves Codex's files alone (codex delete removes one)")
 				return m, nil
@@ -2051,6 +2070,15 @@ func (m model) overPopups() []popup {
 	}
 }
 
+// keyRule is how ccs decides between a single key and a ^X chord, at the
+// top of the ? popup and --help: a single key does something now and leaves
+// nothing behind; a chord changes something that stays. AGENTS.md says why.
+var keyRule = []string{
+	"single keys act now and leave nothing behind; ^X then a letter changes",
+	"something that stays (a mark, a setting, a file, whether it runs), and",
+	"the ones that can't be undone ask first",
+}
+
 // Compact key labels, shared by every hint so they stay consistent.
 const (
 	keyEnter = "enter" // words, not ⏎ ⇥: those draw wider than a cell in some fonts
@@ -2102,13 +2130,11 @@ func (m model) shortcuts() [][2]string {
 	}
 	add(sel, "^F", "fork it: a new session with the same history, in a new tab")
 	add(sel && len(m.linksWithPRs()) > 0, "^O", "open a link in view or one of its PRs")
-	add(sel, "^D", "delete its transcript file; asks first, can't be undone")
-	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned sessions")
 
 	group("^X then a letter: this session")
-	add(sel && !live, "^X E", "edit its name, as /rename does")
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top of the list")
 	add(pinned, "^X P", "unpin it")
+	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned sessions")
 	if sel && m.marks != nil {
 		if m.putAway(m.filtered[m.cursor].conv) != awake {
 			add(true, "^X S", "bring it back from settled or snoozed")
@@ -2116,19 +2142,19 @@ func (m model) shortcuts() [][2]string {
 			add(true, "^X S", "put it away: settle until its next message, or snooze it")
 		}
 	}
-	add(!m.hideCoord, "^X C", "hide the coordinator: its row, and the offer to set one up")
-	add(m.hideCoord, "^X C", "show the coordinator again")
+	add(sel && !live, "^X E", "edit its name, as /rename does")
+	add(sel && m.headerCollapsed, "^X F", "show its full details above the conversation (or click the line)")
+	add(sel && !m.headerCollapsed, "^X F", "fold its details to one line (or click them)")
+	add(sel, "^X X", "shrink its file, keeping the dialogue; asks first, loses /rewind")
 	if sel {
 		id := m.filtered[m.cursor].conv.SessionID
-		if _, bg := m.bg[id]; bg && live {
-			add(true, "^X K", "stop this background session (press twice)")
-		} else if live && m.hostedApp(id) == "" {
-			add(true, "^X K", "stop this session and close its tab (press twice)")
+		if _, bg := m.bg[id]; bg && m.stoppable(id) {
+			add(true, "^X K", "stop this background session; asks first")
+		} else if m.stoppable(id) {
+			add(true, "^X K", "stop this session and close its tab; asks first")
 		}
 	}
-	add(sel, "^X X", "shrink its file, keeping the dialogue; loses rewind history")
-	add(sel && m.headerCollapsed, "^X D", "show its full details above the conversation (or click the line)")
-	add(sel && !m.headerCollapsed, "^X D", "fold its details to one line (or click them)")
+	add(sel, "^X D", "delete its transcript file; asks first, can't be undone")
 
 	group("^X then a letter: view and tools")
 	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you: answer, open or snooze them")
@@ -2139,7 +2165,9 @@ func (m model) shortcuts() [][2]string {
 	add(!m.table, "^X T", "the full table, every column")
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.table && !m.hideSidebar, "^X L", "hide the list, the preview taking the whole width (↑↓ still move)")
-	add(!m.table && m.hideSidebar, "^X L", "show the list again")
+	add(!m.table && m.hideSidebar, "^X L", "show the list beside the preview again")
+	add(!m.hideCoord, "^X C", "hide the coordinator: its row, and the offer to set one up")
+	add(m.hideCoord, "^X C", "show the coordinator again")
 	add(!showHeadless, "^X H", "show headless runs (claude -p, codex exec)")
 	add(showHeadless, "^X H", "hide headless runs")
 	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
@@ -2244,7 +2272,11 @@ func legendLines() string {
 
 func (m model) helpPopup() string {
 	var b strings.Builder
-	b.WriteString("\033[1mshortcuts\033[0m\n\n")
+	b.WriteString("\033[1mshortcuts\033[0m\n")
+	for _, l := range keyRule {
+		b.WriteString("\033[90m" + l + "\033[0m\n")
+	}
+	b.WriteString("\n")
 	for i, s := range m.shortcuts() {
 		if s[0] == "" { // a group's heading
 			if i > 0 {
@@ -2358,7 +2390,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "coordinator", "D", "details", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "L", "list", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "coordinator", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "open coordinator", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}
@@ -2378,6 +2410,17 @@ func (m model) viewScreen() string {
 			Render(fmt.Sprintf("Prune \"%s\"? %s -> %s, saves %s (keeps dialogue).",
 				transcript.Truncate(transcript.GetTopic(conv), 32), transcript.FormatBytes(conv.Size), transcript.FormatBytes(conv.Size-m.pruneSaved), transcript.FormatBytes(m.pruneSaved))) +
 			"  \033[90m" + hints("y", "prune", "n/"+keyEsc, "cancel") + "\033[0m"
+		sections = append(sections, "  "+inputSection)
+	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmStop != "" && it.conv.SessionID == m.confirmStop }); i >= 0 {
+		conv := m.filtered[i].conv
+		what := "Stop %q and close its tab?"
+		if _, bg := m.bg[conv.SessionID]; bg {
+			what = "Stop background session %q?"
+		}
+		inputSection = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")). // Red
+			Render(fmt.Sprintf(what, transcript.Truncate(m.sessionName(conv), 50))) +
+			"  \033[90m" + hints("y", "stop", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if m.confirmDelete {
 		conv := m.filtered[m.deleteIndex].conv
@@ -2964,7 +3007,7 @@ type settings struct {
 	HideCoordinator bool `json:"hide_coordinator,omitempty"`
 	// HideSidebar (^X L): the sidebar layout shows the preview alone.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
-	// HeaderOpen (^X D): the preview's full details, one line unless chosen.
+	// HeaderOpen (^X F): the preview's full details, one line unless chosen.
 	HeaderOpen bool `json:"header_open,omitempty"`
 	// AutoUpdate (^X I) installs new versions once you're away instead of
 	// offering them. Off unless chosen; always written once known.

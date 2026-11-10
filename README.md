@@ -183,8 +183,9 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 ### Keybindings
 
 - Text boxes (the search, the message box) edit like Claude Code's prompt: `Ctrl+A`/`Ctrl+E` start/end, `Ctrl+K`/`Ctrl+U` delete to the end/start, `Ctrl+W` the word before, `Ctrl+Y` puts back what they deleted, `Alt+B`/`Alt+F` move by word. So ccs's own actions are `Ctrl+X` then a letter (`Ctrl+X Ctrl+W` works too)
+- The rule for which is which: single keys act now and leave nothing behind (move, open, message, fork, refresh); `Ctrl+X` then a letter changes something that stays (a mark, a setting, a file, whether a session runs), and the ones that can't be undone (`Ctrl+X D` delete, `Ctrl+X K` stop, `Ctrl+X X` shrink) ask first
 - `↑/↓` or `Ctrl+P/N` - Move through the list
-- Background sessions (`claude --bg`) show `bg <state>` on the grey row: Enter opens one with `claude attach` in a new tmux window or iTerm tab, and `Ctrl+X K` twice stops it (on a session in a terminal tab, `Ctrl+X K` twice stops it and closes the tab). One started from another session's `claude --bg` sits under it
+- Background sessions (`claude --bg`) show `bg <state>` on the grey row: Enter opens one with `claude attach` in a new tmux window or iTerm tab, and `Ctrl+X K` stops it once you say `y` (on a session in a terminal tab, it stops it and closes the tab). One started from another session's `claude --bg` sits under it
 - Messages between sessions show at both ends: the sender's preview shows each `SendMessage` as `To <session>` (`✓ arrived` once it's in that session's transcript), the recipient's `From <session>`
 - A live session run by an app without a terminal shows `in <app>`. One in T3 Code opens in T3 Code with Enter, at its thread; any other app gets a hollow `○`, since ccs can't switch to it, and Enter says to open it there. Messaging it (`Ctrl+S`) and forking it (`Ctrl+F`) work either way
 - Each open session has a circle, `●` (or `○` in an app ccs can't open), coloured by its state: magenta waiting on you, light magenta asked you something, cyan done, green idle, amber busy. Under a section heading, which already names the state, it shows only when it adds something: a done session, one in another app, or a nested one in a different state; pinned sessions always have it
@@ -199,12 +200,12 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Ctrl+X C` - Hide the coordinator: its section and row, and the offer to set one up. Again to show it. Kept across restarts. `Ctrl+X O` and `ccs coordinator` still open it
 - `Ctrl+X S` - Put the selected session away: settle it (until its next message) or snooze it (an hour, 4 hours, tomorrow 9:00). It moves to the settled or snoozed section at the bottom, and comes back early if it waits on you. Again to bring it back
 - `Ctrl+X G` - Group the list by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^X T layout, and reopens the way you left it
-- `Ctrl+X D` - Fold the details above the conversation to one line (name, project, model, context %, PR, task and subagent counts, size), or show them in full; clicking them does the same, unless the click is on a link. One line by default, remembered across restarts
+- `Ctrl+X F` - Fold the details above the conversation to one line (name, project, model, context %, PR, task and subagent counts, size), or show them in full; clicking them does the same, unless the click is on a link. One line by default, remembered across restarts
 - `Ctrl+X T` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view
 - `Ctrl+X L` - In the sidebar layout, hide the list so the conversation takes the whole width; `↑`/`↓` still move between sessions, and the details above the conversation name the one you're on. The header shows `^X L list off` while it is hidden. Again to show it. Kept across restarts
 - `Enter` - Resume it in claude, in a new tab in tmux or iTerm. On one already open in `claude` (`●`), go to its iTerm tab / tmux pane instead
 - `Ctrl+F` - Fork it: a new session with the same history, in a new tab (`claude --resume <id> --fork-session`); the original is left as it was
-- `Ctrl+D` - Delete its transcript file; asks first, can't be undone (the file is removed, not moved to the bin)
+- `Ctrl+X D` - Delete its transcript file; asks first, can't be undone (the file is removed, not moved to the bin)
 - `Ctrl+X N` - Start a new session in an iTerm tab or tmux window, in the selected session's folder: type its name, Enter, then its brief, Enter (`ccs launch`)
 - `Ctrl+X O` - Open the coordinator, resuming it if it isn't running, or offer to set one up if there is none (see [The coordinator](#the-coordinator))
 - `Ctrl+X E` - Edit its name, as `/rename` does (not while it's open in `claude`; use `/rename` there)

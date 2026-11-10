@@ -214,9 +214,9 @@ func TestCodexRowsAndPreview(t *testing.T) {
 
 func TestCodexSessionsRefuseRenameDeletePrune(t *testing.T) {
 	conv := transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, FilePath: "/nowhere", Messages: []transcript.Message{{Role: "user", Text: "x"}}}
-	for _, k := range []tea.KeyMsg{{Type: tea.KeyCtrlD}} {
+	{
 		m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
-		m, _ = key(m, k)
+		m, _ = chord(m, "d")
 		if m.confirmDelete || !strings.Contains(m.errorMsg, "Codex") {
 			t.Errorf("delete: %q", m.errorMsg)
 		}

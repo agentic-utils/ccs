@@ -897,7 +897,7 @@ func (m model) previewHeader(conv transcript.Conversation, query string) []strin
 	if m.headerCollapsed {
 		return []string{m.headerSummary(conv, query), ""}
 	}
-	header := []string{"\033[1;33mProject:\033[0m " + highlight(conv.Cwd, query) + " \033[90m▾ ^X D\033[0m"}
+	header := []string{"\033[1;33mProject:\033[0m " + highlight(conv.Cwd, query) + " \033[90m▾ ^X F\033[0m"}
 	if conv.Title != "" {
 		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
 	}
@@ -912,7 +912,7 @@ func (m model) previewHeader(conv transcript.Conversation, query string) []strin
 	return append(header, "")
 }
 
-// headerSummary is the header as one line (^X D): the session's name and where
+// headerSummary is the header as one line (^X F): the session's name and where
 // it is, then what the full header would make you look for: an API error, its
 // model and context, its PRs, running tasks and subagents, and its size.
 func (m model) headerSummary(conv transcript.Conversation, query string) string {
@@ -944,7 +944,7 @@ func (m model) headerSummary(conv transcript.Conversation, query string) string 
 	parts = append(parts, fmt.Sprintf("%s · %d msgs", transcript.FormatBytes(conv.Size), len(conv.Messages)))
 	// The topic gets what's left beside the facts and the time (whenWidth), so
 	// a long one or a narrow pane can't push the counts off the line.
-	const sep, hint, lead = " \033[90m·\033[0m ", " \033[90m^X D\033[0m", "\033[90m▸\033[0m "
+	const sep, hint, lead = " \033[90m·\033[0m ", " \033[90m^X F\033[0m", "\033[90m▸\033[0m "
 	rest := strings.Join(parts, sep)
 	topic := transcript.Truncate(transcript.GetTopic(conv), min(max(m.paneWidth()-1-whenWidth-ansi.StringWidth(lead+sep+rest+hint), 12), 40))
 	return ansi.Truncate(lead+highlight(topic, query)+sep+rest+hint, max(m.paneWidth()-1, 20), "…") + "\033[0m"

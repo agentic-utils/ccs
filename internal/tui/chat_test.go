@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,12 +25,16 @@ func TestMessageBoxFocusRules(t *testing.T) {
 	if m.chatFocus || m.chatRows() != 0 {
 		t.Fatal("a non-live selection has no message box")
 	}
-	// Moving onto the live session shows its box but leaves typing in the search.
+	// Moving onto the live session shows its box and puts typing in it.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
-	if m.chatFocus || m.chatRows() == 0 {
-		t.Fatal("moving onto a live session should show its box without focusing it")
+	if !m.chatFocus || m.chatRows() == 0 {
+		t.Fatal("moving onto a live session should show its box and focus it")
 	}
-	// ^S focuses it (Enter opens its tab).
+	// After Esc back to the search, ^S focuses it again (Enter opens its tab).
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.chatFocus {
+		t.Fatal("esc should leave the message box for the search")
+	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlS})
 	if !m.chatFocus {
 		t.Fatal("^S on a live session should focus its message box")
@@ -54,8 +59,8 @@ func TestMessageBoxFocusRules(t *testing.T) {
 		t.Error("clicking the search row should return focus to the search")
 	}
 	// Moving off the live session takes focus back to the search.
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp})
+	m = moveTo(t, m, "live")
+	m = moveTo(t, m, "idle")
 	if m.chatFocus {
 		t.Error("a non-live selection must not keep focus in a message box")
 	}
@@ -74,6 +79,167 @@ func TestTypingSearchNeverLandsInMessageBox(t *testing.T) {
 	if m.chatFocus || m.chatInput.Value() != "" || m.textInput.Value() != "busy one" {
 		t.Errorf("search typing leaked into the message box: focus=%v box=%q search=%q", m.chatFocus, m.chatInput.Value(), m.textInput.Value())
 	}
+}
+
+// twoLive is chatModel with every session live, so the selection can move
+// from one message box to another.
+func twoLive(t *testing.T) model {
+	m := chatModel(t)
+	m.live["idle"] = true
+	m.livePIDs["idle"] = os.Getpid()
+	return m
+}
+
+// moveTo moves the selection onto session id with the arrow keys, as the user
+// would, stepping off it first if it's already selected.
+func moveTo(t *testing.T, m model, id string) model {
+	t.Helper()
+	want := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+	if want < 0 || len(m.filtered) < 2 {
+		t.Fatalf("%q isn't listed with another session to move from", id)
+	}
+	if m.cursor == want {
+		dir := tea.KeyDown
+		if want == len(m.filtered)-1 {
+			dir = tea.KeyUp
+		}
+		m, _ = key(m, tea.KeyMsg{Type: dir})
+	}
+	for range len(m.filtered) {
+		if m.selectedSession() == id {
+			return m
+		}
+		dir := tea.KeyDown
+		if m.cursor > want {
+			dir = tea.KeyUp
+		}
+		m, _ = key(m, tea.KeyMsg{Type: dir})
+	}
+	if m.selectedSession() != id {
+		t.Fatalf("couldn't reach %q, at %q", id, m.selectedSession())
+	}
+	return m
+}
+
+func TestScrollingKeepsTypingInTheMessageBox(t *testing.T) {
+	m := twoLive(t)
+	listTop, _, _ := m.listLayout()
+	moves := []struct {
+		name string
+		move func(model) model
+	}{
+		{"down", func(m model) model { m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown}); return m }},
+		{"up", func(m model) model { m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp}); return m }},
+		{"ctrl+n", func(m model) model { m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlN}); return m }},
+		{"ctrl+p", func(m model) model { m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlP}); return m }},
+		{"wheel down", func(m model) model {
+			res, _ := m.Update(tea.MouseMsg{X: 2, Y: listTop + 1, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+			return res.(model)
+		}},
+		{"wheel up", func(m model) model {
+			res, _ := m.Update(tea.MouseMsg{X: 2, Y: listTop + 1, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+			return res.(model)
+		}},
+	}
+	for _, mv := range moves {
+		before := m.selectedSession()
+		m = mv.move(m)
+		if m.selectedSession() == before {
+			t.Fatalf("%s: setup, the selection didn't move from %q", mv.name, before)
+		}
+		if !m.chatFocus {
+			t.Fatalf("%s onto live %q left typing in the search", mv.name, m.selectedSession())
+		}
+		// Page keys scroll the conversation and keep the box focused.
+		for _, k := range []tea.KeyType{tea.KeyPgUp, tea.KeyPgDown} {
+			if m, _ = key(m, tea.KeyMsg{Type: k}); !m.chatFocus {
+				t.Fatalf("%s then %v: the message box lost focus", mv.name, k)
+			}
+		}
+	}
+}
+
+func TestTypingAfterScrollingGoesToTheSelectedSession(t *testing.T) {
+	m := twoLive(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello there")})
+	if m.chatInput.Value() != "hello there" || m.textInput.Value() != "" {
+		t.Fatalf("box=%q search=%q", m.chatInput.Value(), m.textInput.Value())
+	}
+	// Moving on keeps that draft with its session and types into the next one.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.selectedSession() != "idle" || m.chatInput.Value() != "x" || m.chatDrafts["live"] != "hello there" || m.textInput.Value() != "" {
+		t.Errorf("sel=%q box=%q drafts=%v search=%q", m.selectedSession(), m.chatInput.Value(), m.chatDrafts, m.textInput.Value())
+	}
+}
+
+func TestSearchTakesTypingOnlyWhenAsked(t *testing.T) {
+	m := twoLive(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	// Esc in the box asks for the search: typing filters again.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("busy")})
+	if m.chatFocus || m.textInput.Value() != "busy" || len(m.filtered) != 1 {
+		t.Fatalf("esc then typing should search: focus=%v search=%q rows=%d", m.chatFocus, m.textInput.Value(), len(m.filtered))
+	}
+	// So does a click on the search row.
+	m.textInput.SetValue("")
+	m.updateFilter()
+	m = moveTo(t, m, "live")
+	if !m.chatFocus {
+		t.Fatal("setup: moving onto a live session focuses its box")
+	}
+	m = m.handleMouse(tea.MouseMsg{Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.chatFocus || m.textInput.Value() != "q" {
+		t.Errorf("a click on the search row should search: focus=%v search=%q", m.chatFocus, m.textInput.Value())
+	}
+}
+
+func TestScrollingWithoutAMessageBoxSearches(t *testing.T) {
+	t.Run("no sessions", func(t *testing.T) {
+		m := initialModel(nil, "", nil)
+		m.width, m.height = 120, 40
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		if m.chatFocus || m.textInput.Value() != "a" {
+			t.Errorf("focus=%v search=%q", m.chatFocus, m.textInput.Value())
+		}
+	})
+	t.Run("not open in claude", func(t *testing.T) {
+		m := chatModel(t) // "idle" first, not live
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp})
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+		if m.chatFocus || m.textInput.Value() != "q" {
+			t.Errorf("a session with no box should leave typing in the search: focus=%v search=%q", m.chatFocus, m.textInput.Value())
+		}
+	})
+	t.Run("box hidden behind its question", func(t *testing.T) {
+		m := chatModel(t)
+		m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "input needed")})
+		m.cursor = 0
+		m = moveTo(t, m, "live")
+		if !m.boxHidden() || m.chatFocus {
+			t.Errorf("a waiting session's box is hidden, so it can't take typing: hidden=%v focus=%v", m.boxHidden(), m.chatFocus)
+		}
+	})
+	t.Run("coordinator hidden with ^X C", func(t *testing.T) {
+		coordinatorFixture(t)
+		m := chatModel(t)
+		coordinatorRecord{SessionID: "live"}.save()
+		m.syncCoordinator()
+		m = moveTo(t, m, "live")
+		if !m.chatFocus {
+			t.Fatal("setup: the live coordinator's box is focused")
+		}
+		m, _ = chord(m, "c") // hides it; the selection lands on the session with no box
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+		if m.selectedSession() != "idle" || m.chatFocus || m.textInput.Value() != "q" {
+			t.Errorf("sel=%q focus=%v search=%q", m.selectedSession(), m.chatFocus, m.textInput.Value())
+		}
+	})
 }
 
 func TestSendViaSocketExactBytes(t *testing.T) {

@@ -51,12 +51,13 @@ func (m model) selectedLive() bool {
 }
 
 // selectionMoved runs when the user moves the selection (keys, wheel,
-// click): landing on a live session puts typing in its message box. Never
-// called for list changes caused by typing a search, so a search can't end
-// up in the message box.
-// The message box takes focus only on Enter, never by moving the selection.
+// click): landing on a live session puts typing in its message box, and
+// anywhere else (no box, or one hidden behind its question) in the search.
+// Never called for list changes caused by typing a search, so a search can't
+// end up in the message box; the search gets typing back only when asked
+// (Esc in the box, or a click on the search row).
 func (m *model) selectionMoved() {
-	m.chatFocus = false
+	m.chatFocus = m.selectedLive() && !m.boxHidden() && !m.showUsage
 }
 
 // syncChatDraft gives the message box the selected session's draft, keeping

@@ -30,14 +30,14 @@ func TestMessageBoxFocusRules(t *testing.T) {
 	if !m.chatFocus || m.chatRows() == 0 {
 		t.Fatal("moving onto a live session should show its box and focus it")
 	}
-	// After Esc back to the search, ^S focuses it again (Enter opens its tab).
+	// After Esc back to the search, Enter focuses it again.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.chatFocus {
 		t.Fatal("esc should leave the message box for the search")
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.chatFocus {
-		t.Fatal("^S on a live session should focus its message box")
+		t.Fatal("enter on a live session should focus its message box")
 	}
 	// Typed keys go to the box, not the search.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("yo")})
@@ -401,7 +401,76 @@ func TestIdleLiveSelectionStaysStatic(t *testing.T) {
 	}
 }
 
-func TestCtrlSReachesMessageBoxByKeyboard(t *testing.T) {
+// enterReady is chatModel on its live session with typing back in the search,
+// as after Esc or at startup: where Enter used to go straight to its tab.
+func enterReady(t *testing.T) model {
+	t.Helper()
+	m := moveTo(t, chatModel(t), "live")
+	m.chatFocus = false
+	return m
+}
+
+func TestEnterThenEnterOnAnEmptyBoxGoesToItsTab(t *testing.T) {
+	m := enterReady(t)
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.chatFocus || m.resuming {
+		t.Fatalf("the first enter should only focus the message box (focus %v)", m.chatFocus)
+	}
+	if !strings.Contains(strip2(m.View()), "enter its tab") {
+		t.Error("the header should say enter on the empty box goes to its tab")
+	}
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.chatFocus || cmd == nil || !m.resuming {
+		t.Error("enter on the empty box should go to the session's tab")
+	}
+}
+
+func TestEnterWithTextSendsAndStaysInTheBox(t *testing.T) {
+	m := enterReady(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi there")})
+	if !strings.Contains(strip2(m.View()), "enter send") {
+		t.Error("with text in the box the header should say enter sends")
+	}
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || !m.sending || m.resuming || !m.chatFocus {
+		t.Errorf("enter with text should send and stay in the box (sending %v, resuming %v, focus %v)", m.sending, m.resuming, m.chatFocus)
+	}
+	if m.chatInput.Value() != "" {
+		t.Errorf("the box should empty once sent, holds %q", m.chatInput.Value())
+	}
+}
+
+func TestEscLeavesTheBoxThatEnterFocused(t *testing.T) {
+	m := enterReady(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.chatFocus || cmd != nil {
+		t.Error("esc should leave the message box for the search")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.textInput.Value() != "x" || m.chatInput.Value() != "" {
+		t.Errorf("typing after esc goes to the search: search %q box %q", m.textInput.Value(), m.chatInput.Value())
+	}
+}
+
+func TestEnterWithoutAMessageBoxGoesStraightOn(t *testing.T) {
+	// Waiting on a menu: the box is hidden behind its question, so Enter opens the tab.
+	m := enterReady(t)
+	m.setStat("live", sessions.SessionStat{Status: "waiting", Since: time.Now()})
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.chatFocus || cmd == nil || !m.resuming {
+		t.Error("enter on a session waiting on a menu should go to its tab")
+	}
+	// Not live: Enter resumes it, as before.
+	m = moveTo(t, chatModel(t), "idle")
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.chatFocus || cmd == nil || !m.resuming {
+		t.Error("enter on a session that isn't live should resume it")
+	}
+}
+
+func TestEnterReachesMessageBoxByKeyboard(t *testing.T) {
 	dir := t.TempDir()
 	old := sessions.GetSessionsDir
 	sessions.GetSessionsDir = func() string { return dir }
@@ -410,22 +479,20 @@ func TestCtrlSReachesMessageBoxByKeyboard(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.live = map[string]bool{"s": true}
 	m.chatFocus = false // e.g. after Esc back to the search
+	// ^S was the old way in; Enter is the only one now, so ^S does nothing.
 	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if m = res.(model); m.chatFocus || m.textInput.Value() != "" {
+		t.Fatal("ctrl+s should do nothing")
+	}
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if m = res.(model); !m.chatFocus {
-		t.Fatal("ctrl+s should move typing into the live session's message box")
+		t.Fatal("enter should move typing into the live session's message box")
 	}
 	// Ctrl+J/K scroll the conversation from the message box too.
 	m.previewScroll = 0
 	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	if m = res.(model); m.chatInput.Value() != "" {
 		t.Error("ctrl+k in the message box should scroll, not edit the text")
-	}
-	// Not live: explain instead of focusing.
-	m.live = map[string]bool{}
-	m.chatFocus = false
-	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	if m = res.(model); m.chatFocus || m.errorMsg == "" {
-		t.Error("ctrl+s on a session that isn't live should say why")
 	}
 }
 

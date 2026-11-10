@@ -30,7 +30,11 @@ func TestEnterOnLiveSessionOpensItsTab(t *testing.T) {
 
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.live = map[string]bool{"s": true}
-	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // the first puts typing in its message box
+	if m = res.(model); !m.chatFocus || m.resuming {
+		t.Fatal("the first enter on a live session should focus its message box, nothing else")
+	}
+	res, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = res.(model)
 	if m.selected != nil || m.quitting || cmd == nil {
 		t.Fatal("enter on a live session must focus it (in the background), not resume a second copy")

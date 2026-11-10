@@ -1051,7 +1051,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resuming = false
 		if msg.err != nil {
 			state.LogActivity("couldn't open in T3 Code: %v", msg.err)
-			m.note("In T3 Code: open it there · ^S messages it")
+			m.note("In T3 Code: open it there, or message it from its box here")
 		}
 		return m, nil
 
@@ -1901,18 +1901,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch k {
-		case "ctrl+s":
-			// Keyboard way into the message box of the selected live session
-			// (clicking it is the mouse way).
-			if m.boxHidden() && !m.showUsage {
-				m.errorMsg = "It's waiting on you: answer its question first (" + keyEnter + " opens its tab)"
-			} else if m.selectedLive() && !m.showUsage {
-				m.chatFocus = true
-			} else if len(m.filtered) > 0 {
-				m.errorMsg = "Only a session open in claude (●) can receive messages"
-			}
-			return m, nil
-
 		case "esc":
 			// Esc clears the search and goes back to the top of the list;
 			// Ctrl+C quits.
@@ -1944,6 +1932,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.coordBusy && m.filtered[m.cursor].conv.SessionID == m.coordID { // it's already being opened
 				m.errorMsg = "Still opening the coordinator..."
+				return m, nil
+			}
+			// Two steps on a session with a message box: this Enter puts typing
+			// in the box, and Enter on the empty box goes to its tab. One waiting
+			// on a menu or prompt has no box, so Enter goes straight there.
+			if m.selectedLive() && !m.boxHidden() {
+				m.chatFocus = true
 				return m, nil
 			}
 			// A live session's tab is focused, not resumed again (resumeCmd checks).
@@ -2178,10 +2173,11 @@ func (m model) shortcuts() [][2]string {
 		add(true, keyEnter, "send the message; on an empty box, go to its tab")
 		add(true, keyEsc, "leave the message box for the search")
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
+	case live && m.boxHidden():
+		add(true, keyEnter, "go to its tab to answer it")
 	case live:
-		add(true, keyEnter, "go to its tab")
-		add(!m.boxHidden(), "^S", "message it: type into a box, sent into its conversation")
-		add(!m.boxHidden(), "^V", "paste a screenshot from the clipboard into a message to it")
+		add(true, keyEnter, "type in its message box; enter again on the empty box goes to its tab")
+		add(true, "^V", "paste a screenshot from the clipboard into a message to it")
 	default:
 		add(sel, keyEnter, "resume it in claude, in a new tab in tmux or iTerm")
 	}
@@ -2290,7 +2286,7 @@ func toggleHint(key, label string, on bool) string {
 	return "\033[1m" + key + "\033[22m " + label + " " + state
 }
 
-// hints renders key/label pairs as "enter resume  ^S msg", keys in bold so
+// hints renders key/label pairs as "enter resume  ^F fork", keys in bold so
 // "enter update" reads as key then action.
 func hints(pairs ...string) string {
 	parts := make([]string, 0, len(pairs)/2)
@@ -2455,7 +2451,11 @@ func (m model) viewScreen() string {
 	} else if m.chordX { // ^X pressed: what the next key does
 		pairs, keep = []string{"A", "auto-focus", "C", "coordinator", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "open coordinator", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
-		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll", "?", "help"}, 1 // ? opens help on an empty box, as on the search
+		send := "send"
+		if strings.TrimSpace(m.chatInput.Value()) == "" {
+			send = "its tab"
+		}
+		pairs, keep = []string{keyEnter, send, keyEsc, "search", "pgup/dn", "scroll", "?", "help"}, 1 // ? opens help on an empty box, as on the search
 	}
 	b.WriteString(headerLine(tableWidth, title, strings.Join(toggles, "  "), pairs, keep) + "\n")
 

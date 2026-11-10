@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,8 +163,10 @@ func CloseGracefully(name string, timeout time.Duration) (string, error) {
 		switch cur, err := ReadSessionFile(pid); {
 		case !proc.PIDAlive(pid):
 			how = "it exited by itself"
-		case err != nil || cur.SessionID != f.SessionID:
+		case errors.Is(err, fs.ErrNotExist) || err == nil && cur.SessionID != f.SessionID:
 			how = "its session ended"
+		case err != nil:
+			// Caught mid-rewrite (written in place, so briefly empty): look again.
 		default:
 			if path == "" {
 				path = transcriptOf(f.SessionID)

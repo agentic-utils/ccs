@@ -66,6 +66,9 @@ Usage: ccs [filter] [-- claude-flags...]
                             (a Claude Code or Codex session)
        ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline, --claude-session-id / --codex-session-id <id>);
                             --merged lists what merged and which session merged it
+       ccs depends <PR> --after <PR>   Record that a PR must not merge before another has; ccs watch
+                            and ccs prs then show it blocked and say if it merges early
+                            (ccs depends lists them, --drop forgets one)
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
 
@@ -191,6 +194,9 @@ func Main(v string) {
 	}
 	if len(args) > 0 && args[0] == "prs" {
 		os.Exit(github.RunPRs(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "depends" {
+		os.Exit(github.RunDepends(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "sessions" {
 		// Its --all is its own (sessions not running too), over the list's

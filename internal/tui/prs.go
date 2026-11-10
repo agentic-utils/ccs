@@ -271,6 +271,7 @@ func (m *model) applyPRs(msg prDoneMsg) {
 		m.prErr = transcript.Truncate(strings.TrimSpace(msg.err.Error()), 80)
 	}
 	for u, p := range msg.infos {
+		p.BlockedBy = github.BlockedNow(u)
 		m.prs[u] = p
 	}
 }

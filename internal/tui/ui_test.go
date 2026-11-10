@@ -977,10 +977,10 @@ func TestWheelScrollsWhateverIsUnderThePointer(t *testing.T) {
 		t.Errorf("click should select row 4, cursor=%d", m.cursor)
 	}
 
-	// The layout matches what View draws: the preview's first line is the Project header.
+	// The layout matches what View draws: the preview's first line is the summary line.
 	strip := regexp.MustCompile("\033\\[[0-9;]*m")
 	lines := strings.Split(strip.ReplaceAllString(m.View(), ""), "\n")
-	if !strings.HasPrefix(ansi.Cut(lines[previewTop], m.sidebarWidth()+1, m.width), "Project:") {
+	if !strings.HasPrefix(ansi.Cut(lines[previewTop], m.sidebarWidth()+1, m.width), "▾ ") {
 		t.Errorf("previewTop %d doesn't match the screen: %q", previewTop, lines[previewTop])
 	}
 }
@@ -1017,7 +1017,9 @@ func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
 	m.applyLive([]transcript.Conversation{grown})
 	b, a := strings.Split(strip2(before), "\n"), strings.Split(strip2(m.View()), "\n")
 	_, _, previewTop := m.listLayout()
-	for i := previewTop; i < len(b) && i < len(a); i++ {
+	// The header's summary line counts the messages, so it changes; the
+	// messages under it must not move.
+	for i := previewTop + len(m.previewHeader(grown, "")); i < len(b) && i < len(a); i++ {
 		if bare := func(s string) string { return strings.TrimRight(s, "┃│ ") }; bare(b[i]) != bare(a[i]) { // the scrollbar may move
 			t.Errorf("preview row %d moved:\n was %q\n now %q", i, b[i], a[i])
 		}
@@ -1235,13 +1237,13 @@ func TestSidebarAndTable(t *testing.T) {
 	if !strings.Contains(lines[listTop], "not open in claude 40") {
 		t.Errorf("the list opens with its state section's header: %q", lines[listTop])
 	}
-	if row := lines[listTop+1]; !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(lines[listTop], sw+1, m.width), "Project:") {
+	if row := lines[listTop+1]; !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(lines[listTop], sw+1, m.width), "▾ ") {
 		t.Errorf("sidebar row and preview should sit side by side: %q", row)
 	}
 	if ansi.Cut(lines[listTop], sw, sw+1) != "┃" {
 		t.Errorf("the divider should show the list's thumb at the top, got %q", lines[listTop])
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "Size:") {
+	if !strings.Contains(strings.Join(lines, "\n"), " msgs") {
 		t.Error("the sidebar's preview header should show the size and message count")
 	}
 	if last := lines[len(lines)-1]; !strings.HasSuffix(last, "┃") {
@@ -1299,7 +1301,7 @@ func TestHideSidebar(t *testing.T) {
 	if len(lines) != m.height || strings.Contains(v, "session 1") || strings.ContainsAny(v, "│┬") {
 		t.Errorf("no list, no divider, still the full height (%d rows):\n%s", len(lines), v)
 	}
-	if !strings.Contains(v, "^X L list off") || !strings.HasPrefix(lines[listTop], "session 0") && !strings.HasPrefix(lines[listTop], "Project:") {
+	if !strings.Contains(v, "^X L list off") || !strings.HasPrefix(lines[listTop], "session 0") && !strings.HasPrefix(lines[listTop], "▾ ") {
 		t.Errorf("the preview starts at the left edge, the header saying the list is off:\n%s", v)
 	}
 	if !strings.Contains(v, "said-0") {

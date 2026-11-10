@@ -9,11 +9,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
@@ -122,6 +124,19 @@ func mouseModel(t *testing.T) model {
 }
 
 func strip2(s string) string { return ansiSeq.ReplaceAllString(s, "") }
+
+// listView is the screen as text with the preview cut off, so a check on the
+// list's order isn't thrown by the selected session's title in the preview's
+// summary line. With no sidebar (the table) it's the whole screen.
+func listView(m model) string {
+	lines := strings.Split(strip2(m.View()), "\n")
+	if sw := m.sidebarWidth(); sw > 0 {
+		for i, l := range lines {
+			lines[i] = ansi.Cut(l, 0, sw)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 // chatModel has two conversations, the second live (pid of this process).
 func chatModel(t *testing.T) model {

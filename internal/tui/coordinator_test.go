@@ -767,6 +767,50 @@ func TestCoordinatorHasItsOwnSectionAbovePinned(t *testing.T) {
 	}
 }
 
+func TestHideCoordinator(t *testing.T) {
+	coordinatorFixture(t)
+	at := time.Now().UTC().Format(time.RFC3339)
+	m := initialModel(buildItems([]transcript.Conversation{
+		{SessionID: "b", Title: "another", LastTimestamp: at, Messages: []transcript.Message{{Role: "user", Text: "x"}}},
+		{SessionID: "c", Title: coordinatorName, LastTimestamp: at, Messages: []transcript.Message{{Role: "user", Text: "y"}}},
+	}), "", nil)
+	m.width, m.height = 140, 30
+	if strings.Contains(strip2(m.View()), "^X C coordinator") {
+		t.Error("no coordinator, nothing to hide: no ^X C in the header")
+	}
+	coordinatorRecord{SessionID: "c"}.save()
+	m.syncCoordinator()
+	if v := strip2(m.View()); !strings.Contains(v, "coordinator 1") || !strings.Contains(v, "^X C coordinator") {
+		t.Fatalf("listed in its section, with ^X C in the header:\n%s", v)
+	}
+
+	m, _ = chord(m, "c")
+	if v := strip2(m.View()); strings.Contains(v, "coordinator 1") || slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "c" }) {
+		t.Errorf("^X C hides its section and row:\n%s", v)
+	}
+	if !loadSettings().HideCoordinator {
+		t.Error("hiding is saved, so the next ccs starts hidden")
+	}
+	next, _ := m.Update(coordinatorOfferMsg{plan: coordinatorPlan{}})
+	if next.(model).coordOffer != nil {
+		t.Error("hidden: the set-up offer doesn't come up on its own")
+	}
+	next, _ = m.Update(coordinatorOfferMsg{plan: coordinatorPlan{}, opened: true})
+	if next.(model).coordOffer == nil {
+		t.Error("^X O still offers it when asked")
+	}
+	coordinatorRecord{SessionID: "b"}.save() // a new coordinator, say after /clear
+	m.syncCoordinator()
+	if len(m.filtered) != 1 || m.filtered[0].conv.SessionID != "c" {
+		t.Errorf("a new coordinator is hidden too, the old one listed again: %v", m.filtered)
+	}
+
+	m, _ = chord(m, "c")
+	if v := strip2(m.View()); !strings.Contains(v, "coordinator 1") || loadSettings().HideCoordinator {
+		t.Errorf("^X C again shows it, and saves that:\n%s", v)
+	}
+}
+
 func TestCoordinatorOfferNeedsADeliberateAnswer(t *testing.T) {
 	newList := func(t *testing.T) model {
 		coordinatorFixture(t)

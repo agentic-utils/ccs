@@ -85,6 +85,8 @@ Whether a link is clickable depends on the app showing it. Browsers ask before o
 
 The coordinator is one Claude Code session that keeps your other sessions moving and never does the work itself. Tell it what you want done; it starts a named session for each ask, tracks who owns which PR and what order they must merge in, tells you what needs you, and closes sessions when they finish.
 
+It's optional: everything else in ccs works without one. `Ctrl+X C` in the list hides it, both its row and the offer to set one up, and ccs remembers that.
+
 ```bash
 ccs coordinator                  # open it: its tab if it's running, resumed if not, set up if there is none
 ccs coordinator --adopt my-hub   # make an existing session the coordinator instead
@@ -194,7 +196,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Ctrl+X H` - Show or hide headless runs (`claude -p` given a single prompt and never named, `codex exec`), hidden unless ccs started with `--all`. Not shown in the header. Not saved: the next ccs starts as its flags say
 - `Ctrl+X A` - Auto-focus: when a session starts waiting on a question or permission prompt, switch to its iTerm tab or tmux pane (without pulling iTerm in front of another app), once you've stopped typing for 2 seconds (moving the mouse doesn't count), and not again until that question is answered. Questions already waiting when ccs starts count too; one it already switched to before a restart doesn't. Off by default, remembered across restarts
 - `Ctrl+X P` - Pin the selected session: pinned sessions sit in their own section at the top, whatever their state, in the order you pinned them; `Alt+↑`/`Alt+↓` move one among them. Again to unpin. Kept across restarts
-- `Ctrl+X C` - With folders grouped, collapse the selected session's folder to its most urgent session, its header counting the rest (`▸ api 5 · 4 more`). Again to expand. Kept across restarts
+- `Ctrl+X C` - Hide the coordinator: its section and row, and the offer to set one up. Again to show it. Kept across restarts. `Ctrl+X O` and `ccs coordinator` still open it
 - `Ctrl+X S` - Put the selected session away: settle it (until its next message) or snooze it (an hour, 4 hours, tomorrow 9:00). It moves to the settled or snoozed section at the bottom, and comes back early if it waits on you. Again to bring it back
 - `Ctrl+X G` - Group the list by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^X T layout, and reopens the way you left it
 - `Ctrl+X D` - Fold the details above the conversation to one line (name, project, model, context %, PR, task and subagent counts, size), or show them in full; clicking them does the same, unless the click is on a link. One line by default, remembered across restarts

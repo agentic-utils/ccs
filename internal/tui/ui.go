@@ -2516,9 +2516,6 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		marks, colouredMarks, mw = "  "+marks, "  "+colouredMarks, colMarks+2
 	}
 	tw := m.topicColWidth()
-	// A trailing ✎ marks a name you set (not the ai-title Claude gives almost
-	// every session); the title is cut short so it always stays visible. Not
-	// ✍: some terminals draw that emoji two cells wide, so the row wraps.
 	nest := nestPrefix(item.depth)
 	topic := nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest))
 	if tasks := m.taskCell(item.conv, false); tasks != "" { // running background tasks, after the title
@@ -2557,7 +2554,6 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		colWhen, when, colProject, project, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits, m.prCell(item.conv, true))
 }
 
-// listTopic is the session's title cut to w, a trailing ✎ when you named it.
 // nestPrefix marks a session started by the one above it: "└ ", indented
 // two more per level below the first.
 func nestPrefix(depth int) string {
@@ -2567,10 +2563,8 @@ func nestPrefix(depth int) string {
 	return strings.Repeat("  ", depth-1) + "└ "
 }
 
+// listTopic is the session's title cut to w.
 func listTopic(conv transcript.Conversation, w int) string {
-	if conv.IsCustomTitle {
-		return transcript.Truncate(transcript.GetTopic(conv), w-2) + " ✎"
-	}
 	return transcript.Truncate(transcript.GetTopic(conv), w)
 }
 

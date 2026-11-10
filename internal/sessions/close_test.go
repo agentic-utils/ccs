@@ -165,6 +165,26 @@ func TestGracefulCloseStopsAnywayAtTheTimeout(t *testing.T) {
 	}
 }
 
+// A session file caught mid-rewrite (empty, or cut short) isn't the session
+// ending: the close keeps waiting for it to go idle.
+func TestGracefulCloseWaitsThroughAnUnreadableSessionFile(t *testing.T) {
+	g := newGracefulFixture(t)
+	file := filepath.Join(GetSessionsDir(), fmt.Sprintf("%d.json", g.pid))
+	SendCloseNotice = func(_ int, _ SessionFile, text string) error {
+		g.say("user", text)
+		os.WriteFile(file, []byte(`{"pid":`), 0o600)
+		go func() {
+			time.Sleep(60 * time.Millisecond)
+			g.setStatus("idle", time.Now().Add(time.Second))
+		}()
+		return nil
+	}
+	msg, err := CloseGracefully("worker", 5*time.Second)
+	if err != nil || !strings.Contains(msg, "it went idle") {
+		t.Errorf("waited through the half-written file: %q, %v", msg, err)
+	}
+}
+
 func TestGracefulCloseRefusals(t *testing.T) {
 	sessionsFixture(t)
 	if _, err := CloseGracefully("nobody", time.Second); err == nil || !strings.Contains(err.Error(), "no running session") {

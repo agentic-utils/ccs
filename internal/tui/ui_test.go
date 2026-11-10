@@ -240,7 +240,7 @@ func TestFormatListItem(t *testing.T) {
 	}
 }
 
-func TestFormatListItemNamedSessionMarker(t *testing.T) {
+func TestNamedSessionHasNoMark(t *testing.T) {
 	custom := listItem{conv: transcript.Conversation{
 		SessionID:     "s1",
 		Title:         "Refactor auth flow",
@@ -264,14 +264,15 @@ func TestFormatListItemNamedSessionMarker(t *testing.T) {
 	m := initialModel([]listItem{custom, aiTitled, fallback}, "", nil)
 	m.width = 120 // give TOPIC room so the title isn't truncated
 
-	if got := m.formatListItem(custom, false); !strings.Contains(got, "Refactor auth flow ✎") {
-		t.Errorf("user-set custom title should show the marker, got %q", got)
-	}
-	if got := m.formatListItem(aiTitled, false); strings.Contains(got, "✎") {
-		t.Errorf("auto ai-title must NOT show the marker, got %q", got)
-	}
-	if got := m.formatListItem(fallback, false); strings.Contains(got, "✎") {
-		t.Errorf("first-message fallback should not show the marker, got %q", got)
+	// Nearly every launched session is named, so a mark for it is noise.
+	for _, it := range []listItem{custom, aiTitled, fallback} {
+		got := m.formatListItem(it, false)
+		if strings.Contains(got, "✎") || !strings.Contains(got, transcript.GetTopic(it.conv)) {
+			t.Errorf("a title should show as it is, with no mark for a name you set: %q", got)
+		}
+		if row := m.sidebarRow(it, false, 40)[0]; strings.Contains(row, "✎") {
+			t.Errorf("the sidebar shouldn't mark a name you set either: %q", row)
+		}
 	}
 }
 

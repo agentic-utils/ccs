@@ -246,10 +246,16 @@ ccs watch --author me --owner my-org --interval 5m
 ccs watch --once                           # one pass, then exit
 ```
 
-Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (awaiting review now: see below), `review_not_needed`, `ready` (approved, checks green, not a draft), `conflicts`, `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `threads_unanswered` (with `count` and the thread ids in `threads`, when an unresolved thread's last comment isn't yours: a new one, or a reviewer's new comment on one), `merged`, `closed`. Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
+Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (awaiting review now: see below), `review_not_needed`, `ready` (approved, checks green, not a draft), `conflicts`, `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `threads_unanswered` (with `count` and the thread ids in `threads`, when an unresolved thread's last comment isn't yours: a new one, or a reviewer's new comment on one), `merged`, `closed`, `claimed` (a session now owns the PR: `session`, `session_id`, and `auto` when ccs watch claimed it for the session that opened it). Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
 
 ```json
 {"at":"2026-11-03T09:12:51Z","event":"checks_failing","pr":"https://github.com/o/r/pull/220","repo":"o/r","number":220,"title":"...","head":"0fc4f95...","checks":["setup"]}
+```
+
+Everything on GitHub is done as you, whether a session, the browser, auto-merge or a cloud routine did it, so `ccs watch` reads who did it from your Claude Code sessions' transcripts (those written in the last 48 hours). `new` carries `origin`: `local` with `opened_by` (`name`, `session`) when a session's `gh pr create` printed the PR's address as it was created, else `not_local`. `merged` carries `merge`: `local` with `merged_by` when a session's `gh pr merge` ran as it merged, `auto_merge` with `merged_by` when a session had run `gh pr merge --auto` on it, nothing while a `gh pr merge` of it is still running, else `not_local` (the browser, a cloud routine, or a merge through `gh api`, which isn't read). Codex sessions' commands aren't read.
+
+```json
+{"at":"2026-11-10T09:12:51Z","event":"merged","pr":"https://github.com/o/r/pull/220","repo":"o/r","number":220,"title":"...","head":"0fc4f95...","merged_by":{"name":"fix-login-tests","session":"5f0c..."},"merge":"local"}
 ```
 
 The first run records what it finds and writes one `watch_started` line, plus `needs_review` for PRs already awaiting review; it doesn't report every PR as news. Its state is kept beside ccs's settings (`pr-watch.json`), so a restart reports what changed while it was stopped, without repeating anything. Only one `ccs watch` runs at a time.
@@ -282,7 +288,9 @@ Events: `nudged` (pr, head, session, reasons) and `nudge_failed` (the same plus 
 
 A session that owns a PR says so by running `ccs claim <PR URL>` (`--release` to give it up). ccs works out which session ran it from the claude process it runs under, and records the session's id and name in `claims.json` beside its settings. In Codex it uses the `CODEX_THREAD_ID` Codex gives every command (Codex's sandbox can't run `ps`), named by its `ccs launch` name, else Codex's title for the thread; such a claim counts as running while its `ccs launch` codex process runs, or, for one ccs didn't launch, while Codex wrote to its transcript within 12 hours. A claim ends by itself when the PR merges or closes, or the session stops.
 
-`ccs prs` lists your open PRs with their owners, needing you first, and flags any PR nobody has claimed (`UNOWNED`) and any PR two running sessions both claim (`CONTESTED`). It uses `ccs watch`'s state when that is under 10 minutes old, and otherwise asks GitHub (REST) itself. Without `--author`, it lists the running `ccs watch`'s author and owner, else the gh user's PRs in every owner's repos; `--statusline` never asks gh. A PR with a failed check, optional or not, needs you.
+`ccs watch` also claims a PR for the running Claude Code session that opened it, when no running session owns it, so a session that forgot `ccs claim` still owns its PRs and is told when they fail (`--no-auto-claim` turns this off). A session that released a PR isn't given it back.
+
+`ccs prs` lists your open PRs with their owners, needing you first, and flags any PR nobody has claimed (`UNOWNED`, saying when a session that has since stopped opened it, or when no local session did) and any PR two running sessions both claim (`CONTESTED`). It uses `ccs watch`'s state when that is under 10 minutes old, and otherwise asks GitHub (REST) itself. Without `--author`, it lists the running `ccs watch`'s author and owner, else the gh user's PRs in every owner's repos; `--statusline` never asks gh. A PR with a failed check, optional or not, needs you.
 
 ```bash
 ccs claim https://github.com/o/r/pull/12
@@ -291,9 +299,12 @@ ccs prs --json           # the same, for scripts
 ccs prs --statusline     # e.g. "PRs 3 ready · 1 need you · 2 unowned", from saved state only
 ccs prs --claude-session-id <id> --statusline   # one session's PRs: "PRs ✓1 ✗1 2" (ready, need you, waiting)
 ccs prs --codex-session-id <thread id> --json   # a Codex session's
+ccs prs --merged         # what merged in the last week, and which session merged it (--json too)
 ```
 
-`--claude-session-id` keeps only the PRs a Claude Code session claims (its id is the `session_id` in Claude Code's status line input), and `--codex-session-id` a Codex session's (its thread id); each matches only claims of its own kind, by id, not name, so a `/rename` or two sessions with one name can't confuse it. `--json` gives each PR's `owners` (names) and `owners_detail` (`name`, `kind` claude or codex, `session` id).
+`--claude-session-id` keeps only the PRs a Claude Code session claims (its id is the `session_id` in Claude Code's status line input), and `--codex-session-id` a Codex session's (its thread id); each matches only claims of its own kind, by id, not name, so a `/rename` or two sessions with one name can't confuse it. `--json` gives each PR's `owners` (names) and `owners_detail` (`name`, `kind` claude or codex, `session` id), and `opened_by` and `origin` as the `new` event has them.
+
+`ccs prs --merged` answers "who merged that?": each PR `ccs watch` saw merge in the last week, with `merged by <session>`, `auto-merge, turned on by <session>` or `not merged by a local session`.
 
 `--statusline` never asks GitHub, so it is quick enough for Claude Code's status line; it prints nothing when there is nothing to count, and adds `(stale)` when `ccs watch` hasn't refreshed the state for 10 minutes.
 

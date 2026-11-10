@@ -58,9 +58,11 @@ Usage: ccs [filter] [-- claude-flags...]
                             also: ccs link status, ccs link uninstall
        ccs watch [flags]    Report changes to your open PRs as JSON lines, and tell the sessions
                             that claimed them what's failing (see ccs watch --help)
-       ccs claim <PR URL>   Record that the session running it owns the PR (--release drops it)
+       ccs claim <PR URL>   Record that the session running it owns the PR (--release drops it);
+                            ccs watch does it for the session that opened a PR
                             (a Claude Code or Codex session)
-       ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline, --claude-session-id / --codex-session-id <id>)
+       ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline, --claude-session-id / --codex-session-id <id>);
+                            --merged lists what merged and which session merged it
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
 

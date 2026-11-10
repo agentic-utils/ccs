@@ -53,6 +53,17 @@ type WatchedPR struct {
 	Ended      string           `json:"ended,omitempty"`      // when it merged or closed (RFC3339), to prune it later
 	UpdatedAt  string           `json:"updated_at,omitempty"` // GitHub's updatedAt from the search
 	FullAt     time.Time        `json:"full_at,omitzero"`     // when its details were last read
+	CreatedAt  string           `json:"created_at,omitempty"` // GitHub's createdAt from the search
+	MergedAt   string           `json:"merged_at,omitempty"`  // when GitHub says it merged
+	// OpenedBy is the local session whose gh pr create opened it. Origin says
+	// what is known: OriginLocal, OriginNotLocal (first seen with no local
+	// session's gh pr create behind it), "" for one from before ccs looked.
+	OpenedBy *PRActor `json:"opened_by,omitempty"`
+	Origin   string   `json:"origin,omitempty"`
+	// MergedBy and Merge are how it merged (MergeLocal, MergeAuto,
+	// MergeNotLocal), "" when ccs wasn't watching then.
+	MergedBy *PRActor `json:"merged_by,omitempty"`
+	Merge    string   `json:"merge,omitempty"`
 
 	conflictsUnknown bool // GitHub hadn't worked out mergeability yet: keep the last answer
 	threadsUnknown   bool // not counted this pass (checks not green, or the query failed): keep the last count
@@ -113,7 +124,25 @@ type PREvent struct {
 	Threads []string `json:"threads,omitempty"`
 	// Why a PR stopped awaiting review, on review_not_needed.
 	Reason string `json:"reason,omitempty"`
+	// On new: the local session whose gh pr create opened it, and origin
+	// (local, or not_local when none did). On merged: how it merged (merge:
+	// local, auto_merge or not_local) and the session that ran gh pr merge.
+	OpenedBy *PRActor `json:"opened_by,omitempty"`
+	Origin   string   `json:"origin,omitempty"`
+	MergedBy *PRActor `json:"merged_by,omitempty"`
+	Merge    string   `json:"merge,omitempty"`
+	// On claimed: the session that now owns the PR (its name and id), and
+	// auto when ccs watch claimed it for the session that opened it.
+	Session   string `json:"session,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Auto      bool   `json:"auto,omitempty"`
 }
+
+// Where a PR came from, as WatchedPR.Origin and the new event say it.
+const (
+	OriginLocal    = "local"     // a local Claude Code session's gh pr create opened it
+	OriginNotLocal = "not_local" // none did: a cloud routine, the browser, the API, a Codex session
+)
 
 // notNeededReason is why p, which was awaiting review at head asked, no
 // longer is: "" while it still is.
@@ -243,8 +272,9 @@ func RunWatch(args []string) int {
 	once := fs.Bool("once", false, "make one pass and exit")
 	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unanswered review threads")
 	selfLogins := fs.String("self-logins", "", "comma-separated GitHub logins whose replies also answer a review thread (bots or co-authors acting for you), besides --author")
+	noAutoClaim := fs.Bool("no-auto-claim", false, "don't claim a PR for the running Claude Code session whose gh pr create opened it")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, threads_unanswered, merged, closed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). Only one ccs watch runs at a time.\n\n", PREventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, threads_unanswered, merged, closed, claimed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
 		fs.PrintDefaults()
 	}
 	for _, a := range args {
@@ -265,6 +295,7 @@ func RunWatch(args []string) int {
 		return 1
 	}
 	SetThreadSelves(*author, *selfLogins)
+	AutoClaim = !*noAutoClaim
 	lock, err := LockPRWatch()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -323,6 +354,7 @@ func WatchPass(author, owner string, now time.Time) error {
 		}
 	}
 	next := PRWatchState{Author: author, Owner: owner, Started: old.Started, Updated: now, PRs: map[string]*WatchedPR{}, Version: PRWatchVersion}
+	local := LocalActs(now) // what the sessions' transcripts say they opened and merged
 	var events []PREvent
 	emit := func(p *WatchedPR, event string) {
 		e := PREvent{At: now.UTC().Format(time.RFC3339), Event: event, PR: p.URL, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head}
@@ -335,6 +367,10 @@ func WatchPass(author, owner string, now time.Time) error {
 			e.Unresolved = *p.Threads
 		case "threads_unanswered":
 			e.Count, e.Threads = len(p.Unanswered), sortedKeys(p.Unanswered)
+		case "new":
+			e.OpenedBy, e.Origin = p.OpenedBy, p.Origin
+		case "merged":
+			e.MergedBy, e.Merge = p.MergedBy, p.Merge
 		}
 		events = append(events, e)
 	}
@@ -368,6 +404,7 @@ func WatchPass(author, owner string, now time.Time) error {
 		}
 		if o != nil {
 			n.AskedHead, n.Awaiting = o.AskedHead, o.Awaiting
+			n.OpenedBy, n.Origin = o.OpenedBy, o.Origin
 			if n.conflictsUnknown {
 				n.Conflicts = o.Conflicts
 			}
@@ -376,6 +413,16 @@ func WatchPass(author, owner string, now time.Time) error {
 			}
 		}
 		next.PRs[p.URL] = n
+		// Who opened it: looked for until known. Only a PR new to the watcher
+		// with no local gh pr create behind it is called not local; one from
+		// before the watch may have been opened by a session long gone.
+		if n.Origin != OriginLocal {
+			if by := local.opener(n); by != nil {
+				n.OpenedBy, n.Origin = by, OriginLocal
+			} else if !seeding && (o == nil || o.State != "open") {
+				n.Origin = OriginNotLocal // until a gh pr create whose result came late says otherwise
+			}
+		}
 		if seeding {
 			// Awaiting review already: said now, so a consumer starting
 			// with the watcher knows (once per head, as ever).
@@ -430,16 +477,22 @@ func WatchPass(author, owner string, now time.Time) error {
 		mergedSet[p.URL] = true
 		o := old.PRs[p.URL]
 		if o != nil && o.State == "merged" {
+			if o.Merge == "" && o.MergedAt != "" { // a gh pr merge hadn't come back: look again
+				n := *o
+				n.MergedBy, n.Merge = local.merger(&n, parseTime(n.MergedAt))
+				o = &n
+			}
 			next.PRs[p.URL] = o
 			continue
 		}
 		n := p
 		n.State, n.Ended = "merged", now.UTC().Format(time.RFC3339)
 		if o != nil {
-			n.Head = o.Head
+			n.Head, n.OpenedBy, n.Origin = o.Head, o.OpenedBy, o.Origin
 		}
 		next.PRs[p.URL] = &n
 		if !seeding {
+			n.MergedBy, n.Merge = local.merger(&n, parseTime(n.MergedAt))
 			notNeeded(&n, o)
 			emit(&n, "merged")
 		}
@@ -456,7 +509,7 @@ func WatchPass(author, owner string, now time.Time) error {
 			}
 			continue
 		}
-		ended, err := prEndState(o)
+		ended, mergedAt, err := prEnd(o)
 		if err != nil || ended == "open" { // unknown or still open (search lag): keep it as it was
 			if err != nil {
 				state.LogActivity("pr watch: %s: %v", url, err)
@@ -465,12 +518,18 @@ func WatchPass(author, owner string, now time.Time) error {
 			continue
 		}
 		n := *o
-		n.State, n.Ended = ended, now.UTC().Format(time.RFC3339)
+		n.State, n.Ended, n.MergedAt = ended, now.UTC().Format(time.RFC3339), mergedAt
+		if ended == "merged" {
+			n.MergedBy, n.Merge = local.merger(&n, parseTime(mergedAt))
+		}
 		next.PRs[url] = &n
 		notNeeded(&n, o)
 		emit(&n, ended)
 	}
 
+	if AutoClaim {
+		events = append(events, claimOpeners(&next, now)...)
+	}
 	if seeding {
 		events = append([]PREvent{{At: now.UTC().Format(time.RFC3339), Event: "watch_started", Review: fmt.Sprintf("%d open PRs by %s in %s", len(open), author, cmp.Or(owner, "any owner"))}}, events...)
 	}
@@ -491,8 +550,25 @@ func writePREvents(events []PREvent) error {
 
 // writeEventLines appends one JSON line per event to prEventsPath and prints them.
 func writeEventLines(events []any) error {
+	text, err := eventLines(events)
+	if err == nil {
+		fmt.Print(text)
+	}
+	return err
+}
+
+// appendEventLines appends to prEventsPath without printing: for a command
+// other than ccs watch, whose stdout is its own answer.
+func appendEventLines(events []any) error {
+	_, err := eventLines(events)
+	return err
+}
+
+// eventLines appends one JSON line per event to prEventsPath, each line one
+// write so writers never interleave, and returns what it wrote.
+func eventLines(events []any) (string, error) {
 	if len(events) == 0 {
-		return nil
+		return "", nil
 	}
 	var b strings.Builder
 	for _, e := range events {
@@ -502,18 +578,17 @@ func writeEventLines(events []any) error {
 	}
 	path := PREventsPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return "", err
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer f.Close()
 	if _, err := f.WriteString(b.String()); err != nil {
-		return err
+		return "", err
 	}
-	fmt.Print(b.String())
-	return nil
+	return b.String(), nil
 }
 
 // Login is the login gh is signed in as. Stubbed in tests.
@@ -546,7 +621,7 @@ func searchPRs(author, owner string, filters ...string) ([]WatchedPR, error) {
 	if owner != "" { // else every owner's repos
 		args = append(args, "--owner", owner)
 	}
-	args = append(append(args, "--sort", "updated", "--limit", "200", "--json", "url,title,number,repository,isDraft,updatedAt"), filters...)
+	args = append(append(args, "--sort", "updated", "--limit", "200", "--json", "url,title,number,repository,isDraft,updatedAt,createdAt,closedAt"), filters...)
 	out, err := RunGH(args...)
 	if err != nil {
 		return nil, err
@@ -557,6 +632,8 @@ func searchPRs(author, owner string, filters ...string) ([]WatchedPR, error) {
 		Number     int    `json:"number"`
 		IsDraft    bool   `json:"isDraft"`
 		UpdatedAt  string `json:"updatedAt"`
+		CreatedAt  string `json:"createdAt"`
+		ClosedAt   string `json:"closedAt"` // a merged PR's merge time
 		Repository struct {
 			NameWithOwner string `json:"nameWithOwner"`
 		} `json:"repository"`
@@ -574,9 +651,22 @@ func searchPRs(author, owner string, filters ...string) ([]WatchedPR, error) {
 			p := transcript.PRURL.FindStringSubmatch(r.URL)
 			repo = p[1] + "/" + p[2]
 		}
-		prs = append(prs, WatchedPR{URL: r.URL, Repo: repo, Number: r.Number, Title: r.Title, Draft: r.IsDraft, UpdatedAt: r.UpdatedAt, State: "open"})
+		p := WatchedPR{URL: r.URL, Repo: repo, Number: r.Number, Title: r.Title, Draft: r.IsDraft, UpdatedAt: r.UpdatedAt, CreatedAt: r.CreatedAt, State: "open"}
+		if !parseTime(r.ClosedAt).IsZero() { // gh prints the zero time for an open PR
+			p.MergedAt = r.ClosedAt
+		}
+		prs = append(prs, p)
 	}
 	return prs, nil
+}
+
+// parseTime reads a GitHub time, the zero time when there's none.
+func parseTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil || t.Year() < 2000 {
+		return time.Time{}
+	}
+	return t
 }
 
 // prDetails reads an open PR's head, draft, mergeability, checks and
@@ -904,20 +994,26 @@ func prDetailsPass(open []WatchedPR, old map[string]*WatchedPR, now time.Time) [
 // prEndState is "merged", "closed" or "open" for a PR the open search no
 // longer lists.
 func prEndState(p *WatchedPR) (string, error) {
+	s, _, err := prEnd(p)
+	return s, err
+}
+
+// prEnd is prEndState with when it merged.
+func prEnd(p *WatchedPR) (ended, mergedAt string, err error) {
 	var pr struct {
 		State    string `json:"state"`
 		MergedAt string `json:"merged_at"`
 	}
 	if err := ghJSON(&pr, fmt.Sprintf("repos/%s/pulls/%d", p.Repo, p.Number)); err != nil {
-		return "", err
+		return "", "", err
 	}
 	switch {
 	case pr.MergedAt != "":
-		return "merged", nil
+		return "merged", pr.MergedAt, nil
 	case pr.State == "closed":
-		return "closed", nil
+		return "closed", "", nil
 	}
-	return "open", nil
+	return "open", "", nil
 }
 
 func ghJSON(v any, path string) error {
@@ -943,6 +1039,7 @@ type PRClaim struct {
 	ProcStart string    `json:"proc_start"`       // that process's start, as its session file says: a recycled pid isn't it
 	ClaimedAt time.Time `json:"claimed_at"`
 	Notify    bool      `json:"notify,omitempty"` // reserved: the session asks to be told of its PR's failures
+	Auto      bool      `json:"auto,omitempty"`   // ccs watch claimed it for the session that opened the PR
 }
 
 // ClaimsFile is claimsPath: each PR's claims, in the order they were made.
@@ -951,6 +1048,67 @@ type ClaimsFile struct {
 	// Checked is when each claimed PR outside the watcher's state was last
 	// asked about, so every session's status line shares one check.
 	Checked map[string]time.Time `json:"checked,omitempty"`
+	// Released is the sessions that gave each PR up (ccs claim --release), so
+	// ccs watch doesn't claim it for them again.
+	Released map[string][]string `json:"released,omitempty"`
+}
+
+// AutoClaim: ccs watch claims a PR for the live session that opened it.
+// --no-auto-claim turns it off.
+var AutoClaim = true
+
+// claimOpeners claims each open PR nobody live owns for the session that
+// opened it, when that session is running and hasn't released it, and returns
+// a claimed event for each. Only Claude Code sessions: the transcripts read
+// for who opened what are theirs.
+func claimOpeners(st *PRWatchState, now time.Time) []PREvent {
+	want := map[string]PRClaim{}
+	var live map[int]PRClaim
+	for u, p := range st.PRs {
+		if p.State != "open" || p.OpenedBy == nil {
+			continue
+		}
+		if live == nil {
+			live = LiveByPID()
+		}
+		for _, s := range live {
+			if s.Session == p.OpenedBy.Session {
+				want[u] = s
+			}
+		}
+	}
+	released := len(LoadClaims().Released) > 0
+	if len(want) == 0 && !released {
+		return nil
+	}
+	var events []PREvent
+	err := WithClaims(func(c *ClaimsFile) bool {
+		changed := false
+		for u := range c.Released { // a release lasts while its PR is open
+			if p := st.PRs[u]; p != nil && p.State != "open" { // not one this watch doesn't cover
+				delete(c.Released, u)
+				changed = true
+			}
+		}
+		for u, me := range want {
+			owned := slices.ContainsFunc(c.Claims[u], func(x PRClaim) bool { return claimLive(x, live) })
+			if owned || slices.Contains(c.Released[u], me.Session) {
+				continue
+			}
+			me.ClaimedAt, me.Auto = now, true
+			c.Claims[u] = append(c.Claims[u], me)
+			p := st.PRs[u]
+			events = append(events, PREvent{At: now.UTC().Format(time.RFC3339), Event: "claimed", PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, Session: me.Name, SessionID: me.Session, Auto: true})
+			changed = true
+		}
+		return changed
+	})
+	if err != nil {
+		state.LogActivity("pr watch: couldn't claim PRs for the sessions that opened them: %v", err)
+		return nil
+	}
+	slices.SortFunc(events, func(a, b PREvent) int { return strings.Compare(a.PR, b.PR) })
+	return events
 }
 
 func ClaimsPath() string { return filepath.Join(filepath.Dir(state.SettingsPath), "claims.json") }
@@ -1109,6 +1267,7 @@ func Claim(pr string, release bool, now time.Time) (string, error) {
 		return "", err
 	}
 	var msg string
+	fresh := false // a claim this session didn't have
 	err = WithClaims(func(c *ClaimsFile) bool {
 		mine := func(x PRClaim) bool { return x.Session == me.Session }
 		has := slices.ContainsFunc(c.Claims[pr], mine)
@@ -1121,6 +1280,12 @@ func Claim(pr string, release bool, now time.Time) (string, error) {
 			if len(c.Claims[pr]) == 0 {
 				delete(c.Claims, pr)
 			}
+			if !slices.Contains(c.Released[pr], me.Session) { // so ccs watch doesn't claim it back
+				if c.Released == nil {
+					c.Released = map[string][]string{}
+				}
+				c.Released[pr] = append(c.Released[pr], me.Session)
+			}
 			msg = fmt.Sprintf("%s released %s", me.Name, pr)
 			return true
 		}
@@ -1131,6 +1296,12 @@ func Claim(pr string, release bool, now time.Time) (string, error) {
 			c.Claims[pr][i] = me
 		} else {
 			c.Claims[pr] = append(c.Claims[pr], me)
+			fresh = true
+		}
+		if rel := slices.DeleteFunc(slices.Clone(c.Released[pr]), func(s string) bool { return s == me.Session }); len(rel) == 0 {
+			delete(c.Released, pr)
+		} else {
+			c.Released[pr] = rel
 		}
 		msg = fmt.Sprintf("%s owns %s", me.Name, pr)
 		if others := len(c.Claims[pr]) - 1; others > 0 {
@@ -1138,6 +1309,18 @@ func Claim(pr string, release bool, now time.Time) (string, error) {
 		}
 		return true
 	})
+	if err == nil && fresh {
+		// Said in the events too, so whoever follows them (a coordinator) knows
+		// the owner without being told by the session.
+		e := PREvent{At: now.UTC().Format(time.RFC3339), Event: "claimed", PR: pr, Session: me.Name, SessionID: cmp.Or(me.Thread, me.Session)}
+		if m := transcript.PRURL.FindStringSubmatch(pr); m != nil {
+			e.Repo = m[1] + "/" + m[2]
+			e.Number, _ = strconv.Atoi(m[3])
+		}
+		if werr := appendEventLines([]any{e}); werr != nil {
+			state.LogActivity("ccs claim: couldn't record the claim in %s: %v", PREventsPath(), werr)
+		}
+	}
 	return msg, err
 }
 
@@ -1159,6 +1342,73 @@ type PRRow struct {
 	Status      string `json:"status"` // why, as the list says it
 	Unowned     bool   `json:"unowned,omitempty"`
 	Contested   bool   `json:"contested,omitempty"` // claimed by two or more live sessions
+	// OpenedBy is the local session whose gh pr create opened it, and Origin
+	// what ccs watch knows of where it came from (local, not_local, or
+	// nothing for a PR from before it looked), so an unowned PR says whether
+	// a session here should own it.
+	OpenedBy *PRActor `json:"opened_by,omitempty"`
+	Origin   string   `json:"origin,omitempty"`
+}
+
+// MergedRow is one line of ccs prs --merged: a PR ccs watch saw merge, and how.
+type MergedRow struct {
+	PR       string   `json:"pr"`
+	Repo     string   `json:"repo"`
+	Number   int      `json:"number"`
+	Title    string   `json:"title"`
+	MergedAt string   `json:"merged_at,omitempty"`
+	Merge    string   `json:"merge,omitempty"` // local, auto_merge, not_local; "" when ccs wasn't watching
+	MergedBy *PRActor `json:"merged_by,omitempty"`
+	OpenedBy *PRActor `json:"opened_by,omitempty"`
+}
+
+// MergedList is the PRs the watcher's state saw merge (it keeps them
+// mergedKeep), newest first.
+func MergedList() []MergedRow {
+	st, _ := LoadPRWatchState()
+	rows := []MergedRow{}
+	for u, p := range st.PRs {
+		if p.State == "merged" {
+			rows = append(rows, MergedRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, MergedAt: cmp.Or(p.MergedAt, p.Ended), Merge: p.Merge, MergedBy: p.MergedBy, OpenedBy: p.OpenedBy})
+		}
+	}
+	slices.SortFunc(rows, func(a, b MergedRow) int {
+		return cmp.Or(strings.Compare(b.MergedAt, a.MergedAt), strings.Compare(a.PR, b.PR))
+	})
+	return rows
+}
+
+// how says a merge in words.
+func (r MergedRow) how() string {
+	who := ""
+	if r.MergedBy != nil {
+		who = cmp.Or(r.MergedBy.Name, r.MergedBy.Session)
+	}
+	switch r.Merge {
+	case MergeLocal:
+		return "merged by " + who
+	case MergeAuto:
+		return "auto-merge, turned on by " + who
+	case MergeNotLocal:
+		return "not merged by a local session"
+	}
+	return "merged before ccs watch could tell how"
+}
+
+// mergedText is ccs prs --merged for people.
+func mergedText(rows []MergedRow) string {
+	if len(rows) == 0 {
+		return "ccs watch has seen no PR merge in the last week\n"
+	}
+	var b strings.Builder
+	for _, r := range rows {
+		when := r.MergedAt
+		if t := parseTime(r.MergedAt); !t.IsZero() {
+			when = t.Local().Format("Jan 2 15:04")
+		}
+		fmt.Fprintf(&b, "● %s#%d  %s  %s  %s\n   %s\n", r.Repo[strings.LastIndex(r.Repo, "/")+1:], r.Number, when, r.how(), r.Title, r.PR)
+	}
+	return b.String()
 }
 
 // PROwner is one live session claiming a PR.
@@ -1301,6 +1551,11 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 			return rep, err
 		}
 		open, rep.Updated = fetched, now
+		for u, p := range open { // who opened it is the watcher's to know
+			if s := st.PRs[u]; s != nil {
+				p.OpenedBy, p.Origin = s.OpenedBy, s.Origin
+			}
+		}
 	}
 
 	live := LiveByPID()
@@ -1326,6 +1581,12 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 	}
 	prune := func(c *ClaimsFile) bool {
 		changed := false
+		for u := range c.Released {
+			if ended[u] {
+				delete(c.Released, u)
+				changed = true
+			}
+		}
 		for u, cs := range c.Claims {
 			kept := slices.DeleteFunc(slices.Clone(cs), func(x PRClaim) bool { return !claimLive(x, live) })
 			for i := range kept {
@@ -1353,7 +1614,7 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 
 	for u, p := range open {
 		g, why := p.status()
-		row := PRRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.NeedsReview(), Group: groupNames[g], Status: why}
+		row := PRRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.NeedsReview(), Group: groupNames[g], Status: why, OpenedBy: p.OpenedBy, Origin: p.Origin}
 		for _, c := range claims.Claims[u] {
 			o := OwnerOf(c, live)
 			row.Owners = append(row.Owners, o.Name)
@@ -1420,6 +1681,10 @@ func (r PRsReport) Text() string {
 	for _, p := range r.PRs {
 		owner := strings.Join(p.Owners, ", ")
 		switch {
+		case p.Unowned && p.OpenedBy != nil:
+			owner = "UNOWNED: " + cmp.Or(p.OpenedBy.Name, p.OpenedBy.Session) + " opened it and isn't running"
+		case p.Unowned && p.Origin == OriginNotLocal:
+			owner = "UNOWNED: no local session opened it"
 		case p.Unowned:
 			owner = "UNOWNED"
 		case p.Contested:
@@ -1479,8 +1744,9 @@ func RunPRs(args []string, stdout, stderr io.Writer) int {
 	owner := fs.String("owner", "", "GitHub owner (org or user) whose repos to list (default: every owner, or the running ccs watch's)")
 	claudeID := fs.String("claude-session-id", "", "only the PRs this Claude Code session claims")
 	codexID := fs.String("codex-session-id", "", "only the PRs this Codex session (thread id) claims")
+	merged := fs.Bool("merged", false, "list the PRs ccs watch saw merge in the last week instead, with the local session that merged each or turned on auto-merge")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: ccs prs [flags]\n\nList the author's open PRs with the session that owns each (ccs claim),\nflagging unowned PRs and PRs claimed by two live sessions. Uses ccs watch's\nstate when it is under %s old, else asks GitHub.\n\n", prsFresh)
+		fmt.Fprintf(stderr, "Usage: ccs prs [flags]\n\nList the author's open PRs with the session that owns each (ccs claim, or\nccs watch for the session that opened it), flagging unowned PRs and PRs\nclaimed by two live sessions. Uses ccs watch's state when it is under %s\nold, else asks GitHub.\n\n", prsFresh)
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -1488,6 +1754,16 @@ func RunPRs(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		return 2
+	}
+	if *merged {
+		rows := MergedList()
+		if *asJSON {
+			b, _ := json.MarshalIndent(rows, "", "  ")
+			fmt.Fprintln(stdout, string(b))
+		} else {
+			fmt.Fprint(stdout, mergedText(rows))
+		}
+		return 0
 	}
 	// Defaults: the running ccs watch's author and owner (no network, for
 	// --statusline), else the gh user's PRs in every owner's repos.

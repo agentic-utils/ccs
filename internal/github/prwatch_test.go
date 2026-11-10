@@ -27,6 +27,7 @@ type fakePR struct {
 	runs        [][3]string // name, status, conclusion
 	reviews     [][2]string // login, state
 	mergedAt    time.Time
+	createdAt   time.Time // what the search says; zero leaves it out
 	failDetails bool
 	unresolved  int          // review threads not resolved, each last commented on by a reviewer
 	threadsFail bool         // the GraphQL thread count fails
@@ -50,6 +51,7 @@ type fakeGitHub struct {
 	prs         []*fakePR
 	searchFails bool
 	mergedSince []string
+	hideMerged  string // a merged PR the merged search leaves out (search lag)
 }
 
 func (g *fakeGitHub) run(args ...string) ([]byte, error) {
@@ -69,11 +71,18 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 				}
 			case "--merged-at":
 				since, _ := time.Parse(time.RFC3339, strings.TrimPrefix(filter[1], ">="))
-				if p.state != "merged" || p.mergedAt.Before(since) {
+				if p.state != "merged" || p.mergedAt.Before(since) || p.url() == g.hideMerged {
 					continue
 				}
 			}
-			rows = append(rows, map[string]any{"url": p.url(), "title": "t" + fmt.Sprint(p.number), "number": p.number, "isDraft": p.draft, "updatedAt": p.updatedAt, "repository": map[string]string{"nameWithOwner": p.repo}})
+			row := map[string]any{"url": p.url(), "title": "t" + fmt.Sprint(p.number), "number": p.number, "isDraft": p.draft, "updatedAt": p.updatedAt, "repository": map[string]string{"nameWithOwner": p.repo}, "closedAt": "0001-01-01T00:00:00Z"}
+			if !p.createdAt.IsZero() {
+				row["createdAt"] = p.createdAt.UTC().Format(time.RFC3339)
+			}
+			if p.state == "merged" {
+				row["closedAt"] = p.mergedAt.UTC().Format(time.RFC3339)
+			}
+			rows = append(rows, row)
 		}
 		if filter[0] == "--merged-at" {
 			g.mergedSince = append(g.mergedSince, filter[1])

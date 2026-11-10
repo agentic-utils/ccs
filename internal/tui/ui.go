@@ -60,7 +60,7 @@ type model struct {
 	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
 	grouped         bool              // ^X X G: sessions grouped by folder
 	chordX          bool              // ^X pressed: the next key picks a ccs action
-	headerCollapsed bool              // ^X F or a click: the preview's header is one line
+	headerCollapsed bool              // ^X F or a click on the summary line: the details under it are hidden
 	selectedID      string            // the selected session, to see when it changes
 	selectedAt      time.Time         // when it was selected: its preview waits previewDebounce
 	marks           *sessionMarks     // when each session was last looked at (done)
@@ -345,8 +345,9 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			lines := strings.Split(m.renderPreview(m.filtered[m.cursor], m.previewRenderHeight()), "\n")
 			if row := msg.Y - previewTop; row >= 0 && row < len(lines) {
 				m.linkPending = linkAt(lines[row], msg.X-paneX)
-				// A click on the header that isn't on a link folds or unfolds it.
-				if m.linkPending == "" && row < len(m.previewHeader(m.filtered[m.cursor].conv, m.textInput.Value()))-1 {
+				// A click anywhere on the summary line (its first) shows or hides
+				// the details; the detail rows below it hold links and stay put.
+				if m.linkPending == "" && row == 0 {
 					m.toggleHeader()
 				}
 			}
@@ -2199,8 +2200,8 @@ func (m model) shortcuts() [][2]string {
 		}
 	}
 	add(sel && !live, "^X E", "edit its name, as /rename does")
-	add(sel && m.headerCollapsed, "^X F", "show its full details above the conversation (or click the line)")
-	add(sel && !m.headerCollapsed, "^X F", "fold its details to one line (or click them)")
+	add(sel && m.headerCollapsed, "^X F", "show its details under the summary line (or click the line)")
+	add(sel && !m.headerCollapsed, "^X F", "hide its details, leaving the summary line (or click the line)")
 	add(sel, "^X X", "shrink its file, keeping the dialogue; asks first, loses /rewind")
 	if sel {
 		id := m.filtered[m.cursor].conv.SessionID

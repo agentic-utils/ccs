@@ -27,7 +27,7 @@ func TestDoneUntilSeen(t *testing.T) {
 	m.chatStatus = map[string]sessions.SessionStat{"old": {Status: "idle"}, "new": {Status: "idle"}}
 	m.blurred = true // not looking yet
 	m.sortList()
-	v := strip2(m.View())
+	v := listView(m)
 	if strings.Contains(v, "done") || !strings.Contains(v, "idle 2") || strings.Index(v, "finished while away") > strings.Index(v, "finished before") {
 		t.Errorf("done sessions share idle's section, newest first:\n%s", v)
 	}
@@ -102,7 +102,7 @@ func TestPinnedSectionKeepsOrder(t *testing.T) {
 	m, _ = chord(m, "p")
 	sel("b")
 	m, _ = chord(m, "p")
-	v := strip2(m.View())
+	v := listView(m)
 	ic, ib, ia := strings.Index(v, "session c"), strings.Index(v, "session b"), strings.Index(v, "session a")
 	if !strings.Contains(v, "pinned 2") || !(ic < ib && ib < ia) {
 		t.Errorf("pinned first in pin order, even above a session waiting on you:\n%s", v)
@@ -139,7 +139,7 @@ func TestSnoozeAndSettle(t *testing.T) {
 		t.Fatalf("^X S opens the picker:\n%s", strip2(m.View()))
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
-	v := strip2(m.View())
+	v := listView(m)
 	if m.snoozeOpen || !strings.Contains(v, "settled 1") || strings.Index(v, "sleepy") < strings.Index(v, "other") {
 		t.Errorf("settled goes to the bottom:\n%s", v)
 	}

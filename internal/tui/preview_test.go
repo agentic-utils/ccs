@@ -509,49 +509,138 @@ func TestHeaderCollapses(t *testing.T) {
 	item := listItem{conv: conv}
 	m := initialModel([]listItem{item}, "", nil)
 	m.width, m.height = 140, 30
-	full := len(m.previewHeader(conv, ""))
+	m.headerCollapsed = false
+	open := m.previewHeader(conv, "")
 
-	// ^X F folds it to one line that still has the key facts, and more rows for messages.
+	// ^X F hides the details, leaving the summary line, and more rows for messages.
 	rows := m.previewMessageRows(conv)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
 	if !m.headerCollapsed {
-		t.Fatal("^X F should fold the header")
+		t.Fatal("^X F should hide the details")
 	}
 	if loadSettings().HeaderOpen {
 		t.Error("the choice should be saved")
 	}
 	head := m.previewHeader(conv, "")
-	if len(head) != 2 || full <= 2 || m.previewMessageRows(conv) <= rows {
-		t.Errorf("should be one line and a blank row, got %d of %d", len(head), full)
+	if len(head) != 2 || len(open) <= 2 || m.previewMessageRows(conv) <= rows {
+		t.Errorf("should be one line and a blank row, got %d of %d", len(head), len(open))
 	}
 	s := strip2(head[0])
-	for _, want := range []string{"fix login", "api", "35% ctx", "^X F"} {
+	for _, want := range []string{"fix login", "api", "35% ctx", "^X F details"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary should say %q: %q", want, s)
 		}
 	}
 	if strings.Contains(strip2(m.renderPreview(item, 20)), "Session:") {
-		t.Error("the full header shouldn't show when folded")
+		t.Error("the details shouldn't show when hidden")
 	}
 
-	// A click on it unfolds, and again folds; clicks on messages do neither.
+	// A click anywhere on the summary line shows them, and again hides them;
+	// clicks on the detail rows or the messages do neither.
 	_, _, top := m.listLayout()
-	x := m.width - 5
-	m = m.handleMouse(tea.MouseMsg{X: x, Y: top, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	click := func(x, y int) {
+		m = m.handleMouse(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	}
+	paneX := m.width - m.paneWidth()
+	click(paneX, top) // the glyph
 	if m.headerCollapsed {
-		t.Error("a click on the line should unfold it")
+		t.Error("a click on the glyph should show the details")
 	}
-	m = m.handleMouse(tea.MouseMsg{X: x, Y: top + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	click(m.width-5, top+1)
+	if m.headerCollapsed {
+		t.Error("a click on a detail row shouldn't hide them")
+	}
+	click(paneX+10, top) // the middle of the line
 	if !m.headerCollapsed {
-		t.Error("a click on the full header should fold it")
+		t.Error("a click on the summary line should hide them")
 	}
-	m = m.handleMouse(tea.MouseMsg{X: x, Y: top + 3, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	click(m.width-5, top+3)
 	if !m.headerCollapsed {
 		t.Error("a click below the header shouldn't toggle it")
 	}
 	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^X F" }) {
 		t.Error("^X F should be in the help popup")
+	}
+}
+
+// The summary line is the header's first line in both states: the same text
+// in the same columns, only its glyph and hint saying which state it's in.
+func TestHeaderFirstLineStaysPut(t *testing.T) {
+	var msgs []transcript.Message
+	for i := range 30 {
+		msgs = append(msgs, transcript.Message{Role: "assistant", Text: fmt.Sprintf("reply %d", i), Ts: fmt.Sprintf("2026-09-11T10:%02d:00Z", i)})
+	}
+	conv := transcript.Conversation{SessionID: "abc", Title: "fix login", Cwd: "/code/api", ActiveModel: "claude-opus-5-5", ContextTokens: 90000, Size: 2048, Messages: msgs}
+	item := listItem{conv: conv}
+	for _, width := range []int{200, 120, 80, 60} {
+		m := initialModel([]listItem{item}, "", nil)
+		m.width, m.height = width, 40
+		m.headerCollapsed = true
+		folded := strings.Split(m.renderPreview(item, 30), "\n")
+		m.headerCollapsed = false
+		opened := strings.Split(m.renderPreview(item, 30), "\n")
+		f, o := strip2(folded[0]), strip2(opened[0])
+		if !strings.HasPrefix(f, "▸ ") || !strings.HasPrefix(o, "▾ ") {
+			t.Errorf("width %d: the glyph should start the line: %q / %q", width, f, o)
+		}
+		if fh, oh := strings.Contains(f, "  ^X F details"), strings.Contains(o, "  ^X F hide details"); fh != oh || width == 200 && !fh {
+			t.Errorf("width %d: the hint should say what ^X F does, in both states or neither: %q / %q", width, f, o)
+		}
+		fb, _, _ := strings.Cut(strings.TrimPrefix(f, "▸ "), "  ") // the facts end where the hint or the padding before the time starts
+		ob, _, _ := strings.Cut(strings.TrimPrefix(o, "▾ "), "  ")
+		if fb != ob {
+			t.Errorf("width %d: the summary should read the same in both states:\n%q\n%q", width, fb, ob)
+		}
+		for _, l := range []string{folded[0], opened[0]} {
+			if w := ansi.StringWidth(l); w > m.paneWidth()-1 {
+				t.Errorf("width %d: the line is %d wide in a pane of %d: %q", width, w, m.paneWidth(), strip2(l))
+			}
+		}
+		// Each ends with its own top message's time (more header rows can
+		// mean a different one at the top), at the pane's edge; under 40
+		// columns there's no room for it.
+		for _, s := range []struct {
+			collapsed bool
+			lines     []string
+		}{{true, folded}, {false, opened}} {
+			if m.paneWidth() < 41 {
+				break
+			}
+			m.headerCollapsed = s.collapsed
+			n := len(m.previewHeader(conv, ""))
+			// The first message row at or below the header ("● reply 16 │");
+			// a spacer row on top belongs to the message above it.
+			var whens []string
+			for j := n; j < len(s.lines); j++ {
+				if f := strings.Fields(strip2(s.lines[j])); len(f) > 2 && f[1] == "reply" {
+					i, _ := strconv.Atoi(f[2])
+					whens = append(whens, humanWhen(transcript.FormatTimestamp(msgs[i].Ts), "Mon 2 Jan 15:04"))
+					if j > n && i > 0 {
+						whens = append(whens, humanWhen(transcript.FormatTimestamp(msgs[i-1].Ts), "Mon 2 Jan 15:04"))
+					}
+					break
+				}
+			}
+			first := strip2(s.lines[0])
+			if len(whens) == 0 || !slices.ContainsFunc(whens, func(w string) bool { return strings.HasSuffix(first, " "+w) }) || ansi.StringWidth(s.lines[0]) != m.paneWidth()-1 {
+				t.Errorf("width %d: the top message's time %v should end the line at the pane's edge: %q", width, whens, first)
+			}
+		}
+		m.headerCollapsed = false
+		// The details go beneath it, indented under its text, and repeat
+		// neither the name nor the size the summary already gives.
+		details := strip2(strings.Join(opened[1:len(m.previewHeader(conv, ""))], "\n"))
+		for _, want := range []string{"  Project: /code/api", "  Session: abc", "  Model:"} {
+			if !strings.Contains(details, want) {
+				t.Errorf("width %d: details should have %q:\n%s", width, want, details)
+			}
+		}
+		for _, gone := range []string{"Name:", "Size:"} {
+			if strings.Contains(details, gone) {
+				t.Errorf("width %d: %q repeats the summary:\n%s", width, gone, details)
+			}
+		}
 	}
 }
 
@@ -561,12 +650,16 @@ func TestHeaderSummaryFitsAndCounts(t *testing.T) {
 	m := initialModel([]listItem{{conv: conv}}, "", nil)
 	m.width, m.height = 60, 20
 	m.headerCollapsed = true
-	if w := ansi.StringWidth(m.headerSummary(conv, "")); w > m.paneWidth()-1 {
+	s := m.headerSummary(conv, "", "Wed 28 Oct 21:51")
+	if w := ansi.StringWidth(s); w > m.paneWidth()-1 {
 		t.Errorf("summary is %d wide in a pane of %d", w, m.paneWidth())
 	}
+	if plain := strip2(s); !strings.HasPrefix(plain, "▸ ") || strings.Contains(plain, "^X F") || strings.Contains(plain, "21:51") || !strings.Contains(plain, "…") {
+		t.Errorf("a narrow pane drops the hint and the time and cuts the facts, never the glyph: %q", plain)
+	}
 	m.width = 200
-	if !strings.Contains(strip2(m.headerSummary(conv, "")), "! 529 overloaded") {
-		t.Errorf("an API error should show: %q", strip2(m.headerSummary(conv, "")))
+	if !strings.Contains(strip2(m.headerSummary(conv, "", "")), "! 529 overloaded") {
+		t.Errorf("an API error should show: %q", strip2(m.headerSummary(conv, "", "")))
 	}
 }
 
@@ -597,9 +690,7 @@ func TestHeaderSaysWhenTheTopMessageHappened(t *testing.T) {
 	m.previewScroll = 8
 	check() // it follows the scroll
 	m.headerCollapsed = false
-	if first := strip2(strings.Split(m.renderPreview(item, 30), "\n")[0]); !strings.HasPrefix(first, "Project:") || !strings.Contains(first, "Sep") {
-		t.Errorf("the full header carries it too: %q", first)
-	}
+	check() // and the shown details don't change it
 }
 
 func TestSummaryKeepsItsFactsBesideTheTime(t *testing.T) {
@@ -609,23 +700,13 @@ func TestSummaryKeepsItsFactsBesideTheTime(t *testing.T) {
 	m := initialModel([]listItem{item}, "", nil)
 	m.width, m.height, m.headerCollapsed = 100, 30, true
 	first := strip2(strings.Split(m.renderPreview(item, 20), "\n")[0])
+	if strings.Contains(first, "^X F") {
+		t.Errorf("the hint gives way before the facts: %q", first)
+	}
 	for _, want := range []string{"a long", "9% ctx", humanWhen(transcript.FormatTimestamp(conv.Messages[0].Ts), "Mon 2 Jan 15:04")} {
 		if !strings.Contains(first, want) {
 			t.Errorf("a %d-wide pane should keep %q: %q", m.paneWidth(), want, first)
 		}
-	}
-}
-
-func TestWithWhen(t *testing.T) {
-	if got := withWhen("short", "Wed 28 Oct 21:51", 60); ansi.StringWidth(got) != 60 || !strings.HasPrefix(strip2(got), "short ") {
-		t.Errorf("padded to the edge: %q", got)
-	}
-	long := strings.Repeat("x", 80)
-	if got := strip2(withWhen(long, "Wed 28 Oct 21:51", 60)); ansi.StringWidth(got) != 60 || !strings.Contains(got, "…") || !strings.HasSuffix(got, "21:51") {
-		t.Errorf("a long line is cut to fit: %q", got)
-	}
-	if got := withWhen(long, "Wed 28 Oct 21:51", 40); got != long {
-		t.Errorf("too narrow for both keeps the line: %q", got)
 	}
 }
 

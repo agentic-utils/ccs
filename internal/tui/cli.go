@@ -130,7 +130,7 @@ Key bindings:
   Ctrl+X S        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
   Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
-  Ctrl+X F        Its full details, or one line (clicking does too)
+  Ctrl+X F        Show or hide its details under the summary line (clicking the line does too)
   Ctrl+X X        Shrink its file, keeping the dialogue; asks first, loses
                   rewind history
   Ctrl+X K        Stop it and close its tab, or stop a background session;

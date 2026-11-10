@@ -797,17 +797,6 @@ func turnEnd(conv transcript.Conversation, t transcript.ToolUse) string {
 // whenWidth is the room the header's date and time take, with their margin.
 const whenWidth = len("Wed 28 Oct 21:51") + 2
 
-// withWhen puts when at the right of a width-wide header line, cutting the line
-// if it must; a pane too narrow for both keeps the line.
-func withWhen(line, when string, width int) string {
-	room := width - ansi.StringWidth(when) - 2
-	if room < 30 {
-		return line
-	}
-	line = ansi.Truncate(line, room, "…") + "\033[0m"
-	return line + strings.Repeat(" ", width-ansi.StringWidth(line)-ansi.StringWidth(when)) + "\033[90m" + when + "\033[0m"
-}
-
 // markFirst puts mark in the two-column indent of a message's first line, as
 // Claude Code's terminal does, without the blank lines around it.
 func markFirst(lines []string, mark string) []string {
@@ -892,30 +881,50 @@ func (m model) previewMessageRows(conv transcript.Conversation) int {
 }
 
 // previewHeader is the preview's fixed header (always visible above the
-// scrolling messages).
+// scrolling messages). Its first line is always the one-line summary, the same text in the same
+// place whether the details are shown or not; showing them (^X F, or a click
+// on that line) only adds their rows beneath it, indented under its glyph.
+// The summary already says the session's name, size and message count, so no
+// detail row repeats them.
 func (m model) previewHeader(conv transcript.Conversation, query string) []string {
+	header := []string{m.headerSummary(conv, query, "")}
 	if m.headerCollapsed {
-		return []string{m.headerSummary(conv, query), ""}
+		return append(header, "")
 	}
-	header := []string{"\033[1;33mProject:\033[0m " + highlight(conv.Cwd, query) + " \033[90m▾ ^X F\033[0m"}
-	if conv.Title != "" {
-		header = append(header, "\033[1;33mName:\033[0m    "+highlight(conv.Title, query))
+	var rows []string
+	rows = append(rows, "\033[1;33mProject:\033[0m "+highlight(conv.Cwd, query))
+	rows = append(rows, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
+	rows = append(rows, sessionStats(conv)...)
+	width := m.paneWidth() - len(detailIndent)
+	rows = append(rows, m.prLines(conv, width)...)
+	rows = append(rows, m.taskLines(conv, width)...)
+	rows = append(rows, m.subagentLines(conv, width)...)
+	for _, r := range rows {
+		header = append(header, detailIndent+r)
 	}
-	header = append(header, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
-	header = append(header, sessionStats(conv)...)
-	if !m.table { // the list's columns aren't beside it
-		header = append(header, fmt.Sprintf("\033[1;33mSize:\033[0m    %s · %d messages · %s", transcript.FormatBytes(conv.Size), len(conv.Messages), transcript.FormatAgo(conv.LastTimestamp, time.Now())))
-	}
-	header = append(header, m.prLines(conv, m.paneWidth())...)
-	header = append(header, m.taskLines(conv, m.paneWidth())...)
-	header = append(header, m.subagentLines(conv, m.paneWidth())...)
 	return append(header, "")
 }
 
-// headerSummary is the header as one line (^X F): the session's name and where
-// it is, then what the full header would make you look for: an API error, its
-// model and context, its PRs, running tasks and subagents, and its size.
-func (m model) headerSummary(conv transcript.Conversation, query string) string {
+// detailIndent puts the detail rows under the summary's text, past its glyph.
+const detailIndent = "  "
+
+// The summary line's disclosure glyph and hint: ▸ and "details" while the
+// details are hidden, ▾ and "hide details" while shown, so the line says what
+// clicking it or ^X F does.
+const (
+	foldedGlyph, openGlyph = "▸", "▾"
+	foldedHint, openHint   = "^X F details", "^X F hide details"
+)
+
+// headerSummary is the header's first line: the session's name and where it
+// is, then what the full header would make you look for: an API error, its
+// model and context, its PRs, running tasks and subagents, and its size; then
+// the ^X F hint and, given one, when at the right edge. It's the same in both
+// states but for its glyph and hint, which are sized for the longer hint, so
+// nothing else on the line moves when the details open or close. It fits
+// paneWidth()-1; a narrow pane drops the hint first, then cuts the facts
+// (under 40 columns the time goes too), never the glyph.
+func (m model) headerSummary(conv transcript.Conversation, query, when string) string {
 	parts := []string{highlight(transcript.Truncate(filepath.Base(conv.Cwd), 24), query)}
 	if conv.Kind == transcript.KindCodex {
 		glyph, colour := transcript.AgentGlyph(conv)
@@ -942,15 +951,47 @@ func (m model) headerSummary(conv transcript.Conversation, query string) string 
 		parts = append(parts, fmt.Sprintf("\033[%sm◆%d\033[0m", transcript.SubagentColour, n))
 	}
 	parts = append(parts, fmt.Sprintf("%s · %d msgs", transcript.FormatBytes(conv.Size), len(conv.Messages)))
-	// The topic gets what's left beside the facts and the time (whenWidth), so
-	// a long one or a narrow pane can't push the counts off the line.
-	const sep, hint, lead = " \033[90m·\033[0m ", " \033[90m^X F\033[0m", "\033[90m▸\033[0m "
+	const sep = " \033[90m·\033[0m "
+	glyph, hint := foldedGlyph, foldedHint
+	if !m.headerCollapsed {
+		glyph, hint = openGlyph, openHint
+	}
+	width := max(m.paneWidth()-1, 20)
+	whenRoom := 0
+	if when != "" && width-2-whenWidth >= 20 {
+		whenRoom = whenWidth
+	} else {
+		when = "" // too narrow for it beside the facts
+	}
 	rest := strings.Join(parts, sep)
-	topic := transcript.Truncate(transcript.GetTopic(conv), min(max(m.paneWidth()-1-whenWidth-ansi.StringWidth(lead+sep+rest+hint), 12), 40))
-	return ansi.Truncate(lead+highlight(topic, query)+sep+rest+hint, max(m.paneWidth()-1, 20), "…") + "\033[0m"
+	// fit lays out the topic and facts in what's left beside the glyph ("▸ "),
+	// the time and extra columns: the topic gets what the facts leave, so a
+	// long one can't push the counts off the line. ok says nothing was cut.
+	fit := func(extra int) (body string, ok bool) {
+		room := width - 2 - whenRoom - extra
+		topic := transcript.Truncate(transcript.GetTopic(conv), min(max(room-ansi.StringWidth(sep+rest), 12), 40))
+		body = highlight(topic, query) + sep + rest
+		return ansi.Truncate(body, max(room, 1), "…") + "\033[0m", ansi.StringWidth(body) <= room
+	}
+	// The hint takes the room of the longer one ("  ^X F hide details") in
+	// both states, and only where the facts fit beside it: on a narrow pane it
+	// gives way before the facts are cut. The choice
+	// doesn't depend on the state, so the line never shifts when it changes.
+	body, showHint := fit(2 + len(openHint))
+	if !showHint {
+		body, _ = fit(0)
+	}
+	line := "\033[90m" + glyph + "\033[0m " + body
+	if showHint {
+		line += "  \033[90m" + hint + "\033[0m"
+	}
+	if when == "" {
+		return line
+	}
+	return line + strings.Repeat(" ", max(width-ansi.StringWidth(line)-len(when), 1)) + "\033[90m" + when + "\033[0m"
 }
 
-// toggleHeader switches the preview header between its full form and one line.
+// toggleHeader shows or hides the detail rows under the summary line.
 func (m *model) toggleHeader() {
 	m.headerCollapsed = !m.headerCollapsed
 	saveSettings(m.settings())
@@ -978,7 +1019,7 @@ func (m model) renderPreview(item listItem, height int) string {
 
 	// The header's first line says when the top visible message happened.
 	if when := m.preview.stampAt(start); when != "" && len(visibleMsgLines) > 0 {
-		header[0] = withWhen(header[0], humanWhen(when, "Mon 2 Jan 15:04"), m.paneWidth()-1)
+		header[0] = m.headerSummary(conv, query, humanWhen(when, "Mon 2 Jan 15:04"))
 	}
 
 	// While searching, where the view is among this conversation's hits.

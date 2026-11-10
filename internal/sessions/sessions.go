@@ -1476,21 +1476,6 @@ func RunLaunch(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// RunClose is `ccs close`.
-func RunClose(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(stderr, "usage: ccs close <name>")
-		return 2
-	}
-	msg, err := CloseByName(args[0])
-	if err != nil {
-		fmt.Fprintln(stderr, "ccs close:", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, msg)
-	return 0
-}
-
 // LaunchPrompt is ^X N's one-line box.
 func LaunchPrompt(prompt, value string) textinput.Model {
 	in := textinput.New()

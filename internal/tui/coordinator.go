@@ -476,7 +476,7 @@ func createCoordinator(p coordinatorPlan, inPlace bool) (string, error) {
 	if err := rec.save(); err != nil {
 		return "", err
 	}
-	o := sessions.LaunchOpts{Name: coordinatorName, Brief: coordinatorPrompt, Cwd: coordinatorDir(), SessionID: id, Focus: true, Wait: coordinatorWait, InPlace: inPlace}
+	o := sessions.LaunchOpts{Name: coordinatorName, Brief: coordinatorPrompt, Cwd: coordinatorDir(), SessionID: id, Focus: true, Wait: coordinatorWait, InPlace: inPlace, NoPreamble: true}
 	if inPlace && len(done)+len(errs) > 0 {
 		fmt.Fprintln(os.Stderr, strings.Join(append(done, errs...), "\n"))
 	}

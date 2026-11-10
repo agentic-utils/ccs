@@ -938,6 +938,55 @@ type LaunchOpts struct {
 	Focus                    bool          // bring its tab to the front: it needs an answer there
 	Wait                     time.Duration // how long it may take to start; launchWait if zero
 	InPlace                  bool          // no tab: replace this process with it
+	NoPreamble               bool          // the brief as given, without PreamblePath's text before it
+}
+
+// PreamblePath is the text every new session's brief starts with, when the
+// file exists: the rules each brief would otherwise repeat.
+func PreamblePath() string {
+	return filepath.Join(filepath.Dir(state.SettingsPath), "launch-preamble.md")
+}
+
+// withPreamble is a new session's brief after PreamblePath's text. A resumed
+// session's prompt, an empty brief and NoPreamble are left as they are.
+func withPreamble(o LaunchOpts) string {
+	if o.NoPreamble || o.Resume != "" || o.Brief == "" {
+		return o.Brief
+	}
+	pre, err := os.ReadFile(PreamblePath())
+	if p := strings.TrimSpace(string(pre)); err == nil && p != "" {
+		return p + "\n\n" + o.Brief
+	}
+	return o.Brief
+}
+
+// startingFile records the tab a launch typed its launcher into, for as long
+// as nothing says the session is up: a second launch of the name is refused
+// while that tab still runs it.
+const startingFile = "starting"
+
+// startingOn is the tty a launch of name is still starting on, "" if none: the
+// tab recorded by the launch runs its launcher (or the claude or codex it
+// execs), and no session has registered from that tab yet. A session that
+// did register is Named's to find; one on a tab since reused isn't this name's.
+func startingOn(name string) string {
+	dir := filepath.Join(state.LaunchDir(), name)
+	b, err := os.ReadFile(filepath.Join(dir, startingFile))
+	tty := strings.TrimSpace(string(b))
+	if err != nil || tty == "" {
+		return ""
+	}
+	if !LauncherRunning(tty, filepath.Join(dir, "launch.sh")) {
+		os.Remove(filepath.Join(dir, startingFile))
+		return ""
+	}
+	for _, s := range ScanSessions(nil) {
+		if !s.Codex && proc.TTYOf(s.PID) == tty {
+			os.Remove(filepath.Join(dir, startingFile))
+			return ""
+		}
+	}
+	return tty
 }
 
 // LaunchWait is how long launch waits for the session to show up, and
@@ -1002,6 +1051,23 @@ type Launched struct {
 	PID    int
 	TTY    string
 	thread string
+	// Starting: the wait ran out with its tab still running the launcher and
+	// no session registered, as when claude asks whether to trust the folder.
+	// Not a failure: the session shows up once that's answered.
+	Starting bool
+	Script   string // the launcher, with Starting
+}
+
+// Text says what a launch of name came to, for the command, the MCP tool and
+// the list.
+func (l Launched) Text(name string) string {
+	switch {
+	case l.Starting:
+		return fmt.Sprintf("%s is still starting on %s (launcher %s): no session has registered yet, so a folder-trust question may be waiting in that tab. Don't launch it again; it is running once ccs sessions lists it", name, l.TTY, l.Script)
+	case l.thread != "":
+		return fmt.Sprintf("launched %s: pid %d, %s, codex thread %s", name, l.PID, l.TTY, l.thread)
+	}
+	return fmt.Sprintf("launched %s: pid %d, %s", name, l.PID, l.TTY)
 }
 
 // Resumable: id has a transcript to resume, a Claude Code session under
@@ -1058,6 +1124,9 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 	} else if len(pids) > 0 {
 		return Launched{}, fmt.Errorf("a session named %s is already running (pid %d)", o.Name, pids[0])
 	}
+	if tty := startingOn(o.Name); tty != "" && !o.InPlace {
+		return Launched{}, fmt.Errorf("a session named %s is still starting on %s: answer what its tab asks (a folder-trust question, perhaps), or close that tab first", o.Name, tty)
+	}
 	binName := "claude"
 	if o.Codex {
 		binName = "codex"
@@ -1070,7 +1139,7 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Launched{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "brief.md"), []byte(o.Brief), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "brief.md"), []byte(withPreamble(o)), 0o600); err != nil {
 		return Launched{}, err
 	}
 	script := filepath.Join(dir, "launch.sh")
@@ -1087,6 +1156,8 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 	if o.Focus {
 		FocusTTY(tty, true)
 	}
+	starting := filepath.Join(dir, startingFile)
+	os.WriteFile(starting, []byte(tty+"\n"), 0o600)
 	wait := LaunchWait
 	if o.Wait > 0 {
 		wait = o.Wait
@@ -1112,13 +1183,22 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 			thread = CodexThreadFor(o.Name) // queue and claim need it
 		}
 		if len(pids) > 0 && (!o.Codex || thread != "" || o.Resume != "") {
-			return Launched{pids[0], tty, thread}, nil
+			os.Remove(starting)
+			return Launched{PID: pids[0], TTY: tty, thread: thread}, nil
 		}
 		if time.Now().After(deadline) {
 			if len(pids) > 0 {
-				return Launched{pids[0], tty, ""}, fmt.Errorf("%s started (pid %d) but Codex wrote no transcript for it within %s, so it can't be messaged: see the tab on %s", o.Name, pids[0], wait, tty)
+				os.Remove(starting)
+				return Launched{PID: pids[0], TTY: tty}, fmt.Errorf("%s started (pid %d) but Codex wrote no transcript for it within %s, so it can't be messaged: see the tab on %s", o.Name, pids[0], wait, tty)
 			}
-			return Launched{TTY: tty}, fmt.Errorf("%s didn't start within %s: see the tab on %s, where a folder-trust question may be waiting (launcher %s)", o.Name, wait, tty, script)
+			if LauncherRunning(tty, script) {
+				// Up, but not registered: the marker stays, so the name isn't
+				// launched twice.
+				state.LogActivity("launch %s: still starting on %s after %s", o.Name, tty, wait)
+				return Launched{TTY: tty, Starting: true, Script: script}, nil
+			}
+			os.Remove(starting)
+			return Launched{TTY: tty}, fmt.Errorf("%s didn't start within %s: nothing in the tab on %s runs its launcher (%s)", o.Name, wait, tty, script)
 		}
 		Sleep(250 * time.Millisecond)
 	}
@@ -1367,8 +1447,9 @@ func RunLaunch(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.Resume, "resume", "", "a session id to resume instead (or as well)")
 	fs.StringVar(&o.Cwd, "cwd", "", "the folder to start in (default: this one)")
 	fs.BoolVar(&o.Codex, "codex", false, "start codex instead of claude")
+	fs.BoolVar(&o.NoPreamble, "no-preamble", false, "don't start the brief with the text of "+TildePath(PreamblePath()))
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>]")
+		fmt.Fprintln(stderr, "usage: ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>] [--no-preamble]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -1391,11 +1472,7 @@ func RunLaunch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ccs launch:", err)
 		return 1
 	}
-	if l.thread != "" {
-		fmt.Fprintf(stdout, "launched %s: pid %d, %s, codex thread %s\n", o.Name, l.PID, l.TTY, l.thread)
-	} else {
-		fmt.Fprintf(stdout, "launched %s: pid %d, %s\n", o.Name, l.PID, l.TTY)
-	}
+	fmt.Fprintln(stdout, l.Text(o.Name))
 	return 0
 }
 

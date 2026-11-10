@@ -146,15 +146,16 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "launch_session",
-		"description": "Start a new named Claude Code (or codex) session in a new iTerm tab or tmux window, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty.",
+		"description": "Start a new named Claude Code (or codex) session in a new iTerm tab or tmux window, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty, or says it is still starting (its tab is up but no session has registered, as while a folder-trust question waits there): that is not a failure, and the name is refused if launched again meanwhile. A new session's brief starts with the user's launch-preamble.md, when they keep one beside ccs's settings.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name":   map[string]any{"type": "string", "description": "the session's name: letters, digits, '.', '_' and '-'"},
-				"brief":  map[string]any{"type": "string", "description": "its first prompt"},
-				"resume": map[string]any{"type": "string", "description": "a session id to resume instead (or as well)"},
-				"cwd":    map[string]any{"type": "string", "description": "absolute path of the folder to start in"},
-				"codex":  map[string]any{"type": "boolean", "description": "start codex instead of claude"},
+				"name":     map[string]any{"type": "string", "description": "the session's name: letters, digits, '.', '_' and '-'"},
+				"brief":    map[string]any{"type": "string", "description": "its first prompt"},
+				"resume":   map[string]any{"type": "string", "description": "a session id to resume instead (or as well)"},
+				"cwd":      map[string]any{"type": "string", "description": "absolute path of the folder to start in"},
+				"codex":    map[string]any{"type": "boolean", "description": "start codex instead of claude"},
+				"preamble": map[string]any{"type": "boolean", "description": "false to give the brief as it is, without the user's launch preamble; default true"},
 			},
 			"required": []string{"name", "cwd"},
 		},
@@ -180,6 +181,7 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	var a struct {
 		Name, Brief, Resume, Cwd string
 		Codex                    bool
+		Preamble                 *bool
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -192,11 +194,11 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	if !filepath.IsAbs(a.Cwd) {
 		return "", fmt.Errorf("cwd must be an absolute path")
 	}
-	l, err := sessions.LaunchSession(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex})
+	l, err := sessions.LaunchSession(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex, NoPreamble: a.Preamble != nil && !*a.Preamble})
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("launched %s: pid %d, %s", a.Name, l.PID, l.TTY), nil
+	return l.Text(a.Name), nil
 }
 
 func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {

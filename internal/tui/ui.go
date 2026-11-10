@@ -904,6 +904,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case launchDoneMsg:
 		if msg.err != nil {
 			m.errorMsg = "Couldn't start " + msg.name + ": " + msg.err.Error()
+		} else if msg.l.Starting {
+			m.note(fmt.Sprintf("%s is still starting on %s: its tab may be asking something", msg.name, msg.l.TTY))
 		} else {
 			m.note(fmt.Sprintf("Started %s (pid %d, %s)", msg.name, msg.l.PID, msg.l.TTY))
 		}

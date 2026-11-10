@@ -50,8 +50,9 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs coordinator [--yes] [--no-mcp] [--adopt <session> | --release]
                             Open the session that runs your other sessions: its tab, resumed
                             if it isn't running, set up (with the ccs MCP server) if there is none
-       ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>]
-                            Start a named claude (or codex) session in a new iTerm tab or tmux window
+       ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>] [--no-preamble]
+                            Start a named claude (or codex) session in a new iTerm tab or tmux window;
+                            a new session's brief starts with launch-preamble.md beside ccs's settings, if you keep one
        ccs close <name>     Stop the named session and close its tab
        ccs link install     Make ccs://session/<name> links switch to that session's tab (macOS);
                             also: ccs link status, ccs link uninstall

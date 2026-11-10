@@ -688,10 +688,6 @@ func (m *model) selectSession(id string) {
 	}
 	if i := find(); i >= 0 {
 		m.cursor = i
-		for m.cursor > 0 && m.filtered[m.cursor].hidden { // its folder is collapsed
-			m.toggleCollapse()
-			m.cursor = find()
-		}
 		m.previewScroll = 0
 		m.selectionMoved()
 	} else {

@@ -38,7 +38,6 @@ type listItem struct {
 	state       int    // its liveGroup as of the last sortList
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
 	sectioned   bool   // familyState is set: listed under a section heading (nestFamilies)
-	hidden      bool   // in a collapsed folder, under the one session it shows (^X C)
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -200,6 +199,7 @@ type model struct {
 	coordAsked bool             // the open offer came from ^X O
 	coordSince time.Time        // when the offer last came on screen: keys wait for its grace
 	coordID    string           // the coordinator session, listed in its own section
+	hideCoord  bool             // ^X C: the coordinator isn't listed and never offered (saved)
 	// Each session's PRs (prs.go): what GitHub said, by address.
 	prs        map[string]github.PRInfo
 	prNext     time.Time       // when the next round is due
@@ -443,6 +443,7 @@ func (m *model) updateFilter() {
 		m.filtered = next
 	}
 	m.hideHeadless()
+	m.hideCoordinator()
 	m.sortList()
 	m.lastFilterQuery = queryLower
 	// Keep cursor in bounds
@@ -536,12 +537,8 @@ func (m *model) sortList() {
 		}
 		return first[groupOf(a)] < first[groupOf(b)]
 	})
-	m.hideCollapsed()
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
 		m.cursor = i
-	}
-	for m.cursor > 0 && m.filtered[m.cursor].hidden { // its folder was collapsed: to the one it shows
-		m.cursor--
 	}
 }
 
@@ -576,14 +573,11 @@ func permute(items []listItem, idx []int) {
 	}
 }
 
-// step moves the cursor by one shown session (dir -1 up, 1 down), past those
-// a collapsed folder hides; false at either end.
+// step moves the cursor by one session (dir -1 up, 1 down); false at either end.
 func (m *model) step(dir int) bool {
-	for i := m.cursor + dir; i >= 0 && i < len(m.filtered); i += dir {
-		if !m.filtered[i].hidden {
-			m.cursor = i
-			return true
-		}
+	if i := m.cursor + dir; i >= 0 && i < len(m.filtered) {
+		m.cursor = i
+		return true
 	}
 	return false
 }
@@ -952,7 +946,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case coordinatorOfferMsg:
-		if !msg.opened && (m.coordBusy || m.coordOffer != nil || loadCoordinator().Offered) {
+		if !msg.opened && (m.hideCoord || m.coordBusy || m.coordOffer != nil || loadCoordinator().Offered) {
 			return m, nil // answered, or ^X O got there, while the check ran
 		}
 		m.coordBusy = false
@@ -1525,9 +1519,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x c" && m.grouped && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
-			m.toggleCollapse()
+			m.toggleHideCoordinator()
 			return m, nil
 		}
 		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
@@ -2113,13 +2107,8 @@ func (m model) shortcuts() [][2]string {
 			add(true, "^X S", "put it away: settle until its next message, or snooze it")
 		}
 	}
-	if sel && m.grouped && m.marks != nil {
-		if m.collapsed(m.filtered[m.cursor].familyCwd) {
-			add(true, "^X C", "expand its folder")
-		} else {
-			add(true, "^X C", "collapse its folder to its most urgent session")
-		}
-	}
+	add(!m.hideCoord, "^X C", "hide the coordinator: its row, and the offer to set one up")
+	add(m.hideCoord, "^X C", "show the coordinator again")
 	if sel {
 		id := m.filtered[m.cursor].conv.SessionID
 		if _, bg := m.bg[id]; bg && live {
@@ -2337,6 +2326,9 @@ func (m model) viewScreen() string {
 	var toggles []string
 	if !m.showUsage {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
+		if m.coordID != "" || m.hideCoord { // nothing to hide for someone with no coordinator
+			toggles = append(toggles, toggleHint("^X C", "coordinator", !m.hideCoord))
+		}
 		if m.checkLatest != nil { // a release build: one that updates
 			toggles = append(toggles, toggleHint("^X I", "auto-update", m.autoUpdate))
 		}
@@ -2704,14 +2696,7 @@ func (m model) listRows() []listRow {
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
 		}
 		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(&m.filtered[i-1])) {
-			fold, more := "", ""
-			if m.collapsed(it.familyCwd) {
-				fold, more = "▸ ", fmt.Sprintf(" · %d more", counts[k]-1)
-			}
-			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s%s\033[0m \033[90m%d%s\033[0m", fold, projectName(groupKey(it.familyCwd)), counts[k], more)})
-		}
-		if it.hidden {
-			continue
+			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s\033[0m \033[90m%d\033[0m", projectName(groupKey(it.familyCwd)), counts[k])})
 		}
 		for p := range m.rowsPerItem() {
 			rows = append(rows, listRow{item: i, part: p})
@@ -2947,6 +2932,8 @@ type settings struct {
 	Table     bool `json:"table,omitempty"`
 	Grouped   bool `json:"grouped,omitempty"`
 	AutoFocus bool `json:"auto_focus,omitempty"`
+	// HideCoordinator (^X C): no coordinator row and no offer to set one up.
+	HideCoordinator bool `json:"hide_coordinator,omitempty"`
 	// HeaderOpen (^X D): the preview's full details, one line unless chosen.
 	HeaderOpen bool `json:"header_open,omitempty"`
 	// AutoUpdate (^X I) installs new versions once you're away instead of
@@ -2969,7 +2956,7 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideCoordinator: m.hideCoord, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.

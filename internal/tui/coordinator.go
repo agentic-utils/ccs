@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -772,7 +773,46 @@ func (m *model) syncCoordinator() {
 	}
 	if rec.SessionID != m.coordID {
 		m.coordID = rec.SessionID
-		m.sortList()
+		if m.hideCoord {
+			m.refilter() // a new coordinator is hidden too
+		} else {
+			m.sortList()
+		}
+	}
+}
+
+// hideCoordinator drops the coordinator from m.filtered while ^X C hides it,
+// unless it was asked for by name (selectSession).
+func (m *model) hideCoordinator() {
+	if !m.hideCoord || m.coordID == "" || m.revealed[m.coordID] {
+		return
+	}
+	m.filtered = slices.DeleteFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == m.coordID })
+}
+
+// toggleHideCoordinator is ^X C: hide the coordinator's row and the offer to
+// set one up, or show them again. Saved, so ccs reopens as it was left.
+func (m *model) toggleHideCoordinator() {
+	m.hideCoord = !m.hideCoord
+	if m.hideCoord {
+		m.coordOffer = nil
+		delete(m.revealed, m.coordID)
+	}
+	saveSettings(m.settings())
+	m.refilter()
+}
+
+// refilter runs the filter again, keeping the cursor on its session where it's
+// still listed.
+func (m *model) refilter() {
+	sel := ""
+	if len(m.filtered) > 0 {
+		sel = m.filtered[m.cursor].conv.SessionID
+	}
+	m.lastFilterQuery = "" // narrowing from the shown list would miss what it hid
+	m.updateFilter()
+	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == sel }); i >= 0 {
+		m.cursor = i
 	}
 }
 

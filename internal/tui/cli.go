@@ -123,7 +123,7 @@ Key bindings:
   Ctrl+X P        Pin it to the top of the list (again to unpin)
   Ctrl+X S        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
-  Ctrl+X C        Collapse its folder to its most urgent session (grouped)
+  Ctrl+X C        Hide or show the coordinator and the offer to set one up
   Ctrl+X K        Stop it and close its tab, or stop a background session
                   (press twice)
   Ctrl+X X        Shrink its file, keeping the dialogue; loses rewind history
@@ -306,7 +306,7 @@ func Main(v string) {
 
 	items := buildItems(conversations)
 	// Nothing to list: open only if there's a coordinator to offer.
-	if len(items) == 0 && !coordinatorOfferable() {
+	if len(items) == 0 && (loadSettings().HideCoordinator || !coordinatorOfferable()) {
 		fmt.Fprintf(os.Stderr, "No conversations found in %s\n", projectsDir)
 		fmt.Fprintf(os.Stderr, "Start one with claude, or set up a coordinator with ccs coordinator.\n")
 		os.Exit(1)
@@ -318,7 +318,7 @@ func Main(v string) {
 	go sessions.RefreshLinkApp()
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
-	m.table, m.grouped, m.autoFocus = s.Table, s.Grouped, s.AutoFocus
+	m.table, m.grouped, m.autoFocus, m.hideCoord = s.Table, s.Grouped, s.AutoFocus, s.HideCoordinator
 	m.headerCollapsed = !s.HeaderOpen
 	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
 	if s.AutoUpdate == nil && s.found {
@@ -330,6 +330,7 @@ func Main(v string) {
 	}
 	m.marks = loadMarks()                     // when each session was last looked at
 	m.coordID = loadCoordinator().SessionID   // listed above everything
+	m.hideCoordinator()                       // unless ^X C hides it
 	if handled, ok := loadFocusRecord(); ok { // waits it switched to before a restart aren't switched to again
 		m.focusHandled, m.focusNoted = handled, map[string]bool{}
 	}

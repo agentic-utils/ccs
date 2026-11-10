@@ -159,7 +159,8 @@ Key bindings:
   Tab             Token use of every session in the last 12h, and your
                   allowance (Tab again to go back)
   Ctrl+L          What changed in each ccs release
-  ?               Show the shortcuts that apply right now (on an empty search)
+  ?               Show the shortcuts that apply right now (on an empty search or
+                  message box; after text it types a ?)
   Ctrl+C          Quit
 
   ccs's own actions are Ctrl+X then a letter (Ctrl+X Ctrl+W works too), so

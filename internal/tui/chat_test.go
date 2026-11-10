@@ -66,6 +66,34 @@ func TestMessageBoxFocusRules(t *testing.T) {
 	}
 }
 
+func TestQuestionMarkHelpOnlyOnAnEmptyMessageBox(t *testing.T) {
+	m := chatModel(t)
+	q := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown}) // onto the live session: its box has focus
+	if !m.chatFocus {
+		t.Fatal("setup: the live session's message box should have focus")
+	}
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.HasSuffix(head, "? help") {
+		t.Errorf("the message box's header keys should end with ? help: %q", head)
+	}
+	if m, _ = key(m, q); !m.helpOpen || m.chatInput.Value() != "" {
+		t.Fatalf("? on an empty message box opens help: help=%v box=%q", m.helpOpen, m.chatInput.Value())
+	}
+	if m, _ = key(m, q); m.helpOpen || !m.chatFocus {
+		t.Fatalf("? again closes it, leaving the box focused: help=%v focus=%v", m.helpOpen, m.chatFocus)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("why")})
+	if m, _ = key(m, q); m.helpOpen || m.chatInput.Value() != "why?" || m.textInput.Value() != "" {
+		t.Errorf("after text, ? types into the box: help=%v box=%q search=%q", m.helpOpen, m.chatInput.Value(), m.textInput.Value())
+	}
+	// A search typed doesn't matter while the box has focus: its emptiness decides.
+	m.chatInput.SetValue("")
+	m.textInput.SetValue("busy")
+	if m, _ = key(m, q); !m.helpOpen || m.textInput.Value() != "busy" {
+		t.Errorf("? on an empty box opens help whatever the search holds: help=%v search=%q", m.helpOpen, m.textInput.Value())
+	}
+}
+
 func TestTypingSearchNeverLandsInMessageBox(t *testing.T) {
 	m := chatModel(t)
 	// Typing narrows the list so the live session becomes the selection.

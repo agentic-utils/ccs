@@ -1692,9 +1692,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.acctOpen {
 			return m.acctKey(msg)
 		}
-		// ? opens help when it can't be meant as text: an empty search, the
-		// message box not focused.
-		if msg.String() == "?" && m.textInput.Value() == "" && !m.chatFocus && !m.prompting() && !m.showUsage && !m.waitOpen {
+		// ? opens help when it can't be meant as text: the box being typed
+		// into (the message box when focused, else the search) is empty, as
+		// on Claude Code's prompt. After text it's a ?.
+		box := m.textInput.Value()
+		if m.chatFocus {
+			box = m.chatInput.Value()
+		}
+		if msg.String() == "?" && box == "" && !m.prompting() && !m.showUsage && !m.waitOpen {
 			m.helpOpen = true
 			return m, nil
 		}
@@ -2234,6 +2239,7 @@ func (m model) shortcuts() [][2]string {
 	add(true, "^R", "refresh sessions, PRs and allowance now; check for an update")
 	add(true, keyTab, "token use of every session in the last 12h, and your allowance")
 	add(true, "^L", "what changed in each ccs release")
+	add(true, "?", "this help, from an empty search or message box (after text it's a ?)")
 	add(true, "^C", "quit")
 	return out
 }
@@ -2448,7 +2454,7 @@ func (m model) viewScreen() string {
 	} else if m.chordX { // ^X pressed: what the next key does
 		pairs, keep = []string{"A", "auto-focus", "C", "coordinator", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "open coordinator", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
-		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
+		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll", "?", "help"}, 1 // ? opens help on an empty box, as on the search
 	}
 	b.WriteString(headerLine(tableWidth, title, strings.Join(toggles, "  "), pairs, keep) + "\n")
 

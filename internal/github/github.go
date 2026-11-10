@@ -33,16 +33,19 @@ import (
 
 // WatchedPR is what the watcher last saw of one PR.
 type WatchedPR struct {
-	URL       string   `json:"url"`
-	Repo      string   `json:"repo"` // owner/name
-	Number    int      `json:"number"`
-	Title     string   `json:"title"`
-	State     string   `json:"state"` // open, merged, closed
-	Head      string   `json:"head,omitempty"`
-	Draft     bool     `json:"draft,omitempty"`
-	Checks    string   `json:"checks,omitempty"` // success, pending, failing, none
-	Failing   []string `json:"failing,omitempty"`
-	Review    string   `json:"review,omitempty"` // approved, changes_requested, required
+	URL     string   `json:"url"`
+	Repo    string   `json:"repo"` // owner/name
+	Number  int      `json:"number"`
+	Title   string   `json:"title"`
+	State   string   `json:"state"` // open, merged, closed
+	Head    string   `json:"head,omitempty"`
+	Draft   bool     `json:"draft,omitempty"`
+	Checks  string   `json:"checks,omitempty"` // success, pending, failing, none
+	Failing []string `json:"failing,omitempty"`
+	Review  string   `json:"review,omitempty"` // approved, changes_requested, required
+	// ReviewBy is whose reviews decide Review: those asking for changes, else
+	// those approving, sorted.
+	ReviewBy  []string `json:"review_by,omitempty"`
 	Conflicts bool     `json:"conflicts,omitempty"`
 	Threads   *int     `json:"threads,omitempty"` // unresolved review threads; nil until counted (only GraphQL knows)
 	// Unanswered: the unresolved threads whose last comment isn't the
@@ -133,9 +136,11 @@ type PREvent struct {
 	Merge    string   `json:"merge,omitempty"`
 	// On claimed: the session that now owns the PR (its name and id), and
 	// auto when ccs watch claimed it for the session that opened it.
-	Session   string `json:"session,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	Auto      bool   `json:"auto,omitempty"`
+	Session string `json:"session,omitempty"`
+	// On approved and changes_requested: the reviewers whose reviews say so.
+	By        []string `json:"by,omitempty"`
+	SessionID string   `json:"session_id,omitempty"`
+	Auto      bool     `json:"auto,omitempty"`
 }
 
 // Where a PR came from, as WatchedPR.Origin and the new event say it.
@@ -274,7 +279,7 @@ func RunWatch(args []string) int {
 	selfLogins := fs.String("self-logins", "", "comma-separated GitHub logins whose replies also answer a review thread (bots or co-authors acting for you), besides --author")
 	noAutoClaim := fs.Bool("no-auto-claim", false, "don't claim a PR for the running Claude Code session whose gh pr create opened it")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, threads_unresolved, threads_resolved, threads_unanswered, merged, closed, claimed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, approved, changes_requested, threads_unresolved, threads_resolved, threads_unanswered, merged, closed, claimed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
 		fs.PrintDefaults()
 	}
 	for _, a := range args {
@@ -369,6 +374,8 @@ func WatchPass(author, owner string, now time.Time) error {
 			e.Count, e.Threads = len(p.Unanswered), sortedKeys(p.Unanswered)
 		case "new":
 			e.OpenedBy, e.Origin = p.OpenedBy, p.Origin
+		case "approved", "changes_requested":
+			e.Review, e.By = p.Review, p.ReviewBy
 		case "merged":
 			e.MergedBy, e.Merge = p.MergedBy, p.Merge
 		}
@@ -446,6 +453,11 @@ func WatchPass(author, owner string, now time.Time) error {
 		}
 		if n.Conflicts && !prev.Conflicts {
 			emit(n, "conflicts")
+		}
+		// A reviewer's verdict, as it lands and whatever the checks say: ready
+		// and needs_review only speak once everything else is in order.
+		if n.Review != prev.Review && (n.Review == "approved" || n.Review == "changes_requested") {
+			emit(n, n.Review)
 		}
 		if !n.threadsUnknown {
 			was := 0
@@ -806,16 +818,23 @@ func PRDetails(p WatchedPR) (*WatchedPR, error) {
 			latest[r.User.Login] = r.State
 		}
 	}
-	n.Review = "required"
-	for _, s := range latest {
-		if s == "CHANGES_REQUESTED" {
-			n.Review = "changes_requested"
-			break
-		}
-		if s == "APPROVED" {
-			n.Review = "approved"
+	n.Review, n.ReviewBy = "required", nil
+	var approved, changes []string
+	for who, s := range latest {
+		switch s {
+		case "CHANGES_REQUESTED":
+			changes = append(changes, who)
+		case "APPROVED":
+			approved = append(approved, who)
 		}
 	}
+	switch {
+	case len(changes) > 0:
+		n.Review, n.ReviewBy = "changes_requested", changes
+	case len(approved) > 0:
+		n.Review, n.ReviewBy = "approved", approved
+	}
+	slices.Sort(n.ReviewBy)
 	return &n, nil
 }
 

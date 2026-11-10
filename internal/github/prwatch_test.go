@@ -281,7 +281,7 @@ func TestWatchTransitions(t *testing.T) {
 	step() // keeps the conflict, no repeat
 	a.mergeable = "clean"
 	a.reviews = [][2]string{{"rev", "COMMENTED"}, {"rev", "APPROVED"}}
-	step("review_not_needed", "ready") // approved: no longer awaiting review
+	step("review_not_needed", "approved", "ready") // approved: no longer awaiting review
 	a.head = "h3"
 	a.reviews = [][2]string{{"rev", "DISMISSED"}}
 	step("needs_review") // new head, approval dismissed: asked again
@@ -289,6 +289,46 @@ func TestWatchTransitions(t *testing.T) {
 	b.state = "closed"
 	step("review_not_needed", "merged", "closed") // a was awaiting review again at h3
 	step()                                        // never again
+}
+
+func TestWatchSaysAReviewersVerdictAsItLands(t *testing.T) {
+	g := watchWorld(t)
+	now := time.Now()
+	a := &fakePR{repo: "o/a", number: 1, state: "open", head: "h1", mergeable: "clean"}
+	pending(a) // checks still running: neither ready nor needs_review can speak
+	g.prs = []*fakePR{a}
+	passEvents(t, now)
+	verdict := func(want string, by ...string) {
+		t.Helper()
+		now = now.Add(3 * time.Minute)
+		before, _ := os.ReadFile(PREventsPath())
+		if err := WatchPass("me", "o", now); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := os.ReadFile(PREventsPath())
+		lines := strings.Fields(strings.TrimSpace(string(after[len(before):])))
+		if want == "" {
+			if len(lines) != 0 {
+				t.Errorf("nothing new to say: %s", lines)
+			}
+			return
+		}
+		var e PREvent
+		if len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &e) != nil || e.Event != want || e.Review != want || !slices.Equal(e.By, by) {
+			t.Errorf("want %s by %v, got %s", want, by, lines)
+		}
+	}
+	a.reviews = [][2]string{{"zed", "APPROVED"}, {"amy", "COMMENTED"}}
+	verdict("approved", "zed")
+	verdict("") // said once
+	a.reviews = append(a.reviews, [2]string{"amy", "APPROVED"})
+	verdict("") // a second approval changes nothing
+	a.reviews = append(a.reviews, [2]string{"amy", "CHANGES_REQUESTED"})
+	verdict("changes_requested", "amy") // one reviewer asking for changes outweighs an approval
+	a.reviews = append(a.reviews, [2]string{"amy", "APPROVED"})
+	verdict("approved", "amy", "zed")
+	a.reviews = append(a.reviews, [2]string{"amy", "DISMISSED"}, [2]string{"zed", "DISMISSED"})
+	verdict("") // back to needing a review: needs_review's to say, once the checks pass
 }
 
 func TestWatchMergedWindow(t *testing.T) {
@@ -499,7 +539,7 @@ func TestWatchStateFromBeforeAwaitingIsMigratedQuietly(t *testing.T) {
 		t.Errorf("an upgrade emits nothing: %v", got)
 	}
 	a.reviews = [][2]string{{"rev", "APPROVED"}}
-	if got := passEvents(t, now.Add(6*time.Minute)); !slices.Equal(got, []string{"review_not_needed " + a.url(), "ready " + a.url()}) {
+	if got := passEvents(t, now.Add(6*time.Minute)); !slices.Equal(got, []string{"review_not_needed " + a.url(), "approved " + a.url(), "ready " + a.url()}) {
 		t.Errorf("but knows it was awaiting: %v", got)
 	}
 }

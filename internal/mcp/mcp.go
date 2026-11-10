@@ -161,11 +161,15 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "close_session",
-		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab or tmux pane.",
+		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab or tmux pane. That stops it mid-whatever-it-was-doing; with graceful, a Claude Code session is first asked to wrap up (stop at a safe point, remove its worktrees, say what's left) and is stopped once it has gone idle after that, or when the timeout passes, and the result carries its last message. If the notice can't be sent nothing is stopped.",
 		"inputSchema": map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"name": map[string]any{"type": "string", "description": "the session's name"}},
-			"required":   []string{"name"},
+			"type": "object",
+			"properties": map[string]any{
+				"name":            map[string]any{"type": "string", "description": "the session's name"},
+				"graceful":        map[string]any{"type": "boolean", "description": "ask it to wrap up first and wait for it to go idle; default false. Not for Codex sessions"},
+				"timeout_seconds": map[string]any{"type": "integer", "description": "with graceful: how long to wait before stopping it anyway; default 120, at most 900"},
+			},
+			"required": []string{"name"},
 		},
 	},
 	{
@@ -187,7 +191,7 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 		}
 	}
 	if name == "close_session" {
-		return sessions.CloseByName(a.Name)
+		return closeCall(a.Name, raw)
 	}
 	if !filepath.IsAbs(a.Cwd) {
 		return "", fmt.Errorf("cwd must be an absolute path")
@@ -198,6 +202,27 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	}
 	return fmt.Sprintf("launched %s: pid %d, %s", a.Name, l.PID, l.TTY), nil
 }
+
+// closeCall is close_session: at once, or with graceful after asking the
+// session to wrap up.
+func closeCall(name string, raw json.RawMessage) (string, error) {
+	var a struct {
+		Graceful bool `json:"graceful"`
+		Timeout  int  `json:"timeout_seconds"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return "", fmt.Errorf("bad arguments: %v", err)
+		}
+	}
+	if !a.Graceful {
+		return sessions.CloseByName(name)
+	}
+	return closeGracefully(name, time.Duration(clampInt(a.Timeout, 120, 900))*time.Second)
+}
+
+// closeGracefully is sessions.CloseGracefully, stubbed in tests.
+var closeGracefully = sessions.CloseGracefully
 
 func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	if name == "launch_session" || name == "close_session" {

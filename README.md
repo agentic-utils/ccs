@@ -54,6 +54,8 @@ ccs close fix-login
 
 `ccs close <name>` finds the one running session with that name (two with the same name are left alone), stops it, confirms its process has exited, then closes its iTerm tab (or tmux pane). A session with no terminal (an app's, or `claude --bg`) is refused.
 
+That stops a session mid-whatever-it-was-doing. `ccs close --graceful <name>` (or `graceful` on the `close_session` tool) asks it first: the session gets one automatic notice, marked as from `ccs close` and not typed by you, telling it to stop at a safe point, commit or stash what's worth keeping, stop its background tasks, remove the worktrees it made and say what's left. ccs then waits until the session has gone idle after that notice reached its transcript, closes it as above and prints its last message. After `--timeout` (default `2m`) it is stopped anyway, and the result says whether the notice never arrived (a session in another permission mode holds such messages for approval) or it simply hadn't finished. If the notice can't be sent at all, nothing is stopped. Codex sessions can't be sent one, so `--graceful` refuses them.
+
 ## Link to a session's tab
 
 On macOS, `ccs://session/<name>` switches to that running session's iTerm tab or tmux window, so a session can mention another one as something you can click:

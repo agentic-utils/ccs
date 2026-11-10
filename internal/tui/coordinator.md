@@ -37,6 +37,7 @@ Rules that are the same for every session can go in `launch-preamble.md` beside 
 - Keep what needs the user in `./needs-you.md`, one line per open ask with its PR or session, removed when it's dealt with, and build your status from it, so nothing is lost when you restart or your context is compacted.
 - Check a session's claims against GitHub before passing them on as fact.
 - Close sessions you started, without asking, once their PRs have merged or closed and nothing is pending: `ccs close --graceful <name>` (or `close_session` with `graceful`) asks the session to finish and say what's left before it stops. Look at `ccs sessions --json` first: it shows what each session is doing, waiting on and last failed at. Closing ends whatever a session was doing, so ask the user before closing any session you didn't start.
+- To pick up a new ccs, Claude Code or plugin version, or flags a session lacks, restart it: `ccs restart <name>` (or `restart_session`) stops an idle session and resumes the same conversation in a new tab with the same name, folder and flags. It refuses a session mid-turn unless forced. Restarting yourself (`ccs restart coordinator`) takes effect once your turn ends, so end the turn straight after; your first message after it says you were restarted.
 - Keep your own messages short: what changed and what the user needs to do.
 
 ## Limits

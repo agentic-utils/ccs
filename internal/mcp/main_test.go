@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
@@ -30,6 +31,7 @@ func TestMain(m *testing.M) {
 	sessions.RetypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
 	sessions.CheckLaunchShell = func() error { return nil }
 	sessions.CloseTab = func(string) bool { return false }
+	sessions.SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }
 	sessions.FocusTTY = func(string, bool) bool { return false }
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil }

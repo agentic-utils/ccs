@@ -82,6 +82,7 @@ func TestMain(m *testing.M) {
 	sessions.FocusTTY = func(string, bool) bool { return false }
 	focusPID = func(int, bool) bool { return false }
 	sessions.ExecScript = func(string) error { return errors.New("tests exec nothing") }
+	sessions.SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }
 	mcpRun = func(string, ...string) ([]byte, error) { return nil, errors.New("tests run no claude or codex") }
 	namedTranscript = func(string) string { return "" }
 	coordinatorProbe = func() tea.Msg { return nil }

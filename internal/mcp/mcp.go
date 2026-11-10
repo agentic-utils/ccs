@@ -79,7 +79,7 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 			"instructions": "Search and read the user's earlier Claude Code sessions (from ~/.claude/projects). " +
 				"Use search_sessions to find a past conversation by what was said in it, list_sessions for recent ones, " +
 				"and read_session to read one. Sessions are the user's private history; quote only what's relevant. " +
-				"launch_session starts a named session in a new iTerm tab or tmux window and close_session stops one and closes its tab. " +
+				"launch_session starts a named session in a new iTerm tab or tmux window and close_session stops one and closes its tab; restart_session stops one and resumes it in a new tab (your own once your turn ends). " +
 				"list_prs lists the user's open PRs with the session that owns each.",
 		}, nil
 	case "ping":
@@ -175,13 +175,27 @@ var mcpTools = []map[string]any{
 		},
 	},
 	{
+		"name":        "restart_session",
+		"description": "Restart the running Claude Code session with this name: stop it and resume the same conversation in a new iTerm tab or tmux window, with the same name, folder and the user's claude flags, to pick up a new ccs, Claude Code or plugin version or a flag it lacked. Returns as soon as the new tab is open. Refused while the session is mid-turn (working, or waiting on a menu or prompt) unless force, which stops it where it is. Called on your own session, it returns at once and the restart happens once your turn ends (or after timeout_seconds), so end the turn straight after. The resumed session's first message says it was restarted; its background tasks, Monitors and subagents don't survive.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":            map[string]any{"type": "string", "description": "the session's name"},
+				"force":           map[string]any{"type": "boolean", "description": "restart it even mid-turn; default false"},
+				"timeout_seconds": map[string]any{"type": "integer", "description": "restarting your own session: how long to wait for your turn to end before stopping it anyway; default 120, at most 900"},
+			},
+			"required": []string{"name"},
+		},
+	},
+	{
 		"name":        "list_prs",
 		"description": "The user's open PRs (as ccs prs --json): each with the live sessions that own it (ccs claim, or ccs watch for the session that opened it), the session that opened it or that none here did (opened_by, origin), the PRs it must merge after that haven't merged (blocked_by, from ccs depends), its group (ready, needs_you, waiting) and status, and flags for PRs nobody owns and PRs two sessions claim.",
 		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 	},
 }
 
-// mcpSessionCall runs launch_session and close_session, which need no transcripts.
+// mcpSessionCall runs launch_session, close_session and restart_session,
+// which need no transcripts.
 func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	var a struct {
 		Name, Brief, Resume, Cwd string
@@ -195,6 +209,9 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	}
 	if name == "close_session" {
 		return closeCall(a.Name, raw)
+	}
+	if name == "restart_session" {
+		return restartCall(a.Name, raw)
 	}
 	if !filepath.IsAbs(a.Cwd) {
 		return "", fmt.Errorf("cwd must be an absolute path")
@@ -227,8 +244,52 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 // closeGracefully is sessions.CloseGracefully, stubbed in tests.
 var closeGracefully = sessions.CloseGracefully
 
+// restartSession is sessions.RestartSession, stubbed in tests.
+var restartSession = sessions.RestartSession
+
+// restartCall is restart_session. It returns once the new tab is open; the
+// wait for the resumed session to register goes on here in the background
+// (this server lives as long as the session that called it) and its outcome
+// goes to the activity log.
+func restartCall(name string, raw json.RawMessage) (string, error) {
+	var a struct {
+		Force   bool `json:"force"`
+		Timeout int  `json:"timeout_seconds"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return "", fmt.Errorf("bad arguments: %v", err)
+		}
+	}
+	type result struct {
+		text string
+		err  error
+	}
+	tab := make(chan string, 1)
+	done := make(chan result, 1)
+	go func() {
+		text, err := restartSession(sessions.RestartOpts{
+			Name: name, Force: a.Force,
+			Timeout: time.Duration(clampInt(a.Timeout, 120, 900)) * time.Second,
+			OnTab:   func(tty string) { tab <- tty },
+		})
+		done <- result{text, err}
+	}()
+	select {
+	case r := <-done:
+		return r.text, r.err
+	case tty := <-tab:
+		go func() {
+			if r := <-done; r.err != nil {
+				state.LogActivity("restart_session %s: %v", name, r.err)
+			}
+		}()
+		return fmt.Sprintf("stopped %s and opened its new tab on %s, where it is resuming the same conversation: list_sessions shows it once it's up", name, tty), nil
+	}
+}
+
 func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
-	if name == "launch_session" || name == "close_session" {
+	if name == "launch_session" || name == "close_session" || name == "restart_session" {
 		return mcpSessionCall(name, raw)
 	}
 	if name == "list_prs" {

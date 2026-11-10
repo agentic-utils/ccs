@@ -65,17 +65,17 @@ func TestEraseSavedLinesAfterClear(t *testing.T) {
 func TestProfileChord(t *testing.T) {
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 200, 30
-	m, _ = chord(m, "r")
+	m, _ = chord(m, "q")
 	if m.profileStop == nil || !strings.Contains(m.View(), "recording profile") {
-		t.Fatal("^X R starts recording and says so in the header")
+		t.Fatal("^X Q starts recording and says so in the header")
 	}
 	path := m.profilePath
 	if filepath.Dir(path) != filepath.Dir(state.UpdateLogPath) {
 		t.Errorf("the profile goes beside the logs: %s", path)
 	}
-	m, _ = chord(m, "r")
+	m, _ = chord(m, "q")
 	if m.profileStop != nil || strings.Contains(m.View(), "recording profile") || !strings.Contains(m.errorMsg, path) {
-		t.Errorf("^X R again stops it and says where it is: %q", m.errorMsg)
+		t.Errorf("^X Q again stops it and says where it is: %q", m.errorMsg)
 	}
 	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
 		t.Errorf("profile not written: %v", err)

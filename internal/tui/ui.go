@@ -104,6 +104,8 @@ type model struct {
 	bg              map[string]sessions.BgSession // background sessions (claude --bg), opened with claude attach
 	agentsAt        time.Time                     // when claude agents was last asked
 	confirmStop     string                        // ^X K asked whether to stop this session: y stops it
+	confirmRestart  string                        // ^X R asked whether to restart this session: y restarts it
+	restartForce    bool                          // with confirmRestart: it was mid-turn when asked, so y forces it
 
 	// transcript.Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
@@ -382,7 +384,24 @@ func (m model) stoppable(id string) bool {
 
 // prompting reports an open rename, delete, prune or stop prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.launchStep > 0
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmRestart != "" || m.launchStep > 0
+}
+
+// restartable reports whether ^X R can restart the session: a live Claude
+// Code session in a terminal tab (not a background one, an app's or Codex).
+func (m model) restartable(id string) bool {
+	if !m.live[id] {
+		return false
+	}
+	if _, bg := m.bg[id]; bg {
+		return false
+	}
+	i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+	if i < 0 || m.filtered[i].conv.Kind == transcript.KindCodex {
+		return false
+	}
+	_, live := m.livePIDs[id]
+	return live && m.hostedApp(id) == ""
 }
 
 func initialModel(items []listItem, filterQuery string, claudeFlags []string) model {
@@ -1555,6 +1574,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if k == "^x r" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			if id := m.filtered[m.cursor].conv.SessionID; m.restartable(id) {
+				m.confirmRestart = id
+				st := m.chatStatus[id].Status
+				m.restartForce = st == "busy" || st == "waiting"
+			} else {
+				m.errorMsg = "^X R restarts a live Claude Code session in a terminal tab; this one isn't"
+			}
+			return m, nil
+		}
 		if k == "^x o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			switch {
@@ -1584,7 +1614,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.launchInput = sessions.LaunchPrompt("New session name: ", "")
 			return m, nil
 		}
-		if k == "^x r" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+		if k == "^x q" && !m.prompting() && !m.acctOpen && !m.waitOpen {
 			m.helpOpen = false
 			if m.profileStop != nil {
 				m.profileStop()
@@ -1599,7 +1629,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.profileStop, m.profilePath = stop, path
-			m.note("Recording a CPU profile: do what's slow, then ^X R again")
+			m.note("Recording a CPU profile: do what's slow, then ^X Q again")
 			return m, nil
 		}
 		if k == "^x i" && !m.prompting() && !m.acctOpen && !m.waitOpen {
@@ -1784,6 +1814,26 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, closeCmd(m.sessionName(conv), m.livePIDs[id])
 			case "n", "N", "esc":
 				m.confirmStop = ""
+				return m, nil
+			}
+			return m, nil // Ignore all other keys
+		}
+
+		// Handle restart confirmation mode
+		if id := m.confirmRestart; id != "" {
+			switch msg.String() {
+			case "y", "Y":
+				m.confirmRestart = ""
+				i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+				if i < 0 || !m.restartable(id) {
+					m.errorMsg = "It isn't running any more"
+					return m, nil
+				}
+				name := m.sessionName(m.filtered[i].conv)
+				m.note("Restarting " + name + "...")
+				return m, restartCmd(name, m.restartForce)
+			case "n", "N", "esc":
+				m.confirmRestart = ""
 				return m, nil
 			}
 			return m, nil // Ignore all other keys
@@ -2154,6 +2204,7 @@ func (m model) shortcuts() [][2]string {
 		} else if m.stoppable(id) {
 			add(true, "^X K", "stop this session and close its tab; asks first")
 		}
+		add(m.restartable(id), "^X R", "restart it: stop, then resume this conversation in a new tab with the same flags; asks first")
 	}
 	add(sel, "^X D", "delete its transcript file; asks first, can't be undone")
 
@@ -2175,8 +2226,8 @@ func (m model) shortcuts() [][2]string {
 	add(m.autoFocus, "^X A", "stop switching to sessions that wait on you")
 	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
 	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
-	add(m.profileStop == nil, "^X R", "record a CPU profile, for when ccs feels slow")
-	add(m.profileStop != nil, "^X R", "stop recording and save the CPU profile")
+	add(m.profileStop == nil, "^X Q", "record a CPU profile, for when ccs feels slow")
+	add(m.profileStop != nil, "^X Q", "stop recording and save the CPU profile")
 	add(hasCswap, "^X U", "switch Claude account (cswap)")
 
 	group("ccs")
@@ -2370,7 +2421,7 @@ func (m model) viewScreen() string {
 		status += fmt.Sprintf("%d waiting", n)
 	}
 	if m.profileStop != nil { // a reminder: it records until stopped
-		status += " · " + key("^X R") + "\033[31mrecording profile\033[33m"
+		status += " · " + key("^X Q") + "\033[31mrecording profile\033[33m"
 	}
 	// The modes ^X toggles, on the right beside the key hints.
 	var toggles []string
@@ -2426,6 +2477,17 @@ func (m model) viewScreen() string {
 			Foreground(lipgloss.Color("196")). // Red
 			Render(fmt.Sprintf(what, transcript.Truncate(m.sessionName(conv), 50))) +
 			"  \033[90m" + hints("y", "stop", "n/"+keyEsc, "cancel") + "\033[0m"
+		sections = append(sections, "  "+inputSection)
+	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmRestart != "" && it.conv.SessionID == m.confirmRestart }); i >= 0 {
+		name := transcript.Truncate(m.sessionName(m.filtered[i].conv), 50)
+		what, colour := fmt.Sprintf("Restart %q? It stops, then resumes this conversation in a new tab.", name), "214" // Amber
+		if m.restartForce {
+			what, colour = fmt.Sprintf("%q is mid-turn: restart it anyway, stopping it where it is?", name), "196" // Red
+		}
+		inputSection = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colour)).
+			Render(what) +
+			"  \033[90m" + hints("y", "restart", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if m.confirmDelete {
 		conv := m.filtered[m.deleteIndex].conv

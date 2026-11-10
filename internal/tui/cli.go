@@ -55,6 +55,10 @@ Usage: ccs [filter] [-- claude-flags...]
                             a new session's brief starts with launch-preamble.md beside ccs's settings, if you keep one
        ccs close <name>     Stop the named session and close its tab (--graceful asks it to
                             finish and say what's left first)
+       ccs restart [--force] <name>
+                            Stop the named session and resume the same conversation in a new tab, with
+                            the same name, folder and flags; refused mid-turn unless --force. A session
+                            restarting itself restarts once its turn ends
        ccs sessions [--json] [--all]
                             The sessions running now and what each is doing: busy, idle or waiting on you
                             and since when, its question, last API error, PRs, background tasks and subagents
@@ -185,6 +189,9 @@ func Main(v string) {
 	}
 	if len(args) > 0 && args[0] == "close" {
 		os.Exit(sessions.RunClose(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "restart" {
+		os.Exit(sessions.RunRestart(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "link" {
 		os.Exit(sessions.RunLink(args[1:], os.Stdout, os.Stderr))

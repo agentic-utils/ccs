@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -41,6 +42,7 @@ func TestMain(m *testing.M) {
 	CloseTab = func(string) bool { return false }
 	FocusTTY = func(string, bool) bool { return false }
 	ExecScript = func(string) error { return errors.New("tests exec nothing") }
+	SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }
 	CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	LiveCodexSessions = func() map[string]LiveSession { return nil }
 	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }

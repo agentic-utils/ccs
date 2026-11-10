@@ -30,6 +30,18 @@ type closeDoneMsg struct {
 }
 
 // closeCmd stops the session on pid and closes its tab, off the UI goroutine.
+// restartCmd restarts the session called name (^X R, after y), force when
+// it was mid-turn when asked.
+func restartCmd(name string, force bool) tea.Cmd {
+	return func() tea.Msg {
+		text, err := restartSession(sessions.RestartOpts{Name: name, Force: force})
+		return closeDoneMsg{text, err}
+	}
+}
+
+// restartSession is sessions.RestartSession, stubbed in tests.
+var restartSession = sessions.RestartSession
+
 func closeCmd(name string, pid int) tea.Cmd {
 	return func() tea.Msg {
 		text, err := sessions.CloseSession(name, pid)

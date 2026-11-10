@@ -545,9 +545,97 @@ func TestLaunchTypesTheLauncherAgainWhenTheShellLostIt(t *testing.T) {
 	LauncherRunning = func(string, string) bool { return true }
 	typed = 0
 	LaunchWait = 200 * time.Millisecond
-	LaunchSession(LaunchOpts{Name: "stuck", Brief: "x", Cwd: t.TempDir()})
+	l, err := LaunchSession(LaunchOpts{Name: "stuck", Brief: "x", Cwd: t.TempDir()})
 	if typed != 0 {
 		t.Errorf("typed into a tab that runs it: %d", typed)
+	}
+	// Its tab runs the launcher and no session registered: starting, not failed.
+	if err != nil || !l.Starting || l.TTY != "/dev/ttys045" || l.PID != 0 {
+		t.Fatalf("still starting is no error: %+v, %v", l, err)
+	}
+	if text := l.Text("stuck"); !strings.Contains(text, "still starting on /dev/ttys045") || !strings.Contains(text, "launch.sh") || !strings.Contains(text, "folder-trust") {
+		t.Errorf("says where it is and what may be waiting: %s", text)
+	}
+}
+
+func TestLaunchRefusesANameStillStarting(t *testing.T) {
+	write := sessionsFixture(t)
+	stubLaunch(t)
+	LaunchWait = 100 * time.Millisecond
+	opened := 0
+	OpenLaunchTab = func(string) (string, error) { opened++; return "/dev/ttys046", nil }
+	LauncherRunning = func(tty, script string) bool {
+		return tty == "/dev/ttys046" && strings.HasSuffix(script, "launch.sh")
+	}
+	cwd := t.TempDir()
+	if l, err := LaunchSession(LaunchOpts{Name: "slow", Brief: "x", Cwd: cwd}); err != nil || !l.Starting {
+		t.Fatalf("first launch is starting: %+v, %v", l, err)
+	}
+	if _, err := LaunchSession(LaunchOpts{Name: "slow", Brief: "x", Cwd: cwd}); err == nil || !strings.Contains(err.Error(), "still starting on /dev/ttys046") || opened != 1 {
+		t.Errorf("a second launch is refused before any tab opens: %v, %d tabs", err, opened)
+	}
+	// Another name is its own.
+	if l, err := LaunchSession(LaunchOpts{Name: "other", Brief: "x", Cwd: cwd}); err != nil || !l.Starting || opened != 2 {
+		t.Errorf("another name still launches: %+v, %v", l, err)
+	}
+
+	// A session has registered from that tab since (under any name): the tab
+	// isn't a launch in progress any more.
+	oldTTY := proc.TTYOf
+	t.Cleanup(func() { proc.TTYOf = oldTTY })
+	proc.TTYOf = func(int) string { return "/dev/ttys046" }
+	write("1.json", os.Getpid(), "renamed")
+	if tty := startingOn("slow"); tty != "" {
+		t.Errorf("a tab whose session registered isn't starting: %s", tty)
+	}
+	if _, err := os.Stat(filepath.Join(state.LaunchDir(), "slow", startingFile)); err == nil {
+		t.Error("its marker is dropped")
+	}
+
+	// The tab went away (nothing runs the launcher): launch it again.
+	LauncherRunning = func(string, string) bool { return false }
+	if tty := startingOn("other"); tty != "" {
+		t.Errorf("a closed tab isn't starting: %s", tty)
+	}
+}
+
+func TestLaunchPrependsThePreamble(t *testing.T) {
+	write := sessionsFixture(t)
+	stubLaunch(t)
+	OpenLaunchTab = func(string) (string, error) {
+		write("1.json", os.Getpid(), "pre")
+		return "/dev/ttys047", nil
+	}
+	t.Cleanup(func() { os.Remove(PreamblePath()) })
+	briefOf := func(o LaunchOpts) string {
+		t.Helper()
+		o.Cwd = t.TempDir()
+		// The name is running after the first launch, which is after the brief is written.
+		LaunchSession(o)
+		b, _ := os.ReadFile(filepath.Join(state.LaunchDir(), o.Name, "brief.md"))
+		return string(b)
+	}
+	if got := briefOf(LaunchOpts{Name: "p0", Brief: "the ask"}); got != "the ask" {
+		t.Errorf("no preamble file, the brief as given: %q", got)
+	}
+	os.WriteFile(PreamblePath(), []byte("Work in a worktree.\nDon't merge.\n\n"), 0o600)
+	if got := briefOf(LaunchOpts{Name: "p1", Brief: "the ask"}); got != "Work in a worktree.\nDon't merge.\n\nthe ask" {
+		t.Errorf("the preamble comes first: %q", got)
+	}
+	if got := briefOf(LaunchOpts{Name: "p2", Brief: "the ask", NoPreamble: true}); got != "the ask" {
+		t.Errorf("NoPreamble leaves it out: %q", got)
+	}
+	if got := withPreamble(LaunchOpts{Brief: "carry on", Resume: "abc"}); got != "carry on" {
+		t.Errorf("a resumed session gets none: %q", got)
+	}
+	if got := withPreamble(LaunchOpts{}); got != "" {
+		t.Errorf("no brief, no preamble: %q", got)
+	}
+	// Whether it starts isn't the point here: the brief is written first.
+	var out, errs strings.Builder
+	RunLaunch([]string{"--name", "p3", "--brief", filepath.Join(state.LaunchDir(), "p2", "brief.md"), "--no-preamble", "--cwd", t.TempDir()}, &out, &errs)
+	if b, _ := os.ReadFile(filepath.Join(state.LaunchDir(), "p3", "brief.md")); string(b) != "the ask" {
+		t.Errorf("--no-preamble leaves it out: %q", b)
 	}
 }
 

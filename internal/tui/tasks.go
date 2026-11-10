@@ -19,16 +19,7 @@ func (m model) runningTasks(conv transcript.Conversation) []transcript.BgTask {
 	if !m.live[conv.SessionID] {
 		return nil
 	}
-	since := m.procStart(conv)
-	now := time.Now()
-	var out []transcript.BgTask
-	for _, t := range conv.Tasks {
-		started, err := time.Parse(time.RFC3339, t.Started)
-		if t.Status == "" && (t.Expires.IsZero() || now.Before(t.Expires)) && (err != nil || !started.Before(since)) {
-			out = append(out, t)
-		}
-	}
-	return out
+	return transcript.RunningTasks(conv, m.procStart(conv), time.Now())
 }
 
 // taskCell is the list's counts of running background tasks (⧗) and
@@ -103,7 +94,7 @@ func (m model) procStart(conv transcript.Conversation) time.Time {
 // process. Older Claude Code wrote no finished flag at all, so an old
 // subagent without one ended with the process that ran it.
 func (m model) subagentAlive(conv transcript.Conversation, s transcript.Subagent) bool {
-	return !s.Finished && m.live[conv.SessionID] && !s.Started.Before(m.procStart(conv))
+	return m.live[conv.SessionID] && transcript.SubagentAlive(s, m.procStart(conv))
 }
 
 // subagentRunning: alive and still writing, not an idle teammate.

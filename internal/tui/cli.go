@@ -54,6 +54,9 @@ Usage: ccs [filter] [-- claude-flags...]
                             Start a named claude (or codex) session in a new iTerm tab or tmux window;
                             a new session's brief starts with launch-preamble.md beside ccs's settings, if you keep one
        ccs close <name>     Stop the named session and close its tab
+       ccs sessions [--json] [--all]
+                            The sessions running now and what each is doing: busy, idle or waiting on you
+                            and since when, its question, last API error, PRs, background tasks and subagents
        ccs link install     Make ccs://session/<name> links switch to that session's tab (macOS);
                             also: ccs link status, ccs link uninstall
        ccs watch [flags]    Report changes to your open PRs as JSON lines, and tell the sessions
@@ -188,6 +191,14 @@ func Main(v string) {
 	}
 	if len(args) > 0 && args[0] == "prs" {
 		os.Exit(github.RunPRs(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "sessions" {
+		// Its --all is its own (sessions not running too), over the list's
+		// usual window: the list's flags aren't its flags.
+		load := func() ([]transcript.Conversation, error) {
+			return transcript.GetConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, []string{"observer-sessions"})
+		}
+		os.Exit(mcp.RunSessions(args[1:], os.Stdout, os.Stderr, load))
 	}
 
 	for _, arg := range args {

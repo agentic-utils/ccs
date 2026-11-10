@@ -58,6 +58,7 @@ const coordinatorSettings = `{
       "Bash(ccs launch:*)",
       "Bash(ccs close:*)",
       "Bash(ccs prs:*)",
+      "Bash(ccs sessions:*)",
       "Bash(ccs claim:*)",
       "Bash(ccs watch:*)",
       "Bash(tail -n0 -F:*)",

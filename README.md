@@ -39,7 +39,7 @@ Launch, watch, search and resume your coding CLI sessions: [Claude Code](https:/
 claude mcp add --scope user ccs -- ccs mcp
 ```
 
-Claude starts it when needed (no ccs window has to be open, no network port). It has six tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first; both leave out headless runs unless `include_headless`) `read_session` (a session's messages, paged, optionally only those around a search term), `launch_session` / `close_session`, which do what `ccs launch` and `ccs close` do (below), and `list_prs`, which is `ccs prs --json`. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
+Claude starts it when needed (no ccs window has to be open, no network port). It has six tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first, a running session with what it is doing as `ccs sessions` gives it, `live_only` for just those; both leave out headless runs unless `include_headless`) `read_session` (a session's messages, paged, optionally only those around a search term), `launch_session` / `close_session`, which do what `ccs launch` and `ccs close` do (below), and `list_prs`, which is `ccs prs --json`. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
 
 ## Start and close sessions
 
@@ -48,7 +48,11 @@ ccs launch --name fix-login --brief brief.md --cwd ~/code/app   # claude, the br
 ccs launch --name fix-login --resume <session-id>               # resume one under a name (refused, with no tab opened, when there's no such session)
 ccs launch --name tests --brief brief.md --codex                # codex instead
 ccs close fix-login
+ccs sessions                                                    # what each running session is doing
+ccs sessions --json                                             # the same, for scripts and other sessions
 ```
+
+`ccs sessions` lists the sessions running now, those needing you first: whether each is busy, idle or waiting on you and since when, the question or permission prompt it waits on, whether an idle one's last message asks something, its last API error (until a later reply succeeds), its PRs (the open ones, when `ccs watch` has run; otherwise every PR it touched), and how many background tasks and subagents it runs. `--all` adds sessions that aren't running (the last 60 days). `--json` prints `{"sessions": [...]}` with `name`, `session`, `kind`, `cwd`, `live`, `pid`, `status`, `since`, `waiting_for`, `question`, `asked`, `last_error`, `last_error_at`, `prs`, `open_prs`, `tasks`, `subagents`, `last_message` and `messages`; a field with nothing to say is left out. A wait that isn't on a tool call or a question menu has no `question`.
 
 `ccs launch` needs zsh at `/bin/zsh`. It opens a background tmux window when run inside tmux, otherwise an iTerm tab (at the end of the tab strip if iTerm's "new tabs at the end" setting is on, focus staying where it was), clears the prompt and runs a launcher kept in `~/Library/Caches/ccs/launch/<name>/`: a login zsh that sources `~/.claude.secret` when there is one and runs `claude "<brief>" --name <name> $CCS_CLAUDE_ARGS`, the brief first since `--channels` takes every word after it. It then waits up to 20 seconds for a session with that name to start, printing its pid and tty. If none has registered by then but the tab is still running the launcher (Claude asking whether to trust the folder, for instance), it says the session is still starting, with the tty and launcher, and exits 0; it fails only when nothing in the tab runs the launcher. A name already running is refused, and so is one still starting in its tab, before any new tab opens.
 

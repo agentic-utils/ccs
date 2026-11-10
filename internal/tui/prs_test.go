@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/transcript"
@@ -90,7 +91,7 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 			t.Errorf("line %d = %q, want %q", i, strip2(lines[i]), want)
 		}
 	}
-	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 1 ●1" {
+	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 ◷1 ●1" {
 		t.Errorf("PRS column counts every group: %q", got)
 	}
 	m.prs["https://github.com/o/r/pull/5"] = github.PRInfo{State: "CLOSED"}
@@ -231,12 +232,81 @@ func TestPRColoursMatchGitHub(t *testing.T) {
 		u(5): {State: "CLOSED"},
 	}
 	lines := m.prLines(conv, 200)
-	for i, want := range []string{"\033[32m✓", "\033[" + amber + "m○", "\033[90m○"} {
+	for i, want := range []string{"\033[32m✓", "\033[" + amber + "m◷", "\033[90m○"} {
 		if !strings.Contains(lines[i], want) {
 			t.Errorf("line %d should start %q: %q", i, want, lines[i])
 		}
 	}
 	if last := lines[len(lines)-1]; !strings.Contains(last, "\033["+prPurple+"m1 merged") || !strings.Contains(last, "\033[31m1 closed") {
 		t.Errorf("merged should be purple and closed red: %q", last)
+	}
+}
+
+// A draft is counted apart from PRs waiting on checks or a review, grey, and
+// every count in the column carries a glyph.
+func TestPRCellDraftApartFromWaiting(t *testing.T) {
+	u := func(n int) string { return fmt.Sprint("https://github.com/o/r/pull/", n) }
+	conv := transcript.Conversation{SessionID: "s", PRs: []string{u(1), u(2), u(3), u(4), u(5), u(6)}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
+	m.prs = map[string]github.PRInfo{
+		u(1): {State: "OPEN", MergeState: "CLEAN"},
+		u(2): {State: "OPEN", Checks: "FAILURE", MergeState: "BLOCKED"},
+		u(3): {State: "OPEN", Checks: "PENDING", MergeState: "BLOCKED"},
+		u(4): {State: "OPEN", Draft: true},
+		u(5): {State: "OPEN", Draft: true, Checks: "PENDING"},
+		u(6): {State: "MERGED", Draft: true}, // a merged PR is merged, whatever it once was
+	}
+	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 ◷1 ○2 ●1" {
+		t.Errorf("ready, needs you, waiting, draft, merged: %q", got)
+	}
+	if got := m.prCell(conv, false); ansi.StringWidth(got) != colPRs {
+		t.Errorf("every group at once fits the column exactly: %q is %d wide, colPRs %d", got, ansi.StringWidth(got), colPRs)
+	}
+	coloured := m.prCell(conv, true)
+	for _, want := range []string{"\033[" + amber + "m◷1", "\033[90m○2", "\033[" + prPurple + "m●1"} {
+		if !strings.Contains(coloured, want) {
+			t.Errorf("want %q in %q", want, coloured)
+		}
+	}
+	for _, word := range strings.Fields(strip2(coloured)) {
+		if word[0] >= '0' && word[0] <= '9' {
+			t.Errorf("a bare number with no glyph: %q in %q", word, strip2(coloured))
+		}
+	}
+	// The preview's line and the ^O popup use the same mark as the column.
+	if l := m.prLine(u(4)); !strings.Contains(l, "\033[90m○") || !strings.Contains(strip2(l), "draft") {
+		t.Errorf("a draft's line is a grey ○: %q", l)
+	}
+	if l := m.prLinkText(u(3)); !strings.Contains(l, "\033["+amber+"m◷") {
+		t.Errorf("a waiting PR's link is an amber ◷: %q", l)
+	}
+	// Not looked up yet: waiting's mark in grey, never counted.
+	m.prs[u(7)] = github.PRInfo{Draft: true}
+	if l := m.prLine(u(7)); !strings.Contains(l, "\033[90m◷") {
+		t.Errorf("unknown is a grey ◷, even if an old answer said draft: %q", l)
+	}
+}
+
+// The ? help explains every glyph the list puts before a count.
+func TestHelpLegendNamesEveryCountGlyph(t *testing.T) {
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 120, 40
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	v := strip2(m.View())
+	for _, want := range []string{"⧗ commands and monitors running", "◆ subagents running", "⌕ search hits",
+		"✓ ready", "✗ needs you", "◷ waiting", "○ draft", "● merged"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("legend missing %q:\n%s", want, v)
+		}
+	}
+}
+
+// The table's HITS carry the same ⌕ as the sidebar's.
+func TestTableHitsHaveGlyph(t *testing.T) {
+	conv := transcript.Conversation{SessionID: "s", Title: "work", Messages: []transcript.Message{{Role: "user", Text: "needle"}}}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "needle", nil)
+	m.width, m.height, m.table = 160, 40, true
+	if v := strip2(m.View()); !strings.Contains(v, " ⌕1") {
+		t.Errorf("table HITS should read ⌕1:\n%s", v)
 	}
 }

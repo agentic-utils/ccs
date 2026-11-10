@@ -1295,11 +1295,14 @@ func TestGroupByFolder(t *testing.T) {
 	}
 	listTop, _, _ := m.listLayout()
 	lines := strings.Split(strip2(m.View()), "\n")
-	// State sections first (idle, then not open), folders within each.
-	for at, want := range map[int]string{0: "idle 1", 1: "ccs 1", 4: "not open in claude 3", 5: "api 2", 10: "ccs 1"} {
+	// State sections first (idle, then not open, after a blank row), folders within each.
+	for at, want := range map[int]string{0: "idle 1", 1: "ccs 1", 5: "not open in claude 3", 6: "api 2", 11: "ccs 1"} {
 		if !strings.Contains(lines[listTop+at], want) {
-			t.Errorf("row %d should be the header %q:\n%s", at, want, strings.Join(lines[listTop:listTop+13], "\n"))
+			t.Errorf("row %d should be the header %q:\n%s", at, want, strings.Join(lines[listTop:listTop+14], "\n"))
 		}
+	}
+	if gap := ansi.Cut(lines[listTop+4], 0, m.sidebarWidth()); strings.TrimSpace(gap) != "" {
+		t.Errorf("a blank row should part a section from the one above, got %q", gap)
 	}
 	if folder, title := strings.Index(lines[listTop+1], "ccs"), strings.Index(lines[listTop+2], "ccs-main"); title <= folder {
 		t.Errorf("a session should sit in from its folder's header: header at %d, title at %d", folder, title)
@@ -1309,7 +1312,11 @@ func TestGroupByFolder(t *testing.T) {
 	if m.cursor != cur {
 		t.Error("clicking a group's header selects nothing")
 	}
-	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 6, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if m.cursor != cur {
+		t.Error("clicking the blank row between sections selects nothing")
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 7, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.filtered[m.cursor].conv.SessionID != "api-new" {
 		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
 	}

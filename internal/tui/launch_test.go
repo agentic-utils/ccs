@@ -136,3 +136,53 @@ func TestLaunchResumeNeedsATranscript(t *testing.T) {
 		}
 	}
 }
+
+// ^X R asks first, then y restarts the session by its name; one mid-turn
+// asks in red, and y then forces it.
+func TestRestartFromTheList(t *testing.T) {
+	old := restartSession
+	t.Cleanup(func() { restartSession = old })
+	var got []sessions.RestartOpts
+	restartSession = func(o sessions.RestartOpts) (string, error) {
+		got = append(got, o)
+		return "restarted " + o.Name, nil
+	}
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
+	m.width, m.height = 120, 30
+	m, cmd := chord(m, "r")
+	if cmd != nil || m.confirmRestart != "" || !strings.Contains(m.errorMsg, "^X R restarts") {
+		t.Fatalf("a session that isn't running can't be restarted: %q", m.errorMsg)
+	}
+	m.errorMsg = ""
+	m.live = map[string]bool{"s1": true}
+	m.livePIDs = map[string]int{"s1": 999999}
+	m, cmd = chord(m, "r")
+	if cmd != nil || m.confirmRestart != "s1" || m.restartForce || !strings.Contains(m.View(), "Restart \"one\"?") {
+		t.Fatalf("^X R asks first: %q", m.confirmRestart)
+	}
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil || m.confirmRestart != "" || len(got) != 0 {
+		t.Fatal("esc cancels it")
+	}
+	m, _ = chord(m, "r")
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil || m.confirmRestart != "" {
+		t.Fatal("y restarts it")
+	}
+	res, _ := m.Update(cmd())
+	m = res.(model)
+	if len(got) != 1 || got[0].Name != "one" || got[0].Force || !strings.Contains(m.errorMsg, "restarted one") {
+		t.Errorf("restarted by name, not forced: %+v, %q", got, m.errorMsg)
+	}
+
+	m.chatStatus = map[string]sessions.SessionStat{"s1": {Status: "busy"}}
+	m, _ = chord(m, "r")
+	if !m.restartForce || !strings.Contains(m.View(), "mid-turn") {
+		t.Fatal("mid-turn, it says so")
+	}
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	cmd()
+	if len(got) != 2 || !got[1].Force {
+		t.Errorf("y forces it: %+v", got)
+	}
+}

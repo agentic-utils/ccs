@@ -934,11 +934,12 @@ func LinkStatus(stdout io.Writer) int {
 type LaunchOpts struct {
 	Name, Brief, Resume, Cwd string
 	Codex                    bool
-	SessionID                string        // claude's id for a new session, known before it starts
-	Focus                    bool          // bring its tab to the front: it needs an answer there
-	Wait                     time.Duration // how long it may take to start; launchWait if zero
-	InPlace                  bool          // no tab: replace this process with it
-	NoPreamble               bool          // the brief as given, without PreamblePath's text before it
+	SessionID                string           // claude's id for a new session, known before it starts
+	Focus                    bool             // bring its tab to the front: it needs an answer there
+	Wait                     time.Duration    // how long it may take to start; launchWait if zero
+	InPlace                  bool             // no tab: replace this process with it
+	NoPreamble               bool             // the brief as given, without PreamblePath's text before it
+	OnTab                    func(tty string) // called once the tab is open, before the wait for the session
 }
 
 // PreamblePath is the text every new session's brief starts with, when the
@@ -1155,6 +1156,9 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 	}
 	if o.Focus {
 		FocusTTY(tty, true)
+	}
+	if o.OnTab != nil {
+		o.OnTab(tty)
 	}
 	starting := filepath.Join(dir, startingFile)
 	os.WriteFile(starting, []byte(tty+"\n"), 0o600)
@@ -1511,6 +1515,7 @@ type SessionFile struct {
 	StatusUpdatedAt int64  `json:"statusUpdatedAt"` // epoch ms
 	WaitingFor      string `json:"waitingFor"`
 	Socket          string `json:"messagingSocketPath"`
+	Cwd             string `json:"cwd"`
 }
 
 func (f SessionFile) Stat() SessionStat {

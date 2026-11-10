@@ -28,6 +28,7 @@ type fakePR struct {
 	reviews     [][2]string // login, state
 	mergedAt    time.Time
 	createdAt   time.Time // what the search says; zero leaves it out
+	autoMerge   bool      // GitHub will merge it by itself
 	failDetails bool
 	unresolved  int          // review threads not resolved, each last commented on by a reviewer
 	threadsFail bool         // the GraphQL thread count fails
@@ -163,7 +164,11 @@ func (g *fakeGitHub) run(args ...string) ([]byte, error) {
 			if p.state != "open" {
 				state = "closed"
 			}
-			return json.Marshal(map[string]any{"draft": p.draft, "mergeable_state": p.mergeable, "head": map[string]string{"sha": p.head}, "state": state, "merged_at": merged})
+			pull := map[string]any{"draft": p.draft, "mergeable_state": p.mergeable, "head": map[string]string{"sha": p.head}, "state": state, "merged_at": merged, "auto_merge": nil}
+			if p.autoMerge {
+				pull["auto_merge"] = map[string]string{"merge_method": "merge"}
+			}
+			return json.Marshal(pull)
 		case strings.HasPrefix(path, commit+"check-runs"):
 			var runs []map[string]string
 			for _, r := range p.runs {

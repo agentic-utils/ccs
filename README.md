@@ -250,7 +250,7 @@ ccs watch --author me --owner my-org --interval 5m
 ccs watch --once                           # one pass, then exit
 ```
 
-Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (awaiting review now: see below), `review_not_needed`, `ready` (approved, checks green, not a draft), `conflicts`, `approved` and `changes_requested` (a reviewer's verdict as it lands, whatever the checks say, with the reviewers in `by`), `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `threads_unanswered` (with `count` and the thread ids in `threads`, when an unresolved thread's last comment isn't yours: a new one, or a reviewer's new comment on one), `merged`, `closed`, `claimed` (a session now owns the PR: `session`, `session_id`, and `auto` when ccs watch claimed it for the session that opened it). Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
+Events: `new`, `checks_failing` (with the failing checks), `checks_passed`, `needs_review` (awaiting review now: see below), `review_not_needed`, `ready` (approved, checks green, not a draft), `conflicts`, `approved` and `changes_requested` (a reviewer's verdict as it lands, whatever the checks say, with the reviewers in `by`), `blocked`, `unblocked`, `blocked_automerge` and `merged_early` (merge order, below), `threads_unresolved` (with `unresolved`, when the count of unresolved review threads rises), `threads_resolved` (back to none), `threads_unanswered` (with `count` and the thread ids in `threads`, when an unresolved thread's last comment isn't yours: a new one, or a reviewer's new comment on one), `merged`, `closed`, `claimed` (a session now owns the PR: `session`, `session_id`, and `auto` when ccs watch claimed it for the session that opened it). Any failed check, optional or not, counts as failing, and so does an unresolved review thread: such a PR is never `ready` or `needs_review`. Threads are counted only for PRs whose checks pass, with one small GraphQL query each (REST doesn't say whether a thread is resolved). Each line has `at`, `event`, `pr`, `repo`, `number`, `title` and `head`.
 
 ```json
 {"at":"2026-11-03T09:12:51Z","event":"checks_failing","pr":"https://github.com/o/r/pull/220","repo":"o/r","number":220,"title":"...","head":"0fc4f95...","checks":["setup"]}
@@ -287,6 +287,20 @@ This session claimed it with ccs claim. If it's yours, deal with it; if not, run
 ```
 
 Events: `nudged` (pr, head, session, reasons) and `nudge_failed` (the same plus the error; tried again next pass). What was sent is kept in `nudges.json` beside ccs's settings, so a restart never sends it again. `--no-nudge` turns this off.
+
+## Merge order
+
+When one PR must not merge before another (infrastructure before the code that uses it), say so, and ccs keeps it in view instead of it living in a chat:
+
+```bash
+ccs depends infra#5080 --after infra#5137   # an address, owner/repo#N, or repo#N
+ccs depends                                 # what waits for what
+ccs depends infra#5080 --drop
+```
+
+While the prerequisite hasn't merged, `ccs prs` and the list show the PR as `blocked: after infra#5137`, never ready, and `ccs watch` holds its `ready` event. `ccs watch` emits `blocked` and `unblocked` as that changes, `blocked_automerge` the moment auto-merge is on for a blocked PR (its owning session is told how to turn it off, and `ccs prs` lists it as needing you), and `merged_early` if it merges first anyway; each carries the PRs it waits for in `after`. A prerequisite can be anyone's PR: GitHub is asked about one the watch doesn't cover. The record is dropped when the PR merges or closes.
+
+ccs refuses no merge itself: GitHub's auto-merge, the browser and other machines are out of its reach. It makes the order visible and says at once when it is about to be, or has been, broken.
 
 ## Who owns each PR
 

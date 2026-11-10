@@ -67,6 +67,10 @@ type WatchedPR struct {
 	// MergeNotLocal), "" when ccs wasn't watching then.
 	MergedBy *PRActor `json:"merged_by,omitempty"`
 	Merge    string   `json:"merge,omitempty"`
+	// BlockedBy is the PRs it must not merge before that haven't merged
+	// (ccs depends), and AutoMerge whether GitHub will merge it by itself.
+	BlockedBy []string `json:"blocked_by,omitempty"`
+	AutoMerge bool     `json:"auto_merge,omitempty"`
 
 	conflictsUnknown bool // GitHub hadn't worked out mergeability yet: keep the last answer
 	threadsUnknown   bool // not counted this pass (checks not green, or the query failed): keep the last count
@@ -75,9 +79,10 @@ type WatchedPR struct {
 // threadsClear: its review threads were counted and none is unresolved.
 func (p *WatchedPR) threadsClear() bool { return p.Threads != nil && *p.Threads == 0 }
 
-// ready: approved, checks green, no unresolved thread, not a draft.
+// ready: approved, checks green, no unresolved thread, not a draft, and
+// waiting for no other PR to merge first.
 func (p *WatchedPR) ready() bool {
-	return p.State == "open" && !p.Draft && p.Checks == "success" && p.threadsClear() && p.Review == "approved"
+	return p.State == "open" && !p.Draft && p.Checks == "success" && p.threadsClear() && p.Review == "approved" && len(p.BlockedBy) == 0
 }
 
 // NeedsReview: green, no unresolved thread and not a draft, waiting for an
@@ -137,6 +142,9 @@ type PREvent struct {
 	// On claimed: the session that now owns the PR (its name and id), and
 	// auto when ccs watch claimed it for the session that opened it.
 	Session string `json:"session,omitempty"`
+	// On blocked, blocked_automerge and merged_early: the PRs it was to
+	// merge after that hadn't merged.
+	After []string `json:"after,omitempty"`
 	// On approved and changes_requested: the reviewers whose reviews say so.
 	By        []string `json:"by,omitempty"`
 	SessionID string   `json:"session_id,omitempty"`
@@ -279,7 +287,7 @@ func RunWatch(args []string) int {
 	selfLogins := fs.String("self-logins", "", "comma-separated GitHub logins whose replies also answer a review thread (bots or co-authors acting for you), besides --author")
 	noAutoClaim := fs.Bool("no-auto-claim", false, "don't claim a PR for the running Claude Code session whose gh pr create opened it")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, approved, changes_requested, threads_unresolved, threads_resolved, threads_unanswered, merged, closed, claimed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, approved, changes_requested, threads_unresolved, threads_resolved, threads_unanswered, blocked, unblocked, blocked_automerge, merged_early (ccs depends), merged, closed, claimed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
 		fs.PrintDefaults()
 	}
 	for _, a := range args {
@@ -359,7 +367,8 @@ func WatchPass(author, owner string, now time.Time) error {
 		}
 	}
 	next := PRWatchState{Author: author, Owner: owner, Started: old.Started, Updated: now, PRs: map[string]*WatchedPR{}, Version: PRWatchVersion}
-	local := LocalActs(now) // what the sessions' transcripts say they opened and merged
+	local := LocalActs(now)                                      // what the sessions' transcripts say they opened and merged
+	order := newMergeOrder(LoadDepends(), old.PRs, open, merged) // the merge order declared with ccs depends
 	var events []PREvent
 	emit := func(p *WatchedPR, event string) {
 		e := PREvent{At: now.UTC().Format(time.RFC3339), Event: event, PR: p.URL, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head}
@@ -376,6 +385,8 @@ func WatchPass(author, owner string, now time.Time) error {
 			e.OpenedBy, e.Origin = p.OpenedBy, p.Origin
 		case "approved", "changes_requested":
 			e.Review, e.By = p.Review, p.ReviewBy
+		case "blocked", "blocked_automerge", "merged_early":
+			e.After = p.BlockedBy
 		case "merged":
 			e.MergedBy, e.Merge = p.MergedBy, p.Merge
 		}
@@ -397,15 +408,37 @@ func WatchPass(author, owner string, now time.Time) error {
 		events = append(events, e)
 	}
 
+	// orderEvents says a PR's merge-order changes: when it starts waiting
+	// and when it no longer does, and at once when GitHub would merge a
+	// waiting PR by itself.
+	orderEvents := func(n, prev *WatchedPR) {
+		blocked, wasBlocked := len(n.BlockedBy) > 0, len(prev.BlockedBy) > 0
+		switch {
+		case blocked && !wasBlocked:
+			emit(n, "blocked")
+		case !blocked && wasBlocked:
+			emit(n, "unblocked")
+			events[len(events)-1].After = prev.BlockedBy // what it waited for
+		}
+		if blocked && n.AutoMerge && !(wasBlocked && prev.AutoMerge) {
+			emit(n, "blocked_automerge")
+		}
+	}
+
 	// Open PRs: details for each, in parallel, then diff.
 	details := prDetailsPass(open, old.PRs, now)
 	openSet := map[string]bool{}
 	for i, p := range open {
 		openSet[p.URL] = true
 		n, o := details[i], old.PRs[p.URL]
-		if n == nil { // couldn't be read: keep what was known, report nothing
+		if n == nil { // couldn't be read: keep what was known, report nothing but its merge order
 			if o != nil {
-				next.PRs[p.URL] = o
+				c := *o
+				c.BlockedBy = order.unmet(p.URL) // a dependency declared since still holds it
+				next.PRs[p.URL] = &c
+				if !seeding && o.State == "open" {
+					orderEvents(&c, o)
+				}
 			}
 			continue
 		}
@@ -420,6 +453,7 @@ func WatchPass(author, owner string, now time.Time) error {
 			}
 		}
 		next.PRs[p.URL] = n
+		n.BlockedBy = order.unmet(p.URL)
 		// Who opened it: looked for until known. Only a PR new to the watcher
 		// with no local gh pr create behind it is called not local; one from
 		// before the watch may have been opened by a session long gone.
@@ -436,6 +470,11 @@ func WatchPass(author, owner string, now time.Time) error {
 			if n.NeedsReview() && stillNeedsReview(n) {
 				n.AskedHead, n.Awaiting = n.Head, true
 				emit(n, "needs_review")
+			}
+			// Auto-merge already on for a PR that must wait: never quiet,
+			// or no later pass would see it change and say so.
+			if len(n.BlockedBy) > 0 && n.AutoMerge {
+				emit(n, "blocked_automerge")
 			}
 			continue
 		}
@@ -474,6 +513,7 @@ func WatchPass(author, owner string, now time.Time) error {
 				emit(n, "threads_unanswered")
 			}
 		}
+		orderEvents(n, prev)
 		if n.ready() && !prev.ready() {
 			emit(n, "ready")
 		}
@@ -507,6 +547,9 @@ func WatchPass(author, owner string, now time.Time) error {
 			n.MergedBy, n.Merge = local.merger(&n, parseTime(n.MergedAt))
 			notNeeded(&n, o)
 			emit(&n, "merged")
+			if n.BlockedBy = order.early(n.URL, parseTime(n.MergedAt)); len(n.BlockedBy) > 0 {
+				emit(&n, "merged_early") // before what it was to wait for
+			}
 		}
 	}
 
@@ -537,8 +580,10 @@ func WatchPass(author, owner string, now time.Time) error {
 		next.PRs[url] = &n
 		notNeeded(&n, o)
 		emit(&n, ended)
+		if n.BlockedBy = order.early(url, parseTime(mergedAt)); ended == "merged" && len(n.BlockedBy) > 0 {
+			emit(&n, "merged_early")
+		}
 	}
-
 	if AutoClaim {
 		events = append(events, claimOpeners(&next, now)...)
 	}
@@ -548,7 +593,11 @@ func WatchPass(author, owner string, now time.Time) error {
 	if err := writePREvents(events); err != nil {
 		return fmt.Errorf("writing events: %w", err)
 	}
-	return SavePRWatchState(next)
+	if err := SavePRWatchState(next); err != nil {
+		return err
+	}
+	pruneDepends(&next) // only once what they said is written and saved
+	return nil
 }
 
 // writePREvents appends events to prEventsPath and prints them.
@@ -742,8 +791,9 @@ func ghPaged[T any](path, key string) ([]T, error) {
 func PRDetails(p WatchedPR) (*WatchedPR, error) {
 	base := "repos/" + p.Repo
 	var pr struct {
-		Draft          bool   `json:"draft"`
-		MergeableState string `json:"mergeable_state"`
+		Draft          bool      `json:"draft"`
+		MergeableState string    `json:"mergeable_state"`
+		AutoMerge      *struct{} `json:"auto_merge"` // set while GitHub will merge it by itself
 		Head           struct {
 			SHA string `json:"sha"`
 		} `json:"head"`
@@ -752,7 +802,7 @@ func PRDetails(p WatchedPR) (*WatchedPR, error) {
 		return nil, err
 	}
 	n := p
-	n.Head, n.Draft = pr.Head.SHA, pr.Draft
+	n.Head, n.Draft, n.AutoMerge = pr.Head.SHA, pr.Draft, pr.AutoMerge != nil
 	n.Conflicts = pr.MergeableState == "dirty"
 	n.conflictsUnknown = pr.MergeableState == "unknown" || pr.MergeableState == ""
 	var runs struct {
@@ -1367,6 +1417,8 @@ type PRRow struct {
 	// a session here should own it.
 	OpenedBy *PRActor `json:"opened_by,omitempty"`
 	Origin   string   `json:"origin,omitempty"`
+	// BlockedBy is the PRs it must merge after (ccs depends) that haven't merged.
+	BlockedBy []string `json:"blocked_by,omitempty"`
 }
 
 // MergedRow is one line of ccs prs --merged: a PR ccs watch saw merge, and how.
@@ -1510,6 +1562,10 @@ func (p *WatchedPR) status() (int, string) {
 		return PRFix, threadsText(*p.Threads)
 	case p.Review == "changes_requested":
 		return PRFix, "changes requested"
+	case len(p.BlockedBy) > 0 && p.AutoMerge:
+		return PRFix, "auto-merge is on, but it must merge after " + prNames(p.BlockedBy)
+	case len(p.BlockedBy) > 0:
+		return PRWaiting, "blocked: after " + prNames(p.BlockedBy)
 	case p.Checks == "pending":
 		return PRWaiting, "checks running"
 	case p.Review == "approved":
@@ -1576,6 +1632,16 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 			}
 		}
 	}
+	// Merge order as declared now, not as of the watcher's last pass: a
+	// dependency made a moment ago already holds its PR. On copies, so the
+	// saved state's own records aren't changed.
+	if deps := LoadDepends(); len(deps.Depends) > 0 {
+		for u, p := range open {
+			c := *p
+			c.BlockedBy = listBlocked(u, deps, st, !offline)
+			open[u] = &c
+		}
+	}
 
 	live := LiveByPID()
 	claims := LoadClaims()
@@ -1633,7 +1699,7 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 
 	for u, p := range open {
 		g, why := p.status()
-		row := PRRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.NeedsReview(), Group: groupNames[g], Status: why, OpenedBy: p.OpenedBy, Origin: p.Origin}
+		row := PRRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.NeedsReview(), Group: groupNames[g], Status: why, OpenedBy: p.OpenedBy, Origin: p.Origin, BlockedBy: p.BlockedBy}
 		for _, c := range claims.Claims[u] {
 			o := OwnerOf(c, live)
 			row.Owners = append(row.Owners, o.Name)
@@ -2004,6 +2070,7 @@ type PRInfo struct {
 	// ThreadsUnread: more threads than the batch reads and none of those
 	// unresolved, so it can't be called clear (the watcher reads them all).
 	ThreadsUnread bool
+	BlockedBy     []string // the PRs it must merge after that haven't merged (ccs depends)
 }
 
 // threadsText is "1 unresolved thread" or "N unresolved threads".
@@ -2065,6 +2132,8 @@ func (p PRInfo) Status() (int, string) {
 		return PRFix, threadsText(p.Unresolved)
 	case p.ThreadsUnread:
 		return PRWaiting, "over 100 review threads: see them on GitHub"
+	case len(p.BlockedBy) > 0: // never ready before what it waits for has merged
+		return PRWaiting, "blocked: after " + prNames(p.BlockedBy)
 	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
 		return PRReady, "ready to merge"
 	case p.MergeState == "UNSTABLE" && (p.Checks == "PENDING" || p.Checks == "EXPECTED"):
@@ -2213,6 +2282,7 @@ type nudgeSent struct {
 	Head      string `json:"head"`
 	Checks    bool   `json:"checks,omitempty"`
 	Conflicts bool   `json:"conflicts,omitempty"`
+	Blocked   bool   `json:"blocked,omitempty"` // told auto-merge is on for a PR that must wait
 	// Told: the unanswered threads it was told of, each at its last comment;
 	// kept across heads, since a push doesn't answer a thread.
 	Told map[string]int64 `json:"told,omitempty"`
@@ -2237,7 +2307,7 @@ type NudgeEvent struct {
 	PR      string   `json:"pr"`
 	Head    string   `json:"head,omitempty"`
 	Session string   `json:"session"` // the session's name
-	Reasons []string `json:"reasons"` // threads, checks, conflicts
+	Reasons []string `json:"reasons"` // threads, checks, conflicts, blocked
 	Error   string   `json:"error,omitempty"`
 }
 
@@ -2272,6 +2342,8 @@ func nudgeText(p *WatchedPR, reasons []string) string {
 			what = append(what, "checks failing: "+strings.Join(p.Failing, ", "))
 		case "conflicts":
 			what = append(what, "merge conflicts with its base")
+		case "blocked":
+			what = append(what, fmt.Sprintf("auto-merge on, though it must not merge before %s has (ccs depends): turn it off until then with gh pr merge --disable-auto %s", prNames(p.BlockedBy), p.URL))
 		}
 	}
 	return fmt.Sprintf("%s (%s) has %s.\nThis session claimed it with ccs claim. If it's yours, deal with it; if not, run: ccs claim %s --release", p.URL, p.Title, strings.Join(what, "; "), p.URL)
@@ -2299,6 +2371,9 @@ func nudgeReasons(p *WatchedPR, sent *nudgeSent) []string {
 	}
 	if p.Conflicts && !sent.Conflicts {
 		reasons = append(reasons, "conflicts")
+	}
+	if len(p.BlockedBy) > 0 && p.AutoMerge && !sent.Blocked {
+		reasons = append(reasons, "blocked")
 	}
 	return reasons
 }
@@ -2377,6 +2452,8 @@ func NudgeTick(now time.Time) error {
 						sent.Checks = true
 					case "conflicts":
 						sent.Conflicts = true
+					case "blocked":
+						sent.Blocked = true
 					}
 				}
 				changed = true

@@ -176,7 +176,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "list_prs",
-		"description": "The user's open PRs (as ccs prs --json): each with the live sessions that own it (ccs claim, or ccs watch for the session that opened it), the session that opened it or that none here did (opened_by, origin), its group (ready, needs_you, waiting) and status, and flags for PRs nobody owns and PRs two sessions claim.",
+		"description": "The user's open PRs (as ccs prs --json): each with the live sessions that own it (ccs claim, or ccs watch for the session that opened it), the session that opened it or that none here did (opened_by, origin), the PRs it must merge after that haven't merged (blocked_by, from ccs depends), its group (ready, needs_you, waiting) and status, and flags for PRs nobody owns and PRs two sessions claim.",
 		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 	},
 }

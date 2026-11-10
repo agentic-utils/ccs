@@ -59,10 +59,12 @@ const coordinatorSettings = `{
       "Bash(ccs close:*)",
       "Bash(ccs prs:*)",
       "Bash(ccs sessions:*)",
+      "Bash(ccs depends:*)",
       "Bash(ccs claim:*)",
       "Bash(ccs watch:*)",
       "Bash(tail -n0 -F:*)",
       "Edit(./briefs/**)",
+      "Edit(./needs-you.md)",
       "mcp__ccs"
     ]
   }

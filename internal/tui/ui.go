@@ -200,6 +200,8 @@ type model struct {
 	coordSince time.Time        // when the offer last came on screen: keys wait for its grace
 	coordID    string           // the coordinator session, listed in its own section
 	hideCoord  bool             // ^X C: the coordinator isn't listed and never offered (saved)
+	// hideSidebar (^X L): the sidebar layout shows only the preview, full width (saved).
+	hideSidebar bool
 	// Each session's PRs (prs.go): what GitHub said, by address.
 	prs        map[string]github.PRInfo
 	prNext     time.Time       // when the next round is due
@@ -258,9 +260,10 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 	return listTop, listHeight, listTop + listHeight + 1
 }
 
-// sidebarWidth is the session list's width beside the preview, 0 in the table.
+// sidebarWidth is the session list's width beside the preview, 0 in the table
+// or while ^X L hides it.
 func (m model) sidebarWidth() int {
-	if m.table {
+	if m.table || m.hideSidebar {
 		return 0
 	}
 	return min(max(m.width/4, 30), 48)
@@ -1495,6 +1498,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
+		if k == "^x l" && !m.table && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen, m.hideSidebar = false, !m.hideSidebar
+			saveSettings(m.settings())
+			m.chatInput.Width = chatInputWidth(m.paneWidth())
+			return m, nil
+		}
 		if k == "^x d" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			m.toggleHeader()
@@ -2129,6 +2138,8 @@ func (m model) shortcuts() [][2]string {
 	add(m.grouped, "^X G", "stop grouping by folder")
 	add(!m.table, "^X T", "the full table, every column")
 	add(m.table, "^X T", "back to the sidebar")
+	add(!m.table && !m.hideSidebar, "^X L", "hide the list, the preview taking the whole width (↑↓ still move)")
+	add(!m.table && m.hideSidebar, "^X L", "show the list again")
 	add(!showHeadless, "^X H", "show headless runs (claude -p, codex exec)")
 	add(showHeadless, "^X H", "hide headless runs")
 	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
@@ -2267,7 +2278,9 @@ func overlayCentre(screen, box string, width, height int) string {
 	for _, l := range boxLines {
 		boxW = max(boxW, ansi.StringWidth(l))
 	}
-	top := max((height-len(boxLines))/2, 0)
+	// Never over the title row, whose notes (the waiting count, an update) stay
+	// readable while a popup is open; a box taller than the rest is cut at the bottom.
+	top := max((height-len(boxLines))/2, min(1, height-1))
 	left := max((width-boxW)/2, 0)
 	for i, bl := range boxLines {
 		row := top + i
@@ -2329,6 +2342,9 @@ func (m model) viewScreen() string {
 		if m.coordID != "" || m.hideCoord { // nothing to hide for someone with no coordinator
 			toggles = append(toggles, toggleHint("^X C", "coordinator", !m.hideCoord))
 		}
+		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
+			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
+		}
 		if m.checkLatest != nil { // a release build: one that updates
 			toggles = append(toggles, toggleHint("^X I", "auto-update", m.autoUpdate))
 		}
@@ -2342,7 +2358,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "collapse", "D", "details", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "coordinator", "D", "details", "E", "edit name", "G", "group", "I", "auto-update", "K", "stop bg", "L", "list", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		pairs, keep = []string{keyEnter, "send", keyEsc, "search", "pgup/dn", "scroll"}, 1 // ? types into the box here
 	}
@@ -2396,6 +2412,8 @@ func (m model) viewScreen() string {
 	b.WriteString(strings.Join(sections, "\n") + "\n")
 	if sw := m.sidebarWidth(); sw > 0 && !m.showUsage { // a rule over the list and preview, joining the divider
 		b.WriteString("\033[90m" + strings.Repeat("─", sw) + "┬" + strings.Repeat("─", max(m.width-sw-1, 0)) + "\033[0m")
+	} else if !m.table && !m.showUsage { // ^X L hid the list: the rule over the preview alone
+		b.WriteString("\033[90m" + strings.Repeat("─", m.width) + "\033[0m")
 	}
 	b.WriteString("\n")
 
@@ -2633,6 +2651,16 @@ func (m model) sidebarView() string {
 			}
 			pane = append(pane[:h-rows], strings.Split(m.chatView(), "\n")...)
 		}
+	}
+	if sw == 0 { // ^X L hid the list: the preview alone
+		for len(pane) < h { // the full height, as with the list
+			pane = append(pane, "")
+		}
+		pane = pane[:h]
+		for r := range pane {
+			pane[r] = ansi.Truncate(pane[r], pw, "…")
+		}
+		return strings.Join(pane, "\n")
 	}
 	top, size, bar := scrollThumb(len(rows), start, h)
 	lines := make([]string, h)
@@ -2934,6 +2962,8 @@ type settings struct {
 	AutoFocus bool `json:"auto_focus,omitempty"`
 	// HideCoordinator (^X C): no coordinator row and no offer to set one up.
 	HideCoordinator bool `json:"hide_coordinator,omitempty"`
+	// HideSidebar (^X L): the sidebar layout shows the preview alone.
+	HideSidebar bool `json:"hide_sidebar,omitempty"`
 	// HeaderOpen (^X D): the preview's full details, one line unless chosen.
 	HeaderOpen bool `json:"header_open,omitempty"`
 	// AutoUpdate (^X I) installs new versions once you're away instead of
@@ -2956,7 +2986,7 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideCoordinator: m.hideCoord, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideCoordinator: m.hideCoord, HideSidebar: m.hideSidebar, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.

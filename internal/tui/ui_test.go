@@ -1841,7 +1841,7 @@ func TestHelpStatesTheRule(t *testing.T) {
 		in[s[0]] = group
 	}
 	for k, g := range map[string]string{
-		"^F": "this session", "^O": "", "^S": "this session",
+		"^F": "this session", "^O": "",
 		"^X D": "^X then a letter: this session", "^X K": "^X then a letter: this session", "^X X": "^X then a letter: this session", "^X F": "^X then a letter: this session",
 		"^X C": "^X then a letter: view and tools", "^X L": "^X then a letter: view and tools",
 	} {

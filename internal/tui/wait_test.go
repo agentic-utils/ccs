@@ -907,8 +907,8 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 	if strings.Contains(v, "message ") || strings.Contains(v, "╭") {
 		t.Errorf("no message box while it waits:\n%s", v)
 	}
-	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlS}); m.chatFocus {
-		t.Error("^S can't focus a hidden box")
+	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter}); m.chatFocus {
+		t.Error("enter can't focus a hidden box")
 	}
 }
 

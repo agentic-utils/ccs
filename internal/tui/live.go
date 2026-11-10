@@ -417,7 +417,7 @@ func (m *model) hostedElsewhere(id string) bool {
 	if h == "" || !m.live[id] {
 		return false
 	}
-	m.note("In " + h + ": open it there · ^S messages it")
+	m.note("In " + h + ": open it there, or message it from its box here")
 	return true
 }
 

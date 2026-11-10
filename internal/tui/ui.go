@@ -2302,6 +2302,10 @@ func (m model) helpPopup() string {
 // overlayCentre draws box over the middle of screen, keeping what's visible
 // either side of it. Widths are measured without ANSI codes.
 func overlayCentre(screen, box string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		// Before the first WindowSizeMsg there is no screen to draw over.
+		return screen
+	}
 	lines := strings.Split(screen, "\n")
 	for len(lines) < height {
 		lines = append(lines, "")

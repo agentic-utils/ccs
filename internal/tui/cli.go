@@ -384,7 +384,9 @@ func Main(v string) {
 		m.profileStop, m.profilePath = stop, path
 	}
 	finalModel, err := p.Run()
-	if stop := finalModel.(model).profileStop; stop != nil {
+	// After a panic bubbletea hands back no model, only the error.
+	final, _ := finalModel.(model)
+	if stop := final.profileStop; stop != nil {
 		stop()
 	}
 	sessions.CloseInboxes()
@@ -393,7 +395,6 @@ func Main(v string) {
 		os.Exit(1)
 	}
 
-	final := finalModel.(model)
 	if final.restart != "" {
 		// Hand the new version where the user was, so the update is seamless.
 		env := os.Environ()

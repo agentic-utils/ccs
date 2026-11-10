@@ -90,6 +90,20 @@ func TestOverlayFrameFitsTheTerminal(t *testing.T) {
 	}
 }
 
+// A popup open before the first WindowSizeMsg (an update or coordinator offer
+// at startup) used to put its top row at -1 and panic.
+func TestPopupBeforeTheTerminalSizeIsKnown(t *testing.T) {
+	m := richModel(t, 120, 45)
+	m.width, m.height = 0, 0
+	m.helpOpen = true
+	m.View()
+	for _, size := range [][2]int{{0, 0}, {80, 0}, {0, 24}, {80, 1}} {
+		box := "┌──┐\n│hi│\n│  │\n└──┘"
+		overlayCentre("", box, size[0], size[1])
+		overlayCentre("title\nrow", box, size[0], size[1])
+	}
+}
+
 // narrowSymbols are the symbols from the dingbat and misc-symbol blocks that
 // ccs draws and that terminals agree are one cell wide (checked in tmux).
 // Others there, like ✍, are emoji that some terminals draw two cells wide

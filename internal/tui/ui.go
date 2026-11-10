@@ -2684,7 +2684,7 @@ type listRow struct {
 }
 
 // listRows lays the list out in screen rows: a header before each state
-// section, and with ^X G before each folder within it (sortList keeps a
+// section (after a blank row, except the first), and with ^X G before each folder within it (sortList keeps a
 // section's and a group's sessions together).
 func (m model) listRows() []listRow {
 	counts := map[group]int{}
@@ -2693,7 +2693,7 @@ func (m model) listRows() []listRow {
 		counts[groupOf(&m.filtered[i])]++
 		sections[sectionOf(m.filtered[i].familyState)]++
 	}
-	rows := make([]listRow, 0, len(m.filtered)*m.rowsPerItem()+len(sections)+len(counts))
+	rows := make([]listRow, 0, len(m.filtered)*m.rowsPerItem()+2*len(sections)+len(counts))
 	for i := range m.filtered {
 		it := &m.filtered[i]
 		if s := sectionOf(it.familyState); i == 0 || s != sectionOf(m.filtered[i-1].familyState) {
@@ -2703,6 +2703,9 @@ func (m model) listRows() []listRow {
 				sec = coordinatorSection
 			case s >= 0:
 				sec = stateSections[min(s, len(stateSections)-1)]
+			}
+			if i > 0 { // a blank row parts it from the section above
+				rows = append(rows, listRow{item: -1})
 			}
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
 		}

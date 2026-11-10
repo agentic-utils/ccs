@@ -1265,6 +1265,70 @@ func TestSidebarAndTable(t *testing.T) {
 	}
 }
 
+func TestHideSidebar(t *testing.T) {
+	saveSettings(settings{})
+	t.Cleanup(func() { saveSettings(settings{}) })
+	var convs []transcript.Conversation
+	for i := range 3 {
+		convs = append(convs, transcript.Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p",
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339),
+			Messages:      []transcript.Message{{Role: "user", Text: fmt.Sprint("said-", i)}}})
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 30
+	if v := strip2(m.View()); strings.Contains(v, "^X L") || !strings.Contains(v, "session 1") {
+		t.Fatalf("the sidebar shows by default, the header leaving ^X L to ? help:\n%s", v)
+	}
+	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^X L" && strings.Contains(s[1], "hide the list") }) {
+		t.Error("? help offers ^X L to hide the list")
+	}
+
+	m, _ = chord(m, "l")
+	if !m.hideSidebar || !loadSettings().HideSidebar {
+		t.Fatal("^X L hides the sidebar and saves it, so the next ccs starts that way")
+	}
+	if m.sidebarWidth() != 0 || m.paneWidth() != m.width || m.chatInput.Width != chatInputWidth(m.width) {
+		t.Errorf("the preview takes the whole width: sidebar %d, pane %d", m.sidebarWidth(), m.paneWidth())
+	}
+	lines := strings.Split(strip2(m.View()), "\n")
+	listTop, _, _ := m.listLayout()
+	v := strings.Join(lines, "\n")
+	if len(lines) != m.height || strings.Contains(v, "session 1") || strings.ContainsAny(v, "│┬") {
+		t.Errorf("no list, no divider, still the full height (%d rows):\n%s", len(lines), v)
+	}
+	if !strings.Contains(v, "^X L list off") || !strings.HasPrefix(lines[listTop], "session 0") && !strings.HasPrefix(lines[listTop], "Project:") {
+		t.Errorf("the preview starts at the left edge, the header saying the list is off:\n%s", v)
+	}
+	if !strings.Contains(v, "said-0") {
+		t.Errorf("the selected session's conversation shows:\n%s", v)
+	}
+
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 4, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	if m.cursor != 0 {
+		t.Error("with the list hidden, the wheel at the left edge scrolls the preview, never the selection")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.cursor != 1 || !strings.Contains(strip2(m.View()), "said-1") {
+		t.Errorf("↓ still moves to the next session, cursor=%d", m.cursor)
+	}
+	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^X L" && strings.Contains(s[1], "show the list") }) {
+		t.Error("? help offers ^X L to show the list again")
+	}
+
+	m, _ = chord(m, "t")
+	if v := strip2(m.View()); !strings.Contains(v, "session 0") || strings.Contains(v, "^X L") {
+		t.Errorf("the table always lists, and has no ^X L toggle:\n%s", v)
+	}
+	if m, _ = chord(m, "l"); !m.hideSidebar {
+		t.Error("^X L does nothing in the table")
+	}
+	m, _ = chord(m, "t")
+	m, _ = chord(m, "l")
+	if v := strip2(m.View()); m.hideSidebar || loadSettings().HideSidebar || !strings.Contains(v, "session 0") {
+		t.Errorf("^X L again shows the list, and saves that:\n%s", v)
+	}
+}
+
 func TestGroupByFolder(t *testing.T) {
 	conv := func(id, cwd, ts string) transcript.Conversation {
 		return transcript.Conversation{SessionID: id, Title: id, Cwd: cwd, LastTimestamp: ts, Messages: []transcript.Message{{Role: "user", Text: "hi"}}}

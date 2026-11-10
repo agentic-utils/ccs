@@ -134,6 +134,7 @@ Key bindings:
   Ctrl+X O        Open the coordinator, setting one up if there is none
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X T        The full table, every column, instead of the sidebar
+  Ctrl+X L        Hide or show the sidebar list, the preview taking its place
   Ctrl+X D        A session's full details, or one line (clicking does too)
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
@@ -318,7 +319,7 @@ func Main(v string) {
 	go sessions.RefreshLinkApp()
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
-	m.table, m.grouped, m.autoFocus, m.hideCoord = s.Table, s.Grouped, s.AutoFocus, s.HideCoordinator
+	m.table, m.grouped, m.autoFocus, m.hideCoord, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideCoordinator, s.HideSidebar
 	m.headerCollapsed = !s.HeaderOpen
 	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
 	if s.AutoUpdate == nil && s.found {

@@ -33,6 +33,7 @@ func TestMain(m *testing.M) {
 	sessions.FocusTTY = func(string, bool) bool { return false }
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil }
+	liveSessions = func() map[string]sessions.LiveSession { return nil }
 	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil }

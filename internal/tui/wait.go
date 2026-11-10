@@ -83,10 +83,7 @@ func (m model) waitSignal(conv transcript.Conversation) int {
 
 // asks: the text ends in a question. Markdown closing it ("(yes?)", "push?**")
 // still asks; a bare "?" doesn't.
-func asks(text string) bool {
-	t := strings.TrimRight(strings.TrimSpace(text), ")*_` ")
-	return strings.HasSuffix(t, "?") && strings.TrimRight(t, "?") != ""
-}
+func asks(text string) bool { return transcript.Asks(text) }
 
 // snoozedNow reports whether id's wait is snoozed.
 func (m model) snoozedNow(id string) bool {
@@ -519,16 +516,7 @@ func answerable(conv transcript.Conversation) int {
 }
 
 // toolSummary is the part of a tool call's input a person would check first.
-func toolSummary(input json.RawMessage) string {
-	var in map[string]any
-	json.Unmarshal(input, &in)
-	for _, k := range []string{"command", "file_path", "url", "pattern", "description"} {
-		if v, ok := in[k].(string); ok && v != "" {
-			return transcript.CleanText(strings.Join(strings.Fields(v), " "))
-		}
-	}
-	return ""
-}
+func toolSummary(input json.RawMessage) string { return transcript.ToolSummary(input) }
 
 type answerDoneMsg struct {
 	name, where string
@@ -796,11 +784,4 @@ func (m *model) saveFocusRecord() {
 
 // lastSaid is the index of the last message said in the session itself, past
 // any it sent to other sessions and any channel events; -1 if none.
-func lastSaid(msgs []transcript.Message) int {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != "sent" && msgs[i].Role != "channel" {
-			return i
-		}
-	}
-	return -1
-}
+func lastSaid(msgs []transcript.Message) int { return transcript.LastSaid(msgs) }

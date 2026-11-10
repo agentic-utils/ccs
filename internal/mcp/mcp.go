@@ -120,12 +120,13 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "list_sessions",
-		"description": "List the most recently active Claude Code sessions, newest first.",
+		"description": "List the most recently active Claude Code sessions, newest first. A session that is running also says what it is doing (as ccs sessions): busy, idle or waiting on the user and since when, the question or permission prompt it waits on, whether its last message asks something, its last API error, its PRs, and the background tasks and subagents it runs. live_only keeps just the running ones.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"project":          map[string]any{"type": "string", "description": "only sessions whose working directory contains this"},
 				"limit":            map[string]any{"type": "integer", "description": "default 20, at most 100"},
+				"live_only":        map[string]any{"type": "boolean", "description": "only the sessions running now; default false"},
 				"include_headless": map[string]any{"type": "boolean", "description": "also one-shot runs nobody talked to (claude -p with a single prompt, codex exec); default false"},
 			},
 		},
@@ -245,6 +246,7 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 		Offset     int    `json:"offset"`
 		SessionID  string `json:"session_id"`
 		Headless   bool   `json:"include_headless"`
+		LiveOnly   bool   `json:"live_only"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -278,7 +280,17 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	case "search_sessions":
 		return mcpSearch(convs, a.Query, clampInt(a.MaxResults, 10, 50))
 	case "list_sessions":
-		return mcpList(convs, clampInt(a.Limit, 20, 100)), nil
+		live := liveSessions()
+		if a.LiveOnly {
+			kept := convs[:0:0]
+			for _, c := range convs {
+				if _, ok := live[c.SessionID]; ok {
+					kept = append(kept, c)
+				}
+			}
+			convs = kept
+		}
+		return mcpList(convs, live, clampInt(a.Limit, 20, 100)), nil
 	case "read_session":
 		return mcpRead(convs, a.SessionID, a.Query, a.Offset, clampInt(a.Limit, 40, 200))
 	}
@@ -362,7 +374,8 @@ func mcpSearch(convs []transcript.Conversation, query string, n int) (string, er
 	return b.String(), nil
 }
 
-func mcpList(convs []transcript.Conversation, n int) string {
+func mcpList(convs []transcript.Conversation, live map[string]sessions.LiveSession, n int) string {
+	now := time.Now()
 	sort.SliceStable(convs, func(i, j int) bool { return convs[i].LastTimestamp > convs[j].LastTimestamp })
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d sessions", len(convs))
@@ -372,6 +385,9 @@ func mcpList(convs []transcript.Conversation, n int) string {
 	b.WriteString("\n")
 	for i, c := range convs[:min(n, len(convs))] {
 		fmt.Fprintf(&b, "\n%d. %s\n", i+1, Header(c))
+		if l, ok := live[c.SessionID]; ok {
+			b.WriteString(sessionRow(c, l, true, now).liveLine(now) + "\n")
+		}
 	}
 	return b.String()
 }

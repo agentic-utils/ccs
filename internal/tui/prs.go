@@ -20,10 +20,16 @@ import (
 // loop over repos) or for its subagents, so the PRs gh pr create and merge
 // print count too, in the session and its subagents (prsOf).
 
-// GitHub's colours: green ready, amber waiting, red to fix or closed, purple merged.
+// GitHub's colours: green ready, amber waiting, grey draft, red to fix or
+// closed, purple merged.
 const prPurple = "38;5;141"
 
-// prMark is a group's glyph and colour.
+// prDraft is the draft PRs' slot in prCounts, after GitHub's groups: a draft
+// is in github.PRWaiting, but nothing is happening to it, so it's counted
+// apart from the PRs waiting on checks or a review.
+const prDraft = github.PRClosed + 1
+
+// prMark is a group's glyph and colour (prDraft's too).
 func prMark(group int) (string, string) {
 	switch group {
 	case github.PRReady:
@@ -31,7 +37,9 @@ func prMark(group int) (string, string) {
 	case github.PRFix:
 		return "✗", "31"
 	case github.PRWaiting:
-		return "○", amber
+		return "◷", amber
+	case prDraft:
+		return "○", "90"
 	case github.PRMerged:
 		return "●", prPurple
 	case github.PRClosed:
@@ -52,21 +60,31 @@ func (m model) sessionPRs(conv transcript.Conversation) []string {
 	return urls
 }
 
-// prCounts is how many of conv's PRs are in each group (prReady…prClosed);
-// one GitHub can't find isn't counted.
-func (m model) prCounts(conv transcript.Conversation) (n [github.PRClosed + 1]int) {
+// prGroup is p's group for its mark and count: GitHub's, or prDraft for an
+// open draft.
+func prGroup(p github.PRInfo) int {
+	g, _ := p.Status()
+	if g == github.PRWaiting && p.Draft && p.State != "" {
+		return prDraft
+	}
+	return g
+}
+
+// prCounts is how many of conv's PRs are in each group (prReady…prClosed,
+// then prDraft); one GitHub can't find isn't counted.
+func (m model) prCounts(conv transcript.Conversation) (n [prDraft + 1]int) {
 	for _, u := range github.PRsOf(conv) {
 		if s := m.prs[u].State; s == "" || s == "GONE" { // not looked up yet, or not found
 			continue
 		}
-		g, _ := m.prs[u].Status()
-		n[g]++
+		n[prGroup(m.prs[u])]++
 	}
 	return
 }
 
-// prCell is the PRS column: "✓1 ✗1 2 ●3" (ready, needing you, waiting,
-// merged; closed ones left out), blank when there are none. Plain for the
+// prCell is the PRS column: "✓1 ✗1 ◷1 ○1 ●3" (ready, needing you, waiting,
+// draft, merged; closed ones left out), blank when there are none. Every
+// count has its glyph (the ? help lists them, legendLines). Plain for the
 // selected row, else coloured.
 func (m model) prCell(conv transcript.Conversation, coloured bool) string {
 	n := m.prCounts(conv)
@@ -81,10 +99,10 @@ func (m model) prCell(conv transcript.Conversation, coloured bool) string {
 		}
 		parts = append(parts, s)
 	}
-	add(n[github.PRReady], "✓", "32")
-	add(n[github.PRFix], "✗", "31")
-	add(n[github.PRWaiting], "", amber)
-	add(n[github.PRMerged], "●", prPurple)
+	for _, g := range []int{github.PRReady, github.PRFix, github.PRWaiting, prDraft, github.PRMerged} {
+		glyph, colour := prMark(g)
+		add(n[g], glyph, colour)
+	}
 	s := strings.Join(parts, " ")
 	return strings.Repeat(" ", max(colPRs-ansi.StringWidth(s), 0)) + s
 }
@@ -142,12 +160,12 @@ func (m model) prLines(conv transcript.Conversation, width int) []string {
 // prLine is one PR: "✓ ccs#113 title · ready to merge", the number a link.
 func (m model) prLine(u string) string {
 	p := m.prs[u]
-	g, why := p.Status()
+	_, why := p.Status()
 	if p.State == "" && m.fetchPRs == nil {
 		why = "needs gh to look it up"
 	}
-	glyph, colour := prMark(g)
-	if p.Draft || p.State == "" { // grey on GitHub too: nothing is happening to it yet
+	glyph, colour := prMark(prGroup(p))
+	if p.State == "" { // not looked up yet
 		colour = "90"
 	}
 	name := github.PRName(u)
@@ -170,9 +188,9 @@ func (m model) prLinks(conv transcript.Conversation) []linkItem {
 // title, so a long title is what gets cut.
 func (m model) prLinkText(u string) string {
 	p := m.prs[u]
-	g, why := p.Status()
-	glyph, colour := prMark(g)
-	if p.Draft || p.State == "" {
+	_, why := p.Status()
+	glyph, colour := prMark(prGroup(p))
+	if p.State == "" {
 		colour = "90"
 	}
 	return "\033[" + colour + "m" + glyph + "\033[39m " + github.PRName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title

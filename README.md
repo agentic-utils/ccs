@@ -16,6 +16,7 @@ Launch, watch, search and resume your coding CLI sessions: [Claude Code](https:/
 - See context size (tokens as of the last reply), message counts, hit counts, and file size per conversation
 - Resume conversations directly from the search interface
 - Background tasks and subagents: a session open in `claude` shows `⧗N` for its running background commands and monitors and a pink `◆N` for its running subagents, and the preview lists both with how long each has run
+- Every count in the list has its own glyph, explained at the bottom of `?` help: `⌕N` search hits, and each session's PRs as `✓` ready, `✗` needs you, `◷` waiting (checks running, review required, blocked), `○` draft, `●` merged
 - Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, and ones started by another session's `claude -p` sit `└` under it
 - Rename conversations (`Ctrl+X E`)
 - Delete conversations with confirmation prompt

@@ -91,7 +91,7 @@ func TestTasksBeforeHits(t *testing.T) {
 		Tasks: []transcript.BgTask{{ID: "b1", Kind: "bash", Desc: "watch", Started: time.Now().UTC().Format(time.RFC3339)}}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "needle", nil)
 	m.live = map[string]bool{"s": true}
-	if row := strip2(m.sidebarRow(m.filtered[0], false, 40)[0]); !strings.HasSuffix(strings.TrimRight(row, " "), "⧗1 1") {
+	if row := strip2(m.sidebarRow(m.filtered[0], false, 40)[0]); !strings.HasSuffix(strings.TrimRight(row, " "), "⧗1 ⌕1") {
 		t.Errorf("tasks first, then the hits at the edge: %q", row)
 	}
 }

@@ -2214,6 +2214,34 @@ func hints(pairs ...string) string {
 }
 
 // helpPopup lists the shortcuts that apply now; ? or Esc closes it.
+// hitGlyph marks the count of messages matching the search (HITS).
+const hitGlyph = "⌕"
+
+// legendLines is the ? help's key to every count's glyph, two lines so the
+// popup stays short: the title row's tasks, subagents and hits, then the PR
+// counts (prCell), in the order a row shows them. Every count the list draws
+// has a glyph, so none is a bare number.
+func legendLines() string {
+	item := func(glyph, colour, what string) string {
+		return "\033[" + colour + "m" + glyph + "\033[0m " + what
+	}
+	pr := func(group int, what string) string {
+		glyph, colour := prMark(group)
+		return item(glyph, colour, what)
+	}
+	return "\033[90mcounts:\033[0m  " + strings.Join([]string{
+		item("⧗", transcript.TaskColour, "commands and monitors running"),
+		item("◆", transcript.SubagentColour, "subagents running"),
+		item(hitGlyph, "36", "search hits"),
+	}, "  ") + "\n\033[90mPRs:\033[0m     " + strings.Join([]string{
+		pr(github.PRReady, "ready"),
+		pr(github.PRFix, "needs you"),
+		pr(github.PRWaiting, "waiting"),
+		pr(prDraft, "draft"),
+		pr(github.PRMerged, "merged"),
+	}, "  ")
+}
+
 func (m model) helpPopup() string {
 	var b strings.Builder
 	b.WriteString("\033[1mshortcuts\033[0m\n\n")
@@ -2227,11 +2255,14 @@ func (m model) helpPopup() string {
 		}
 		fmt.Fprintf(&b, "\033[33m%-8s\033[0m %s\n", s[0], s[1])
 	}
+	if !m.showUsage {
+		b.WriteString("\n" + legendLines() + "\n")
+	}
 	b.WriteString("\n\033[90m" + hints("?/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
-		Padding(1, 3).
+		Padding(0, 3).
 		Render(b.String())
 }
 
@@ -2452,8 +2483,8 @@ const (
 	colModel   = 12
 	colCtx     = 5
 	colMsgs    = 5
-	colPRs     = 11 // "✓1 ✗1 2 ●3"
-	colHits    = 4
+	colPRs     = 14 // "✓1 ✗1 ◷1 ○1 ●3"
+	colHits    = 5  // "⌕123"
 	colSize    = 6
 	colGap     = 2 // spaces between columns
 	listIndent = 2 // leading "  " on each row
@@ -2500,7 +2531,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	// Number of messages containing the query (memoised per query).
 	hits := ""
 	if m.searching() {
-		hits = fmt.Sprintf("  %*d", colHits, m.hitCount(item))
+		hits = fmt.Sprintf("  %*s", colHits, hitGlyph+fmt.Sprint(m.hitCount(item)))
 	}
 
 	size := transcript.FormatBytes(item.conv.Size)
@@ -2727,7 +2758,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	// HITS stay lined up at the edge; the PR counts have the grey row below.
 	hits, colouredHits := "", ""
 	if m.searching() {
-		hits = fmt.Sprint(m.hitCount(item))
+		hits = hitGlyph + fmt.Sprint(m.hitCount(item))
 		colouredHits = "\033[36m" + hits + "\033[0m"
 	}
 	if tasks := m.taskCell(conv, false); tasks != "" {

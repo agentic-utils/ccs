@@ -799,7 +799,19 @@ func (m *model) toggleHideCoordinator() {
 		delete(m.revealed, m.coordID)
 	}
 	saveSettings(m.settings())
+	sel := m.selectedSession()
 	m.refilter()
+	if m.selectedSession() != sel { // hiding the selected coordinator moved the selection
+		m.selectionMoved()
+	}
+}
+
+// selectedSession is the selected session's id, "" with nothing listed.
+func (m model) selectedSession() string {
+	if len(m.filtered) == 0 {
+		return ""
+	}
+	return m.filtered[m.cursor].conv.SessionID
 }
 
 // refilter runs the filter again, keeping the cursor on its session where it's

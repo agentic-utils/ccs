@@ -260,9 +260,10 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 }
 
 // sidebarWidth is the session list's width beside the preview, 0 in the table
-// or while ^X L hides it.
+// or while ^X L hides it. A search filters the list, so it shows while one is
+// typed and hides again once the search is cleared, ^X L staying as it was.
 func (m model) sidebarWidth() int {
-	if m.table || m.hideSidebar {
+	if m.table || m.hideSidebar && m.textInput.Value() == "" {
 		return 0
 	}
 	return min(max(m.width/4, 30), 48)

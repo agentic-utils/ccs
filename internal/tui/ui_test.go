@@ -1332,6 +1332,34 @@ func TestHideSidebar(t *testing.T) {
 	}
 }
 
+func TestSearchShowsAHiddenSidebar(t *testing.T) {
+	t.Cleanup(func() { saveSettings(settings{}) })
+	var convs []transcript.Conversation
+	for i := range 3 {
+		convs = append(convs, transcript.Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p",
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339),
+			Messages:      []transcript.Message{{Role: "user", Text: fmt.Sprint("said-", i)}}})
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 120, 30
+	m, _ = chord(m, "l")
+	if m.sidebarWidth() != 0 {
+		t.Fatal("setup: ^X L hides the list")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("session")})
+	if v := strip2(m.View()); m.sidebarWidth() == 0 || !strings.Contains(v, "session 1") || !strings.Contains(v, "│") {
+		t.Errorf("typing a search shows the list it filters:\n%s", v)
+	}
+	if !m.hideSidebar || !loadSettings().HideSidebar {
+		t.Error("searching doesn't change the saved ^X L choice")
+	}
+	// Clearing the search hides it again: ^X L is still on.
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if v := strip2(m.View()); m.sidebarWidth() != 0 || strings.Contains(v, "session 1") {
+		t.Errorf("a cleared search hides the list again:\n%s", v)
+	}
+}
+
 func TestGroupByFolder(t *testing.T) {
 	conv := func(id, cwd, ts string) transcript.Conversation {
 		return transcript.Conversation{SessionID: id, Title: id, Cwd: cwd, LastTimestamp: ts, Messages: []transcript.Message{{Role: "user", Text: "hi"}}}

@@ -1097,7 +1097,7 @@ func prEnd(p *WatchedPR) (ended, mergedAt string, err error) {
 }
 
 func ghJSON(v any, path string) error {
-	out, err := ghCall("api", path)
+	out, err := ghGet(path)
 	if err != nil {
 		return err
 	}

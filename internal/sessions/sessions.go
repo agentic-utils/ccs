@@ -1080,8 +1080,7 @@ func Resumable(id string, codex bool) bool {
 	if strings.ContainsAny(id, `/\*?[`) {
 		return false
 	}
-	paths, _ := filepath.Glob(filepath.Join(transcript.GetProjectsDir(), "*", id+".jsonl"))
-	return len(paths) > 0
+	return transcript.TranscriptPath(id) != ""
 }
 
 // LaunchSession starts o in a new iTerm tab and waits until it's running.
@@ -1505,6 +1504,7 @@ type SessionStat struct {
 	WaitingFor string    // with "waiting": "permission prompt", "input needed"
 	Since      time.Time // statusUpdatedAt; zero when the file has none
 	Name       string
+	Cwd        string // the folder the process runs in, from its session file
 }
 
 // SessionFile is the part of ~/.claude/sessions/<pid>.json ccs uses.
@@ -1519,7 +1519,7 @@ type SessionFile struct {
 }
 
 func (f SessionFile) Stat() SessionStat {
-	st := SessionStat{Status: f.Status, WaitingFor: f.WaitingFor, Name: f.Name}
+	st := SessionStat{Status: f.Status, WaitingFor: f.WaitingFor, Name: f.Name, Cwd: f.Cwd}
 	if f.StatusUpdatedAt > 0 {
 		st.Since = time.UnixMilli(f.StatusUpdatedAt)
 	}

@@ -98,6 +98,9 @@ func sessionRow(conv transcript.Conversation, l sessions.LiveSession, ok bool, n
 	if l.Stat.Name != "" {
 		r.Name = l.Stat.Name
 	}
+	if l.Stat.Cwd != "" && l.Stat.Cwd != r.Cwd && !transcript.DirExists(r.Cwd) && transcript.DirExists(l.Stat.Cwd) {
+		r.Cwd = l.Stat.Cwd // its recorded folder moved: where the process runs now
+	}
 	if !l.Stat.Since.IsZero() {
 		r.Since = l.Stat.Since.UTC().Format(time.RFC3339)
 	}

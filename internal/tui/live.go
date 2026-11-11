@@ -44,7 +44,7 @@ type liveMsg struct {
 	live       map[string]bool
 	pids       map[string]int
 	updated    []transcript.Conversation       // live conversations whose transcript grew
-	unknown    []string                        // live sessions not in the list yet
+	unknown    []string                        // live sessions not in the list yet, or listed from a transcript it no longer writes (movedTranscript)
 	stats      map[string]sessions.SessionStat // each live session's status, from its session file
 	unverified map[string]bool                 // live sessions whose pid couldn't be checked against the file's procStart
 	scan       map[string]sessions.LiveSession // this tick's sessions, the next tick's prev
@@ -118,6 +118,10 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 				if c, err := transcript.ParseAppended(&conv); err == nil && c != nil && c.Size != conv.Size {
 					mu.Lock()
 					msg.updated = append(msg.updated, *c)
+					mu.Unlock()
+				} else if live[id] && movedTranscript(id, conv.FilePath, time.Now()) {
+					mu.Lock()
+					msg.unknown = append(msg.unknown, id)
 					mu.Unlock()
 				}
 			}()
@@ -462,4 +466,24 @@ func stopCmd(name string, b sessions.BgSession) tea.Cmd {
 		_, err := proc.RunBounded(10*time.Second, nil, "claude", "stop", b.ID)
 		return stopDoneMsg{name, err}
 	}
+}
+
+// movedChecks: when each live session's transcript was last looked for in
+// other project folders (movedTranscript), so an idle one costs a glob at
+// most every movedCheckEvery.
+var movedChecks sync.Map
+
+const movedCheckEvery = 15 * time.Second
+
+// movedTranscript: live session id writes a transcript other than path, the
+// one its row came from, as when it was resumed from its folder's new place
+// while a copy stays in the old folder's project dir. Its row would otherwise
+// stay frozen until the next full scan. Checked only when path didn't grow.
+func movedTranscript(id, path string, now time.Time) bool {
+	if last, ok := movedChecks.Load(id); ok && now.Sub(last.(time.Time)) < movedCheckEvery {
+		return false
+	}
+	movedChecks.Store(id, now)
+	newest := transcript.TranscriptPath(id)
+	return newest != "" && newest != path
 }

@@ -192,3 +192,21 @@ func TestMCPListSessionsSaysWhatLiveOnesDo(t *testing.T) {
 		t.Errorf("live_only:\n%s", text)
 	}
 }
+
+// A live session whose recorded folder is gone shows the folder its process
+// runs in; one whose folder exists keeps it.
+func TestSessionRowLiveCwd(t *testing.T) {
+	old := transcript.DirExists
+	transcript.DirExists = func(p string) bool { return p == "/new" || p == "/here" }
+	t.Cleanup(func() { transcript.DirExists = old })
+	live := sessions.LiveSession{PID: 1, Stat: sessions.SessionStat{Status: "idle", Cwd: "/new"}}
+	if r := sessionRow(transcript.Conversation{SessionID: "a", Cwd: "/gone"}, live, true, time.Now()); r.Cwd != "/new" {
+		t.Errorf("moved: Cwd = %s, want /new", r.Cwd)
+	}
+	if r := sessionRow(transcript.Conversation{SessionID: "a", Cwd: "/here"}, live, true, time.Now()); r.Cwd != "/here" {
+		t.Errorf("still there: Cwd = %s, want /here", r.Cwd)
+	}
+	if r := sessionRow(transcript.Conversation{SessionID: "a", Cwd: "/gone"}, live, false, time.Now()); r.Cwd != "/gone" {
+		t.Errorf("not live: Cwd = %s, want /gone", r.Cwd)
+	}
+}

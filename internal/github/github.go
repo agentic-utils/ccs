@@ -654,7 +654,7 @@ func eventLines(events []any) (string, error) {
 
 // Login is the login gh is signed in as. Stubbed in tests.
 var Login = func() (string, error) {
-	out, err := RunGH("api", "user", "--jq", ".login")
+	out, err := ghCall("api", "user", "--jq", ".login")
 	if err != nil {
 		return "", err
 	}
@@ -683,7 +683,7 @@ func searchPRs(author, owner string, filters ...string) ([]WatchedPR, error) {
 		args = append(args, "--owner", owner)
 	}
 	args = append(append(args, "--sort", "updated", "--limit", "200", "--json", "url,title,number,repository,isDraft,updatedAt,createdAt,closedAt"), filters...)
-	out, err := RunGH(args...)
+	out, err := ghCall(args...)
 	if err != nil {
 		return nil, err
 	}
@@ -918,7 +918,7 @@ func unresolvedThreads(p WatchedPR) (int, map[string]int64, error) {
 		if after != "" {
 			args = append(args, "-f", "after="+after)
 		}
-		out, err := RunGH(args...)
+		out, err := ghCall(args...)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -1001,6 +1001,9 @@ func sortedKeys(m map[string]int64) []string {
 func prDetailsAll(open []WatchedPR) []*WatchedPR {
 	details := make([]*WatchedPR, len(open))
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var limited []string
+	var limitErr error
 	sem := make(chan struct{}, prWatchParallel)
 	for i, p := range open {
 		wg.Add(1)
@@ -1009,14 +1012,22 @@ func prDetailsAll(open []WatchedPR) []*WatchedPR {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			d, err := PRDetails(p)
-			if err != nil {
+			switch {
+			case IsRateLimited(err): // one line for them all, not one a PR
+				mu.Lock()
+				limited, limitErr = append(limited, p.URL), err
+				mu.Unlock()
+			case err != nil:
 				state.LogActivity("pr watch: %s skipped this pass: %v", p.URL, err)
-				return
+			default:
+				details[i] = d
 			}
-			details[i] = d
 		}()
 	}
 	wg.Wait()
+	if len(limited) > 0 {
+		state.LogActivity("pr watch: %d PRs skipped this pass: %v", len(limited), limitErr)
+	}
 	return details
 }
 
@@ -1086,7 +1097,7 @@ func prEnd(p *WatchedPR) (ended, mergedAt string, err error) {
 }
 
 func ghJSON(v any, path string) error {
-	out, err := RunGH("api", path)
+	out, err := ghCall("api", path)
 	if err != nil {
 		return err
 	}
@@ -1589,7 +1600,110 @@ var FetchOpenPRs = func(author, owner string) (map[string]*WatchedPR, error) {
 			out[d.URL] = d
 		}
 	}
+	// A list cut short by the rate limit would stand for prsFresh as if it
+	// were whole: fail instead, so the caller keeps what it had.
+	if len(out) < len(open) {
+		if until, ok := limitedUntil("core", time.Now()); ok {
+			return nil, &RateLimitedError{Resource: "core", Until: until}
+		}
+	}
+	// Likewise when GraphQL was limited: the threads went uncounted.
+	if until, ok := limitedUntil("graphql", time.Now()); ok {
+		return nil, &RateLimitedError{Resource: "graphql", Until: until}
+	}
 	return out, nil
+}
+
+// watchTrust is how stale a running watcher's state may be and still stand
+// for ccs prs: past an hour (and the rate limit's reset) a pass should have
+// landed, so the "running" pid is more likely a recycled one.
+const watchTrust = 75 * time.Minute
+
+// PRWatchRunning says a ccs watch is running: the pid LockPRWatch wrote is
+// alive. Never by taking the lock, which would make a ccs watch starting at
+// that moment think another runs. Stubbed in tests.
+var PRWatchRunning = func() bool {
+	b, err := os.ReadFile(prWatchLockPath())
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	return err == nil && pid > 0 && proc.PIDAlive(pid)
+}
+
+// prsFetch is the last time ccs prs asked GitHub itself, shared by every
+// ccs process (prsFetchPath): Tried is when it last tried, and Updated and
+// PRs what the last success found.
+type prsFetch struct {
+	Author  string                `json:"author"`
+	Owner   string                `json:"owner"`
+	Tried   time.Time             `json:"tried"`
+	Updated time.Time             `json:"updated"`
+	PRs     map[string]*WatchedPR `json:"prs"`
+}
+
+func prsFetchPath() string { return filepath.Join(filepath.Dir(state.SettingsPath), "prs-fetch.json") }
+func prsFetchLock() string { return filepath.Join(filepath.Dir(state.SettingsPath), "prs-fetch.lock") }
+
+func loadPRsFetch(author, owner string) (prsFetch, bool) {
+	var f prsFetch
+	b, err := os.ReadFile(prsFetchPath())
+	if err != nil || json.Unmarshal(b, &f) != nil || f.Author != author || f.Owner != owner {
+		return prsFetch{}, false
+	}
+	return f, true
+}
+
+// sharedFetch is FetchOpenPRs for ccs prs without ccs watch: across every
+// ccs process, at most one try each prsFresh, successful or not, and only
+// one at a time; the rest use what the last success found. err when there's
+// nothing to use.
+func sharedFetch(author, owner string, now time.Time) (prsFetch, error) {
+	usable := func(f prsFetch, ok bool) (prsFetch, error) {
+		if ok && f.PRs != nil {
+			return f, nil
+		}
+		return f, fmt.Errorf("another ccs asked GitHub at %s, with no answer to use yet", f.Tried.Format(time.RFC3339))
+	}
+	f, ok := loadPRsFetch(author, owner)
+	if ok && now.Sub(f.Tried) < prsFresh {
+		return usable(f, ok)
+	}
+	if err := os.MkdirAll(filepath.Dir(prsFetchLock()), 0o700); err != nil {
+		return f, err
+	}
+	lock, err := os.OpenFile(prsFetchLock(), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return f, err
+	}
+	defer lock.Close()
+	if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return usable(f, ok) // another ccs is asking right now
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	if f, ok = loadPRsFetch(author, owner); ok && now.Sub(f.Tried) < prsFresh {
+		return usable(f, ok) // it answered while this one waited for the lock
+	}
+	if !ok {
+		f = prsFetch{Author: author, Owner: owner}
+	}
+	f.Tried = now
+	if err := writeJSON(prsFetchPath(), f); err != nil { // the try counts even if this process dies in it
+		return f, err
+	}
+	prs, err := FetchOpenPRs(author, owner)
+	if err != nil {
+		if f.PRs != nil {
+			state.LogActivity("ccs prs: using GitHub's answer from %s: %v", f.Updated.Format(time.RFC3339), err)
+			return f, nil
+		}
+		return f, err
+	}
+	f.Updated, f.PRs = now, prs
+	if err := writeJSON(prsFetchPath(), f); err != nil {
+		state.LogActivity("ccs prs: couldn't save GitHub's answer: %v", err)
+	}
+	return f, nil
 }
 
 // EndState is prEndState for a claimed PR the open list doesn't have. Stubbed in tests.
@@ -1608,24 +1722,47 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 	var rep PRsReport
 	open := map[string]*WatchedPR{}
 	ended := map[string]bool{}
-	switch {
-	case ok && (offline || now.Sub(st.Updated) < prsFresh):
-		rep.Updated, rep.Stale = st.Updated, now.Sub(st.Updated) >= prsFresh
-		for u, p := range st.PRs {
+	fromState := func(s PRWatchState) {
+		rep.Updated, rep.Stale = s.Updated, now.Sub(s.Updated) >= prsFresh
+		open, ended = map[string]*WatchedPR{}, map[string]bool{}
+		for u, p := range s.PRs {
 			if p.State == "open" {
 				open[u] = p
 			} else {
 				ended[u] = true
 			}
 		}
+	}
+	switch {
+	case ok && (offline || now.Sub(st.Updated) < prsFresh):
+		fromState(st)
 	case offline:
 		return rep, nil
 	default:
-		fetched, err := FetchOpenPRs(author, owner)
-		if err != nil {
-			return rep, err
+		// Every session's status line and MCP server runs ccs prs, so a
+		// stale state must not send each of them to GitHub: they share
+		// one fetch (sharedFetch). While ccs watch runs, its next pass
+		// refreshes the state; asking GitHub here too only doubles the
+		// calls, and while its passes fail on the rate limit, keeps the
+		// limit spent.
+		if ok && now.Sub(st.Updated) < watchTrust && PRWatchRunning() {
+			fromState(st)
+			break
 		}
-		open, rep.Updated = fetched, now
+		fetched, err := sharedFetch(author, owner, now)
+		if err != nil {
+			if !ok {
+				return rep, err
+			}
+			state.LogActivity("ccs prs: using ccs watch's state from %s: %v", st.Updated.Format(time.RFC3339), err)
+			fromState(st)
+			break
+		}
+		if ok && !st.Updated.Before(fetched.Updated) { // the watcher's is newer
+			fromState(st)
+			break
+		}
+		open, rep.Updated, rep.Stale = fetched.PRs, fetched.Updated, now.Sub(fetched.Updated) >= prsFresh
 		for u, p := range open { // who opened it is the watcher's to know
 			if s := st.PRs[u]; s != nil {
 				p.OpenedBy, p.Origin = s.OpenedBy, s.Origin
@@ -1635,10 +1772,12 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 	// Merge order as declared now, not as of the watcher's last pass: a
 	// dependency made a moment ago already holds its PR. On copies, so the
 	// saved state's own records aren't changed.
+	// A running ccs watch judges prerequisites itself: no session asks too.
+	watching := !offline && PRWatchRunning()
 	if deps := LoadDepends(); len(deps.Depends) > 0 {
 		for u, p := range open {
 			c := *p
-			c.BlockedBy = listBlocked(u, deps, st, !offline)
+			c.BlockedBy = listBlocked(u, deps, st, !offline && !watching)
 			open[u] = &c
 		}
 	}
@@ -1831,7 +1970,7 @@ func RunPRs(args []string, stdout, stderr io.Writer) int {
 	codexID := fs.String("codex-session-id", "", "only the PRs this Codex session (thread id) claims")
 	merged := fs.Bool("merged", false, "list the PRs ccs watch saw merge in the last week instead, with the local session that merged each or turned on auto-merge")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: ccs prs [flags]\n\nList the author's open PRs with the session that owns each (ccs claim, or\nccs watch for the session that opened it), flagging unowned PRs and PRs\nclaimed by two live sessions. Uses ccs watch's state when it is under %s\nold, else asks GitHub.\n\n", prsFresh)
+		fmt.Fprintf(stderr, "Usage: ccs prs [flags]\n\nList the author's open PRs with the session that owns each (ccs claim, or\nccs watch for the session that opened it), flagging unowned PRs and PRs\nclaimed by two live sessions. Uses ccs watch's state when it is under %s\nold or ccs watch is running, else asks GitHub, once per that time across\nevery ccs process.\n\n", prsFresh)
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -2193,7 +2332,15 @@ func QueryPRs(gh string, urls []string) (map[string]PRInfo, error) {
 		fmt.Fprintf(&q, `p%d:repository(owner:%q,name:%q){pullRequest(number:%s){number title state isDraft mergeStateStatus reviewDecision reviewThreads(first:100){totalCount nodes{isResolved}} commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:50){nodes{...on CheckRun{name conclusion} ...on StatusContext{context state}}}}}}}}}`, i, p[1], p[2], p[3])
 	}
 	q.WriteString("}")
+	if until, ok := limitedUntil("graphql", time.Now()); ok { // the shared backoff (ghCall)
+		return nil, &RateLimitedError{Resource: "graphql", Until: until}
+	}
 	raw, runErr := proc.RunBounded(30*time.Second, []string{"GH_PROMPT_DISABLED=1"}, gh, "api", "graphql", "-f", "query="+q.String())
+	if runErr != nil && (rateLimitRefusal(runErr) || strings.Contains(strings.ToLower(string(raw)), "rate limit exceeded")) {
+		until := limitReset("graphql", time.Now())
+		noteRateLimit("graphql", until)
+		return nil, &RateLimitedError{Resource: "graphql", Until: until, Err: runErr}
+	}
 	var resp struct {
 		Data map[string]*struct {
 			PullRequest *struct {

@@ -106,7 +106,7 @@ Install the release locally: `brew update && brew upgrade ccs`.
 
 ### Key Functions
 
-- `getConversations(cutoff, maxSize)` - Loads conversations from `~/.claude/projects/` with filters
+- `getConversations(cutoff, maxSize)` - Loads conversations from `~/.claude/projects/` with filters; project folders whose names start with a dot are never read (`hiddenProjectDir`), and a session id found in several project folders gives one row, from the transcript written last (`newestPerSession`). Lookups by id go through `transcript.TranscriptPath`, which follows the same rules. A session's `Cwd` is the folder it started in unless that is gone and a later user line's folder exists (`resolveCwd`, `DirExists`); `ccs sessions` also takes a live process's folder when the recorded one is gone
 - `parseConversationFile(path, cutoff, maxSize)` - Parses JSONL files, skips by mtime/size
 - `buildItems()` - Creates list items with searchable text
 - `initialModel()` - Sets up bubbletea TUI

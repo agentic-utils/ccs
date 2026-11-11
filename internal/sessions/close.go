@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -58,14 +57,7 @@ var SendCloseNotice = func(pid int, f SessionFile, text string) error {
 
 // transcriptOf is the path of a Claude Code session's transcript, "" if none.
 func transcriptOf(id string) string {
-	if id == "" || strings.ContainsAny(id, `/\*?[`) {
-		return ""
-	}
-	paths, _ := filepath.Glob(filepath.Join(transcript.GetProjectsDir(), "*", id+".jsonl"))
-	if len(paths) == 0 {
-		return ""
-	}
-	return paths[0]
+	return transcript.TranscriptPath(id)
 }
 
 // appendedHas: the file at path holds want somewhere after offset.

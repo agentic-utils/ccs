@@ -89,6 +89,9 @@ func scanLocalActs(now time.Time) *localActs {
 	out := &localActs{prs: map[string][]string{}, names: map[string]string{}}
 	seen := map[string]bool{}
 	for _, path := range append(append(paths, subs...), flows...) {
+		if rel, err := filepath.Rel(root, path); err == nil && transcript.HiddenProjectDir(strings.SplitN(rel, string(filepath.Separator), 2)[0]) {
+			continue // a copy moved aside by hand: its session's PRs come from the real one
+		}
 		info, err := os.Stat(path)
 		if err != nil || now.Sub(info.ModTime()) > localLookback {
 			continue

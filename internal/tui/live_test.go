@@ -340,3 +340,36 @@ func TestBackgroundSessionsOpenWithAttach(t *testing.T) {
 		t.Error("^X K does nothing to a session that isn't in the background")
 	}
 }
+
+// A live session listed from a transcript it no longer writes is noticed,
+// at most once per movedCheckEvery.
+func TestMovedTranscript(t *testing.T) {
+	root := t.TempDir()
+	old := transcript.GetProjectsDir
+	transcript.GetProjectsDir = func() string { return root }
+	t.Cleanup(func() { transcript.GetProjectsDir = old })
+	id := "moved-session"
+	oldPath, newPath := filepath.Join(root, "-old", id+".jsonl"), filepath.Join(root, "-new", id+".jsonl")
+	for i, p := range []string{oldPath, newPath} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mod := time.Now().Add(time.Duration(i-1) * time.Hour)
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	if !movedTranscript(id, oldPath, now) {
+		t.Error("listed from the old copy: want moved")
+	}
+	if movedTranscript(id, oldPath, now.Add(time.Second)) {
+		t.Error("checked again within movedCheckEvery")
+	}
+	if movedTranscript(id, newPath, now.Add(movedCheckEvery)) {
+		t.Error("listed from the newest copy: want not moved")
+	}
+}

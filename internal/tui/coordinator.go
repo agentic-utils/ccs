@@ -299,11 +299,11 @@ var namedTranscript = func(name string) string {
 
 // sessionCwd is the folder a session ran in.
 func sessionCwd(id string) string {
-	paths, _ := filepath.Glob(filepath.Join(transcript.GetProjectsDir(), "*", id+".jsonl"))
-	if len(paths) == 0 {
+	path := transcript.TranscriptPath(id)
+	if path == "" {
 		return ""
 	}
-	c, err := transcript.ParseConversationFile(paths[0], time.Time{}, 0)
+	c, err := transcript.ParseConversationFile(path, time.Time{}, 0)
 	if err != nil || c == nil || c.Cwd == "unknown" {
 		return ""
 	}
@@ -312,11 +312,11 @@ func sessionCwd(id string) string {
 
 // sessionTitle is the name a session was given, "" if none.
 func sessionTitle(id string) string {
-	paths, _ := filepath.Glob(filepath.Join(transcript.GetProjectsDir(), "*", id+".jsonl"))
-	if len(paths) == 0 {
+	path := transcript.TranscriptPath(id)
+	if path == "" {
 		return ""
 	}
-	c, err := transcript.ParseConversationFile(paths[0], time.Time{}, 0)
+	c, err := transcript.ParseConversationFile(path, time.Time{}, 0)
 	if err != nil || c == nil || !c.IsCustomTitle {
 		return ""
 	}

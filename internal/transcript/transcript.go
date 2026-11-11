@@ -77,6 +77,8 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	ParsedBytes int64
 	sawUser     bool
+	firstCwd    string         // the folder its first user line was in
+	lastCwd     string         // the folder its latest user line was in; Cwd falls back to it when firstCwd is gone (resolveCwd)
 	sdkCLI      bool           // its first user line's entrypoint is sdk-cli (claude -p)
 	firstPrompt string         // the first promptId seen
 	morePrompts bool           // a second promptId: something talked to it after its first prompt
@@ -445,9 +447,6 @@ func ParseAppended(prev *Conversation) (*Conversation, error) {
 	c.Messages = slices.Clip(prev.Messages) // appends must not write into prev's array
 	c.Tools = slices.Clip(prev.Tools)
 	c.outputs = slices.Clip(prev.outputs)
-	if c.Cwd == "unknown" {
-		c.Cwd = ""
-	}
 	complete, total, tail, err := consumeLines(&c, file)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", prev.FilePath, err)
@@ -563,8 +562,11 @@ func ParseLine(conv *Conversation, line []byte) bool {
 				conv.morePrompts = true
 			}
 		}
-		if conv.Cwd == "" {
-			conv.Cwd = raw.Cwd
+		if conv.firstCwd == "" {
+			conv.firstCwd = raw.Cwd
+		}
+		if raw.Cwd != "" {
+			conv.lastCwd = raw.Cwd
 		}
 		trackTools(conv, raw.Message.Content, raw.Timestamp)
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
@@ -867,9 +869,87 @@ func FinishParse(conv *Conversation) {
 			}
 		}
 	}
+	resolveCwd(conv)
 	if conv.Cwd == "" {
 		conv.Cwd = "unknown"
 	}
+}
+
+// resolveCwd: a session's folder is the one it started in, unless that folder
+// no longer exists (moved or renamed) and a later line was in one that does,
+// as when the session was resumed from the folder's new place. Restarts and
+// the PROJECT column then point at the real folder.
+// It depends only on the first and latest folders, so an incremental parse
+// gives what a full parse would.
+func resolveCwd(conv *Conversation) {
+	if conv.Kind == KindCodex || conv.firstCwd == "" { // Codex: its folder comes from session_meta
+		return
+	}
+	conv.Cwd = conv.firstCwd
+	if conv.lastCwd != "" && conv.lastCwd != conv.firstCwd && !DirExists(conv.firstCwd) && DirExists(conv.lastCwd) {
+		conv.Cwd = conv.lastCwd
+	}
+}
+
+// DirExists: path is a folder now. Stubbed in tests.
+var DirExists = func(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// HiddenProjectDir: a folder in the projects dir that ccs never reads, one
+// whose name starts with a dot, such as a copy moved aside by hand.
+func HiddenProjectDir(name string) bool { return strings.HasPrefix(name, ".") }
+
+// TranscriptPath is the transcript of Claude Code session id, the one written
+// last when several project folders hold it; "" if none.
+func TranscriptPath(id string) string {
+	if id == "" || strings.ContainsAny(id, `/\*?[`) {
+		return ""
+	}
+	paths, _ := filepath.Glob(filepath.Join(GetProjectsDir(), "*", id+".jsonl"))
+	best, bestMod := "", time.Time{}
+	for _, p := range paths {
+		if HiddenProjectDir(filepath.Base(filepath.Dir(p))) {
+			continue
+		}
+		info, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if best == "" || info.ModTime().After(bestMod) {
+			best, bestMod = p, info.ModTime()
+		}
+	}
+	return best
+}
+
+// newestPerSession keeps one conversation per session: the transcript written
+// last. The same session id can sit in two project folders when a session's
+// folder moved and its transcript was copied into the new folder's project
+// dir, and two rows for it would each be joined to the one live process.
+func newestPerSession(convs []Conversation) []Conversation {
+	at := make(map[string]int, len(convs))
+	mod := func(c Conversation) time.Time {
+		if info, err := os.Stat(c.FilePath); err == nil {
+			return info.ModTime()
+		}
+		return time.Time{}
+	}
+	out := convs[:0]
+	for _, c := range convs {
+		key := c.Kind + "\x00" + c.SessionID
+		i, ok := at[key]
+		if !ok {
+			at[key] = len(out)
+			out = append(out, c)
+			continue
+		}
+		if prev := out[i]; mod(c).After(mod(prev)) || mod(c).Equal(mod(prev)) && c.FilePath < prev.FilePath {
+			out[i] = c
+		}
+	}
+	return out
 }
 
 // parseForScan parses one file for a full scan. A panic skips that file
@@ -926,7 +1006,7 @@ func GetConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() && info.Name() == "subagents" {
+		if info.IsDir() && (info.Name() == "subagents" || path != projectsDir && HiddenProjectDir(info.Name())) {
 			return filepath.SkipDir
 		}
 		if info.IsDir() {
@@ -978,6 +1058,7 @@ func GetConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 	for conv := range results {
 		conversations = append(conversations, *conv)
 	}
+	conversations = newestPerSession(conversations)
 
 	sort.Slice(conversations, func(i, j int) bool {
 		return conversations[i].LastTimestamp > conversations[j].LastTimestamp

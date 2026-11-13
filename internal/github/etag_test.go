@@ -2,6 +2,7 @@ package github
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -39,7 +40,8 @@ func (s *etagServer) run(args ...string) ([]byte, error) {
 	}
 	if i := slices.Index(args, "-H"); i >= 0 && strings.TrimPrefix(args[i+1], "If-None-Match: ") == s.etag(path) {
 		s.notMod++
-		return []byte("HTTP/2.0 304 Not Modified" + nl + "Etag: " + s.etag(path) + nl + nl), nil
+		// like gh: the headers on stdout, and exit 1 all the same
+		return []byte("HTTP/2.0 304 Not Modified" + nl + "Etag: " + s.etag(path) + nl + nl), errors.New("exit status 1: gh: HTTP 304")
 	}
 	s.full++
 	return []byte("HTTP/2.0 200 OK" + nl + "Content-Type: application/json" + nl + "ETag: " + s.etag(path) + nl + nl + s.bodies[path]), nil
@@ -93,7 +95,9 @@ func TestGHJSONSharesSavedAnswersAcrossPaths(t *testing.T) {
 
 func TestGHJSON304WithoutASavedAnswer(t *testing.T) {
 	s := etagEnv(t, map[string]string{"p": `{}`})
-	RunGH = func(args ...string) ([]byte, error) { return []byte("HTTP/2.0 304 Not Modified\n\n"), nil }
+	RunGH = func(args ...string) ([]byte, error) {
+		return []byte("HTTP/2.0 304 Not Modified\n\n"), errors.New("exit status 1: gh: HTTP 304")
+	}
 	var v any
 	if err := ghJSON(&v, "p"); err == nil {
 		t.Error("a 304 with nothing saved is an error, never an empty answer")

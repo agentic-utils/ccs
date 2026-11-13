@@ -125,10 +125,12 @@ func ghGet(path string) ([]byte, error) {
 		args = append(args, "-H", "If-None-Match: "+saved.ETag)
 	}
 	out, err := ghCall(args...)
-	if err != nil {
+	status, etag, body := splitHTTP(out)
+	// gh exits 1 on a 304 ("gh: HTTP 304") though the answer is good and its
+	// headers are on stdout: only the status says whether it failed.
+	if err != nil && !(status == 304 && bytes.HasPrefix(out, []byte("HTTP/"))) {
 		return nil, err
 	}
-	status, etag, body := splitHTTP(out)
 	switch {
 	case status == 304 && have:
 		now := time.Now() // still in use: keep it past pruneETags

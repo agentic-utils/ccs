@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,7 +81,7 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 				"Use search_sessions to find a past conversation by what was said in it, list_sessions for recent ones, " +
 				"and read_session to read one. Sessions are the user's private history; quote only what's relevant. " +
 				"launch_session starts a named session in a new iTerm tab or tmux window and close_session stops one and closes its tab; restart_session stops one and resumes it in a new tab (your own once your turn ends). " +
-				"list_prs lists the user's open PRs with the session that owns each.",
+				"list_prs lists the user's open PRs with the session that owns each (or with merged, the recent merges and who merged them); claim_pr records a PR's owner and depends the order PRs must merge in.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -120,7 +121,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "list_sessions",
-		"description": "List the most recently active Claude Code sessions, newest first. A session that is running also says what it is doing (as ccs sessions): busy, idle or waiting on the user and since when, the question or permission prompt it waits on, whether its last message asks something, its last API error, its PRs, and the background tasks and subagents it runs. live_only keeps just the running ones.",
+		"description": "List the most recently active Claude Code sessions, newest first. Each says its kind (claude or codex), session id, project folder, last message time and the command that resumes it, whether or not it is running. A session that is running also says what it is doing (as ccs sessions): busy, idle or waiting on the user and since when, the question or permission prompt it waits on, whether its last message asks something, its last API error, its PRs, and the background tasks and subagents it runs. live_only keeps just the running ones.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -133,7 +134,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "read_session",
-		"description": "Read a session's messages (user and Claude text; tool calls are not included). Long messages are cut. Page with offset/limit; with query, only messages containing it (plus their neighbours) are returned.",
+		"description": "Read a session's messages (user and Claude text; tool calls are not included, except AskUserQuestion: each question with its numbered options, and the user's answer with any notes they added, are messages of their own where they were asked). Long messages are cut. Page with offset/limit; with query, only messages containing it (plus their neighbours) are returned.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -189,9 +190,96 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "list_prs",
-		"description": "The user's open PRs (as ccs prs --json): each with the live sessions that own it (ccs claim, or ccs watch for the session that opened it), the session that opened it or that none here did (opened_by, origin), the PRs it must merge after that haven't merged (blocked_by, from ccs depends), its group (ready, needs_you, waiting) and status, and flags for PRs nobody owns and PRs two sessions claim.",
-		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		"description": "The user's open PRs (as ccs prs --json): each with the live sessions that own it (ccs claim, or ccs watch for the session that opened it), the session that opened it or that none here did (opened_by, origin), the PRs it must merge after that haven't merged (blocked_by, from ccs depends), its group (ready, needs_you, waiting) and status, and flags for PRs nobody owns and PRs two sessions claim. With merged, the PRs ccs watch saw merge in the last week instead (as ccs prs --merged --json), newest first, each with how it merged (merge: local, auto_merge or not_local; empty when ccs watch couldn't tell) and the session that merged it or turned on auto-merge (merged_by: name and session id).",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"merged": map[string]any{"type": "boolean", "description": "list the PRs merged in the last week instead of the open ones; default false"},
+			},
+		},
 	},
+	{
+		"name":        "claim_pr",
+		"description": "Record that a running session owns a PR (as ccs claim), so ccs watch tells it of the PR's failing checks, conflicts and new review threads and list_prs names it as the owner. Without session, the claim is yours; with session, it's for the running session of that name (a coordinator claiming for a session it runs). Another session's claim on the PR stays beside it, and two owners show as contested in list_prs. Claims end when the PR merges or closes, or the session stops. With release, the session's claim is dropped instead, and ccs watch won't claim it back for it.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pr":      map[string]any{"type": "string", "description": "the PR's address, https://github.com/owner/repo/pull/N"},
+				"session": map[string]any{"type": "string", "description": "optional: the name of the running session that owns it; default your own session"},
+				"release": map[string]any{"type": "boolean", "description": "drop the claim instead; default false"},
+			},
+			"required": []string{"pr"},
+		},
+	},
+	{
+		"name":        "depends",
+		"description": "The recorded merge order (as ccs depends): with pr and after, record that pr must not merge before each PR in after has (added to what it already waits for; a PR waiting for itself or a circle is refused); with pr and drop, forget what pr waits for; with neither, list every record as JSON (pr, after, waiting: those of after not known to have merged, by: the session that recorded it). ccs watch holds a waiting PR's ready event, list_prs shows it in blocked_by, and blocked_automerge and merged_early events say when auto-merge is on for it or it merged first. ccs refuses no merge itself. A PR is its address, owner/repo#N, or repo#N when ccs knows one repo of that name.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pr":    map[string]any{"type": "string", "description": "the PR that must wait"},
+				"after": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "the PRs that must merge first"},
+				"drop":  map[string]any{"type": "boolean", "description": "forget what pr waits for instead; default false"},
+			},
+		},
+	},
+}
+
+// prCall runs list_prs, claim_pr and depends, which need no transcripts.
+func prCall(name string, raw json.RawMessage) (string, error) {
+	var a struct {
+		Merged  bool     `json:"merged"`
+		PR      string   `json:"pr"`
+		Session string   `json:"session"`
+		Release bool     `json:"release"`
+		After   []string `json:"after"`
+		Drop    bool     `json:"drop"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return "", fmt.Errorf("bad arguments: %v", err)
+		}
+	}
+	if name == "claim_pr" {
+		if a.PR == "" {
+			return "", errors.New("pr is required")
+		}
+		return github.ClaimAs(strings.TrimSpace(a.PR), strings.TrimSpace(a.Session), a.Release, time.Now())
+	}
+	var args []string
+	run := github.RunPRs
+	switch name {
+	case "list_prs":
+		args = []string{"--json"}
+		if a.Merged {
+			args = append(args, "--merged")
+		}
+	case "depends":
+		run = github.RunDepends
+		switch {
+		case a.PR == "" && len(a.After) == 0 && !a.Drop:
+			args = []string{"--json"}
+		case a.PR == "":
+			return "", errors.New("pr is required with after or drop")
+		case a.Drop && len(a.After) > 0:
+			return "", errors.New("give after or drop, not both")
+		case !a.Drop && len(a.After) == 0:
+			return "", errors.New("give the PRs it waits for in after, or drop to forget them")
+		default:
+			args = []string{a.PR}
+			if a.Drop {
+				args = append(args, "--drop")
+			}
+			for _, u := range a.After {
+				args = append(args, "--after", u)
+			}
+		}
+	}
+	var out, errs strings.Builder
+	if run(args, &out, &errs) != 0 {
+		return "", errors.New(cmp.Or(strings.TrimSpace(errs.String()), name+" failed"))
+	}
+	return out.String(), nil
 }
 
 // mcpSessionCall runs launch_session, close_session and restart_session,
@@ -292,12 +380,8 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	if name == "launch_session" || name == "close_session" || name == "restart_session" {
 		return mcpSessionCall(name, raw)
 	}
-	if name == "list_prs" {
-		var out, errs strings.Builder
-		if github.RunPRs([]string{"--json"}, &out, &errs) != 0 {
-			return "", errors.New(strings.TrimSpace(errs.String()))
-		}
-		return out.String(), nil
+	if name == "list_prs" || name == "claim_pr" || name == "depends" {
+		return prCall(name, raw)
 	}
 	var a struct {
 		Query      string `json:"query"`
@@ -476,21 +560,22 @@ func mcpRead(convs []transcript.Conversation, id, query string, offset, limit in
 		return "", fmt.Errorf("%q matches %d sessions; give more of the id", id, len(match))
 	}
 	c := match[0]
-	idx := make([]int, 0, len(c.Messages))
+	entries := readEntries(c)
+	idx := make([]int, 0, len(entries))
 	if q := strings.ToLower(strings.TrimSpace(query)); q != "" {
 		keep := map[int]bool{}
-		for i, m := range c.Messages {
-			if strings.Contains(strings.ToLower(m.Text), q) {
+		for i, e := range entries {
+			if strings.Contains(strings.ToLower(e.text), q) {
 				keep[i-1], keep[i], keep[i+1] = true, true, true
 			}
 		}
-		for i := range c.Messages {
+		for i := range entries {
 			if keep[i] {
 				idx = append(idx, i)
 			}
 		}
 	} else {
-		for i := range c.Messages {
+		for i := range entries {
 			idx = append(idx, i)
 		}
 	}
@@ -511,7 +596,12 @@ func mcpRead(convs []transcript.Conversation, id, query string, offset, limit in
 	}
 	b.WriteString("\n")
 	for _, i := range page {
-		m := c.Messages[i]
+		e := entries[i]
+		if e.msg < 0 {
+			fmt.Fprintf(&b, "\n[%d] %s %s:\n%s\n", i, transcript.FormatTimestamp(e.ts), e.who, cutText(e.text))
+			continue
+		}
+		m := c.Messages[e.msg]
 		who, text := "Claude", transcript.CleanText(m.Text)
 		if m.Role == "sent" {
 			who = "Claude, to " + transcript.ShortAddr(m.To)
@@ -533,12 +623,70 @@ func mcpRead(convs []transcript.Conversation, id, query string, offset, limit in
 				who, text = "Note", tag+" · "+summary
 			}
 		}
-		if r := []rune(text); len(r) > mcpMessageRunes {
-			text = string(r[:mcpMessageRunes]) + fmt.Sprintf("… (%d more characters)", len(r)-mcpMessageRunes)
-		}
-		fmt.Fprintf(&b, "\n[%d] %s %s:\n%s\n", i, transcript.FormatTimestamp(m.Ts), who, text)
+		fmt.Fprintf(&b, "\n[%d] %s %s:\n%s\n", i, transcript.FormatTimestamp(m.Ts), who, cutText(text))
 	}
 	return b.String(), nil
+}
+
+func cutText(text string) string {
+	if r := []rune(text); len(r) > mcpMessageRunes {
+		return string(r[:mcpMessageRunes]) + fmt.Sprintf("… (%d more characters)", len(r)-mcpMessageRunes)
+	}
+	return text
+}
+
+// readEntry is one item read_session lists: a message (msg its index), or
+// part of an AskUserQuestion (msg -1), which the transcript keeps out of
+// the messages.
+type readEntry struct {
+	msg           int
+	who, text, ts string
+}
+
+// readEntries is c's messages with each AskUserQuestion put where it was
+// asked: one entry per question with its options, then one per answer with
+// the choice and the user's notes (or the result as Claude Code wrote it,
+// when the transcript doesn't hold the choices). The query filter reads
+// e.text, which for a message is its raw text.
+func readEntries(c transcript.Conversation) []readEntry {
+	// Questions go where they were asked and answers where their result
+	// arrived, since a message can come in while the menu waits.
+	type placed struct {
+		at int // before message at
+		e  readEntry
+	}
+	var extra []placed
+	for _, a := range c.Asks {
+		for _, q := range a.Questions {
+			extra = append(extra, placed{a.At, readEntry{msg: -1, who: "Claude asks (AskUserQuestion)", text: q.Text(), ts: a.Ts}})
+		}
+		answer := func(who, text string) {
+			extra = append(extra, placed{a.AnswerAt, readEntry{msg: -1, who: who, text: text, ts: a.AnswerTs}})
+		}
+		switch {
+		case !a.Answered:
+		case len(a.Answers) > 0:
+			for _, ans := range a.Answers {
+				answer("User answered", ans.Text())
+			}
+		case a.Failed:
+			answer("User declined", cmp.Or(a.Result, "(no answer)"))
+		default:
+			answer("User answered", cmp.Or(a.Result, "(no answer)"))
+		}
+	}
+	sort.SliceStable(extra, func(i, j int) bool { return extra[i].at < extra[j].at })
+	out := make([]readEntry, 0, len(c.Messages)+len(extra))
+	for i := 0; i <= len(c.Messages); i++ {
+		for len(extra) > 0 && extra[0].at <= i {
+			out = append(out, extra[0].e)
+			extra = extra[1:]
+		}
+		if i < len(c.Messages) {
+			out = append(out, readEntry{msg: i, text: c.Messages[i].Text})
+		}
+	}
+	return out
 }
 
 // snippetAround returns about width characters of s centred on the first

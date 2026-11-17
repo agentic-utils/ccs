@@ -93,6 +93,7 @@ type Conversation struct {
 	Peers       []PeerRef      // its messages to and from other sessions, to link the two ends
 	outputs     []replyOutput  // each reply's output tokens, for the working line's count this turn
 	Tools       []ToolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
+	Asks        []Ask          // its AskUserQuestion menus and their answers (asks.go), for read_session; not messages either
 	PeerNotes   map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
 	calls       []BgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
 	Tasks       []BgTask       // its background tasks (tasks.go)
@@ -568,7 +569,7 @@ func ParseLine(conv *Conversation, line []byte) bool {
 		if raw.Cwd != "" {
 			conv.lastCwd = raw.Cwd
 		}
-		trackTools(conv, raw.Message.Content, raw.Timestamp)
+		trackTools(conv, raw.Message.Content, raw.Timestamp, line)
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
 		text := extractText(raw.Message.Content)
 		// "/model" logs its result as command output; a switch after the last
@@ -646,7 +647,7 @@ func ParseLine(conv *Conversation, line []byte) bool {
 		if text := extractText(raw.Message.Content); strings.TrimSpace(text) != "" {
 			conv.Messages = append(conv.Messages, Message{Role: "assistant", Text: text, Ts: raw.Timestamp})
 		}
-		trackTools(conv, raw.Message.Content, raw.Timestamp) // after the text: a SendMessage follows what it says
+		trackTools(conv, raw.Message.Content, raw.Timestamp, line) // after the text: a SendMessage follows what it says
 	}
 	return true
 }
@@ -671,7 +672,7 @@ type askQuestion struct {
 
 // trackTools keeps conv.pending in step with a line's content: a tool call
 // becomes pending, its result clears it.
-func trackTools(conv *Conversation, content json.RawMessage, ts string) {
+func trackTools(conv *Conversation, content json.RawMessage, ts string, line []byte) {
 	if len(content) == 0 || content[0] != '[' {
 		return
 	}
@@ -679,6 +680,7 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 		Type      string          `json:"type"`
 		ToolUseID string          `json:"tool_use_id"`
 		Content   json.RawMessage `json:"content"`
+		IsError   bool            `json:"is_error"`
 		toolCall
 	}
 	if json.Unmarshal(content, &blocks) != nil {
@@ -687,6 +689,9 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
 			noteResult(conv, b.ToolUseID, b.Content)
+			if i := askAwaiting(conv, b.ToolUseID); i >= 0 {
+				noteAskResult(conv, i, b.Content, b.IsError, line, ts)
+			}
 			if i := slices.Index(conv.GHCalls, b.ToolUseID); i >= 0 {
 				conv.GHCalls = slices.Delete(slices.Clone(conv.GHCalls), i, i+1)
 				for _, u := range GHOutputPRs(ResultText(b.Content)) {
@@ -703,6 +708,9 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string) {
 				noteSent(conv, call.Input, ts) // drawn as a "To" message, not a tool call
 			} else {
 				NoteTool(conv, call.Name, toolArg(call.Input), ts)
+			}
+			if call.Name == "AskUserQuestion" {
+				noteAsk(conv, call, ts)
 			}
 			if call.Name == "Bash" {
 				var in struct {

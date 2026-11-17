@@ -102,6 +102,14 @@ func lastSaidBy(path string) string {
 // when the notice can't be sent: the caller asked for a graceful close, and
 // can still close it plainly.
 func CloseGracefully(name string, timeout time.Duration) (string, error) {
+	return CloseGracefullyNotify(name, timeout, nil)
+}
+
+// CloseGracefullyNotify is CloseGracefully, calling onSent (when not nil)
+// with the pid as soon as the wrap-up notice is sent, before the wait: so a
+// caller with a deadline of its own (an MCP tool call) can answer then and
+// leave the wait to run on.
+func CloseGracefullyNotify(name string, timeout time.Duration, onSent func(pid int)) (string, error) {
 	if timeout <= 0 {
 		timeout = GracefulTimeout
 	}
@@ -143,6 +151,9 @@ func CloseGracefully(name string, timeout time.Duration) (string, error) {
 		return "", fmt.Errorf("couldn't ask %s (pid %d) to wrap up: %v: %s", name, pid, err, plain)
 	}
 	state.LogActivity("close %s: asked it to wrap up (notice %s), waiting up to %s", name, ref, timeout)
+	if onSent != nil {
+		onSent(pid)
+	}
 
 	// Idle after the notice: its status changed since the notice was sent (or
 	// it was seen busy since, for a session file with no status time) and the

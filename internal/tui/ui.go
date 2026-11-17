@@ -2815,7 +2815,8 @@ type listRow struct {
 }
 
 // listRows lays the list out in screen rows: a header before each state
-// section (after a blank row, except the first), and with ^X G before each folder within it (sortList keeps a
+// section (after a blank row, except the first; none over a lone session
+// named as the section, namesSection), and with ^X G before each folder within it (sortList keeps a
 // section's and a group's sessions together).
 func (m model) listRows() []listRow {
 	counts := map[group]int{}
@@ -2838,7 +2839,9 @@ func (m model) listRows() []listRow {
 			if i > 0 { // a blank row parts it from the section above
 				rows = append(rows, listRow{item: -1})
 			}
-			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
+			if !namesSection(sec.name, sections[s], it) {
+				rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
+			}
 		}
 		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(&m.filtered[i-1])) {
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s\033[0m \033[90m%d\033[0m", projectName(groupKey(it.familyCwd)), counts[k])})
@@ -2848,6 +2851,12 @@ func (m model) listRows() []listRow {
 		}
 	}
 	return rows
+}
+
+// namesSection: a section of one session titled as the section itself (the
+// coordinator, named coordinator) needs no header; the row says it already.
+func namesSection(name string, n int, it *listItem) bool {
+	return n == 1 && transcript.GetTopic(it.conv) == name
 }
 
 // listStart is the first of h rows in view: the top, until the selection's

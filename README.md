@@ -40,7 +40,7 @@ Launch, watch, search and resume your coding CLI sessions: [Claude Code](https:/
 claude mcp add --scope user ccs -- ccs mcp
 ```
 
-Claude starts it when needed (no ccs window has to be open, no network port). It has eleven tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first, a running session with what it is doing as `ccs sessions` gives it, `live_only` for just those; both leave out headless runs unless `include_headless`) `read_session` (a session's messages, paged, optionally only those around a search term; each AskUserQuestion it asked shows as its own messages: the question with its numbered options, then the answer chosen and any notes, so a reader can tell what the user picked), `launch_session` / `close_session` / `restart_session`, which do what `ccs launch`, `ccs close` and `ccs restart` do (below), `adopt_session`, which is `ccs adopt`, `list_prs`, which is `ccs prs --json` (with `merged`, `ccs prs --merged --json`: the last week's merges, each with `merge` (`local`, `auto_merge` or `not_local`) and `merged_by`, the session's name and id), `claim_pr`, which is `ccs claim` for your own session or, with `session`, for the running session of that name, and `depends`, which is `ccs depends`: record, drop or list the order PRs must merge in (`list_prs` shows a waiting PR's `blocked_by`). `session_triage` is `ccs sessions --triage --json` (below): every running session in one bucket with why, for a coordinator looking for the stuck ones (`stall_after_minutes`, default 15; `project` or `parent` to narrow it). Every row of `list_sessions` has the session's kind, id, folder, last message time and resume command, running or not, so a crashed terminal's sessions can be brought back from it. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
+Claude starts it when needed (no ccs window has to be open, no network port). It has twelve tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first, a running session with what it is doing as `ccs sessions` gives it, `live_only` for just those; both leave out headless runs unless `include_headless`) `read_session` (a session's messages, paged, optionally only those around a search term; each AskUserQuestion it asked shows as its own messages: the question with its numbered options, then the answer chosen and any notes, so a reader can tell what the user picked), `launch_session` / `close_session` / `restart_session`, which do what `ccs launch`, `ccs close` and `ccs restart` do (below), `adopt_session`, which is `ccs adopt`, `list_prs`, which is `ccs prs --json` (with `merged`, `ccs prs --merged --json`: the last week's merges, each with `merge` (`local`, `auto_merge` or `not_local`) and `merged_by`, the session's name and id), `claim_pr`, which is `ccs claim` for your own session or, with `session`, for the running session of that name, and `depends`, which is `ccs depends`: record, drop or list the order PRs must merge in (`list_prs` shows a waiting PR's `blocked_by`). `session_triage` is `ccs sessions --triage --json` (below): every running session in one bucket with why, for a coordinator looking for the stuck ones (`stall_after_minutes`, default 15; `project` or `parent` to narrow it). `orchestrator_report` is `ccs orchestrator-report --json` (below). Every row of `list_sessions` has the session's kind, id, folder, last message time and resume command, running or not, so a crashed terminal's sessions can be brought back from it. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
 
 ## Start and close sessions
 
@@ -316,18 +316,44 @@ This session claimed it with ccs claim. If it's yours, deal with it; if not, run
 
 Events: `nudged` (pr, head, session, reasons) and `nudge_failed` (the same plus the error; tried again next pass). What was sent is kept in `nudges.json` beside ccs's settings, so a restart never sends it again. `--no-nudge` turns this off.
 
-### Session events: stalled and done
+### Session events
 
-After each pass, whether or not GitHub answered, `ccs watch` triages the running sessions as `ccs sessions --triage` does and writes a line when one enters `stalled` or `done`, so a coordinator following `pr-events.jsonl` can nudge the stalled ones and close the done ones. Their fields won't change without a major release.
+After each pass, whether or not GitHub answered, `ccs watch` triages the running sessions as `ccs sessions --triage` does and writes a line when one enters `stalled` or `done`, so a coordinator following `pr-events.jsonl` can nudge the stalled ones and close the done ones, and when sessions leave those buckets, start and end, so `ccs orchestrator-report` can time them. Their fields won't change without a major release.
 
 - `session_stalled`: `{at, event, session, session_id, kind, cwd, reason, idle, idle_seconds}`. Idle past `--stall-after` (default `15m`) with nothing pending. `session` is its name, `kind` `claude` or `codex`.
 - `session_done`: the same fields. Its last message says it's finished, and it has no open PR or anything pending.
+- `session_active`: `{at, event, session, session_id, kind, cwd, reason, from, seconds}`. It left a stall or a finish (`from`: `stalled` or `done`) after `seconds` there: it worked again, or now waits on you or on CI. Moving between idle, stalled and done in the same stretch of idleness isn't leaving.
+- `session_started`: `{at, event, session, session_id, kind, cwd}`. First seen running, or running again after it ended. The first run ever records the running sessions without reporting them.
+- `session_ended`: `{at, event, session, session_id, kind, cwd, from, seconds}`. Missing from two scans in a row (one missed scan is a flaky read, not an exit); `at` is when it was last seen, `seconds` how long ccs saw it run, `from` its stall or finish if it ended in one.
 
-Each is written at most once per stretch of idleness: the same stall isn't reported again while the session stays idle, even if it moves between buckets meanwhile; once it works again and then stalls, that's a new one. The first run reports sessions already stalled or done. What was reported is kept in `session-events.json` beside ccs's settings, so a restart doesn't repeat it. `--no-session-events` turns both off.
+Stalls and finishes are written at most once per stretch of idleness: the same stall isn't reported again while the session stays idle, even if it moves between buckets meanwhile; once it works again and then stalls, that's a new one. The first run reports sessions already stalled or done. What was reported is kept in `session-events.json` beside ccs's settings, so a restart doesn't repeat it. `--no-session-events` turns all of them off.
 
 ```json
 {"at":"2026-11-17T12:00:00Z","event":"session_stalled","session":"fix-login","session_id":"5f0c...","kind":"claude","cwd":"/code/app","reason":"idle 40m, app#12 checks failing: test","idle":"40m","idle_seconds":2400}
 ```
+
+## Orchestrator scorecards
+
+```bash
+ccs orchestrator-report                       # every orchestrator, the last 24 hours, against the previous saved day
+ccs orchestrator-report --since 72h --orchestrator coordinator --json
+```
+
+An orchestrator is the session `ccs coordinator` set up, and any session that launched another through `ccs launch` or `launch_session` (`launch-parents.json`). Each gets a scorecard over the sessions under it; the one from `ccs coordinator` answers for every session and PR. Everything is counted from what is already on disk: `pr-events.jsonl`, the parent records and the orchestrator's own transcript.
+
+| Line | How it is counted |
+|---|---|
+| response p50 | Minutes from an event that needs the orchestrator (`session_stalled`, `session_done`, `ready`, `merged_early`, `blocked_automerge`, and `checks_failing` or `conflicts` on a PR nobody owns) to its first message or tool call naming the session or PR. Missed: none within 4 hours. |
+| stalled minutes | `session_stalled` to `session_active` or `session_ended`, summed over its sessions and clipped to the period; the worst session named. |
+| done→close p50 | `session_done` to `session_ended`; also how many are still done at the end. |
+| your idle nudges | Your messages to it (typed in its tab or in ccs) pointing at idle sessions or PRs: "8 idle", "idle prs are piling up". Each is a failure: it should have seen them first. |
+| corrections/100 | Your messages correcting it ("no, ...", "why did you", "ask me questions", "far too many"), per 100 of your messages. The matching lines are quoted below the scorecard so a wrong match is easy to spot. |
+| hands-on calls | Its tool calls that are work it should hand off: Read, Grep, Edit or Write outside its folder, web fetches, and Bash running git, builds, code reading (grep, sed, cat), cluster or cloud commands, `gh pr diff` or job logs. `gh pr view` and `gh pr checks` are checking a claim, not work. The commonest are named. |
+| ccs via bash | `ccs sessions`, `launch`, `close`, `restart`, `prs`, `claim` or `depends` run through Bash, which an MCP tool covers. |
+| merged, ready→merge p50 | PRs of its sessions merged in the period, and minutes from their last `ready` to `merged`. |
+| sessions now | When the period ends now: its running sessions, how many are stalled, done or idle, and how many report to it directly. |
+
+It also flags more than 6 direct sessions (put a workstream under a sub-orchestrator) and a tree deeper than 2. Each run saves the scorecards as the day's, in `reports/<orchestrator>/<YYYY-MM-DD>.json` beside ccs's settings (`--no-save` doesn't), and compares each line with the newest earlier day: ▲ better, ▼ worse. MCP `orchestrator_report` is `ccs orchestrator-report --json` (`since_hours`, `orchestrator`, `save`).
 
 ## Merge order
 

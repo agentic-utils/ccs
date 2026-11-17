@@ -80,6 +80,9 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs depends <PR> --after <PR>   Record that a PR must not merge before another has; ccs watch
                             and ccs prs then show it blocked and say if it merges early
                             (ccs depends lists them, --drop forgets one)
+       ccs orchestrator-report [--since 24h] [--json]   Each orchestrator's scorecard against
+                            the previous saved day: response time, stalled and done minutes,
+                            your nudges and corrections, hands-on work, merges, span
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
 
@@ -220,6 +223,9 @@ func Main(v string) {
 	}
 	if len(args) > 0 && args[0] == "prs" {
 		os.Exit(github.RunPRs(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "orchestrator-report" {
+		os.Exit(mcp.RunReport(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "depends" {
 		os.Exit(github.RunDepends(args[1:], os.Stdout, os.Stderr))

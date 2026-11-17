@@ -1419,9 +1419,31 @@ func TestGroupByFolder(t *testing.T) {
 		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
 	}
 
+	// The folder header names the folder, so a session's grey row doesn't
+	// again; a worktree's own name does differ, and stays.
+	grey := func(id string) string {
+		i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+		return strings.TrimSpace(strip2(m.sidebarRow(m.filtered[i], false, 40)[1]))
+	}
+	if g := grey("api-old"); strings.Contains(g, "api") {
+		t.Errorf("grouped: the folder isn't repeated under its header: %q", g)
+	}
+	if g := grey("ccs-tree"); !strings.HasSuffix(g, "· x") {
+		t.Errorf("grouped: a worktree keeps its own name: %q", g)
+	}
+
 	m, _ = chord(m, "g")
 	if m.grouped || m.filtered[0].conv.SessionID != "ccs-main" || m.filtered[1].conv.SessionID != "api-new" {
 		t.Error("^G again should go back to the usual order")
+	}
+	if g := grey("api-old"); !strings.HasSuffix(g, "· api") {
+		t.Errorf("ungrouped: the grey row names the folder: %q", g)
+	}
+
+	// The coordinator sits under its own section, in a folder named after it.
+	coord := listItem{conv: conv("coord", "/cfg/ccs/coordinator", "2026-10-23T12:00:00Z"), familyState: coordFamily}
+	if g := strings.TrimSpace(strip2(m.sidebarRow(coord, false, 40)[1])); strings.Contains(g, "coordinator") {
+		t.Errorf("the coordinator's grey row doesn't repeat its section's name: %q", g)
 	}
 }
 

@@ -2916,7 +2916,9 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	} else if h := m.hostedApp(conv.SessionID); h != "" && m.live[conv.SessionID] {
 		stats += " · in " + h
 	}
-	stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
+	if !m.headedBy(item) {
+		stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
+	}
 	sw := w - len(lead) - colMarks - ansi.StringWidth(prs) - 1
 	stats = padRight(transcript.Truncate(stats, sw), sw)
 	indent := strings.Repeat(" ", len(lead)+colMarks)
@@ -2930,6 +2932,18 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		lead + colouredMarks + topic + " " + colouredHits,
 		indent + "\033[90m" + stats + "\033[0m " + prs,
 	}
+}
+
+// headedBy: the header above item already names its folder, so its grey row
+// needn't: with ^X G, a session in its folder's group (a worktree's own name
+// still differs, and stays), and the coordinator under its own section, whose
+// folder is named after it.
+func (m model) headedBy(item listItem) bool {
+	name := projectName(item.conv.Cwd)
+	if sectionOf(item.familyState) == coordinatorSec {
+		return name == coordinatorSection.name
+	}
+	return m.grouped && item.familyState >= 0 && name == projectName(groupKey(item.familyCwd))
 }
 
 // projectName is the last part of a session's working directory.

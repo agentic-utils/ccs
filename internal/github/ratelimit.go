@@ -136,7 +136,7 @@ func noteRateLimit(resource string, until time.Time) {
 			delete(l, k)
 		}
 	}
-	if err := writeJSON(ghLimitPath(), l); err != nil {
+	if err := WriteJSON(ghLimitPath(), l); err != nil {
 		state.LogActivity("gh rate limit: couldn't record the backoff: %v", err)
 	}
 }
@@ -159,8 +159,8 @@ func ghCall(args ...string) ([]byte, error) {
 	return out, err
 }
 
-// writeJSON writes v to path whole, through a unique temp file.
-func writeJSON(path string, v any) error {
+// WriteJSON writes v to path whole, through a unique temp file.
+func WriteJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", " ")
 	if err != nil {
 		return err

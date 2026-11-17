@@ -382,3 +382,37 @@ func TestPrsListDropsAnEndedClaimAndItsCheck(t *testing.T) {
 		t.Errorf("merged PR's check kept: %+v", c.Checked)
 	}
 }
+
+func TestOpenPRsByOwnerReadsOnly(t *testing.T) {
+	claimEnv(t)
+	if _, ok := OpenPRsByOwner(); ok {
+		t.Error("no saved state: nothing to say")
+	}
+	now := time.Now()
+	writeWatchState(t, now.Add(-time.Hour),
+		&WatchedPR{URL: claimA, Repo: "o/r", Number: 1, State: "open", Checks: "pending", Review: "required"},
+		&WatchedPR{URL: claimB, Repo: "o/r", Number: 2, State: "open", Checks: "success", Review: "approved"},
+		&WatchedPR{URL: claimC, Repo: "o/r", Number: 3, State: "merged"},
+	)
+	// A claim by a session no live scan knows, and one in Codex: both kept as they stand.
+	WithClaims(func(c *ClaimsFile) bool {
+		c.Claims[claimA] = []PRClaim{{Session: "s-gone", PID: 99999}}
+		c.Claims[claimB] = []PRClaim{{Session: "s-gone", PID: 99999}, {Kind: "codex", Thread: "th-1"}}
+		c.Claims[claimC] = []PRClaim{{Session: "s-gone", PID: 99999}}
+		return true
+	})
+	before, _ := os.ReadFile(ClaimsPath())
+	m, ok := OpenPRsByOwner()
+	if !ok {
+		t.Fatal("saved state not read")
+	}
+	if r := m[OwnerKey("claude", "s-gone")]; len(r) != 2 || r[0].PR != claimA || r[0].Status != "checks running" || r[1].Group != "ready" {
+		t.Errorf("its open PRs, the merged one left out: %+v", r)
+	}
+	if r := m[OwnerKey("codex", "th-1")]; len(r) != 1 || r[0].PR != claimB {
+		t.Errorf("a Codex claim is keyed by its thread: %+v", r)
+	}
+	if after, _ := os.ReadFile(ClaimsPath()); string(after) != string(before) {
+		t.Error("claims.json was written: the lookup must never prune")
+	}
+}

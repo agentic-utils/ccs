@@ -59,9 +59,11 @@ Usage: ccs [filter] [-- claude-flags...]
                             Stop the named session and resume the same conversation in a new tab, with
                             the same name, folder and flags; refused mid-turn unless --force. A session
                             restarting itself restarts once its turn ends
-       ccs sessions [--json] [--all]
+       ccs sessions [--json] [--all] [--triage [--stall-after 15m]]
                             The sessions running now and what each is doing: busy, idle or waiting on you
                             and since when, its question, last API error, PRs, background tasks and subagents
+                            --triage: each in one bucket (waiting_on_user, working, waiting_on_external,
+                            done, stalled, idle) with why, its open PRs and next wake-up
        ccs link install     Make ccs://session/<name> links switch to that session's tab (macOS);
                             also: ccs link status, ccs link uninstall
        ccs watch [flags]    Report changes to your open PRs as JSON lines, and tell the sessions
@@ -198,6 +200,7 @@ func Main(v string) {
 		os.Exit(sessions.RunLink(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "watch" {
+		github.SessionTick = mcp.WatchSessions
 		os.Exit(github.RunWatch(args[1:]))
 	}
 	if len(args) > 0 && args[0] == "claim" {

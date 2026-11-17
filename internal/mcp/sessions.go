@@ -277,8 +277,10 @@ func RunSessions(args []string, stdout, stderr io.Writer, load func() ([]transcr
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print JSON: {\"sessions\": [...]}")
 	all := fs.Bool("all", false, "also the sessions that aren't running (the last 60 days), and one-shot headless runs")
+	triage := fs.Bool("triage", false, "put each running session in one bucket (waiting_on_user, working, waiting_on_external, done, stalled, idle) with a one-line reason, its open PRs and next wake-up")
+	stallAfter := fs.Duration("stall-after", DefaultStallAfter, "with --triage: how long an idle session with nothing pending waits before it is stalled")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: ccs sessions [--json] [--all]\n\nThe sessions running now and what each is doing: busy, idle or waiting on you and since when,\nthe question it asks, its last API error, its PRs, and the background tasks and subagents it runs.")
+		fmt.Fprintln(stderr, "usage: ccs sessions [--json] [--all] [--triage [--stall-after 15m]]\n\nThe sessions running now and what each is doing: busy, idle or waiting on you and since when,\nthe question it asks, its last API error, its PRs, and the background tasks and subagents it runs.\nWith --triage, each running session in exactly one bucket with why: waiting_on_user, working,\nwaiting_on_external, done, stalled (idle past --stall-after with nothing pending) or idle.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -286,6 +288,10 @@ func RunSessions(args []string, stdout, stderr io.Writer, load func() ([]transcr
 	}
 	if fs.NArg() > 0 {
 		fs.Usage()
+		return 2
+	}
+	if *triage && *all {
+		fmt.Fprintln(stderr, "ccs sessions: --triage is for running sessions only; drop --all")
 		return 2
 	}
 	convs, err := load()
@@ -303,6 +309,15 @@ func RunSessions(args []string, stdout, stderr io.Writer, load func() ([]transcr
 			}
 		}
 		convs = kept
+	}
+	if *triage {
+		rows := TriageRows(convs, live, time.Now(), *stallAfter)
+		if *asJSON {
+			fmt.Fprintln(stdout, triageJSON(rows, *stallAfter))
+		} else {
+			fmt.Fprint(stdout, triageText(rows))
+		}
+		return 0
 	}
 	now := time.Now()
 	rows := SessionRows(convs, live, *all, now)

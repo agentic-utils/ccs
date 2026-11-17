@@ -97,6 +97,8 @@ type Conversation struct {
 	PeerNotes   map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
 	calls       []BgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
 	Tasks       []BgTask       // its background tasks (tasks.go)
+	Schedules   []Schedule     // its ScheduleWakeup and CronCreate wake-ups (schedules.go)
+	schedCalls  []schedCall    // ScheduleWakeup/CronCreate/CronDelete calls awaiting their result
 
 	// ReadAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -689,6 +691,7 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string, line []b
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
 			noteResult(conv, b.ToolUseID, b.Content)
+			noteScheduleResult(conv, b.ToolUseID, b.Content, b.IsError, line, ts)
 			if i := askAwaiting(conv, b.ToolUseID); i >= 0 {
 				noteAskResult(conv, i, b.Content, b.IsError, line, ts)
 			}
@@ -704,6 +707,7 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string, line []b
 			call := b.toolCall
 			conv.Pending = &call
 			noteCall(conv, call, ts)
+			noteScheduleCall(conv, call)
 			if call.Name == "SendMessage" {
 				noteSent(conv, call.Input, ts) // drawn as a "To" message, not a tool call
 			} else {

@@ -133,6 +133,17 @@ var mcpTools = []map[string]any{
 		},
 	},
 	{
+		"name":        "session_triage",
+		"description": "Each running session in exactly one bucket, with a one-line reason (as ccs sessions --triage --json): waiting_on_user (a menu, permission prompt or question waits on the user, its last message asks something or asks them to run a command, or its open PR is ready to merge and needs their go), working (mid-turn), waiting_on_external (an open PR it owns with checks running, review required or a recorded depends wait; a background task or Monitor running; a subagent running; a ScheduleWakeup or CronCreate wake-up pending), done (no open PRs, nothing pending, and its last message says it is finished), stalled (idle past stall_after_minutes with nothing pending, an open PR it should fix named in the reason) or idle (the same, not yet that long). Each row also has its idle time and since when, its open PRs with their status (from ccs watch's saved state and the claims), and its next scheduled wake-up when known. Listed waiting_on_user first, then stalled, done, idle, waiting_on_external, working; the longest idle first within each.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"stall_after_minutes": map[string]any{"type": "integer", "description": "how long an idle session with nothing pending waits before it is stalled; default 15"},
+				"project":             map[string]any{"type": "string", "description": "only sessions whose working directory contains this"},
+			},
+		},
+	},
+	{
 		"name":        "read_session",
 		"description": "Read a session's messages (user and Claude text; tool calls are not included, except AskUserQuestion: each question with its numbered options, and the user's answer with any notes they added, are messages of their own where they were asked). Long messages are cut. Page with offset/limit; with query, only messages containing it (plus their neighbours) are returned.",
 		"inputSchema": map[string]any{
@@ -392,6 +403,7 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 		SessionID  string `json:"session_id"`
 		Headless   bool   `json:"include_headless"`
 		LiveOnly   bool   `json:"live_only"`
+		StallAfter int    `json:"stall_after_minutes"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -411,6 +423,24 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 			}
 		}
 		convs = kept
+	}
+	if name == "session_triage" {
+		stall := DefaultStallAfter
+		if a.StallAfter > 0 {
+			stall = time.Duration(a.StallAfter) * time.Minute
+		}
+		rows := TriageRows(convs, liveSessions(), time.Now(), stall)
+		if a.Project != "" {
+			p := strings.ToLower(a.Project)
+			kept := rows[:0]
+			for _, r := range rows {
+				if strings.Contains(strings.ToLower(r.Cwd), p) {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
+		}
+		return triageJSON(rows, stall), nil
 	}
 	if name != "read_session" && !a.Headless { // read_session reads any session by id
 		kept := convs[:0:0]

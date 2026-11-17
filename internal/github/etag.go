@@ -53,7 +53,7 @@ func saveETag(path, etag string, body []byte) {
 	if !json.Valid(body) {
 		return
 	}
-	if err := writeJSON(etagFile(path), etagEntry{Path: path, ETag: etag, Body: body}); err != nil {
+	if err := WriteJSON(etagFile(path), etagEntry{Path: path, ETag: etag, Body: body}); err != nil {
 		state.LogActivity("gh etags: couldn't save %s: %v", path, err)
 	}
 }

@@ -41,6 +41,8 @@ type listItem struct {
 	kids        int    // sessions launched under it (a coordinator's tree), any depth
 	hiddenKids  int    // of those, how many its fold hides
 	roll        rollup // what its tree holds: waiting, stalled, done
+	guides      string // in a coordinator's tree: the │ and spaces its ancestors draw before its own connector
+	lastKid     bool   // the last of its parent's children: └, not ├
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -675,17 +677,27 @@ func (m *model) nestFamilies() {
 	}
 	order := make([]int, 0, n) // the new list, as indexes into m.filtered
 	seen := make([]bool, n)
-	var walk func(i, depth int, cwd string)
-	walk = func(i, depth int, cwd string) {
+	var walk func(i, depth int, cwd, guides string, last bool)
+	walk = func(i, depth int, cwd, guides string, last bool) {
 		if seen[i] {
 			return
 		}
 		seen[i] = true
 		it := &m.filtered[i]
-		it.depth, it.familyCwd = depth, cwd
+		it.depth, it.familyCwd, it.guides, it.lastKid = depth, cwd, guides, last
 		order = append(order, i)
+		below := guides // the guides its children draw: │ under it while siblings follow it
+		if depth > 0 {
+			below += map[bool]string{true: "  ", false: "│ "}[last]
+		}
+		var todo []int
 		for _, k := range kids[i] {
-			walk(k, depth+1, cwd)
+			if !seen[k] {
+				todo = append(todo, k)
+			}
+		}
+		for j, k := range todo {
+			walk(k, depth+1, cwd, below, j == len(todo)-1)
 		}
 	}
 	for i := range m.filtered {
@@ -693,8 +705,8 @@ func (m *model) nestFamilies() {
 		for d := 0; parent[r] >= 0 && d < n; d++ { // up to its top session (d guards a cycle)
 			r = parent[r]
 		}
-		walk(r, 0, m.filtered[r].conv.Cwd)
-		walk(i, 0, m.filtered[i].conv.Cwd) // only reached by a cycle
+		walk(r, 0, m.filtered[r].conv.Cwd, "", true)
+		walk(i, 0, m.filtered[i].conv.Cwd, "", true) // only reached by a cycle
 	}
 	isCoord := make([]bool, len(order)) // coord, in the new order
 	for at, i := range order {
@@ -2409,7 +2421,6 @@ func legendLines() string {
 		pr(github.PRFix, "needs you"),
 		pr(github.PRWaiting, "waiting"),
 		pr(prDraft, "draft"),
-		pr(github.PRMerged, "merged"),
 	}, "  ")
 }
 
@@ -2731,12 +2742,14 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		marks, colouredMarks, mw = "  "+marks, "  "+colouredMarks, colMarks+2
 	}
 	tw := m.topicColWidth()
-	nest := nestPrefix(item.depth) + item.foldGlyph()
-	topic := nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest))
-	// running background tasks, then a coordinator's counts, after the title
-	if after := strings.TrimSpace(m.taskCell(item.conv, false) + " " + rollupCell(item.roll, false)); after != "" {
-		topic = nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest)-ansi.StringWidth(after)-1) + " " + after
+	nest := m.treePrefix(item)
+	title := listTopic(item.conv, tw-mw-ansi.StringWidth(nest))
+	after := strings.TrimSpace(m.taskCell(item.conv, false) + " " + m.treeBadge(item, false))
+	if after != "" { // running background tasks, then a folded tree's counts or what a child needs, after the title
+		title = listTopic(item.conv, tw-mw-ansi.StringWidth(nest)-ansi.StringWidth(after)-1)
+		after = " " + after
 	}
+	topic := nest + title + after
 
 	// transcript.Message count
 	msgs := len(item.conv.Messages)
@@ -2760,7 +2773,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 			colWhen, when, colProject, project, marks, tw-mw, topic, colModel, model, colSize, size, colCtx, ctx, colMsgs, msgs, hits+"  "+m.prCell(item.conv, false))
 	}
 	// Pad before colouring so the escape codes don't eat into the column width.
-	topic = colouredMarks + padRight(topic, tw-mw)
+	topic = colouredMarks + padRight(nest+paintTitle(title, m.titleColour(item))+after, tw-mw)
 	// CTX is coloured by how full the context is (see ctxColour).
 	ctxCode, flash := transcript.CtxColour(item.conv.ContextTokens, item.conv.WindowSize())
 	if flash && time.Now().Unix()%2 == 1 {
@@ -2816,14 +2829,9 @@ func (m model) listMarks(item listItem) (string, string) {
 			liveColour = doneColour
 		}
 	}
-	// In a state section the heading already says the state, so the circle
-	// shows only what it doesn't: done (cyan), hosted in another app (○), or a
-	// nested session whose own state differs from its family's. Pinned rows
-	// have no state heading and keep it.
-	dot := m.live[conv.SessionID]
-	if dot && item.sectioned && item.familyState >= 0 && item.state == item.familyState && liveGlyph == "●" && liveColour != doneColour {
-		dot = false
-	}
+	// The title's colour says the state (titleColour), so the circle shows
+	// only what the colour can't: a session in an app ccs can't open (○).
+	dot := m.live[conv.SessionID] && liveGlyph == "○"
 	for _, s := range []struct {
 		on           bool
 		glyph, color string
@@ -2940,7 +2948,11 @@ func (m model) listRows() []listRow {
 		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(&m.filtered[i-1])) {
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s\033[0m \033[90m%d\033[0m", projectName(groupKey(it.familyCwd)), counts[k])})
 		}
-		for p := range m.rowsPerItem() {
+		n := m.rowsPerItem()
+		if m.oneLine(*it) {
+			n = 1
+		}
+		for p := range n {
 			rows = append(rows, listRow{item: i, part: p})
 		}
 	}
@@ -2991,11 +3003,12 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		hits = hitGlyph + fmt.Sprint(m.hitCount(item))
 		colouredHits = "\033[36m" + hits + "\033[0m"
 	}
-	if tasks := m.taskCell(conv, false); tasks != "" {
+	one := m.oneLine(item)
+	if tasks := m.taskCell(conv, false); tasks != "" && !one {
 		hits, colouredHits = strings.TrimSpace(tasks+" "+hits), strings.TrimSpace(m.taskCell(conv, true)+" "+colouredHits)
 	}
-	if r := rollupCell(item.roll, false); r != "" { // a coordinator's tree: waiting, stalled, done
-		hits, colouredHits = strings.TrimSpace(r+" "+hits), strings.TrimSpace(rollupCell(item.roll, true)+" "+colouredHits)
+	if b := m.treeBadge(item, false); b != "" { // a folded tree's counts, or what a child in one needs
+		hits, colouredHits = strings.TrimSpace(b+" "+hits), strings.TrimSpace(m.treeBadge(item, true)+" "+colouredHits)
 	}
 	// One space before the marks, so their glyphs sit under the search's >;
 	// with ^X G two more, so sessions sit in from their folder's header.
@@ -3004,8 +3017,16 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		lead = "   "
 	}
 	tw := w - len(lead) - colMarks - ansi.StringWidth(hits) - 1
-	nest := nestPrefix(item.depth) + item.foldGlyph()
-	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
+	nest := m.treePrefix(item)
+	title := listTopic(conv, tw-ansi.StringWidth(nest))
+	topic := padRight(nest+title, tw)
+	colouredTopic := padRight(nest+paintTitle(title, m.titleColour(item)), tw)
+	if one { // a session in a coordinator's tree: its title row alone; the rest is in its preview
+		if selected {
+			return [2]string{selectedStyle.Render(padRight(lead+marks+topic+" "+hits, w)), ""}
+		}
+		return [2]string{lead + colouredMarks + colouredTopic + " " + colouredHits, ""}
+	}
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
 	stats := strings.TrimSuffix(transcript.FormatAgo(conv.LastTimestamp, time.Now()), " ago")
 	if conv.Kind != "" {
@@ -3025,9 +3046,10 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if !m.headedBy(item) {
 		stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
 	}
-	sw := w - len(lead) - colMarks - ansi.StringWidth(prs) - 1
+	// The grey row starts under the title, after any tree or nesting prefix.
+	indent := strings.Repeat(" ", len(lead)+colMarks+ansi.StringWidth(nest))
+	sw := w - ansi.StringWidth(indent) - ansi.StringWidth(prs) - 1
 	stats = padRight(transcript.Truncate(stats, sw), sw)
-	indent := strings.Repeat(" ", len(lead)+colMarks)
 	if selected { // the highlight marks it, no >
 		return [2]string{
 			selectedStyle.Render(padRight(lead+marks+topic+" "+hits, w)),
@@ -3035,7 +3057,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		}
 	}
 	return [2]string{
-		lead + colouredMarks + topic + " " + colouredHits,
+		lead + colouredMarks + colouredTopic + " " + colouredHits,
 		indent + "\033[90m" + stats + "\033[0m " + prs,
 	}
 }

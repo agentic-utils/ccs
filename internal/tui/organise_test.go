@@ -31,8 +31,8 @@ func TestDoneUntilSeen(t *testing.T) {
 	if strings.Contains(v, "done") || !strings.Contains(v, "idle 2") || strings.Index(v, "finished while away") > strings.Index(v, "finished before") {
 		t.Errorf("done sessions share idle's section, newest first:\n%s", v)
 	}
-	if r := m.formatListItem(m.filtered[0], false); !strings.Contains(r, "\033["+doneColour+"m●") {
-		t.Errorf("done gets its own colour: %q", r)
+	if r := m.formatListItem(m.filtered[0], false); !strings.Contains(r, "\033["+doneColour+"mfinished while away") {
+		t.Errorf("done: its title in cyan: %q", r)
 	}
 	m.cursor = 0 // the done one
 	nm, _ := m.Update(tea.FocusMsg{})
@@ -40,7 +40,7 @@ func TestDoneUntilSeen(t *testing.T) {
 	if m.viewing != "new" {
 		t.Fatalf("selected with ccs focused: being looked at, got %q", m.viewing)
 	}
-	if r := m.formatListItem(m.filtered[0], false); strings.Contains(r, "\033["+doneColour+"m●") {
+	if r := m.formatListItem(m.filtered[0], false); strings.Contains(r, "\033["+doneColour+"m") {
 		t.Errorf("being looked at, it no longer shows unread: %q", r)
 	}
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -48,7 +48,7 @@ func TestDoneUntilSeen(t *testing.T) {
 	if _, ok := m.marks.Seen["new"]; !ok {
 		t.Error("seen time not recorded")
 	}
-	if r := m.formatListItem(m.filtered[0], false); strings.Contains(r, "\033["+doneColour+"m●") || m.filtered[0].conv.SessionID != "new" {
+	if r := m.formatListItem(m.filtered[0], false); strings.Contains(r, "\033["+doneColour+"m") || m.filtered[0].conv.SessionID != "new" {
 		t.Errorf("seen, it turns plain idle where it was: %q", r)
 	}
 	if m.filtered[m.cursor].conv.SessionID != "old" {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -130,8 +131,66 @@ func rollupCell(r rollup, coloured bool) string {
 	return strings.Join(parts, " ")
 }
 
-// foldGlyph marks a coordinator's row: ▾ unfolded, ▸ folded with how many
-// it hides.
+// inTree: the session is in the coordinator section, drawn as a tree.
+func inTree(it listItem) bool { return sectionOf(it.familyState) == coordinatorSec }
+
+// oneLine: a session inside a coordinator's tree takes one row in the
+// sidebar (its age, context and folder are in its preview); the coordinator
+// itself keeps two.
+func (m model) oneLine(it listItem) bool { return !m.table && it.depth > 0 && inTree(it) }
+
+// treePrefix is what goes before a title. In a coordinator's tree, each
+// child's connector sits under its parent's name: ├ or └, or ▾/▸ in its
+// place for a sub-coordinator, after the │ its ancestors' later siblings
+// draw, so every name at one depth starts in the same column. Elsewhere,
+// a spawned session's └, indented by depth.
+func (m model) treePrefix(it listItem) string {
+	if !inTree(it) {
+		return nestPrefix(it.depth) + it.foldGlyph()
+	}
+	if it.depth == 0 {
+		return it.foldGlyph()
+	}
+	own := "├ "
+	switch {
+	case it.kids > 0:
+		own = it.foldGlyph()
+	case it.lastKid:
+		own = "└ "
+	}
+	return "  " + it.guides + own
+}
+
+// treeBadge is the one cell a tree row has on its right: a folded tree's
+// counts (unfolded, its sessions show their own), or for a session in a
+// tree what needs you, if anything: ? when it waits on you, ✗ when a PR of
+// its needs fixing. "" for any other row.
+func (m model) treeBadge(it listItem, coloured bool) string {
+	paint := func(s, colour string) string {
+		if coloured {
+			return "\033[" + colour + "m" + s + "\033[0m"
+		}
+		return s
+	}
+	own := ""
+	switch {
+	case !m.oneLine(it):
+	case it.state == 0:
+		own = paint("?", waitColour)
+	case it.state == 1:
+		own = paint("?", askedColour)
+	case m.prCounts(it.conv)[github.PRFix] > 0:
+		glyph, colour := prMark(github.PRFix)
+		own = paint(glyph, colour)
+	}
+	if it.hiddenKids > 0 { // folded: its own, then what it hides
+		return strings.TrimSpace(own + " " + rollupCell(it.roll, coloured))
+	}
+	return own
+}
+
+// foldGlyph marks a row with sessions under it: ▾ unfolded, ▸ folded with
+// how many it hides.
 func (it listItem) foldGlyph() string {
 	switch {
 	case it.kids == 0:
@@ -140,4 +199,37 @@ func (it listItem) foldGlyph() string {
 		return fmt.Sprintf("▸%d ", it.hiddenKids)
 	}
 	return "▾ "
+}
+
+// titleColour is the colour a row's title says its state in, in place of a
+// status dot: magenta waiting on a menu or prompt, light magenta its last
+// message asks something, amber busy, cyan done since you last looked;
+// plain when idle, so the list isn't all one colour; dim when it isn't
+// running.
+func (m model) titleColour(it listItem) string {
+	conv := it.conv
+	if !m.live[conv.SessionID] {
+		return "90"
+	}
+	switch m.waitSignal(conv) {
+	case waitPrompt:
+		return waitColour
+	case waitAsked:
+		return askedColour
+	}
+	if m.chatStatus[conv.SessionID].Status == "busy" {
+		return amber
+	}
+	if m.unseen(conv) && conv.SessionID != m.viewing { // being read now: no longer unread
+		return doneColour
+	}
+	return ""
+}
+
+// paintTitle colours a title, leaving it as it is for "".
+func paintTitle(title, colour string) string {
+	if colour == "" {
+		return title
+	}
+	return "\033[" + colour + "m" + title + "\033[0m"
 }

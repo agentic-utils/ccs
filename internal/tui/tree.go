@@ -63,25 +63,58 @@ func (m model) folded(id string) bool {
 	return m.marks != nil && slices.Contains(m.marks.Folded, id)
 }
 
-// toggleFold is ^X B: fold the selected orchestrator's tree to its row, or
-// unfold it. A session with nothing launched under it has nothing to fold.
+// toggleFold is ^X B on a session with others under it, a cycle: its live
+// sessions only, then its closed ones too (when it has any), then its whole
+// tree folded to its row, then back to live only. Saved in the marks.
 func (m *model) toggleFold() {
 	if m.marks == nil || len(m.filtered) == 0 {
 		return
 	}
 	it := m.filtered[m.cursor]
-	if it.kids == 0 {
+	if it.kids == 0 && it.closedKids == 0 {
 		m.note("nothing launched under this session to fold")
 		return
 	}
 	id := it.conv.SessionID
-	if i := slices.Index(m.marks.Folded, id); i >= 0 {
-		m.marks.Folded = slices.Delete(m.marks.Folded, i, i+1)
-	} else {
+	drop := func(list *[]string) {
+		if i := slices.Index(*list, id); i >= 0 {
+			*list = slices.Delete(*list, i, i+1)
+		}
+	}
+	switch {
+	case m.folded(id):
+		drop(&m.marks.Folded)
+		drop(&m.marks.ShowClosed)
+		m.note("its live sessions; ^X B again shows the closed ones too")
+	case it.closedKids > 0 && !m.showingClosed(id):
+		m.marks.ShowClosed = append(m.marks.ShowClosed, id)
+		m.note(fmt.Sprintf("showing its %d closed; ^X B again folds the tree", it.closedKids))
+	default:
+		drop(&m.marks.ShowClosed)
 		m.marks.Folded = append(m.marks.Folded, id)
+		m.note("folded; ^X B again shows its live sessions")
 	}
 	m.marks.save()
 	m.sortList()
+}
+
+// showingClosed: ^X B has shown this parent's closed sessions.
+func (m model) showingClosed(id string) bool {
+	return m.marks != nil && slices.Contains(m.marks.ShowClosed, id)
+}
+
+// closedLineText draws a closed line: the tree's guides, then └ and ▸ (or
+// ▾ when shown) N closed, all dim, lined up with the rows' connectors.
+func (m model) closedLineText(l closedLine) string {
+	lead := " "
+	if m.grouped {
+		lead = "   "
+	}
+	mark := "▸"
+	if l.open {
+		mark = "▾"
+	}
+	return fmt.Sprintf("%s%s\033[90m%s└ %s %d closed\033[0m", lead, strings.Repeat(" ", colMarks-2), l.guides, mark, l.n)
 }
 
 // rollup counts an orchestrator's tree below it: waiting on you (a menu,

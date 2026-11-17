@@ -43,6 +43,20 @@ type listItem struct {
 	roll        rollup // what its tree holds: waiting, stalled, done
 	guides      string // in an orchestrator's tree: the │ and spaces its ancestors draw before its own connector
 	lastKid     bool   // the last of its parent's children: └, not ├
+	closedKids  int    // its launched sessions that have closed (none of their tree running), behind a "N closed" line
+	hideClosed  bool   // closed, behind its parent's "▸ N closed" line until ^X B shows them
+	linesAfter  []closedLine
+}
+
+// closedLine is a parent's "▸ N closed" line in an orchestrator's tree,
+// drawn after the row it's attached to (the last of the parent's branch
+// before its closed sessions): the guides its children draw, how many have
+// closed, whether they're shown, and the parent's depth.
+type closedLine struct {
+	guides string
+	n      int
+	open   bool
+	owner  int
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -675,6 +689,33 @@ func (m *model) nestFamilies() {
 			}
 		}
 	}
+	// A launched session is closed when nothing in its tree runs; in an
+	// orchestrator's tree it waits behind its parent's "N closed" line. A
+	// search shows everything where it is.
+	closed := make([]bool, n)
+	if !m.searching() {
+		alive := make([]int8, n) // 0 unknown, 1 alive, 2 not
+		var isAlive func(i, d int) bool
+		isAlive = func(i, d int) bool {
+			if alive[i] == 0 {
+				alive[i] = 2
+				if m.live[m.filtered[i].conv.SessionID] {
+					alive[i] = 1
+				}
+				for _, k := range kids[i] {
+					if d < n && isAlive(k, d+1) {
+						alive[i] = 1
+					}
+				}
+			}
+			return alive[i] == 1
+		}
+		for i, it := range m.filtered {
+			if parent[i] >= 0 && launched[it.conv.SessionID] == m.filtered[parent[i]].conv.SessionID {
+				closed[i] = !isAlive(i, 0)
+			}
+		}
+	}
 	order := make([]int, 0, n) // the new list, as indexes into m.filtered
 	seen := make([]bool, n)
 	var walk func(i, depth int, cwd, guides string, last bool)
@@ -685,6 +726,7 @@ func (m *model) nestFamilies() {
 		seen[i] = true
 		it := &m.filtered[i]
 		it.depth, it.familyCwd, it.guides, it.lastKid = depth, cwd, guides, last
+		it.closedKids, it.hideClosed, it.linesAfter = 0, false, nil
 		order = append(order, i)
 		below := guides // the guides its children draw: │ under it while siblings follow it
 		if depth > 0 {
@@ -696,8 +738,34 @@ func (m *model) nestFamilies() {
 				todo = append(todo, k)
 			}
 		}
-		for j, k := range todo {
-			walk(k, depth+1, cwd, below, j == len(todo)-1)
+		var open, shut []int
+		for _, k := range todo {
+			if closed[k] {
+				shut = append(shut, k)
+			} else {
+				open = append(open, k)
+			}
+		}
+		for j, k := range open {
+			walk(k, depth+1, cwd, below, j == len(open)-1 && len(shut) == 0)
+		}
+		if len(shut) == 0 {
+			return
+		}
+		// The "N closed" line ends its branch, after the last row so far;
+		// the closed sessions sit under it, hidden until ^X B shows them.
+		showing := m.showingClosed(it.conv.SessionID)
+		at := order[len(order)-1]
+		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), showing, depth})
+		it.closedKids = len(shut)
+		from := len(order)
+		for j, k := range shut {
+			walk(k, depth+2, cwd, below+"  ", j == len(shut)-1)
+		}
+		if !showing {
+			for _, k := range order[from:] {
+				m.filtered[k].hideClosed = true
+			}
 		}
 	}
 	for i := range m.filtered {
@@ -753,20 +821,29 @@ func (m *model) nestFamilies() {
 // sort), and counts them on its row. A search folds nothing, so every match
 // shows.
 func (m *model) foldTrees() {
-	if m.marks == nil || len(m.marks.Folded) == 0 || m.searching() {
+	if m.searching() {
 		return
 	}
 	kept := m.filtered[:0]
 	under := -1 // depth of the folded row whose tree is being skipped
 	for i := range m.filtered {
 		it := m.filtered[i]
-		if under >= 0 && it.depth > under {
+		if under >= 0 && it.depth > under || it.hideClosed {
 			m.foldedAway = append(m.foldedAway, it.conv.SessionID)
+			// An ancestor's closed line attached to it moves to the last row shown.
+			if k := len(kept) - 1; k >= 0 {
+				for _, l := range it.linesAfter {
+					if l.owner < it.depth && (under < 0 || l.owner < under) {
+						kept[k].linesAfter = append(kept[k].linesAfter, l)
+					}
+				}
+			}
 			continue
 		}
 		under = -1
 		if it.kids > 0 && m.folded(it.conv.SessionID) {
 			it.hiddenKids, under = it.kids, it.depth
+			it.linesAfter = slices.DeleteFunc(it.linesAfter, func(l closedLine) bool { return l.owner >= it.depth }) // its own tree is hidden
 		}
 		kept = append(kept, it)
 	}
@@ -2280,10 +2357,13 @@ func (m model) shortcuts() [][2]string {
 	group("^X then a letter: this session")
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top of the list")
 	add(pinned, "^X P", "unpin it")
-	if sel && m.filtered[m.cursor].kids > 0 {
-		if m.filtered[m.cursor].hiddenKids > 0 {
-			add(true, "^X B", "unfold its branch: show the sessions it launched")
-		} else {
+	if sel && (m.filtered[m.cursor].kids > 0 || m.filtered[m.cursor].closedKids > 0) {
+		switch it := m.filtered[m.cursor]; {
+		case it.hiddenKids > 0:
+			add(true, "^X B", "unfold its branch: its live sessions")
+		case it.closedKids > 0 && !m.showingClosed(it.conv.SessionID):
+			add(true, "^X B", "show its closed sessions too")
+		default:
 			add(true, "^X B", "fold its branch to its own row (its counts stay)")
 		}
 	}
@@ -2951,6 +3031,9 @@ func (m model) listRows() []listRow {
 		}
 		for p := range m.rowsPerItem() {
 			rows = append(rows, listRow{item: i, part: p})
+		}
+		for _, l := range it.linesAfter {
+			rows = append(rows, listRow{item: -1, header: m.closedLineText(l)})
 		}
 	}
 	return rows

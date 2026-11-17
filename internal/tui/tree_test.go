@@ -255,3 +255,51 @@ func TestTreeFollowsAdoption(t *testing.T) {
 		}
 	}
 }
+
+// A launched session whose tree has nothing running waits behind its
+// parent's "▸ N closed" line, at the end of the parent's branch, so it isn't
+// one click from being resumed; ^X B on the parent cycles: closed shown,
+// tree folded, live only. A search shows everything.
+func TestClosedSessionsBehindALine(t *testing.T) {
+	m := treeModel(t)
+	m.width, m.height = 110, 40
+	delete(m.live, "leaf-id")
+	delete(m.live, "fresh-id")
+	m.refilter()
+	titles := func() string { return strings.Join(order(m), ",") }
+	view := func() string { return strip2(m.View()) }
+	if got := titles(); strings.Contains(got, "leaf") || strings.Contains(got, "fresh") {
+		t.Fatalf("closed sessions are hidden: %s", got)
+	}
+	if v := view(); !strings.Contains(v, "│   └ ▸ 1 closed") || !strings.Contains(v, " └ ▸ 1 closed") || !strings.Contains(v, "├ ✻ worker") {
+		t.Errorf("each parent's closed line ends its branch, its last live child a ├:\n%s", v)
+	}
+	for i, it := range m.filtered {
+		if it.conv.Title == "hub" {
+			m.cursor = i
+		}
+	}
+	m, _ = chord(m, "b")
+	if got := titles(); !strings.Contains(got, "fresh") || strings.Contains(got, "leaf") {
+		t.Errorf("^X B shows hub's closed sessions, not sub's: %s", got)
+	}
+	if v := view(); !strings.Contains(v, " └ ▾ 1 closed") || !strings.Contains(v, "   └ ✻ fresh") {
+		t.Errorf("shown under a ▾ line:\n%s", v)
+	}
+	if !slices.Contains(loadMarks().ShowClosed, "hub-id") {
+		t.Error("showing them is saved")
+	}
+	m, _ = chord(m, "b")
+	if got := titles(); strings.Contains(got, "worker") || strings.Contains(view(), "1 closed") {
+		t.Errorf("^X B again folds the tree, its closed lines with it: %s", got)
+	}
+	m, _ = chord(m, "b")
+	if got := titles(); !strings.Contains(got, "worker") || strings.Contains(got, "fresh") {
+		t.Errorf("and again: live only: %s", got)
+	}
+	m.textInput.SetValue("fresh")
+	m.updateFilter()
+	if got := titles(); !strings.Contains(got, "fresh") || strings.Contains(view(), "1 closed") {
+		t.Errorf("a search shows a closed match where it is, no closed lines: %s", got)
+	}
+}

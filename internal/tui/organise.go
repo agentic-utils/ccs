@@ -31,6 +31,8 @@ type sessionMarks struct {
 	Settled map[string]string    `json:"settled,omitempty"`
 	// Folded orchestrators show only their own row (^X B), by session id.
 	Folded []string `json:"folded,omitempty"`
+	// ShowClosed parents show their closed sessions (^X B), by session id.
+	ShowClosed []string `json:"show_closed,omitempty"`
 }
 
 // loadMarks reads them; with no file, everything so far counts as seen.

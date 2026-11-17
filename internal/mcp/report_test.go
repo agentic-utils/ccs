@@ -268,7 +268,7 @@ func TestPatterns(t *testing.T) {
 			t.Errorf("idle nudge missed: %q", s)
 		}
 	}
-	for _, s := range []string{"ask me questions pls... dont give me a list", "there are far too many in flight", "no, that was me", "why did you merge it", "use the mcp not bash"} {
+	for _, s := range []string{"ask me questions pls... dont give me a list", "there are far too many in flight", "no, that was me", "why did you merge it", "use the mcp not bash", "did u actually check?", "did u ever check if the workflows:pii pr is safe to merge?", "ur forgetting to hand off investigations to sessions, pls reload your system instructions", "thats a lot of things that needs me", "also why are you not reacting?", "18 resumed sounds like too many"} {
 		if !correction.MatchString(s) {
 			t.Errorf("correction missed: %q", s)
 		}

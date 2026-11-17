@@ -52,7 +52,11 @@ Usage: ccs [filter] [-- claude-flags...]
                             if it isn't running, set up (with the ccs MCP server) if there is none
        ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>] [--no-preamble]
                             Start a named claude (or codex) session in a new iTerm tab or tmux window;
-                            a new session's brief starts with launch-preamble.md beside ccs's settings, if you keep one
+                            a new session's brief starts with launch-preamble.md beside ccs's settings, if you keep one;
+                            the session that ran it becomes its parent, and the list draws it under that one
+       ccs adopt <name> [--to <parent> | --to none]
+                            Move the named session under the calling session (or --to's) in the list;
+                            --to none detaches it
        ccs close <name>     Stop the named session and close its tab (--graceful asks it to
                             finish and say what's left first)
        ccs restart [--force] <name>
@@ -129,6 +133,7 @@ Key bindings:
  Ctrl+X then a letter: this session
   Ctrl+X P        Pin it to the top of the list (again to unpin)
   Alt+Up/Down     Move it among the pinned sessions
+  Ctrl+X B        Fold a coordinator's branch to its own row (again to unfold)
   Ctrl+X S        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
   Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
@@ -189,6 +194,9 @@ func Main(v string) {
 	}
 	if len(args) > 0 && args[0] == coordinatorName {
 		os.Exit(runCoordinator(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal()))
+	}
+	if len(args) > 0 && args[0] == "adopt" {
+		os.Exit(sessions.RunAdopt(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "close" {
 		os.Exit(sessions.RunClose(args[1:], os.Stdout, os.Stderr))

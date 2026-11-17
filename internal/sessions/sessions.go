@@ -940,6 +940,7 @@ type LaunchOpts struct {
 	InPlace                  bool             // no tab: replace this process with it
 	NoPreamble               bool             // the brief as given, without PreamblePath's text before it
 	OnTab                    func(tty string) // called once the tab is open, before the wait for the session
+	RecordParent             bool             // note the calling session as its parent (launch_session, ccs launch; never a restart)
 }
 
 // PreamblePath is the text every new session's brief starts with, when the
@@ -1085,6 +1086,14 @@ func Resumable(id string, codex bool) bool {
 
 // LaunchSession starts o in a new iTerm tab and waits until it's running.
 func LaunchSession(o LaunchOpts) (Launched, error) {
+	l, err := launchSession(o)
+	if o.RecordParent && !o.InPlace && (err == nil || l.PID > 0) {
+		recordLaunchParent(o.Name, l.PID)
+	}
+	return l, err
+}
+
+func launchSession(o LaunchOpts) (Launched, error) {
 	if !state.SessionName.MatchString(o.Name) {
 		return Launched{}, fmt.Errorf("name %q: use letters, digits, '.', '_' and '-' (at most 64)", o.Name)
 	}
@@ -1470,6 +1479,7 @@ func RunLaunch(args []string, stdout, stderr io.Writer) int {
 		}
 		o.Brief = strings.TrimRight(string(data), "\n")
 	}
+	o.RecordParent = true
 	l, err := LaunchSession(o)
 	if err != nil {
 		fmt.Fprintln(stderr, "ccs launch:", err)

@@ -90,6 +90,7 @@ func TestMain(m *testing.M) {
 	coordinatorProbe = func() tea.Msg { return nil }
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil } // never the machine's own processes
+	sessions.CallingSession = func() (sessions.Caller, bool) { return sessions.Caller{}, false }
 	// never the real Codex: its data folder is a temp one, and nothing is queued.
 	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }

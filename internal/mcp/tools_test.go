@@ -104,7 +104,7 @@ func TestReadSessionAskWithoutToolUseResult(t *testing.T) {
 
 // A session not running still lists everything needed to resume it.
 func TestListSessionsRowsCarryWhatResumeNeeds(t *testing.T) {
-	text := mcpList(mcpConvs(), nil, 20)
+	text := mcpList(mcpConvs(), nil, nil, 20)
 	for _, want := range []string{"kind claude", "session aaaa-1111", "project /code/payments", "last active 2026-10-01", "resume: cd /code/payments && claude --resume aaaa-1111"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("list_sessions row lacks %q:\n%s", want, text)

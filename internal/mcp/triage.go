@@ -51,6 +51,7 @@ type TriageRow struct {
 	Name    string `json:"name"`
 	Session string `json:"session"`
 	Kind    string `json:"kind"`
+	Parent  string `json:"parent,omitempty"` // the session that launched or adopted it, by name
 	Cwd     string `json:"cwd,omitempty"`
 	PID     int    `json:"pid,omitempty"`
 	Bucket  string `json:"bucket"`
@@ -288,6 +289,7 @@ func cmpOr(a, b string) string {
 // (bucketOrder), then the longest idle.
 func TriageRows(convs []transcript.Conversation, live map[string]sessions.LiveSession, now time.Time, stallAfter time.Duration) []TriageRow {
 	prs := ownedPRs(now)
+	parents := sessions.ParentNames(convs)
 	byID := map[string]transcript.Conversation{}
 	for _, c := range convs {
 		byID[c.SessionID] = c
@@ -305,7 +307,9 @@ func TriageRows(convs []transcript.Conversation, live map[string]sessions.LiveSe
 		if c.Kind == transcript.KindCodex || l.Codex {
 			kind = transcript.KindCodex
 		}
-		rows = append(rows, triageOf(c, l, prs[ownerKey(kind, id)], now, stallAfter))
+		r := triageOf(c, l, prs[ownerKey(kind, id)], now, stallAfter)
+		r.Parent = parents[id]
+		rows = append(rows, r)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if a, b := bucketOrder[rows[i].Bucket], bucketOrder[rows[j].Bucket]; a != b {
@@ -339,6 +343,9 @@ func triageText(rows []TriageRow) string {
 	b.WriteString(strings.Join(counts, " · ") + "\n")
 	for _, r := range rows {
 		fmt.Fprintf(&b, "\n%s · %s\n  %s\n  %s · session %s · %s\n", r.Name, r.Bucket, r.Reason, r.Kind, r.Session, r.Cwd)
+		if r.Parent != "" {
+			fmt.Fprintf(&b, "  under %s\n", r.Parent)
+		}
 		for _, p := range r.OpenPRs {
 			fmt.Fprintf(&b, "  PR %s: %s\n", github.PRName(p.PR), p.Status)
 		}

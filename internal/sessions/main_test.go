@@ -49,6 +49,7 @@ func TestMain(m *testing.M) {
 	transcript.CodexProcCwd = func(int) string { return "" }
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil }
+	CallingSession = func() (Caller, bool) { return Caller{}, false } // never this machine's sessions
 	proc.TTYOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	code := m.Run()

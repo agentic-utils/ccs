@@ -111,7 +111,7 @@ func (r *rollup) add(o rollup) {
 }
 
 // rollupCell is a coordinator row's counts, plain and coloured: ●N waiting
-// on you, ◌N stalled, ✓N done; "" when nothing needs a look.
+// on you, ◦N stalled, ✓N done; "" when nothing needs a look.
 func rollupCell(r rollup, coloured bool) string {
 	var parts []string
 	add := func(n int, glyph, colour string) {
@@ -125,7 +125,7 @@ func rollupCell(r rollup, coloured bool) string {
 		parts = append(parts, s)
 	}
 	add(r.waiting, "●", waitColour)
-	add(r.stalled, "◌", amber)
+	add(r.stalled, "◦", amber)
 	add(r.done, "✓", doneColour)
 	return strings.Join(parts, " ")
 }

@@ -78,7 +78,7 @@ func TestGHCallBacksOffUntilTheReset(t *testing.T) {
 		t.Errorf("search has its own allowance: %v", err)
 	}
 	// Past the reset, it asks again.
-	writeJSON(ghLimitPath(), map[string]time.Time{"core": time.Now().Add(-time.Second)})
+	WriteJSON(ghLimitPath(), map[string]time.Time{"core": time.Now().Add(-time.Second)})
 	if _, ok := limitedUntil("core", time.Now()); ok {
 		t.Error("a backoff in the past doesn't hold")
 	}
@@ -119,7 +119,7 @@ func TestGHCallOtherErrorsDontBackOff(t *testing.T) {
 func TestLimitedUntilIsCapped(t *testing.T) {
 	limitEnv(t, nil, `{}`)
 	now := time.Now()
-	writeJSON(ghLimitPath(), map[string]time.Time{"core": now.Add(24 * time.Hour)})
+	WriteJSON(ghLimitPath(), map[string]time.Time{"core": now.Add(24 * time.Hour)})
 	if until, ok := limitedUntil("core", now); ok {
 		t.Errorf("a reset beyond limitMax is ignored, never waited for: %v", until)
 	}
@@ -226,7 +226,7 @@ func TestPRsPrefersTheNewerOfWatcherAndFetch(t *testing.T) {
 	now := time.Now()
 	asked := sharedEnv(t, now)
 	// A week-old shared answer, then a watcher that ran until 15 minutes ago.
-	writeJSON(prsFetchPath(), prsFetch{Author: "me", Owner: "o", Tried: now.Add(-time.Minute), Updated: now.Add(-7 * 24 * time.Hour),
+	WriteJSON(prsFetchPath(), prsFetch{Author: "me", Owner: "o", Tried: now.Add(-time.Minute), Updated: now.Add(-7 * 24 * time.Hour),
 		PRs: map[string]*WatchedPR{claimA: {URL: claimA, Repo: "o/r", Number: 1, State: "open"}}})
 	writeWatchState(t, now.Add(-15*time.Minute), &WatchedPR{URL: claimB, Repo: "o/r", Number: 2, State: "open", Checks: "success", Review: "approved"})
 	rep, err := PRsList("me", "o", false, now)

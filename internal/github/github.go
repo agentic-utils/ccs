@@ -286,8 +286,10 @@ func RunWatch(args []string) int {
 	noNudge := fs.Bool("no-nudge", false, "don't tell the sessions that claimed PRs (ccs claim) about failing checks, conflicts or new unanswered review threads")
 	selfLogins := fs.String("self-logins", "", "comma-separated GitHub logins whose replies also answer a review thread (bots or co-authors acting for you), besides --author")
 	noAutoClaim := fs.Bool("no-auto-claim", false, "don't claim a PR for the running Claude Code session whose gh pr create opened it")
+	noSessionEvents := fs.Bool("no-session-events", false, "don't emit session_stalled and session_done when a live session stalls (idle with nothing pending) or finishes")
+	stallAfter := fs.Duration("stall-after", 15*time.Minute, "how long a live session must be idle, with nothing pending, before session_stalled")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, approved, changes_requested, threads_unresolved, threads_resolved, threads_unanswered, blocked, unblocked, blocked_automerge, merged_early (ccs depends), merged, closed, claimed; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, approved, changes_requested, threads_unresolved, threads_resolved, threads_unanswered, blocked, unblocked, blocked_automerge, merged_early (ccs depends), merged, closed, claimed; unless --no-session-events, session_stalled and session_done (a live session idle past --stall-after with nothing pending, or saying it is finished, as ccs sessions --triage buckets it); unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
 		fs.PrintDefaults()
 	}
 	for _, a := range args {
@@ -322,12 +324,24 @@ func RunWatch(args []string) int {
 		} else {
 			afterPass(!*noNudge)
 		}
+		if SessionTick != nil && !*noSessionEvents {
+			if err := SessionTick(*stallAfter, time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "ccs watch:", err)
+				state.LogActivity("session events: %v", err)
+			}
+		}
 		if *once {
 			return 0
 		}
 		time.Sleep(*interval)
 	}
 }
+
+// SessionTick emits session_stalled and session_done for the live sessions
+// that entered those buckets (ccs sessions --triage), after every pass,
+// whether or not GitHub answered: set by the caller, since the triage lives
+// in the mcp package, which imports this one.
+var SessionTick func(stallAfter time.Duration, now time.Time) error
 
 // afterPass runs what follows a successful pass: the nudges.
 func afterPass(nudge bool) {
@@ -606,11 +620,11 @@ func writePREvents(events []PREvent) error {
 	for i, e := range events {
 		all[i] = e
 	}
-	return writeEventLines(all)
+	return WriteEventLines(all)
 }
 
-// writeEventLines appends one JSON line per event to prEventsPath and prints them.
-func writeEventLines(events []any) error {
+// WriteEventLines appends one JSON line per event to prEventsPath and prints them.
+func WriteEventLines(events []any) error {
 	text, err := eventLines(events)
 	if err == nil {
 		fmt.Print(text)
@@ -1729,7 +1743,7 @@ func sharedFetch(author, owner string, now time.Time) (prsFetch, error) {
 		f = prsFetch{Author: author, Owner: owner}
 	}
 	f.Tried = now
-	if err := writeJSON(prsFetchPath(), f); err != nil { // the try counts even if this process dies in it
+	if err := WriteJSON(prsFetchPath(), f); err != nil { // the try counts even if this process dies in it
 		return f, err
 	}
 	prs, err := FetchOpenPRs(author, owner)
@@ -1741,7 +1755,7 @@ func sharedFetch(author, owner string, now time.Time) (prsFetch, error) {
 		return f, err
 	}
 	f.Updated, f.PRs = now, prs
-	if err := writeJSON(prsFetchPath(), f); err != nil {
+	if err := WriteJSON(prsFetchPath(), f); err != nil {
 		state.LogActivity("ccs prs: couldn't save GitHub's answer: %v", err)
 	}
 	return f, nil
@@ -1897,6 +1911,47 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 		return strings.Compare(a.PR, b.PR)
 	})
 	return rep, nil
+}
+
+// OwnerKey is how OpenPRsByOwner keys an owner: its kind ("claude" or
+// "codex") and id (a Claude Code session id, or a Codex thread).
+func OwnerKey(kind, id string) string { return kind + " " + id }
+
+// OpenPRsByOwner is each claimant's open PRs, by OwnerKey, from ccs watch's
+// saved state and the claims as they stand: read only, with no network and
+// no pruning, so a caller holding its own snapshot of the live sessions
+// (triage) can't lose a claim to a second scan that missed one. ok is false
+// with no saved state. Each owner's PRs are sorted by address.
+func OpenPRsByOwner() (map[string][]PRRow, bool) {
+	st, ok := LoadPRWatchState()
+	if !ok {
+		return nil, false
+	}
+	deps := LoadDepends()
+	claims := LoadClaims()
+	out := map[string][]PRRow{}
+	for u, p := range st.PRs {
+		if p.State != "open" || len(claims.Claims[u]) == 0 {
+			continue
+		}
+		c := *p
+		if deps.Depends[u] != nil {
+			c.BlockedBy = listBlocked(u, deps, st, false)
+		}
+		g, why := c.status()
+		row := PRRow{PR: u, Repo: c.Repo, Number: c.Number, Title: c.Title, Head: c.Head, NeedsReview: c.NeedsReview(), Group: groupNames[g], Status: why, BlockedBy: c.BlockedBy}
+		for _, cl := range claims.Claims[u] {
+			o := OwnerOf(cl, nil)
+			k := OwnerKey(o.Kind, o.Session)
+			if !slices.ContainsFunc(out[k], func(r PRRow) bool { return r.PR == u }) {
+				out[k] = append(out[k], row)
+			}
+		}
+	}
+	for _, rows := range out {
+		slices.SortFunc(rows, func(a, b PRRow) int { return strings.Compare(a.PR, b.PR) })
+	}
+	return out, true
 }
 
 // StatusLine is ccs prs --statusline: counts only, "" when there's nothing.
@@ -2650,7 +2705,7 @@ func NudgeTick(now time.Time) error {
 		}
 		return changed
 	})
-	if werr := writeEventLines(events); err == nil {
+	if werr := WriteEventLines(events); err == nil {
 		err = werr
 	}
 	return err

@@ -2948,11 +2948,7 @@ func (m model) listRows() []listRow {
 		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(&m.filtered[i-1])) {
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s\033[0m \033[90m%d\033[0m", projectName(groupKey(it.familyCwd)), counts[k])})
 		}
-		n := m.rowsPerItem()
-		if m.oneLine(*it) {
-			n = 1
-		}
-		for p := range n {
+		for p := range m.rowsPerItem() {
 			rows = append(rows, listRow{item: i, part: p})
 		}
 	}
@@ -3003,11 +2999,10 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		hits = hitGlyph + fmt.Sprint(m.hitCount(item))
 		colouredHits = "\033[36m" + hits + "\033[0m"
 	}
-	one := m.oneLine(item)
-	if tasks := m.taskCell(conv, false); tasks != "" && !one {
+	if tasks := m.taskCell(conv, false); tasks != "" {
 		hits, colouredHits = strings.TrimSpace(tasks+" "+hits), strings.TrimSpace(m.taskCell(conv, true)+" "+colouredHits)
 	}
-	if b := m.treeBadge(item, false); b != "" { // a folded tree's counts, or what a child in one needs
+	if b := m.treeBadge(item, false); b != "" { // a folded tree's counts
 		hits, colouredHits = strings.TrimSpace(b+" "+hits), strings.TrimSpace(m.treeBadge(item, true)+" "+colouredHits)
 	}
 	// One space before the marks, so their glyphs sit under the search's >;
@@ -3016,17 +3011,22 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if m.grouped {
 		lead = "   "
 	}
-	tw := w - len(lead) - colMarks - ansi.StringWidth(hits) - 1
+	// In an orchestrator's tree the connector goes before the marks, so the
+	// agent's glyph nests with the name: the marks' padding, then │ ├ └, then
+	// any ○ or !, the glyph and the title. The grey row carries the │ down.
+	conn, greyConn := treeLines(item)
+	if conn != "" {
+		pad := strings.Repeat(" ", colMarks-2)
+		marks = pad + conn + strings.TrimLeft(marks, " ")
+		colouredMarks = pad + "\033[90m" + conn + "\033[0m" + strings.TrimLeft(colouredMarks, " ")
+		greyConn = pad + greyConn
+	}
+	mw := ansi.StringWidth(marks)
+	tw := w - len(lead) - mw - ansi.StringWidth(hits) - 1
 	nest := m.treePrefix(item)
 	title := listTopic(conv, tw-ansi.StringWidth(nest))
 	topic := padRight(nest+title, tw)
 	colouredTopic := padRight(nest+paintTitle(title, m.titleColour(item)), tw)
-	if one { // a session in an orchestrator's tree: its title row alone; the rest is in its preview
-		if selected {
-			return [2]string{selectedStyle.Render(padRight(lead+marks+topic+" "+hits, w)), ""}
-		}
-		return [2]string{lead + colouredMarks + colouredTopic + " " + colouredHits, ""}
-	}
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
 	stats := strings.TrimSuffix(transcript.FormatAgo(conv.LastTimestamp, time.Now()), " ago")
 	if conv.Kind != "" {
@@ -3046,8 +3046,16 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if !m.headedBy(item) {
 		stats += " · " + projectName(conv.Cwd) // last: it's the one cut short
 	}
-	// The grey row starts under the title, after any tree or nesting prefix.
-	indent := strings.Repeat(" ", len(lead)+colMarks+ansi.StringWidth(nest))
+	// The grey row starts under the title: after the tree's lines, the
+	// marks' width and any nesting prefix.
+	gap := strings.Repeat(" ", mw-ansi.StringWidth(greyConn)+ansi.StringWidth(nest))
+	indent, colouredIndent := lead+greyConn+gap, lead+"\033[90m"+greyConn+"\033[0m"+gap
+	if inTree(item) && item.kids > 0 && item.hiddenKids == 0 { // a │ under its glyph joins it to its children's connectors
+		before := strings.Repeat(" ", mw-2-ansi.StringWidth(greyConn))
+		after := strings.Repeat(" ", 1+ansi.StringWidth(nest))
+		indent = lead + greyConn + before + "│" + after
+		colouredIndent = lead + "\033[90m" + greyConn + "\033[0m" + before + "\033[90m│\033[0m" + after
+	}
 	sw := w - ansi.StringWidth(indent) - ansi.StringWidth(prs) - 1
 	stats = padRight(transcript.Truncate(stats, sw), sw)
 	if selected { // the highlight marks it, no >
@@ -3058,7 +3066,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	}
 	return [2]string{
 		lead + colouredMarks + colouredTopic + " " + colouredHits,
-		indent + "\033[90m" + stats + "\033[0m " + prs,
+		colouredIndent + "\033[90m" + stats + "\033[0m " + prs,
 	}
 }
 

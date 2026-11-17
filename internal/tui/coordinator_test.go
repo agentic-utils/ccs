@@ -753,9 +753,12 @@ func TestCoordinatorHasItsOwnSectionAbovePinned(t *testing.T) {
 		t.Fatalf("coordinator, then pinned: %s %s", m.filtered[0].conv.SessionID, m.filtered[1].conv.SessionID)
 	}
 	v := strip2(m.View())
-	co, pin := strings.Index(v, "coordinator 1"), strings.Index(v, "pinned 1")
+	co, pin := strings.Index(v, coordinatorName), strings.Index(v, "pinned 1")
 	if co < 0 || pin < 0 || co > pin {
 		t.Errorf("section order:\n%s", v)
+	}
+	if strings.Contains(v, "coordinator 1") {
+		t.Errorf("a lone session named coordinator needs no coordinator header over it:\n%s", v)
 	}
 	if slices.Contains(m.marks.Pinned, "c") {
 		t.Errorf("it isn't a pin: %v", m.marks.Pinned)
@@ -780,12 +783,12 @@ func TestHideCoordinator(t *testing.T) {
 	}
 	coordinatorRecord{SessionID: "c"}.save()
 	m.syncCoordinator()
-	if v := strip2(m.View()); !strings.Contains(v, "coordinator 1") || !strings.Contains(v, "^X C coordinator") {
-		t.Fatalf("listed in its section, with ^X C in the header:\n%s", v)
+	if v := strip2(m.View()); m.filtered[0].conv.SessionID != "c" || !strings.Contains(v, "^X C coordinator") {
+		t.Fatalf("listed first, with ^X C in the header:\n%s", v)
 	}
 
 	m, _ = chord(m, "c")
-	if v := strip2(m.View()); strings.Contains(v, "coordinator 1") || slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "c" }) {
+	if v := strip2(m.View()); slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "c" }) {
 		t.Errorf("^X C hides its section and row:\n%s", v)
 	}
 	if !loadSettings().HideCoordinator {
@@ -1122,5 +1125,29 @@ func TestNoZshChangesNothing(t *testing.T) {
 	}
 	if loadCoordinator().SessionID != "" {
 		t.Error("recorded a session")
+	}
+}
+
+func TestCoordinatorHeaderOnlyWhenItSaysSomething(t *testing.T) {
+	coordinatorFixture(t)
+	at := time.Now().UTC().Format(time.RFC3339)
+	for _, tc := range []struct {
+		title  string
+		header bool
+	}{{coordinatorName, false}, {"triage everything", true}} {
+		m := initialModel(buildItems([]transcript.Conversation{
+			{SessionID: "b", Title: "another", LastTimestamp: at, Messages: []transcript.Message{{Role: "user", Text: "x"}}},
+			{SessionID: "c", Title: tc.title, LastTimestamp: at, Messages: []transcript.Message{{Role: "user", Text: "y"}}},
+		}), "", nil)
+		m.width, m.height = 140, 30
+		coordinatorRecord{SessionID: "c"}.save()
+		m.syncCoordinator()
+		rows := m.listRows()
+		if got := rows[0].item == -1; got != tc.header {
+			t.Errorf("%q: header first %v, want %v", tc.title, got, tc.header)
+		}
+		if v := strip2(m.View()); strings.Contains(v, "coordinator 1") != tc.header {
+			t.Errorf("%q:\n%s", tc.title, v)
+		}
 	}
 }

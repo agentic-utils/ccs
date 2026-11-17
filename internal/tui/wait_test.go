@@ -976,12 +976,12 @@ func TestQuestionMarkColours(t *testing.T) {
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
 	m.live = map[string]bool{"s": true}
 	m.chatStatus = map[string]sessions.SessionStat{"s": {Status: "idle"}}
-	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+askedColour+"m●") {
-		t.Errorf("idle with a question in its last message: a light magenta ●, got %q", marks)
+	if c := m.titleColour(listItem{conv: conv}); c != askedColour {
+		t.Errorf("idle with a question in its last message: a light magenta title, got %q", c)
 	}
 	m.chatStatus["s"] = sessions.SessionStat{Status: "waiting"}
-	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+waitColour+"m●") {
-		t.Errorf("a menu or prompt waiting: a magenta ●, got %q", marks)
+	if c := m.titleColour(listItem{conv: conv}); c != waitColour {
+		t.Errorf("a menu or prompt waiting: a magenta title, got %q", c)
 	}
 	m.hosts = map[string]string{"s": "Zed"}
 	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+waitColour+"m○") {

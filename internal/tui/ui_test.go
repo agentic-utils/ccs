@@ -711,17 +711,15 @@ func TestFormatListItemLiveMarker(t *testing.T) {
 	item := listItem{conv: transcript.Conversation{SessionID: "s1", Title: "Topic", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}
 	m := initialModel([]listItem{item}, "", nil)
 	m.width = 120
-	if strings.Contains(m.formatListItem(item, false), "●") {
-		t.Error("non-live row should have no marker")
+	if r := m.formatListItem(item, false); strings.Contains(r, "●") || !strings.Contains(r, "\033[90mTopic") {
+		t.Errorf("not running: no circle, a dim title: %q", r)
 	}
 	m.live = map[string]bool{"s1": true}
-	plain := m.formatListItem(item, true)
-	if !strings.Contains(plain, " ●✻ Topic") {
-		t.Errorf("live row should be marked, got %q", plain)
+	if plain := m.formatListItem(item, true); !strings.Contains(plain, "  ✻ Topic") || strings.Contains(plain, "●") {
+		t.Errorf("running: no circle, the title says it, got %q", plain)
 	}
-	coloured := m.formatListItem(item, false)
-	if !strings.Contains(coloured, " \033[32m●\033[0m\033[38;5;173m✻\033[0m Topic") {
-		t.Errorf("live marker should be green, got %q", coloured)
+	if coloured := m.formatListItem(item, false); !strings.Contains(coloured, "\033[38;5;173m✻\033[0m Topic") {
+		t.Errorf("running and idle: a plain title, got %q", coloured)
 	}
 }
 
@@ -730,11 +728,11 @@ func TestFormatListItemErrorAndLiveMarkers(t *testing.T) {
 	m := initialModel([]listItem{item}, "", nil)
 	m.width = 120
 	m.live = map[string]bool{"s1": true}
-	if got := m.formatListItem(item, true); !strings.Contains(got, "●!✻ Topic") {
+	if got := m.formatListItem(item, true); !strings.Contains(got, " !✻ Topic") {
 		t.Errorf("selected row = %q", got)
 	}
 	got := m.formatListItem(item, false)
-	if !strings.Contains(got, "\033[32m●\033[0m\033[1;31m!\033[0m\033[38;5;173m✻\033[0m Topic") {
+	if !strings.Contains(got, "\033[1;31m!\033[0m\033[38;5;173m✻\033[0m Topic") {
 		t.Errorf("unselected row = %q", got)
 	}
 	// Same visible width as an unmarked row.
@@ -1190,14 +1188,14 @@ func TestLiveMarkerColours(t *testing.T) {
 		it.sectioned = false // no section heading to say it, so the circle does
 		return m.formatListItem(it, false)
 	}
-	if r := row("idle"); !strings.Contains(r, "\033[32m●") {
-		t.Errorf("idle should be a green ●: %q", r)
+	if r := row("idle"); strings.Contains(r, "●") || !strings.Contains(r, "✻\033[0m s ") {
+		t.Errorf("idle: no circle, a plain title: %q", r)
 	}
-	if r := row("busy"); !strings.Contains(r, "\033["+amber+"m●") {
-		t.Errorf("busy should be an amber ●: %q", r)
+	if r := row("busy"); !strings.Contains(r, "\033["+amber+"m") || strings.Contains(r, "●") {
+		t.Errorf("busy: an amber title: %q", r)
 	}
-	if r := row("waiting"); !strings.Contains(r, "\033["+waitColour+"m●") {
-		t.Errorf("waiting on you should be a magenta ●: %q", r)
+	if r := row("waiting"); !strings.Contains(r, "\033["+waitColour+"m") || strings.Contains(r, "●") {
+		t.Errorf("waiting on you: a magenta title: %q", r)
 	}
 }
 
@@ -1761,17 +1759,13 @@ func TestDotOnlyWhenItAdds(t *testing.T) {
 		t.Fatalf("%s not listed", id)
 		return ""
 	}
-	if r := row("idle"); strings.Contains(r, "●") {
-		t.Errorf("idle under the idle heading needs no circle: %q", r)
-	}
-	if r := row("done"); !strings.Contains(r, "●✻ done one") {
-		t.Errorf("done keeps its (cyan) circle, which the heading doesn't say: %q", r)
+	for _, id := range []string{"idle", "done", "pin"} {
+		if r := row(id); strings.Contains(r, "●") {
+			t.Errorf("%s: the title's colour says the state, no circle: %q", id, r)
+		}
 	}
 	if r := row("app"); !strings.Contains(r, "○✻ app one") {
 		t.Errorf("hosted in another app keeps its hollow circle: %q", r)
-	}
-	if r := row("pin"); !strings.Contains(r, "●✻ pin one") {
-		t.Errorf("a pinned row has no state heading, so it keeps its circle: %q", r)
 	}
 }
 

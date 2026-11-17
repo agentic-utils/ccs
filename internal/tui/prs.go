@@ -82,8 +82,9 @@ func (m model) prCounts(conv transcript.Conversation) (n [prDraft + 1]int) {
 	return
 }
 
-// prCell is the PRS column: "✓1 ✗1 ◷1 ○1 ●3" (ready, needing you, waiting,
-// draft, merged; closed ones left out), blank when there are none. Every
+// prCell is the PRS column: "✓1 ✗1 ◷1 ○1" (ready, needing you, waiting,
+// draft: the open ones; merged and closed ones are in the preview's PR
+// lines and ^O), blank when there are none. Every
 // count has its glyph (the ? help lists them, legendLines). Plain for the
 // selected row, else coloured.
 func (m model) prCell(conv transcript.Conversation, coloured bool) string {
@@ -99,7 +100,7 @@ func (m model) prCell(conv transcript.Conversation, coloured bool) string {
 		}
 		parts = append(parts, s)
 	}
-	for _, g := range []int{github.PRReady, github.PRFix, github.PRWaiting, prDraft, github.PRMerged} {
+	for _, g := range []int{github.PRReady, github.PRFix, github.PRWaiting, prDraft} {
 		glyph, colour := prMark(g)
 		add(n[g], glyph, colour)
 	}

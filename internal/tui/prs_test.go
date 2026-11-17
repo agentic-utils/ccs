@@ -91,13 +91,13 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 			t.Errorf("line %d = %q, want %q", i, strip2(lines[i]), want)
 		}
 	}
-	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 ◷1 ●1" {
-		t.Errorf("PRS column counts every group: %q", got)
+	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 ◷1" {
+		t.Errorf("PRS column counts the open ones: %q", got)
 	}
 	m.prs["https://github.com/o/r/pull/5"] = github.PRInfo{State: "CLOSED"}
 	m.prs["https://github.com/o/r/pull/6"] = github.PRInfo{State: "GONE"}
-	if got := strings.TrimSpace(m.prCell(transcript.Conversation{PRs: []string{prA, "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/6"}}, false)); got != "●1" {
-		t.Errorf("merged counted, closed and not found left out: %q", got)
+	if got := strings.TrimSpace(m.prCell(transcript.Conversation{PRs: []string{prA, "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/6"}}, false)); got != "" {
+		t.Errorf("merged, closed and not found left out: %q", got)
 	}
 	if got := m.prCell(transcript.Conversation{PRs: []string{"https://github.com/o/r/pull/6"}}, false); strings.TrimSpace(got) != "" {
 		t.Errorf("nothing found, nothing shown: %q", got)
@@ -256,17 +256,20 @@ func TestPRCellDraftApartFromWaiting(t *testing.T) {
 		u(5): {State: "OPEN", Draft: true, Checks: "PENDING"},
 		u(6): {State: "MERGED", Draft: true}, // a merged PR is merged, whatever it once was
 	}
-	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 ◷1 ○2 ●1" {
-		t.Errorf("ready, needs you, waiting, draft, merged: %q", got)
+	if got := strings.TrimSpace(m.prCell(conv, false)); got != "✓1 ✗1 ◷1 ○2" {
+		t.Errorf("ready, needs you, waiting, draft; never merged: %q", got)
 	}
 	if got := m.prCell(conv, false); ansi.StringWidth(got) != colPRs {
 		t.Errorf("every group at once fits the column exactly: %q is %d wide, colPRs %d", got, ansi.StringWidth(got), colPRs)
 	}
 	coloured := m.prCell(conv, true)
-	for _, want := range []string{"\033[" + amber + "m◷1", "\033[90m○2", "\033[" + prPurple + "m●1"} {
+	for _, want := range []string{"\033[" + amber + "m◷1", "\033[90m○2"} {
 		if !strings.Contains(coloured, want) {
 			t.Errorf("want %q in %q", want, coloured)
 		}
+	}
+	if strings.Contains(coloured, "●") {
+		t.Errorf("merged PRs aren't counted in the list: %q", coloured)
 	}
 	for _, word := range strings.Fields(strip2(coloured)) {
 		if word[0] >= '0' && word[0] <= '9' {
@@ -294,7 +297,7 @@ func TestHelpLegendNamesEveryCountGlyph(t *testing.T) {
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	v := strip2(m.View())
 	for _, want := range []string{"⧗ commands and monitors running", "◆ subagents running", "⌕ search hits",
-		"✓ ready", "✗ needs you", "◷ waiting", "○ draft", "● merged"} {
+		"✓ ready", "✗ needs you", "◷ waiting", "○ draft"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("legend missing %q:\n%s", want, v)
 		}

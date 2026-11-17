@@ -1317,6 +1317,34 @@ func callingSession() (PRClaim, error) {
 	return PRClaim{}, errors.New("not run from a Claude Code or Codex session: ccs claim must be run by the session that owns the PR")
 }
 
+// LiveNamed is the running sessions called name: Claude Code ones as
+// LiveByPID has them, and Codex ones as claims keyed by thread. Stubbed in
+// tests.
+var LiveNamed = func(name string) []PRClaim {
+	var out []PRClaim
+	for id, s := range sessions.ScanSessions(nil) {
+		switch {
+		case s.Codex && codexName(id) == name: // CodexStat carries no name
+			out = append(out, PRClaim{Session: id, Kind: "codex", Thread: id, Name: name})
+		case !s.Codex && s.Stat.Name == name:
+			out = append(out, PRClaim{Session: id, Name: name, PID: s.PID, ProcStart: s.Start})
+		}
+	}
+	return out
+}
+
+// namedSession is the one running session called name.
+func namedSession(name string) (PRClaim, error) {
+	found := LiveNamed(name)
+	switch len(found) {
+	case 0:
+		return PRClaim{}, fmt.Errorf("no running session named %s", name)
+	case 1:
+		return found[0], nil
+	}
+	return PRClaim{}, fmt.Errorf("%d running sessions are named %s: claim from the one that owns it", len(found), name)
+}
+
 // claimLive: the claim's session still runs in the same process (a Codex
 // session: codexLive).
 func claimLive(c PRClaim, live map[int]PRClaim) bool {
@@ -1339,10 +1367,23 @@ func ownerName(c PRClaim, live map[int]PRClaim) string {
 // Claim records (or with release, drops) the calling session's Claim on pr.
 // Another session's Claim on it stays: two owners is something to flag.
 func Claim(pr string, release bool, now time.Time) (string, error) {
+	return ClaimAs(pr, "", release, now)
+}
+
+// ClaimAs is Claim for the running session called name, or with name ""
+// the calling session: claim_pr, which a coordinator calls for the sessions
+// it runs. The name must be one running session's.
+func ClaimAs(pr, name string, release bool, now time.Time) (string, error) {
 	if !transcript.PRURL.MatchString(pr) {
 		return "", fmt.Errorf("not a GitHub PR address: %s", pr)
 	}
-	me, err := callingSession()
+	var me PRClaim
+	var err error
+	if name == "" {
+		me, err = callingSession()
+	} else {
+		me, err = namedSession(name)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -2050,17 +2091,18 @@ func codexSession() (PRClaim, bool) {
 	if !transcript.CodexThreadID.MatchString(thread) {
 		return PRClaim{}, false
 	}
-	c := PRClaim{Session: thread, Kind: "codex", Thread: thread}
+	return PRClaim{Session: thread, Kind: "codex", Thread: thread, Name: cmp.Or(codexName(thread), thread)}, true
+}
+
+// codexName is the name a Codex thread goes by: its ccs launch name, else
+// Codex's own thread name; "" when it has neither.
+func codexName(thread string) string {
 	if m, ok := transcript.ReadCodexMeta(transcript.CodexRollout(thread)); ok {
-		c.Name = transcript.CodexLaunchName(m)
+		if n := transcript.CodexLaunchName(m); n != "" {
+			return n
+		}
 	}
-	if c.Name == "" {
-		c.Name = sessions.CodexThreadName(thread)
-	}
-	if c.Name == "" {
-		c.Name = thread
-	}
-	return c, true
+	return sessions.CodexThreadName(thread)
 }
 
 // PRsOf is conv's PRs and then its subagents' not among them.

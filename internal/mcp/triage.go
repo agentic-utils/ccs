@@ -17,7 +17,7 @@ import (
 )
 
 // `ccs sessions --triage` and session_triage: each running session in
-// exactly one bucket, so a coordinator can tell the one stuck on nothing
+// exactly one bucket, so an orchestrator can tell the one stuck on nothing
 // from the one waiting on CI, the user, or nobody at all.
 
 // The buckets, in the order they're tested: a session lands in the first

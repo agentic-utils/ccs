@@ -20,10 +20,10 @@ func callAs(t *testing.T, c Caller, ok bool) {
 }
 
 func TestRecordLaunchParent(t *testing.T) {
-	callAs(t, Caller{ID: "coord-id", Name: "coordinator"}, true)
+	callAs(t, Caller{ID: "orch-id", Name: "orchestrator"}, true)
 	recordLaunchParent("worker", 0)
 	r, ok := LoadParents().Parents["worker"]
-	if !ok || r.Parent != "coordinator" || r.ParentID != "coord-id" || r.ChildID != "" || r.At.IsZero() {
+	if !ok || r.Parent != "orchestrator" || r.ParentID != "orch-id" || r.ChildID != "" || r.At.IsZero() {
 		t.Fatalf("recorded by name and id: %+v", r)
 	}
 
@@ -82,7 +82,7 @@ func TestRunAdoptUsage(t *testing.T) {
 	if code := RunAdopt(nil, &out, &errs); code != 2 || !strings.Contains(errs.String(), "usage") {
 		t.Errorf("%d %q", code, errs.String())
 	}
-	callAs(t, Caller{ID: "c", Name: "coord"}, true)
+	callAs(t, Caller{ID: "c", Name: "orch"}, true)
 	out.Reset()
 	if code := RunAdopt([]string{"kid", "--to", "none"}, &out, &errs); code != 0 || !strings.Contains(out.String(), "had no parent") {
 		t.Errorf("%d %q", code, out.String())
@@ -91,17 +91,17 @@ func TestRunAdoptUsage(t *testing.T) {
 
 func TestResolveParents(t *testing.T) {
 	convs := []transcript.Conversation{
-		{SessionID: "c1", Title: "coordinator", LastTimestamp: "2026-11-01T10:00:00Z"},
-		{SessionID: "c2", Title: "coordinator", LastTimestamp: "2026-11-02T10:00:00Z"}, // after a /clear
+		{SessionID: "c1", Title: "orchestrator", LastTimestamp: "2026-11-01T10:00:00Z"},
+		{SessionID: "c2", Title: "orchestrator", LastTimestamp: "2026-11-02T10:00:00Z"}, // after a /clear
 		{SessionID: "w1", Title: "worker", LastTimestamp: "2026-11-02T09:00:00Z"},
 		{SessionID: "u1", LastTimestamp: "2026-11-02T09:00:00Z"}, // unnamed: by id only
 		{SessionID: "x1", Title: "x", LastTimestamp: "2026-11-02T09:00:00Z"},
 		{SessionID: "y1", Title: "y", LastTimestamp: "2026-11-02T09:00:00Z"},
 	}
 	f := ParentsFile{Parents: map[string]ParentRec{
-		"worker":  {Child: "worker", Parent: "coordinator", ParentID: "c1"},
+		"worker":  {Child: "worker", Parent: "orchestrator", ParentID: "c1"},
 		"unnamed": {Child: "unnamed", ChildID: "u1", Parent: "worker", ParentID: "w1"},
-		"gone":    {Child: "gone", Parent: "coordinator", ParentID: "c1"},
+		"gone":    {Child: "gone", Parent: "orchestrator", ParentID: "c1"},
 		"x":       {Child: "x", Parent: "y"},
 		"y":       {Child: "y", Parent: "x"},
 	}}

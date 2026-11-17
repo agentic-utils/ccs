@@ -11,7 +11,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-// treeModel lists two coordinators' trees and one unrelated session:
+// treeModel lists two orchestrators' trees and one unrelated session:
 //
 //	hub ─ worker (waiting) ─ sub ─ leaf (stalled)
 //	    └ fresh (done)
@@ -62,26 +62,26 @@ func order(m model) []string {
 	return out
 }
 
-func TestCoordinatorTrees(t *testing.T) {
+func TestOrchestratorTrees(t *testing.T) {
 	m := treeModel(t)
 	got := strings.Join(order(m), ",")
 	if !strings.Contains(got, "hub, worker,  sub,   leaf, fresh") && !strings.Contains(got, "hub, fresh, worker,  sub,   leaf") {
 		t.Errorf("hub's tree, nested at every depth: %s", got)
 	}
 	if !strings.Contains(got, "ops, deploy") {
-		t.Errorf("a second coordinator with its own tree: %s", got)
+		t.Errorf("a second orchestrator with its own tree: %s", got)
 	}
 	if !strings.HasSuffix(got, "loner") {
 		t.Errorf("a session nobody launched stays in its ordinary section, below: %s", got)
 	}
 	for _, it := range m.filtered {
-		if want := it.conv.Title != "loner"; (sectionOf(it.familyState) == coordinatorSec) != want {
-			t.Errorf("%s in the coordinator section: %v", it.conv.Title, !want)
+		if want := it.conv.Title != "loner"; (sectionOf(it.familyState) == orchestratorSec) != want {
+			t.Errorf("%s in the orchestrator section: %v", it.conv.Title, !want)
 		}
 	}
 	hub := m.filtered[0]
 	if hub.conv.Title != "hub" && m.filtered[0].conv.Title != "ops" {
-		t.Fatalf("a coordinator first: %s", got)
+		t.Fatalf("an orchestrator first: %s", got)
 	}
 	for _, it := range m.filtered {
 		switch it.conv.Title {
@@ -91,7 +91,7 @@ func TestCoordinatorTrees(t *testing.T) {
 			}
 		case "worker":
 			if it.kids != 2 || it.roll != (rollup{stalled: 1}) {
-				t.Errorf("a sub-coordinator counts its own tree: %d %+v", it.kids, it.roll)
+				t.Errorf("a sub-orchestrator counts its own tree: %d %+v", it.kids, it.roll)
 			}
 		case "loner":
 			if it.kids != 0 || rollupCell(it.roll, false) != "" {
@@ -100,18 +100,18 @@ func TestCoordinatorTrees(t *testing.T) {
 		}
 	}
 	v := strip2(m.View())
-	if !strings.Contains(v, "coordinators 2") {
+	if !strings.Contains(v, "orchestrators 2") {
 		t.Errorf("two trees: the header counts them\n%s", v)
 	}
 	if !strings.Contains(v, "▾ hub") || strings.Contains(v, "●1 ◦1 ✓1") {
-		t.Errorf("unfolded, the coordinator's row has its fold mark and no counts (its sessions show their own)\n%s", v)
+		t.Errorf("unfolded, the orchestrator's row has its fold mark and no counts (its sessions show their own)\n%s", v)
 	}
 }
 
 // Every name at one depth starts in one column: a child's connector sits
-// under its parent's name, a sub-coordinator's ▾ takes its connector's
+// under its parent's name, a sub-orchestrator's ▾ takes its connector's
 // place, │ runs on past a sub-tree while siblings follow, and a session in a
-// tree takes one row while the coordinator's grey row sits under its name.
+// tree takes one row while the orchestrator's grey row sits under its name.
 func TestTreeAlignment(t *testing.T) {
 	m := treeModel(t)
 	m.width, m.height = 110, 40
@@ -162,7 +162,7 @@ func TestTreeAlignment(t *testing.T) {
 		}
 		if strings.HasSuffix(strings.TrimRight(l, " "), "▾ hub") {
 			if grey := []rune(lines[i+1]); slices.Index(grey, '1') != col("hub") {
-				t.Errorf("the coordinator's grey row starts under its name: %q / %q", l, grey)
+				t.Errorf("the orchestrator's grey row starts under its name: %q / %q", l, grey)
 			}
 		}
 	}
@@ -171,7 +171,7 @@ func TestTreeAlignment(t *testing.T) {
 	}
 }
 
-func TestFoldCoordinatorTree(t *testing.T) {
+func TestFoldOrchestratorTree(t *testing.T) {
 	m := treeModel(t)
 	for i, it := range m.filtered {
 		if it.conv.Title == "hub" {
@@ -247,7 +247,7 @@ func TestTreeFollowsAdoption(t *testing.T) {
 		t.Errorf("deploy moved under hub: %s", got)
 	}
 	for _, it := range m.filtered {
-		if it.conv.Title == "ops" && sectionOf(it.familyState) == coordinatorSec {
+		if it.conv.Title == "ops" && sectionOf(it.familyState) == orchestratorSec {
 			t.Errorf("ops launched nothing now: an ordinary session again")
 		}
 	}

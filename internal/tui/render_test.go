@@ -90,7 +90,7 @@ func TestOverlayFrameFitsTheTerminal(t *testing.T) {
 	}
 }
 
-// A popup open before the first WindowSizeMsg (an update or coordinator offer
+// A popup open before the first WindowSizeMsg (an update or orchestrator offer
 // at startup) used to put its top row at -1 and panic.
 func TestPopupBeforeTheTerminalSizeIsKnown(t *testing.T) {
 	m := richModel(t, 120, 45)

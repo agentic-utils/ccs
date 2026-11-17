@@ -38,10 +38,10 @@ type listItem struct {
 	state       int    // its liveGroup as of the last sortList
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
 	sectioned   bool   // familyState is set: listed under a section heading (nestFamilies)
-	kids        int    // sessions launched under it (a coordinator's tree), any depth
+	kids        int    // sessions launched under it (an orchestrator's tree), any depth
 	hiddenKids  int    // of those, how many its fold hides
 	roll        rollup // what its tree holds: waiting, stalled, done
-	guides      string // in a coordinator's tree: the │ and spaces its ancestors draw before its own connector
+	guides      string // in an orchestrator's tree: the │ and spaces its ancestors draw before its own connector
 	lastKid     bool   // the last of its parent's children: └, not ├
 }
 
@@ -200,12 +200,12 @@ type model struct {
 	reopen        []transcript.Conversation // sessions open before a restart, offered for reopening
 	reopenChecked bool                      // the last boot's record has been read, so it may be overwritten
 
-	coordOffer *coordinatorPlan // the set-up popup is open, with what it will change
-	coordBusy  bool             // opening or setting it up: never twice at once
-	coordAsked bool             // the open offer came from ^X O
-	coordSince time.Time        // when the offer last came on screen: keys wait for its grace
-	coordID    string           // the coordinator session, listed in its own section
-	// Coordinator trees (tree.go): launch-parents.json as last read, each
+	orchOffer *orchestratorPlan // the set-up popup is open, with what it will change
+	orchBusy  bool              // opening or setting it up: never twice at once
+	orchAsked bool              // the open offer came from ^X O
+	orchSince time.Time         // when the offer last came on screen: keys wait for its grace
+	orchID    string            // the orchestrator session, listed in its own section
+	// Orchestrator trees (tree.go): launch-parents.json as last read, each
 	// listed session's resolved parent, and the folded trees' sessions,
 	// kept out of m.filtered until the next updateFilter or sortList.
 	launchRecs   sessions.ParentsFile
@@ -214,7 +214,7 @@ type model struct {
 	launchRes    map[string]string
 	launchResN   int
 	foldedAway   []string
-	hideCoord    bool // ^X C: the coordinator isn't listed and never offered (saved)
+	hideOrch     bool // ^X C: the orchestrator isn't listed and never offered (saved)
 	// hideSidebar (^X L): the sidebar layout shows only the preview, full width (saved).
 	hideSidebar bool
 	// Each session's PRs (prs.go): what GitHub said, by address.
@@ -494,7 +494,7 @@ func (m *model) updateFilter() {
 		m.filtered = next
 	}
 	m.hideHeadless()
-	m.hideCoordinator()
+	m.hideOrchestrator()
 	m.sortList()
 	m.lastFilterQuery = queryLower
 	// Keep cursor in bounds
@@ -659,13 +659,13 @@ func (m *model) nestFamilies() {
 	parent := make([]int, n)
 	kids := map[int][]int{}
 	launched := m.launchParents()
-	coord := make([]bool, n) // started others through ccs launch: a coordinator
+	orch := make([]bool, n) // started others through ccs launch: an orchestrator
 	for i, it := range m.filtered {
 		parent[i] = -1
 		if p, ok := at[launched[it.conv.SessionID]]; ok && p != i {
 			parent[i] = p
 			kids[p] = append(kids[p], i)
-			coord[p] = true
+			orch[p] = true
 			continue
 		}
 		if _, bg := m.bg[it.conv.SessionID]; it.conv.Spawned || bg {
@@ -708,9 +708,9 @@ func (m *model) nestFamilies() {
 		walk(r, 0, m.filtered[r].conv.Cwd, "", true)
 		walk(i, 0, m.filtered[i].conv.Cwd, "", true) // only reached by a cycle
 	}
-	isCoord := make([]bool, len(order)) // coord, in the new order
+	isOrch := make([]bool, len(order)) // orch, in the new order
 	for at, i := range order {
-		isCoord[at] = coord[i]
+		isOrch[at] = orch[i]
 	}
 	permute(m.filtered, order)
 	out := m.filtered
@@ -720,7 +720,7 @@ func (m *model) nestFamilies() {
 		for end < len(out) && out[end].depth > 0 {
 			end++
 		}
-		launches := slices.Contains(isCoord[start:end], true)
+		launches := slices.Contains(isOrch[start:end], true)
 		if launches { // each session's tree below it: how many, and what needs a look
 			for i := end - 1; i >= start; i-- {
 				out[i].kids, out[i].hiddenKids, out[i].roll = 0, 0, rollup{}
@@ -737,8 +737,8 @@ func (m *model) nestFamilies() {
 		if pin := m.familyPin(out[start:end]); pin >= 0 { // above every state, in pin order
 			state = pin - len(m.marks.Pinned)
 		}
-		if launches || m.coordID != "" && slices.ContainsFunc(out[start:end], func(it listItem) bool { return it.conv.SessionID == m.coordID }) {
-			state = coordFamily // above the pins too
+		if launches || m.orchID != "" && slices.ContainsFunc(out[start:end], func(it listItem) bool { return it.conv.SessionID == m.orchID }) {
+			state = orchFamily // above the pins too
 		}
 		for i := start; i < end; i++ {
 			out[i].familyState, out[i].sectioned = state, true
@@ -748,7 +748,7 @@ func (m *model) nestFamilies() {
 	m.foldTrees()
 }
 
-// foldTrees takes the sessions under each folded coordinator out of
+// foldTrees takes the sessions under each folded orchestrator out of
 // m.filtered into m.foldedAway (sortList puts them back before the next
 // sort), and counts them on its row. A search folds nothing, so every match
 // shows.
@@ -800,18 +800,18 @@ type group struct {
 	folder string
 }
 
-// coordFamily is the coordinator's familyState and coordinatorSec its
+// orchFamily is the orchestrator's familyState and orchestratorSec its
 // section, above the pinned ones.
 const (
-	coordFamily    = -1 << 30
-	coordinatorSec = -2
+	orchFamily      = -1 << 30
+	orchestratorSec = -2
 )
 
 // sectionOf is the state section a familyState is listed in: pinned ones
-// (negative, in pin order) share one, and the coordinator has its own.
+// (negative, in pin order) share one, and the orchestrator has its own.
 func sectionOf(state int) int {
-	if state == coordFamily {
-		return coordinatorSec
+	if state == orchFamily {
+		return orchestratorSec
 	}
 	return max(state, -1)
 }
@@ -828,8 +828,8 @@ const (
 // pinnedSection heads the pinned sessions, above every state.
 var pinnedSection = struct{ name, colour string }{"pinned", "1;37"}
 
-// coordinatorSection heads the coordinator, above the pinned ones.
-var coordinatorSection = struct{ name, colour string }{coordinatorName, "1;37"}
+// orchestratorSection heads the orchestrator, above the pinned ones.
+var orchestratorSection = struct{ name, colour string }{orchestratorName, "1;37"}
 
 // stateSections name liveGroup's values, the list's sections, and colour them.
 var stateSections = [...]struct{ name, colour string }{
@@ -908,7 +908,7 @@ func findSpawnParent(c transcript.Conversation, items []listItem) string {
 func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.reload != nil {
-		cmds = append(cmds, transcript.RefreshTick(), liveTick(), waitReceipt, reopenCheckCmd, coordinatorProbe)
+		cmds = append(cmds, transcript.RefreshTick(), liveTick(), waitReceipt, reopenCheckCmd, orchestratorProbe)
 	}
 	if m.checkLatest != nil {
 		cmds = append(cmds, m.checkUpdateCmd())
@@ -1068,17 +1068,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case coordinatorOfferMsg:
-		if !msg.opened && (m.hideCoord || m.coordBusy || m.coordOffer != nil || loadCoordinator().Offered) {
+	case orchestratorOfferMsg:
+		if !msg.opened && (m.hideOrch || m.orchBusy || m.orchOffer != nil || loadOrchestrator().Offered) {
 			return m, nil // answered, or ^X O got there, while the check ran
 		}
-		m.coordBusy = false
-		m.coordOffer, m.coordAsked, m.coordSince = &msg.plan, msg.opened, time.Now()
+		m.orchBusy = false
+		m.orchOffer, m.orchAsked, m.orchSince = &msg.plan, msg.opened, time.Now()
 		return m, nil
 
-	case coordinatorDoneMsg:
-		m.coordBusy = false
-		m.syncCoordinator()
+	case orchestratorDoneMsg:
+		m.orchBusy = false
+		m.syncOrchestrator()
 		if msg.err != nil {
 			m.errorMsg = msg.err.Error()
 			if msg.text != "" { // what the set-up did before it failed
@@ -1166,7 +1166,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.bg = msg.bg
 			}
 		}
-		m.syncCoordinator()
+		m.syncOrchestrator()
 		m.reloadParents() // a launch or adoption from any session
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
@@ -1533,25 +1533,25 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.coordOffer != nil && !m.offerShown() {
-			m.coordSince = time.Time{} // it comes on screen when this is done, with a fresh grace
-		} else if m.coordOffer != nil { // owns the keyboard until answered
-			if m.coordSince.IsZero() {
-				m.coordSince = time.Now()
+		if m.orchOffer != nil && !m.offerShown() {
+			m.orchSince = time.Time{} // it comes on screen when this is done, with a fresh grace
+		} else if m.orchOffer != nil { // owns the keyboard until answered
+			if m.orchSince.IsZero() {
+				m.orchSince = time.Now()
 			}
-			if msg.String() != "ctrl+c" && time.Since(m.coordSince) < updateKeyGrace {
+			if msg.String() != "ctrl+c" && time.Since(m.orchSince) < updateKeyGrace {
 				return m, nil
 			}
 			switch msg.String() {
 			case "enter":
-				p := *m.coordOffer
-				m.coordOffer, m.coordBusy = nil, true
-				markCoordinatorAnswered()
-				m.note("Setting up the coordinator: " + trustNote)
-				return m, coordinatorSetupCmd(p)
+				p := *m.orchOffer
+				m.orchOffer, m.orchBusy = nil, true
+				markOrchestratorAnswered()
+				m.note("Setting up the orchestrator: " + trustNote)
+				return m, orchestratorSetupCmd(p)
 			case "esc":
-				m.coordOffer = nil
-				markCoordinatorAnswered()
+				m.orchOffer = nil
+				markOrchestratorAnswered()
 			case "ctrl+c":
 				m.quitting = true
 				return m, tea.Quit
@@ -1651,7 +1651,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
-			m.toggleHideCoordinator()
+			m.toggleHideOrchestrator()
 			return m, nil
 		}
 		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
@@ -1677,13 +1677,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^x o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			switch {
-			case m.coordBusy || m.resuming:
-				m.errorMsg = "Still opening the coordinator..."
+			case m.orchBusy || m.resuming:
+				m.errorMsg = "Still opening the orchestrator..."
 			case !sessions.CanOpenTabs():
-				m.errorMsg = "^X O opens a tab in iTerm or tmux, and this is neither: run ccs coordinator instead"
+				m.errorMsg = "^X O opens a tab in iTerm or tmux, and this is neither: run ccs orchestrator instead"
 			default:
-				m.coordBusy, m.errorMsg = true, ""
-				return m, coordinatorKeyCmd
+				m.orchBusy, m.errorMsg = true, ""
+				return m, orchestratorKeyCmd
 			}
 			return m, nil
 		}
@@ -2017,14 +2017,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter":
 			if len(m.filtered) == 0 {
-				if m.coordBusy { // quitting would kill the set-up halfway
+				if m.orchBusy { // quitting would kill the set-up halfway
 					return m, nil
 				}
 				m.quitting = true
 				return m, tea.Quit
 			}
-			if m.coordBusy && m.filtered[m.cursor].conv.SessionID == m.coordID { // it's already being opened
-				m.errorMsg = "Still opening the coordinator..."
+			if m.orchBusy && m.filtered[m.cursor].conv.SessionID == m.orchID { // it's already being opened
+				m.errorMsg = "Still opening the orchestrator..."
 				return m, nil
 			}
 			// Two steps on a session with a message box: this Enter puts typing
@@ -2211,7 +2211,7 @@ func (m model) overPopups() []popup {
 		{m.linksOpen, model.linksPopup},
 		{m.snoozeOpen, model.snoozePopup},
 		{len(m.reopen) > 0, model.reopenPopup},
-		{m.offerShown(), model.coordinatorPopup},
+		{m.offerShown(), model.orchestratorPopup},
 	}
 }
 
@@ -2313,15 +2313,15 @@ func (m model) shortcuts() [][2]string {
 	group("^X then a letter: view and tools")
 	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you: answer, open or snooze them")
 	add(sessions.CanOpenTabs(), "^X N", "start a new session in an iTerm tab or tmux window, in this one's folder")
-	add(sessions.CanOpenTabs(), "^X O", "open the coordinator, setting one up if there is none")
+	add(sessions.CanOpenTabs(), "^X O", "open the orchestrator, setting one up if there is none")
 	add(!m.grouped, "^X G", "group the list by folder")
 	add(m.grouped, "^X G", "stop grouping by folder")
 	add(!m.table, "^X T", "the full table, every column")
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.table && !m.hideSidebar, "^X L", "hide the list, the preview taking the whole width (↑↓ still move)")
 	add(!m.table && m.hideSidebar, "^X L", "show the list beside the preview again")
-	add(!m.hideCoord, "^X C", "hide the coordinator: its row, and the offer to set one up")
-	add(m.hideCoord, "^X C", "show the coordinator again")
+	add(!m.hideOrch, "^X C", "hide the orchestrator: its row, and the offer to set one up")
+	add(m.hideOrch, "^X C", "show the orchestrator again")
 	add(!showHeadless, "^X H", "show headless runs (claude -p, codex exec)")
 	add(showHeadless, "^X H", "hide headless runs")
 	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
@@ -2529,8 +2529,8 @@ func (m model) viewScreen() string {
 	var toggles []string
 	if !m.showUsage {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
-		if m.coordID != "" || m.hideCoord { // nothing to hide for someone with no coordinator
-			toggles = append(toggles, toggleHint("^X C", "coordinator", !m.hideCoord))
+		if m.orchID != "" || m.hideOrch { // nothing to hide for someone with no orchestrator
+			toggles = append(toggles, toggleHint("^X C", "orchestrator", !m.hideOrch))
 		}
 		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
 			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
@@ -2548,7 +2548,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "coordinator", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "open coordinator", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
+		pairs, keep = []string{"A", "auto-focus", "C", "orchestrator", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "open orchestrator", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
 	} else if m.chatFocus {
 		send := "send"
 		if strings.TrimSpace(m.chatInput.Value()) == "" {
@@ -2920,8 +2920,8 @@ func (m model) listRows() []listRow {
 	sections := map[int]int{}
 	for i := range m.filtered {
 		counts[groupOf(&m.filtered[i])]++
-		if s := sectionOf(m.filtered[i].familyState); s != coordinatorSec || m.filtered[i].depth == 0 {
-			sections[s]++ // the coordinator section counts its trees
+		if s := sectionOf(m.filtered[i].familyState); s != orchestratorSec || m.filtered[i].depth == 0 {
+			sections[s]++ // the orchestrator section counts its trees
 		}
 	}
 	rows := make([]listRow, 0, len(m.filtered)*m.rowsPerItem()+2*len(sections)+len(counts))
@@ -2930,8 +2930,8 @@ func (m model) listRows() []listRow {
 		if s := sectionOf(it.familyState); i == 0 || s != sectionOf(m.filtered[i-1].familyState) {
 			sec := pinnedSection
 			switch {
-			case s == coordinatorSec:
-				sec = coordinatorSection
+			case s == orchestratorSec:
+				sec = orchestratorSection
 				if sections[s] > 1 {
 					sec.name += "s"
 				}
@@ -2960,7 +2960,7 @@ func (m model) listRows() []listRow {
 }
 
 // namesSection: a section of one session titled as the section itself (the
-// coordinator, named coordinator) needs no header; the row says it already.
+// orchestrator, named orchestrator) needs no header; the row says it already.
 func namesSection(name string, n int, it *listItem) bool {
 	return n == 1 && transcript.GetTopic(it.conv) == name
 }
@@ -3021,7 +3021,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	title := listTopic(conv, tw-ansi.StringWidth(nest))
 	topic := padRight(nest+title, tw)
 	colouredTopic := padRight(nest+paintTitle(title, m.titleColour(item)), tw)
-	if one { // a session in a coordinator's tree: its title row alone; the rest is in its preview
+	if one { // a session in an orchestrator's tree: its title row alone; the rest is in its preview
 		if selected {
 			return [2]string{selectedStyle.Render(padRight(lead+marks+topic+" "+hits, w)), ""}
 		}
@@ -3064,12 +3064,12 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 
 // headedBy: the header above item already names its folder, so its grey row
 // needn't: with ^X G, a session in its folder's group (a worktree's own name
-// still differs, and stays), and the coordinator under its own section, whose
+// still differs, and stays), and the orchestrator under its own section, whose
 // folder is named after it.
 func (m model) headedBy(item listItem) bool {
 	name := projectName(item.conv.Cwd)
-	if sectionOf(item.familyState) == coordinatorSec {
-		return name == coordinatorSection.name
+	if sectionOf(item.familyState) == orchestratorSec {
+		return name == orchestratorSection.name
 	}
 	return m.grouped && item.familyState >= 0 && name == projectName(groupKey(item.familyCwd))
 }
@@ -3219,8 +3219,11 @@ type settings struct {
 	Table     bool `json:"table,omitempty"`
 	Grouped   bool `json:"grouped,omitempty"`
 	AutoFocus bool `json:"auto_focus,omitempty"`
-	// HideCoordinator (^X C): no coordinator row and no offer to set one up.
-	HideCoordinator bool `json:"hide_coordinator,omitempty"`
+	// HideOrchestrator (^X C): no orchestrator row and no offer to set one up.
+	HideOrchestrator bool `json:"hide_orchestrator,omitempty"`
+	// LegacyHide is hide_coordinator, the same setting saved before the rename:
+	// read into HideOrchestrator, never written.
+	LegacyHide bool `json:"hide_coordinator,omitempty"`
 	// HideSidebar (^X L): the sidebar layout shows the preview alone.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
 	// HeaderOpen (^X F): the preview's full details, one line unless chosen.
@@ -3245,7 +3248,7 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideCoordinator: m.hideCoord, HideSidebar: m.hideSidebar, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideOrchestrator: m.hideOrch, HideSidebar: m.hideSidebar, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.
@@ -3253,6 +3256,8 @@ func loadSettings() (s settings) {
 	if b, err := os.ReadFile(state.SettingsPath); err == nil {
 		json.Unmarshal(b, &s)
 		s.found = true
+		s.HideOrchestrator = s.HideOrchestrator || s.LegacyHide
+		s.LegacyHide = false
 	}
 	return s
 }

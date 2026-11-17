@@ -190,7 +190,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "adopt_session",
-		"description": "Make a session the child of another, as if that one had launched it: the list then draws it in that coordinator's tree, and list_sessions and session_triage give it as its parent. With no parent, the calling session adopts it; parent \"none\" detaches it. launch_session already does this for the sessions it starts (the latest launch or adoption wins), so this is for handing a session to another coordinator or taking one over.",
+		"description": "Make a session the child of another, as if that one had launched it: the list then draws it in that orchestrator's tree, and list_sessions and session_triage give it as its parent. With no parent, the calling session adopts it; parent \"none\" detaches it. launch_session already does this for the sessions it starts (the latest launch or adoption wins), so this is for handing a session to another orchestrator or taking one over.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -225,7 +225,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "claim_pr",
-		"description": "Record that a running session owns a PR (as ccs claim), so ccs watch tells it of the PR's failing checks, conflicts and new review threads and list_prs names it as the owner. Without session, the claim is yours; with session, it's for the running session of that name (a coordinator claiming for a session it runs). Another session's claim on the PR stays beside it, and two owners show as contested in list_prs. Claims end when the PR merges or closes, or the session stops. With release, the session's claim is dropped instead, and ccs watch won't claim it back for it.",
+		"description": "Record that a running session owns a PR (as ccs claim), so ccs watch tells it of the PR's failing checks, conflicts and new review threads and list_prs names it as the owner. Without session, the claim is yours; with session, it's for the running session of that name (an orchestrator claiming for a session it runs). Another session's claim on the PR stays beside it, and two owners show as contested in list_prs. Claims end when the PR merges or closes, or the session stops. With release, the session's claim is dropped instead, and ccs watch won't claim it back for it.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -250,7 +250,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "orchestrator_report",
-		"description": "Each orchestrator's scorecard (as ccs orchestrator-report --json): the session ccs coordinator set up and any session that launched another, each over the sessions under it. Per orchestrator: response (minutes from an event that needs it, a session stalled or done, a PR ready, merged early or blocked from auto-merge, or a failing PR nobody owns, to its first message or tool call naming it; missed past 4 hours), stalled minutes and the worst session, done-to-close minutes, the user's messages to it that nudge about idle sessions or PRs (each a failure) and that correct it, with the matching lines, its hands-on tool calls (work it should hand off) and ccs commands run through Bash that an MCP tool covers, PRs merged and ready-to-merge minutes, its sessions running now and how many are stalled, done or idle, span breaches (over 6 direct sessions, deeper than 2), and the previous saved day's numbers. Saves the scorecards as today's unless save is false.",
+		"description": "Each orchestrator's scorecard (as ccs orchestrator-report --json): the session ccs orchestrator set up and any session that launched another, each over the sessions under it. Per orchestrator: response (minutes from an event that needs it, a session stalled or done, a PR ready, merged early or blocked from auto-merge, or a failing PR nobody owns, to its first message or tool call naming it; missed past 4 hours), stalled minutes and the worst session, done-to-close minutes, the user's messages to it that nudge about idle sessions or PRs (each a failure) and that correct it, with the matching lines, its hands-on tool calls (work it should hand off) and ccs commands run through Bash that an MCP tool covers, PRs merged and ready-to-merge minutes, its sessions running now and how many are stalled, done or idle, span breaches (over 6 direct sessions, deeper than 2), and the previous saved day's numbers. Saves the scorecards as today's unless save is false.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{

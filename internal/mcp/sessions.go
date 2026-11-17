@@ -16,7 +16,7 @@ import (
 )
 
 // `ccs sessions` and the live part of list_sessions: what each session is
-// doing right now, so a coordinator needn't read tabs or message sessions
+// doing right now, so an orchestrator needn't read tabs or message sessions
 // to find the one that's stuck.
 
 // liveSessions is the sessions running now. Stubbed in tests.

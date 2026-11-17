@@ -103,7 +103,7 @@ func TestCoordinatorTrees(t *testing.T) {
 	if !strings.Contains(v, "coordinators 2") {
 		t.Errorf("two trees: the header counts them\n%s", v)
 	}
-	if !strings.Contains(v, "▾ hub") || !strings.Contains(v, "●1 ◌1 ✓1") {
+	if !strings.Contains(v, "▾ hub") || !strings.Contains(v, "●1 ◦1 ✓1") {
 		t.Errorf("the coordinator's row: fold mark and counts\n%s", v)
 	}
 }

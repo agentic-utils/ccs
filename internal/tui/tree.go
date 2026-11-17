@@ -12,16 +12,16 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-// Coordinator trees: a session that started others through launch_session
+// Orchestrator trees: a session that started others through launch_session
 // or ccs launch (or adopted them, ccs adopt / adopt_session) is a
-// coordinator. Its family sits in the coordinator section as a tree, the
-// sessions it launched indented under it, sub-coordinators' under theirs,
+// orchestrator. Its family sits in the orchestrator section as a tree, the
+// sessions it launched indented under it, sub-orchestrators' under theirs,
 // and its row counts what its tree holds: waiting on you, stalled, done.
-// ^X B folds a tree to its coordinator row and unfolds it again (saved in
+// ^X B folds a tree to its orchestrator row and unfolds it again (saved in
 // the marks); a search shows every match, folded or not.
 
 // rollupStall is how long an idle session with nothing unread waits before
-// its coordinator's row counts it stalled: session_triage's default.
+// its orchestrator's row counts it stalled: session_triage's default.
 const rollupStall = 15 * time.Minute
 
 // reloadParents rereads launch-parents.json when it changed, from each
@@ -59,12 +59,12 @@ func (m *model) launchParents() map[string]string {
 	return m.launchRes
 }
 
-// folded: the coordinator's tree is folded to its own row.
+// folded: the orchestrator's tree is folded to its own row.
 func (m model) folded(id string) bool {
 	return m.marks != nil && slices.Contains(m.marks.Folded, id)
 }
 
-// toggleFold is ^X B: fold the selected coordinator's tree to its row, or
+// toggleFold is ^X B: fold the selected orchestrator's tree to its row, or
 // unfold it. A session with nothing launched under it has nothing to fold.
 func (m *model) toggleFold() {
 	if m.marks == nil || len(m.filtered) == 0 {
@@ -85,7 +85,7 @@ func (m *model) toggleFold() {
 	m.sortList()
 }
 
-// rollup counts a coordinator's tree below it: waiting on you (a menu,
+// rollup counts an orchestrator's tree below it: waiting on you (a menu,
 // prompt or question), stalled (idle past rollupStall, nothing unread) and
 // done (finished since you last looked).
 type rollup struct{ waiting, stalled, done int }
@@ -111,7 +111,7 @@ func (r *rollup) add(o rollup) {
 	r.done += o.done
 }
 
-// rollupCell is a coordinator row's counts, plain and coloured: ●N waiting
+// rollupCell is an orchestrator row's counts, plain and coloured: ●N waiting
 // on you, ◦N stalled, ✓N done; "" when nothing needs a look.
 func rollupCell(r rollup, coloured bool) string {
 	var parts []string
@@ -131,17 +131,17 @@ func rollupCell(r rollup, coloured bool) string {
 	return strings.Join(parts, " ")
 }
 
-// inTree: the session is in the coordinator section, drawn as a tree.
-func inTree(it listItem) bool { return sectionOf(it.familyState) == coordinatorSec }
+// inTree: the session is in the orchestrator section, drawn as a tree.
+func inTree(it listItem) bool { return sectionOf(it.familyState) == orchestratorSec }
 
-// oneLine: a session inside a coordinator's tree takes one row in the
-// sidebar (its age, context and folder are in its preview); the coordinator
+// oneLine: a session inside an orchestrator's tree takes one row in the
+// sidebar (its age, context and folder are in its preview); the orchestrator
 // itself keeps two.
 func (m model) oneLine(it listItem) bool { return !m.table && it.depth > 0 && inTree(it) }
 
-// treePrefix is what goes before a title. In a coordinator's tree, each
+// treePrefix is what goes before a title. In an orchestrator's tree, each
 // child's connector sits under its parent's name: ├ or └, or ▾/▸ in its
-// place for a sub-coordinator, after the │ its ancestors' later siblings
+// place for a sub-orchestrator, after the │ its ancestors' later siblings
 // draw, so every name at one depth starts in the same column. Elsewhere,
 // a spawned session's └, indented by depth.
 func (m model) treePrefix(it listItem) string {

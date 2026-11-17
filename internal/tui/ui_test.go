@@ -1438,10 +1438,10 @@ func TestGroupByFolder(t *testing.T) {
 		t.Errorf("ungrouped: the grey row names the folder: %q", g)
 	}
 
-	// The coordinator sits under its own section, in a folder named after it.
-	coord := listItem{conv: conv("coord", "/cfg/ccs/coordinator", "2026-10-23T12:00:00Z"), familyState: coordFamily}
-	if g := strings.TrimSpace(strip2(m.sidebarRow(coord, false, 40)[1])); strings.Contains(g, "coordinator") {
-		t.Errorf("the coordinator's grey row doesn't repeat its section's name: %q", g)
+	// The orchestrator sits under its own section, in a folder named after it.
+	orch := listItem{conv: conv("orch", "/cfg/ccs/orchestrator", "2026-10-23T12:00:00Z"), familyState: orchFamily}
+	if g := strings.TrimSpace(strip2(m.sidebarRow(orch, false, 40)[1])); strings.Contains(g, "orchestrator") {
+		t.Errorf("the orchestrator's grey row doesn't repeat its section's name: %q", g)
 	}
 }
 

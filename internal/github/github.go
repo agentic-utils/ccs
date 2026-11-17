@@ -1385,7 +1385,7 @@ func Claim(pr string, release bool, now time.Time) (string, error) {
 }
 
 // ClaimAs is Claim for the running session called name, or with name ""
-// the calling session: claim_pr, which a coordinator calls for the sessions
+// the calling session: claim_pr, which an orchestrator calls for the sessions
 // it runs. The name must be one running session's.
 func ClaimAs(pr, name string, release bool, now time.Time) (string, error) {
 	if !transcript.PRURL.MatchString(pr) {
@@ -1445,7 +1445,7 @@ func ClaimAs(pr, name string, release bool, now time.Time) (string, error) {
 		return true
 	})
 	if err == nil && fresh {
-		// Said in the events too, so whoever follows them (a coordinator) knows
+		// Said in the events too, so whoever follows them (an orchestrator) knows
 		// the owner without being told by the session.
 		e := PREvent{At: now.UTC().Format(time.RFC3339), Event: "claimed", PR: pr, Session: me.Name, SessionID: cmp.Or(me.Thread, me.Session)}
 		if m := transcript.PRURL.FindStringSubmatch(pr); m != nil {

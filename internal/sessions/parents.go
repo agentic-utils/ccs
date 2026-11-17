@@ -20,7 +20,7 @@ import (
 
 // ParentRec is who launched (or last adopted) a named session: the session
 // that ran launch_session or ccs launch for it, by name and session id. A
-// session that starts others is a coordinator, and the list draws it as a
+// session that starts others is an orchestrator, and the list draws it as a
 // tree of what it started.
 type ParentRec struct {
 	Child      string    `json:"child"`              // the launched session's name

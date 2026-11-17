@@ -47,9 +47,10 @@ Search and resume Claude Code conversations, and Codex sessions beside them.
 
 Usage: ccs [filter] [-- claude-flags...]
        ccs prune [flags]    Shrink large conversations (see ccs prune --help)
-       ccs coordinator [--yes] [--no-mcp] [--adopt <session> | --release]
+       ccs orchestrator [--yes] [--no-mcp] [--adopt <session> | --release]
                             Open the session that runs your other sessions: its tab, resumed
-                            if it isn't running, set up (with the ccs MCP server) if there is none
+                            if it isn't running, set up (with the ccs MCP server) if there is none;
+                            ccs coordinator, its old name, still works
        ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>] [--no-preamble]
                             Start a named claude (or codex) session in a new iTerm tab or tmux window;
                             a new session's brief starts with launch-preamble.md beside ccs's settings, if you keep one;
@@ -136,7 +137,7 @@ Key bindings:
  Ctrl+X then a letter: this session
   Ctrl+X P        Pin it to the top of the list (again to unpin)
   Alt+Up/Down     Move it among the pinned sessions
-  Ctrl+X B        Fold a coordinator's branch to its own row (again to unfold)
+  Ctrl+X B        Fold an orchestrator's branch to its own row (again to unfold)
   Ctrl+X S        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
   Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
@@ -150,11 +151,11 @@ Key bindings:
  Ctrl+X then a letter: view and tools
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder
-  Ctrl+X O        Open the coordinator, setting one up if there is none
+  Ctrl+X O        Open the orchestrator, setting one up if there is none
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X T        The full table, every column, instead of the sidebar
   Ctrl+X L        Hide or show the session list, the preview taking its place
-  Ctrl+X C        Hide or show the coordinator and the offer to set one up
+  Ctrl+X C        Hide or show the orchestrator and the offer to set one up
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
   Ctrl+X A        Switch to a session's tab when it starts waiting on you
@@ -195,8 +196,8 @@ func Main(v string) {
 	if len(args) > 0 && args[0] == "launch" {
 		os.Exit(sessions.RunLaunch(args[1:], os.Stdout, os.Stderr))
 	}
-	if len(args) > 0 && args[0] == coordinatorName {
-		os.Exit(runCoordinator(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal()))
+	if len(args) > 0 && isOrchestratorCmd(args[0]) {
+		os.Exit(runOrchestrator(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal()))
 	}
 	if len(args) > 0 && args[0] == "adopt" {
 		os.Exit(sessions.RunAdopt(args[1:], os.Stdout, os.Stderr))
@@ -336,10 +337,10 @@ func Main(v string) {
 	}
 
 	items := buildItems(conversations)
-	// Nothing to list: open only if there's a coordinator to offer.
-	if len(items) == 0 && (loadSettings().HideCoordinator || !coordinatorOfferable()) {
+	// Nothing to list: open only if there's an orchestrator to offer.
+	if len(items) == 0 && (loadSettings().HideOrchestrator || !orchestratorOfferable()) {
 		fmt.Fprintf(os.Stderr, "No conversations found in %s\n", projectsDir)
-		fmt.Fprintf(os.Stderr, "Start one with claude, or set up a coordinator with ccs coordinator.\n")
+		fmt.Fprintf(os.Stderr, "Start one with claude, or set up an orchestrator with ccs orchestrator.\n")
 		os.Exit(1)
 	}
 
@@ -349,7 +350,7 @@ func Main(v string) {
 	go sessions.RefreshLinkApp()
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
-	m.table, m.grouped, m.autoFocus, m.hideCoord, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideCoordinator, s.HideSidebar
+	m.table, m.grouped, m.autoFocus, m.hideOrch, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideOrchestrator, s.HideSidebar
 	m.headerCollapsed = !s.HeaderOpen
 	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
 	if s.AutoUpdate == nil && s.found {
@@ -360,8 +361,8 @@ func Main(v string) {
 		m.updatedFrom, m.updatedOpen = from, true
 	}
 	m.marks = loadMarks()                     // when each session was last looked at
-	m.coordID = loadCoordinator().SessionID   // listed above everything
-	m.hideCoordinator()                       // unless ^X C hides it
+	m.orchID = loadOrchestrator().SessionID   // listed above everything
+	m.hideOrchestrator()                      // unless ^X C hides it
 	if handled, ok := loadFocusRecord(); ok { // waits it switched to before a restart aren't switched to again
 		m.focusHandled, m.focusNoted = handled, map[string]bool{}
 	}

@@ -253,14 +253,14 @@ func TestScrollingWithoutAMessageBoxSearches(t *testing.T) {
 			t.Errorf("a waiting session's box is hidden, so it can't take typing: hidden=%v focus=%v", m.boxHidden(), m.chatFocus)
 		}
 	})
-	t.Run("coordinator hidden with ^X C", func(t *testing.T) {
-		coordinatorFixture(t)
+	t.Run("orchestrator hidden with ^X C", func(t *testing.T) {
+		orchestratorFixture(t)
 		m := chatModel(t)
-		coordinatorRecord{SessionID: "live"}.save()
-		m.syncCoordinator()
+		orchestratorRecord{SessionID: "live"}.save()
+		m.syncOrchestrator()
 		m = moveTo(t, m, "live")
 		if !m.chatFocus {
-			t.Fatal("setup: the live coordinator's box is focused")
+			t.Fatal("setup: the live orchestrator's box is focused")
 		}
 		m, _ = chord(m, "c") // hides it; the selection lands on the session with no box
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})

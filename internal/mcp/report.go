@@ -41,7 +41,7 @@ const (
 // it still counts as its response; later, or never, it was missed.
 const responseCap = 4 * time.Hour
 
-// topName is what the orchestrator recorded in coordinator.json is called
+// topName is what the orchestrator recorded in orchestrator.json is called
 // when no session name for it is known.
 const topName = "orchestrator"
 
@@ -170,21 +170,26 @@ type orgNode struct {
 	Kids     []string
 }
 
-// reportTopID is the orchestrator ccs coordinator set up, from
-// coordinator.json beside the settings; "" when there is none.
+// reportTopID is the orchestrator ccs orchestrator set up, from
+// orchestrator.json beside the settings (or coordinator.json, from before the
+// rename, until ccs has copied it); "" when there is none.
 var reportTopID = func() (id, name string) {
 	var r struct {
 		SessionID string `json:"session_id"`
 		Name      string `json:"name"`
 	}
-	if data, err := os.ReadFile(filepath.Join(filepath.Dir(state.SettingsPath), "coordinator.json")); err == nil {
+	data, legacy, err := state.ReadOrchestrator()
+	if err == nil {
 		json.Unmarshal(data, &r)
+	}
+	if legacy && r.Name == "" {
+		r.Name = state.LegacyOrchestratorName // ccs called it that before the rename
 	}
 	return r.SessionID, r.Name
 }
 
 // orgTree is every orchestrator (a session that launched another, and the
-// one in coordinator.json) and, for each name, its parent's.
+// one in orchestrator.json) and, for each name, its parent's.
 func orgTree() (nodes map[string]*orgNode, parentOf map[string]string, top string) {
 	nodes, parentOf = map[string]*orgNode{}, map[string]string{}
 	for name, p := range sessions.LoadParents().Parents {
@@ -498,7 +503,7 @@ type ReportOpts struct {
 }
 
 // errNoOrchestrator: nothing to report on.
-var errNoOrchestrator = errors.New("no orchestrator found: none in coordinator.json, and no session has launched another through ccs launch or launch_session")
+var errNoOrchestrator = errors.New("no orchestrator found: none in orchestrator.json, and no session has launched another through ccs launch or launch_session")
 
 // BuildReport is every orchestrator's scorecard for the period, the top one
 // first.
@@ -954,7 +959,7 @@ func RunReport(args []string, stdout, stderr io.Writer) int {
 	name := fs.String("orchestrator", "", "only this orchestrator (a session name); default every one")
 	noSave := fs.Bool("no-save", false, "don't save the scorecards as today's")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: ccs orchestrator-report [--since 24h] [--orchestrator name] [--json] [--no-save]\n\nEach orchestrator's scorecard (the session in coordinator.json, and any session that launched\nanother): response time to events, stalled minutes, done-to-close time, your idle nudges and\ncorrections, its hands-on tool calls, merges, and its sessions now, against the previous saved\nday. Saved to "+reportDir()+".")
+		fmt.Fprintln(stderr, "usage: ccs orchestrator-report [--since 24h] [--orchestrator name] [--json] [--no-save]\n\nEach orchestrator's scorecard (the session in orchestrator.json, and any session that launched\nanother): response time to events, stalled minutes, done-to-close time, your idle nudges and\ncorrections, its hands-on tool calls, merges, and its sessions now, against the previous saved\nday. Saved to "+reportDir()+".")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

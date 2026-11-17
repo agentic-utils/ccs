@@ -29,7 +29,7 @@ type sessionMarks struct {
 	// back early when it waits on a menu or prompt.
 	Snoozed map[string]time.Time `json:"snoozed,omitempty"`
 	Settled map[string]string    `json:"settled,omitempty"`
-	// Folded coordinators show only their own row (^X B), by session id.
+	// Folded orchestrators show only their own row (^X B), by session id.
 	Folded []string `json:"folded,omitempty"`
 }
 

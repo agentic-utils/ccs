@@ -61,7 +61,7 @@ def fixtures(home):
         json.dump({"auto_update": False}, f)
     gh = "https://github.com/example/"
     live = []
-    coord = write_conv(home, os.path.join(cfg, "coordinator"), [
+    orch = write_conv(home, os.path.join(cfg, "orchestrator"), [
         ("user", "fix the flaky checkout test, sort out last night's staging deploy, and make settings work on mobile"),
         ("assistant", "Started a session for each:\n\n"
                       "| session | PR | state |\n|---|---|---|\n"
@@ -69,10 +69,10 @@ def fixtures(home):
                       "| ccs://session/staging-deploy-timeout | infra#97 | checks running |\n"
                       "| ccs://session/mobile-settings | web#41 | lint failing |\n\n"
                       "**Needs you:** mobile-settings is asking which breakpoint to use. Merge order: infra#97 before payments-api#812."),
-    ], title="coordinator", custom=True, ctx=64_000, ago=timedelta(minutes=1))
-    live.append((coord, "coordinator", "idle"))
-    with open(os.path.join(cfg, "coordinator.json"), "w") as f:
-        json.dump({"session_id": coord, "offered": True}, f)
+    ], title="orchestrator", custom=True, ctx=64_000, ago=timedelta(minutes=1))
+    live.append((orch, "orchestrator", "idle"))
+    with open(os.path.join(cfg, "orchestrator.json"), "w") as f:
+        json.dump({"session_id": orch, "offered": True}, f)
     live.append((write_conv(home, "/Users/you/code/web", [
         ("user", "make the settings page work on mobile"),
         ("assistant", "The settings form uses a fixed 960px grid. I can switch it to one column on small screens, "
@@ -104,8 +104,8 @@ def fixtures(home):
         ("assistant", "Opened https://github.com/example/infra/pull/97 with the lock timeout and a retry with backoff. Waiting for its checks."),
     ], title="staging-deploy-timeout", custom=True, ctx=95_000, ago=timedelta(minutes=6), prs=[gh + "infra/pull/97"]),
         "staging-deploy-timeout", "busy"))
-    with open(os.path.join(cfg, "launch-parents.json"), "w") as f:  # the coordinator launched the three
-        json.dump({"parents": {name: {"child": name, "parent": "coordinator", "parent_id": coord, "at": "2026-01-01T00:00:00Z"}
+    with open(os.path.join(cfg, "launch-parents.json"), "w") as f:  # the orchestrator launched the three
+        json.dump({"parents": {name: {"child": name, "parent": "orchestrator", "parent_id": orch, "at": "2026-01-01T00:00:00Z"}
                                for _, name, _ in live[1:]}}, f)
     write_conv(home, "/Users/you/code/payments-api", [
         ("user", "add retries to the webhook sender"),
@@ -141,7 +141,7 @@ def start_live(home, live):
 
 ESC, DOWN, UP = "\x1b", "\x1b[B", "\x1b[A"
 KEYS = [  # (delay before, keys)
-    (3.0, ""),            # the coordinator: its sessions, PRs and ccs:// links
+    (3.0, ""),            # the orchestrator: its sessions, PRs and ccs:// links
     (1.2, DOWN),          # waiting on you: its question, answerable with a digit
     (2.5, "\x18w"),       # ^X W the waiting overlay
     (3.0, ESC),
@@ -149,7 +149,7 @@ KEYS = [  # (delay before, keys)
     (2.0, "\x0f"),        # ^O its links and PRs
     (2.5, ESC),
     (1.0, DOWN),          # busy, checks running
-    (1.5, UP + UP + UP),  # back to the coordinator
+    (1.5, UP + UP + UP),  # back to the orchestrator
     (1.5, "\x18b"),       # ^X B folds its tree to one row, its counts kept
     (2.5, "\x18b"),       # and unfolds it
     (1.8, DOWN * 4),
@@ -209,7 +209,7 @@ def main():
     # wait for the first full screen, and the PR lookups, before typing; the
     # clock starts there
     deadline = time.time() + 30
-    while time.time() < deadline and not any("coordinator" in e[2] for e in events):
+    while time.time() < deadline and not any("orchestrator" in e[2] for e in events):
         pump(0.2)
     pump(4.0)
     events[:] = [[0.0, "o", "".join(e[2] for e in events)]]  # the start-up wait plays as an instant

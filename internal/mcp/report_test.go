@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
+	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -116,7 +117,7 @@ func TestBuildReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cards) != 2 || cards[0].Orchestrator != "boss" || cards[1].Orchestrator != "sub" {
-		t.Fatalf("boss (the one in coordinator.json) first, then sub: %+v", cards)
+		t.Fatalf("boss (the one in orchestrator.json) first, then sub: %+v", cards)
 	}
 	b := cards[0]
 	if b.Sessions != 3 || b.Depth != 2 {
@@ -277,5 +278,21 @@ func TestPatterns(t *testing.T) {
 		if idleNudge.MatchString(s) || correction.MatchString(s) {
 			t.Errorf("false positive: %q", s)
 		}
+	}
+}
+
+// reportTopID reads a coordinator.json from before the rename, naming the
+// session coordinator, as ccs then called it, when the record names none.
+func TestReportTopIDReadsTheCoordinatorRecord(t *testing.T) {
+	old := state.SettingsPath
+	state.SettingsPath = filepath.Join(t.TempDir(), "settings.json")
+	defer func() { state.SettingsPath = old }()
+	os.WriteFile(state.LegacyOrchestratorPath(), []byte(`{"session_id":"old-id"}`), 0o600)
+	if id, name := reportTopID(); id != "old-id" || name != "coordinator" {
+		t.Errorf("coordinator.json: %q %q", id, name)
+	}
+	os.WriteFile(state.OrchestratorPath(), []byte(`{"session_id":"new-id"}`), 0o600)
+	if id, name := reportTopID(); id != "new-id" || name != "" {
+		t.Errorf("orchestrator.json: %q %q", id, name)
 	}
 }

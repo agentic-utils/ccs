@@ -87,7 +87,7 @@ func TestMain(m *testing.M) {
 	sessions.SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }
 	mcpRun = func(string, ...string) ([]byte, error) { return nil, errors.New("tests run no claude or codex") }
 	namedTranscript = func(string) string { return "" }
-	coordinatorProbe = func() tea.Msg { return nil }
+	orchestratorProbe = func() tea.Msg { return nil }
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil } // never the machine's own processes
 	sessions.CallingSession = func() (sessions.Caller, bool) { return sessions.Caller{}, false }

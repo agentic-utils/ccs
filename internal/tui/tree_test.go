@@ -103,15 +103,16 @@ func TestOrchestratorTrees(t *testing.T) {
 	if !strings.Contains(v, "orchestrators 2") {
 		t.Errorf("two trees: the header counts them\n%s", v)
 	}
-	if !strings.Contains(v, "▾ hub") || strings.Contains(v, "●1 ◦1 ✓1") {
+	if !strings.Contains(v, "✻ hub") || strings.Contains(v, "●1 ◦1 ✓1") {
 		t.Errorf("unfolded, the orchestrator's row has its fold mark and no counts (its sessions show their own)\n%s", v)
 	}
 }
 
-// Every name at one depth starts in one column: a child's connector sits
-// under its parent's name, a sub-orchestrator's ▾ takes its connector's
-// place, │ runs on past a sub-tree while siblings follow, and a session in a
-// tree takes one row while the orchestrator's grey row sits under its name.
+// Rows in a tree have the shape of every other row, two lines each: a
+// child's connector sits under its parent's agent glyph, its own glyph and
+// name nest after it, │ runs on through the grey lines past a sub-tree
+// while siblings follow and from a parent down to its first child, and
+// every grey line starts under its name.
 func TestTreeAlignment(t *testing.T) {
 	m := treeModel(t)
 	m.width, m.height = 110, 40
@@ -145,8 +146,8 @@ func TestTreeAlignment(t *testing.T) {
 		return -1
 	}
 	want := map[string]string{
-		"hub": "▾ hub", "worker": "  ▾ worker", "sub": "  │ ▾ sub", "leaf": "  │   └ leaf",
-		"fresh": "  └ fresh", "ops": "▾ ops", "deploy": "  └ deploy",
+		"hub": "   ✻ hub", "worker": "   ├ ✻ worker", "sub": "   │ └ ✻ sub", "leaf": "   │   └ ✻ leaf",
+		"fresh": "   └ ✻ fresh", "ops": "   ✻ ops", "deploy": "   └ ✻ deploy",
 	}
 	for name, w := range want {
 		if !strings.Contains(rows[name], w) {
@@ -156,18 +157,20 @@ func TestTreeAlignment(t *testing.T) {
 	if col("worker") != col("fresh") || col("worker") != col("hub")+2 || col("sub") != col("worker")+2 || col("deploy") != col("worker") {
 		t.Errorf("names at one depth share a column, two cells in per level:\n%s", strings.Join(lines, "\n"))
 	}
+	greys := map[string]string{ // each row's grey line: the tree's lines, then its age under its name
+		"hub": "   │ 1m", "worker": "   │ │ 1m", "sub": "   │   │ 1m", "leaf": "   │       1h", "fresh": "       1m",
+	}
 	for i, l := range lines {
-		if strings.Contains(l, " worker") && i+1 < len(lines) && !strings.Contains(lines[i+1], " sub") {
-			t.Errorf("a session in a tree takes one row: %q then %q", l, lines[i+1])
-		}
-		if strings.HasSuffix(strings.TrimRight(l, " "), "▾ hub") {
-			if grey := []rune(lines[i+1]); slices.Index(grey, '1') != col("hub") {
-				t.Errorf("the orchestrator's grey row starts under its name: %q / %q", l, grey)
+		for name, g := range greys {
+			if strings.TrimRight(l, " ") == rows[name] && i+1 < len(lines) {
+				if grey := strings.TrimRight(lines[i+1], " ·"); !strings.HasPrefix(grey, g) || len([]rune(g))-2 != col(name) {
+					t.Errorf("%s's grey line: want %q under its name (column %d), got %q", name, g, col(name), lines[i+1])
+				}
 			}
 		}
 	}
-	if !strings.Contains(rows["worker"], "?") {
-		t.Errorf("a child waiting on you shows ?: %q", rows["worker"])
+	if strings.Contains(strings.Join(lines, "\n"), "▾") {
+		t.Error("no ▾ on an unfolded row")
 	}
 }
 

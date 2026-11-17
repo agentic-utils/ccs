@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -134,71 +133,51 @@ func rollupCell(r rollup, coloured bool) string {
 // inTree: the session is in the orchestrator section, drawn as a tree.
 func inTree(it listItem) bool { return sectionOf(it.familyState) == orchestratorSec }
 
-// oneLine: a session inside an orchestrator's tree takes one row in the
-// sidebar (its age, context and folder are in its preview); the orchestrator
-// itself keeps two.
-func (m model) oneLine(it listItem) bool { return !m.table && it.depth > 0 && inTree(it) }
+// treeLines is what an orchestrator's tree draws before a row, on its title
+// line and on its grey line: the │ its ancestors' later siblings carry
+// down, then its own ├ or └ (│ or space below it, on the grey line). A
+// child's connector sits under its parent's agent glyph, so its glyph sits
+// under the parent's name. "" for the tree's top and for any row outside a
+// tree.
+func treeLines(it listItem) (title, grey string) {
+	if !inTree(it) || it.depth == 0 {
+		return "", ""
+	}
+	if it.lastKid {
+		return it.guides + "└ ", it.guides + "  "
+	}
+	return it.guides + "├ ", it.guides + "│ "
+}
 
-// treePrefix is what goes before a title. In an orchestrator's tree, each
-// child's connector sits under its parent's name: ├ or └, or ▾/▸ in its
-// place for a sub-orchestrator, after the │ its ancestors' later siblings
-// draw, so every name at one depth starts in the same column. Elsewhere,
-// a spawned session's └, indented by depth.
+// treePrefix is what goes before a title: a folded row's ▸N, and outside the
+// sidebar's tree layout (the table, a spawned session) its connector too.
 func (m model) treePrefix(it listItem) string {
 	if !inTree(it) {
 		return nestPrefix(it.depth) + it.foldGlyph()
 	}
-	if it.depth == 0 {
-		return it.foldGlyph()
+	conn, _ := treeLines(it)
+	if !m.table {
+		conn = "" // the sidebar draws it before the agent's glyph (sidebarRow)
 	}
-	own := "├ "
-	switch {
-	case it.kids > 0:
-		own = it.foldGlyph()
-	case it.lastKid:
-		own = "└ "
-	}
-	return "  " + it.guides + own
+	return conn + it.foldGlyph()
 }
 
-// treeBadge is the one cell a tree row has on its right: a folded tree's
-// counts (unfolded, its sessions show their own), or for a session in a
-// tree what needs you, if anything: ? when it waits on you, ✗ when a PR of
-// its needs fixing. "" for any other row.
+// treeBadge is a folded tree's counts: what the sessions it hides hold.
+// Unfolded, they show their own.
 func (m model) treeBadge(it listItem, coloured bool) string {
-	paint := func(s, colour string) string {
-		if coloured {
-			return "\033[" + colour + "m" + s + "\033[0m"
-		}
-		return s
+	if it.hiddenKids > 0 {
+		return rollupCell(it.roll, coloured)
 	}
-	own := ""
-	switch {
-	case !m.oneLine(it):
-	case it.state == 0:
-		own = paint("?", waitColour)
-	case it.state == 1:
-		own = paint("?", askedColour)
-	case m.prCounts(it.conv)[github.PRFix] > 0:
-		glyph, colour := prMark(github.PRFix)
-		own = paint(glyph, colour)
-	}
-	if it.hiddenKids > 0 { // folded: its own, then what it hides
-		return strings.TrimSpace(own + " " + rollupCell(it.roll, coloured))
-	}
-	return own
+	return ""
 }
 
-// foldGlyph marks a row with sessions under it: ▾ unfolded, ▸ folded with
-// how many it hides.
+// foldGlyph marks a folded row: ▸ and how many sessions it hides.
 func (it listItem) foldGlyph() string {
 	switch {
-	case it.kids == 0:
-		return ""
 	case it.hiddenKids > 0:
 		return fmt.Sprintf("▸%d ", it.hiddenKids)
 	}
-	return "▾ "
+	return ""
 }
 
 // titleColour is the colour a row's title says its state in, in place of a

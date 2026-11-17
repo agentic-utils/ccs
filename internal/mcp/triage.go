@@ -403,17 +403,24 @@ func liveConversations(live map[string]sessions.LiveSession) []transcript.Conver
 	return out
 }
 
-// SessionEvent is session_stalled or session_done in pr-events.jsonl.
+// SessionEvent is a live session's change in pr-events.jsonl:
+// session_started (first seen running), session_stalled, session_done,
+// session_active (it left a stall or a finish: From says which and Seconds
+// how long it sat there) and session_ended (gone from two scans in a row; At
+// is when it was last seen, Seconds how long it ran as far as ccs saw, From
+// its last stall or finish if it ended in one).
 type SessionEvent struct {
 	At          string `json:"at"`
-	Event       string `json:"event"`   // session_stalled, session_done
+	Event       string `json:"event"`
 	Session     string `json:"session"` // its name
 	SessionID   string `json:"session_id"`
 	Kind        string `json:"kind"`
 	Cwd         string `json:"cwd,omitempty"`
-	Reason      string `json:"reason"`
+	Reason      string `json:"reason,omitempty"`
 	Idle        string `json:"idle,omitempty"`
-	IdleSeconds int64  `json:"idle_seconds"`
+	IdleSeconds int64  `json:"idle_seconds,omitempty"`
+	From        string `json:"from,omitempty"`
+	Seconds     int64  `json:"seconds,omitempty"`
 }
 
 // sessionEventsPath keeps which stall and which finish each live session was
@@ -423,12 +430,23 @@ var sessionEventsPath = func() string {
 }
 
 // sessionEventRec is what was last emitted for one session: the IdleSince of
-// the stall, the IdleSince of the finish, and when the session was last seen
-// running.
+// the stall, the IdleSince of the finish, when the session was last seen
+// running, and since when it has sat stalled or done (State, StateAt; empty
+// once it moved on). First is when it was first seen running; Missed counts
+// the scans in a row it was missing from, and Ended that its end was told.
 type sessionEventRec struct {
 	Stalled string    `json:"stalled,omitempty"`
 	Done    string    `json:"done,omitempty"`
 	Seen    time.Time `json:"seen"`
+	Name    string    `json:"name,omitempty"`
+	Kind    string    `json:"kind,omitempty"`
+	Cwd     string    `json:"cwd,omitempty"`
+	First   time.Time `json:"first,omitzero"`
+	State   string    `json:"state,omitempty"`
+	StateAt time.Time `json:"state_at,omitzero"`
+	Since   string    `json:"since,omitempty"` // the IdleSince of that stall or finish
+	Missed  int       `json:"missed,omitempty"`
+	Ended   bool      `json:"ended,omitempty"`
 }
 
 // sessionEventKeep is how long a session missing from the scans is
@@ -436,16 +454,40 @@ type sessionEventRec struct {
 // failed process listing) mustn't make its stall news again.
 const sessionEventKeep = 24 * time.Hour
 
+// endAfterMisses is how many scans in a row a session must be missing from
+// before session_ended: one missed scan is a flaky read, not an exit.
+const endAfterMisses = 2
+
 // sessionEvents is the events rows call for, given what was emitted before
 // (prev, updated in place; a session unseen for sessionEventKeep dropped):
 // one per stall and one per finish, a stall or finish being one stretch of
 // idleness (IdleSince), so a session flapping between buckets in it isn't
-// reported twice.
+// reported twice; session_active when it leaves one (new activity, or a
+// bucket that is neither idle, stalled nor done); session_started for a
+// session not in prev, except on the first scan ever (empty prev), which
+// only records; session_ended once it is missing from endAfterMisses scans.
 func sessionEvents(rows []TriageRow, prev map[string]sessionEventRec, now time.Time) []any {
+	seeding := len(prev) == 0
+	at := now.UTC().Format(time.RFC3339)
 	var events []any
+	seen := map[string]bool{}
 	for _, r := range rows {
-		rec := prev[r.Session]
-		rec.Seen = now
+		seen[r.Session] = true
+		rec, known := prev[r.Session]
+		if (!known || rec.Ended) && !seeding {
+			events = append(events, SessionEvent{At: at, Event: "session_started", Session: r.Name, SessionID: r.Session, Kind: r.Kind, Cwd: r.Cwd})
+		}
+		if !known || rec.Ended {
+			rec.First, rec.Ended, rec.State, rec.StateAt, rec.Since = now, false, "", time.Time{}, ""
+		}
+		rec.Seen, rec.Missed, rec.Name, rec.Kind, rec.Cwd = now, 0, r.Name, r.Kind, r.Cwd
+		if rec.State != "" {
+			moved := r.IdleSince != rec.Since || (r.Bucket != BucketIdle && r.Bucket != BucketStalled && r.Bucket != BucketDone)
+			if moved {
+				events = append(events, SessionEvent{At: at, Event: "session_active", Session: r.Name, SessionID: r.Session, Kind: r.Kind, Cwd: r.Cwd, Reason: r.Reason, From: rec.State, Seconds: int64(now.Sub(rec.StateAt).Seconds())})
+				rec.State, rec.StateAt, rec.Since = "", time.Time{}, ""
+			}
+		}
 		ev := ""
 		switch {
 		case r.Bucket == BucketStalled && rec.Stalled != r.IdleSince:
@@ -453,15 +495,41 @@ func sessionEvents(rows []TriageRow, prev map[string]sessionEventRec, now time.T
 		case r.Bucket == BucketDone && rec.Done != r.IdleSince:
 			ev, rec.Done = "session_done", r.IdleSince
 		}
-		prev[r.Session] = rec
 		if ev != "" {
-			events = append(events, SessionEvent{At: now.UTC().Format(time.RFC3339), Event: ev, Session: r.Name, SessionID: r.Session, Kind: r.Kind, Cwd: r.Cwd, Reason: r.Reason, Idle: r.Idle, IdleSeconds: r.IdleSeconds})
+			rec.State, rec.StateAt, rec.Since = strings.TrimPrefix(ev, "session_"), now, r.IdleSince
+			events = append(events, SessionEvent{At: at, Event: ev, Session: r.Name, SessionID: r.Session, Kind: r.Kind, Cwd: r.Cwd, Reason: r.Reason, Idle: r.Idle, IdleSeconds: r.IdleSeconds})
 		}
+		prev[r.Session] = rec
 	}
-	for id, rec := range prev {
+	ids := make([]string, 0, len(prev))
+	for id := range prev {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		rec := prev[id]
+		if seen[id] {
+			continue
+		}
 		if now.Sub(rec.Seen) > sessionEventKeep {
 			delete(prev, id)
+			continue
 		}
+		if rec.Ended {
+			continue
+		}
+		rec.Missed++
+		if rec.Missed >= endAfterMisses && rec.Name == "" {
+			rec.Ended = true // recorded before ccs kept names: its start was never told either
+		} else if rec.Missed >= endAfterMisses {
+			rec.Ended = true
+			e := SessionEvent{At: rec.Seen.UTC().Format(time.RFC3339), Event: "session_ended", Session: rec.Name, SessionID: id, Kind: rec.Kind, Cwd: rec.Cwd, From: rec.State}
+			if !rec.First.IsZero() {
+				e.Seconds = int64(rec.Seen.Sub(rec.First).Seconds())
+			}
+			events = append(events, e)
+		}
+		prev[id] = rec
 	}
 	return events
 }

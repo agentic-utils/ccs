@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -159,7 +160,7 @@ func TestSessionEvents(t *testing.T) {
 	done := TriageRow{Name: "b", Session: "s-b", Kind: "claude", Bucket: BucketDone, Reason: "says it's finished: done.", IdleSince: "2026-11-17T11:00:00Z"}
 	prev := map[string]sessionEventRec{"gone": {Stalled: "x", Seen: now.Add(-sessionEventKeep - time.Minute)}}
 
-	evs := sessionEvents([]TriageRow{stalled, done}, prev, now)
+	evs := onlyEvents(sessionEvents([]TriageRow{stalled, done}, prev, now), "session_stalled", "session_done")
 	if len(evs) != 2 {
 		t.Fatalf("one event each: %+v", evs)
 	}
@@ -175,25 +176,106 @@ func TestSessionEvents(t *testing.T) {
 	}
 	// A scan that misses it once (an unreadable session file) doesn't make the same stall news again.
 	sessionEvents(nil, prev, now.Add(3*time.Minute))
-	if evs := sessionEvents([]TriageRow{stalled}, prev, now.Add(6*time.Minute)); len(evs) != 0 {
+	if evs := onlyEvents(sessionEvents([]TriageRow{stalled}, prev, now.Add(6*time.Minute)), "session_stalled"); len(evs) != 0 {
 		t.Errorf("stalled, missed by one scan, stalled: one event: %+v", evs)
 	}
 
 	// The same stall again, or after flapping to idle and back: nothing.
-	if evs := sessionEvents([]TriageRow{stalled, done}, prev, now); len(evs) != 0 {
+	if evs := onlyEvents(sessionEvents([]TriageRow{stalled, done}, prev, now), "session_stalled", "session_done"); len(evs) != 0 {
 		t.Errorf("at most once per stall: %+v", evs)
 	}
 	flap := stalled
 	flap.Bucket = BucketIdle
 	sessionEvents([]TriageRow{flap}, prev, now)
-	if evs := sessionEvents([]TriageRow{stalled}, prev, now); len(evs) != 0 {
+	if evs := onlyEvents(sessionEvents([]TriageRow{stalled}, prev, now), "session_stalled"); len(evs) != 0 {
 		t.Errorf("the same stretch of idleness is one stall: %+v", evs)
 	}
 	// It worked, then stalled again: a new stall.
 	again := stalled
 	again.IdleSince = "2026-11-17T12:30:00Z"
-	if evs := sessionEvents([]TriageRow{again}, prev, now); len(evs) != 1 {
+	if evs := onlyEvents(sessionEvents([]TriageRow{again}, prev, now), "session_stalled"); len(evs) != 1 {
 		t.Errorf("a new stall is reported: %+v", evs)
+	}
+}
+
+// onlyEvents keeps the events of the named kinds.
+func onlyEvents(evs []any, kinds ...string) []any {
+	var out []any
+	for _, e := range evs {
+		if slices.Contains(kinds, e.(SessionEvent).Event) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func eventNames(evs []any) []string {
+	var out []string
+	for _, e := range evs {
+		out = append(out, e.(SessionEvent).Event+":"+e.(SessionEvent).Session)
+	}
+	return out
+}
+
+func TestSessionLifecycleEvents(t *testing.T) {
+	t0 := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	busy := TriageRow{Name: "a", Session: "s-a", Kind: "claude", Bucket: BucketWorking, IdleSince: "2026-11-17T11:59:00Z"}
+	prev := map[string]sessionEventRec{}
+
+	// The first scan ever only records: every running session would be news.
+	if evs := sessionEvents([]TriageRow{busy}, prev, t0); len(evs) != 0 {
+		t.Fatalf("seeding emits nothing: %v", eventNames(evs))
+	}
+	b := TriageRow{Name: "b", Session: "s-b", Kind: "claude", Bucket: BucketWorking}
+	if got := eventNames(sessionEvents([]TriageRow{busy, b}, prev, t0.Add(time.Minute))); !slices.Equal(got, []string{"session_started:b"}) {
+		t.Errorf("a new session starts: %v", got)
+	}
+
+	// a stalls, then works again 20 minutes later: active from stalled, with how long.
+	st := busy
+	st.Bucket, st.IdleSince = BucketStalled, "2026-11-17T12:00:00Z"
+	sessionEvents([]TriageRow{st, b}, prev, t0.Add(16*time.Minute))
+	idle := st
+	idle.Bucket = BucketIdle
+	if evs := onlyEvents(sessionEvents([]TriageRow{idle, b}, prev, t0.Add(20*time.Minute)), "session_active"); len(evs) != 0 {
+		t.Errorf("stalled to idle in the same stretch isn't activity: %v", eventNames(evs))
+	}
+	work := busy
+	work.IdleSince = "2026-11-17T12:36:00Z"
+	evs := onlyEvents(sessionEvents([]TriageRow{work, b}, prev, t0.Add(36*time.Minute)), "session_active")
+	if len(evs) != 1 {
+		t.Fatalf("active once: %v", eventNames(evs))
+	}
+	if e := evs[0].(SessionEvent); e.From != "stalled" || e.Seconds != 20*60 {
+		t.Errorf("active from stalled after 20m: %+v", e)
+	}
+
+	// b finishes, then is closed: missed once is nothing, twice is its end, told once.
+	d := b
+	d.Bucket, d.IdleSince = BucketDone, "2026-11-17T12:40:00Z"
+	sessionEvents([]TriageRow{work, d}, prev, t0.Add(40*time.Minute))
+	if evs := onlyEvents(sessionEvents([]TriageRow{work}, prev, t0.Add(43*time.Minute)), "session_ended"); len(evs) != 0 {
+		t.Errorf("one missed scan isn't an end: %v", eventNames(evs))
+	}
+	evs = onlyEvents(sessionEvents([]TriageRow{work}, prev, t0.Add(46*time.Minute)), "session_ended")
+	if len(evs) != 1 {
+		t.Fatalf("ended after two misses: %v", eventNames(evs))
+	}
+	if e := evs[0].(SessionEvent); e.Session != "b" || e.From != "done" || e.At != "2026-11-17T12:40:00Z" || e.Seconds != 39*60 {
+		t.Errorf("ended at its last sighting, from done, having run 39m: %+v", e)
+	}
+	if evs := sessionEvents([]TriageRow{work}, prev, t0.Add(49*time.Minute)); len(evs) != 0 {
+		t.Errorf("an end is told once: %v", eventNames(evs))
+	}
+	// Resumed: started again, its old finish forgotten.
+	if got := eventNames(sessionEvents([]TriageRow{work, b}, prev, t0.Add(60*time.Minute))); !slices.Equal(got, []string{"session_started:b"}) {
+		t.Errorf("a resumed session starts again: %v", got)
+	}
+
+	// A record from before ccs kept names ends silently.
+	prev["old"] = sessionEventRec{Seen: t0, Missed: 1}
+	if evs := onlyEvents(sessionEvents([]TriageRow{work, b}, prev, t0.Add(61*time.Minute)), "session_ended"); len(evs) != 0 {
+		t.Errorf("a nameless old record isn't news: %v", eventNames(evs))
 	}
 }
 

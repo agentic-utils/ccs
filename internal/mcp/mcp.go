@@ -248,6 +248,38 @@ var mcpTools = []map[string]any{
 			},
 		},
 	},
+	{
+		"name":        "orchestrator_report",
+		"description": "Each orchestrator's scorecard (as ccs orchestrator-report --json): the session ccs coordinator set up and any session that launched another, each over the sessions under it. Per orchestrator: response (minutes from an event that needs it, a session stalled or done, a PR ready, merged early or blocked from auto-merge, or a failing PR nobody owns, to its first message or tool call naming it; missed past 4 hours), stalled minutes and the worst session, done-to-close minutes, the user's messages to it that nudge about idle sessions or PRs (each a failure) and that correct it, with the matching lines, its hands-on tool calls (work it should hand off) and ccs commands run through Bash that an MCP tool covers, PRs merged and ready-to-merge minutes, its sessions running now and how many are stalled, done or idle, span breaches (over 6 direct sessions, deeper than 2), and the previous saved day's numbers. Saves the scorecards as today's unless save is false.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"since_hours":  map[string]any{"type": "integer", "description": "the period: this many hours up to now; default 24"},
+				"orchestrator": map[string]any{"type": "string", "description": "only this orchestrator (a session name); default every one"},
+				"save":         map[string]any{"type": "boolean", "description": "save the scorecards as today's; default true"},
+			},
+		},
+	},
+}
+
+// reportCall runs orchestrator_report.
+func reportCall(raw json.RawMessage) (string, error) {
+	var a struct {
+		Since        int    `json:"since_hours"`
+		Orchestrator string `json:"orchestrator"`
+		Save         *bool  `json:"save"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return "", fmt.Errorf("bad arguments: %v", err)
+		}
+	}
+	now := time.Now()
+	cards, err := BuildReport(ReportOpts{From: now.Add(-time.Duration(clampInt(a.Since, 24, 24*14)) * time.Hour), To: now, Orchestrator: strings.TrimSpace(a.Orchestrator), Now: now})
+	if err != nil {
+		return "", err
+	}
+	return reportJSON(withPrevious(cards, a.Save == nil || *a.Save)), nil
 }
 
 // prCall runs list_prs, claim_pr and depends, which need no transcripts.
@@ -438,6 +470,9 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	}
 	if name == "list_prs" || name == "claim_pr" || name == "depends" {
 		return prCall(name, raw)
+	}
+	if name == "orchestrator_report" {
+		return reportCall(raw)
 	}
 	var a struct {
 		Query      string `json:"query"`

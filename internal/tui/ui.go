@@ -2421,6 +2421,7 @@ func legendLines() string {
 		pr(github.PRFix, "needs you"),
 		pr(github.PRWaiting, "waiting"),
 		pr(prDraft, "draft"),
+		pr(github.PRMerged, "merged"),
 	}, "  ")
 }
 

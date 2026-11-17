@@ -1103,7 +1103,7 @@ func TestLinksPopupFiltersPRsByStatus(t *testing.T) {
 	m.width, m.height = 100, 20
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
 	v := strip2(m.View())
-	if !strings.Contains(v, "› ✓ r#25 ready to merge · go") || !strings.Contains(v, "● r#1 merged · a very long") {
+	if !strings.Contains(v, "› ✓ r#25 ready to merge · go") || !strings.Contains(v, "+ r#1 merged · a very long") {
 		t.Errorf("each PR's status before its title, ready first:\n%s", v)
 	}
 	if strings.Contains(v, "r#24 ") || !strings.Contains(v, "1/25") || !strings.Contains(v, "┃") {

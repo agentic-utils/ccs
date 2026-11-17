@@ -175,7 +175,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "close_session",
-		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab or tmux pane. That stops it mid-whatever-it-was-doing; with graceful, a Claude Code session is first asked to wrap up (stop at a safe point, remove its worktrees, say what's left) and is stopped once it has gone idle after that, or when the timeout passes, and the result carries its last message. If the notice can't be sent nothing is stopped.",
+		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab or tmux pane. That stops it mid-whatever-it-was-doing; with graceful, a Claude Code session is first asked to wrap up (stop at a safe point, remove its worktrees, say what's left) and is stopped once it has gone idle after that, or when the timeout passes. With graceful the call returns as soon as the notice is sent, with the pid; the close goes on in the background, and list_sessions shows the session gone once it's done (read_session on it gives what it said was left). If the notice can't be sent nothing is stopped and the call fails.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -337,11 +337,39 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 	if !a.Graceful {
 		return sessions.CloseByName(name)
 	}
-	return closeGracefully(name, time.Duration(clampInt(a.Timeout, 120, 900))*time.Second)
+	// The wrap-up takes minutes and a tool call has far less, so this answers
+	// once the notice is sent, as restart_session answers once its tab is up;
+	// the wait and the close go on here in the background (this server lives
+	// as long as the session that called it), the outcome to the activity log.
+	timeout := time.Duration(clampInt(a.Timeout, 120, 900)) * time.Second
+	type result struct {
+		text string
+		err  error
+	}
+	sent := make(chan int, 1)
+	done := make(chan result, 1)
+	go func() {
+		text, err := closeGracefully(name, timeout, func(pid int) { sent <- pid })
+		done <- result{text, err}
+	}()
+	select {
+	case r := <-done:
+		return r.text, r.err
+	case pid := <-sent:
+		go func() {
+			r := <-done
+			if r.err != nil {
+				state.LogActivity("close_session %s: %v", name, r.err)
+			} else {
+				state.LogActivity("close_session %s: %s", name, r.text)
+			}
+		}()
+		return fmt.Sprintf("asked %s (pid %d) to wrap up: it will be stopped and its tab closed once it goes idle, or after %s. list_sessions shows it gone once it is, and read_session on it gives what it said was left", name, pid, timeout), nil
+	}
 }
 
-// closeGracefully is sessions.CloseGracefully, stubbed in tests.
-var closeGracefully = sessions.CloseGracefully
+// closeGracefully is sessions.CloseGracefullyNotify, stubbed in tests.
+var closeGracefully = sessions.CloseGracefullyNotify
 
 // restartSession is sessions.RestartSession, stubbed in tests.
 var restartSession = sessions.RestartSession

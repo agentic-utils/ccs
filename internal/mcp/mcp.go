@@ -80,7 +80,7 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 			"instructions": "Search and read the user's earlier Claude Code sessions (from ~/.claude/projects). " +
 				"Use search_sessions to find a past conversation by what was said in it, list_sessions for recent ones, " +
 				"and read_session to read one. Sessions are the user's private history; quote only what's relevant. " +
-				"launch_session starts a named session in a new iTerm tab or tmux window and close_session stops one and closes its tab; restart_session stops one and resumes it in a new tab (your own once your turn ends). " +
+				"launch_session starts a named session in a new iTerm tab or tmux window and close_session stops one and closes its tab; restart_session stops one and resumes it in a new tab (your own once your turn ends). A session you launch is your child, and adopt_session moves one under you (or another session). " +
 				"list_prs lists the user's open PRs with the session that owns each (or with merged, the recent merges and who merged them); claim_pr records a PR's owner and depends the order PRs must merge in.",
 		}, nil
 	case "ping":
@@ -121,25 +121,27 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "list_sessions",
-		"description": "List the most recently active Claude Code sessions, newest first. Each says its kind (claude or codex), session id, project folder, last message time and the command that resumes it, whether or not it is running. A session that is running also says what it is doing (as ccs sessions): busy, idle or waiting on the user and since when, the question or permission prompt it waits on, whether its last message asks something, its last API error, its PRs, and the background tasks and subagents it runs. live_only keeps just the running ones.",
+		"description": "List the most recently active Claude Code sessions, newest first. Each says its kind (claude or codex), session id, project folder, last message time and the command that resumes it, whether or not it is running, and its parent: the session that launched it through launch_session or ccs launch, or adopted it with adopt_session. A session that is running also says what it is doing (as ccs sessions): busy, idle or waiting on the user and since when, the question or permission prompt it waits on, whether its last message asks something, its last API error, its PRs, and the background tasks and subagents it runs. live_only keeps just the running ones.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"project":          map[string]any{"type": "string", "description": "only sessions whose working directory contains this"},
 				"limit":            map[string]any{"type": "integer", "description": "default 20, at most 100"},
 				"live_only":        map[string]any{"type": "boolean", "description": "only the sessions running now; default false"},
+				"parent":           map[string]any{"type": "string", "description": "only the sessions whose parent (the session that launched or adopted them) has this name"},
 				"include_headless": map[string]any{"type": "boolean", "description": "also one-shot runs nobody talked to (claude -p with a single prompt, codex exec); default false"},
 			},
 		},
 	},
 	{
 		"name":        "session_triage",
-		"description": "Each running session in exactly one bucket, with a one-line reason (as ccs sessions --triage --json): waiting_on_user (a menu, permission prompt or question waits on the user, its last message asks something or asks them to run a command, or its open PR is ready to merge and needs their go), working (mid-turn), waiting_on_external (an open PR it owns with checks running, review required or a recorded depends wait; a background task or Monitor running; a subagent running; a ScheduleWakeup or CronCreate wake-up pending), done (no open PRs, nothing pending, and its last message says it is finished), stalled (idle past stall_after_minutes with nothing pending, an open PR it should fix named in the reason) or idle (the same, not yet that long). Each row also has its idle time and since when, its open PRs with their status (from ccs watch's saved state and the claims), and its next scheduled wake-up when known. Listed waiting_on_user first, then stalled, done, idle, waiting_on_external, working; the longest idle first within each.",
+		"description": "Each running session in exactly one bucket, with a one-line reason (as ccs sessions --triage --json): waiting_on_user (a menu, permission prompt or question waits on the user, its last message asks something or asks them to run a command, or its open PR is ready to merge and needs their go), working (mid-turn), waiting_on_external (an open PR it owns with checks running, review required or a recorded depends wait; a background task or Monitor running; a subagent running; a ScheduleWakeup or CronCreate wake-up pending), done (no open PRs, nothing pending, and its last message says it is finished), stalled (idle past stall_after_minutes with nothing pending, an open PR it should fix named in the reason) or idle (the same, not yet that long). Each row also has its parent (the session that launched or adopted it), its idle time and since when, its open PRs with their status (from ccs watch's saved state and the claims), and its next scheduled wake-up when known. Listed waiting_on_user first, then stalled, done, idle, waiting_on_external, working; the longest idle first within each.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"stall_after_minutes": map[string]any{"type": "integer", "description": "how long an idle session with nothing pending waits before it is stalled; default 15"},
 				"project":             map[string]any{"type": "string", "description": "only sessions whose working directory contains this"},
+				"parent":              map[string]any{"type": "string", "description": "only the sessions whose parent (the session that launched or adopted them) has this name"},
 			},
 		},
 	},
@@ -182,6 +184,18 @@ var mcpTools = []map[string]any{
 				"name":            map[string]any{"type": "string", "description": "the session's name"},
 				"graceful":        map[string]any{"type": "boolean", "description": "ask it to wrap up first and wait for it to go idle; default false. Not for Codex sessions"},
 				"timeout_seconds": map[string]any{"type": "integer", "description": "with graceful: how long to wait before stopping it anyway; default 120, at most 900"},
+			},
+			"required": []string{"name"},
+		},
+	},
+	{
+		"name":        "adopt_session",
+		"description": "Make a session the child of another, as if that one had launched it: the list then draws it in that coordinator's tree, and list_sessions and session_triage give it as its parent. With no parent, the calling session adopts it; parent \"none\" detaches it. launch_session already does this for the sessions it starts (the latest launch or adoption wins), so this is for handing a session to another coordinator or taking one over.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":   map[string]any{"type": "string", "description": "the child session's name"},
+				"parent": map[string]any{"type": "string", "description": "the running session to put it under; default the calling session; \"none\" to detach it"},
 			},
 			"required": []string{"name"},
 		},
@@ -297,9 +311,9 @@ func prCall(name string, raw json.RawMessage) (string, error) {
 // which need no transcripts.
 func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	var a struct {
-		Name, Brief, Resume, Cwd string
-		Codex                    bool
-		Preamble                 *bool
+		Name, Brief, Resume, Cwd, Parent string
+		Codex                            bool
+		Preamble                         *bool
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -312,10 +326,13 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	if name == "restart_session" {
 		return restartCall(a.Name, raw)
 	}
+	if name == "adopt_session" {
+		return sessions.Adopt(a.Name, a.Parent)
+	}
 	if !filepath.IsAbs(a.Cwd) {
 		return "", fmt.Errorf("cwd must be an absolute path")
 	}
-	l, err := sessions.LaunchSession(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex, NoPreamble: a.Preamble != nil && !*a.Preamble})
+	l, err := sessions.LaunchSession(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex, NoPreamble: a.Preamble != nil && !*a.Preamble, RecordParent: true})
 	if err != nil {
 		return "", err
 	}
@@ -416,7 +433,7 @@ func restartCall(name string, raw json.RawMessage) (string, error) {
 }
 
 func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
-	if name == "launch_session" || name == "close_session" || name == "restart_session" {
+	if name == "launch_session" || name == "close_session" || name == "restart_session" || name == "adopt_session" {
 		return mcpSessionCall(name, raw)
 	}
 	if name == "list_prs" || name == "claim_pr" || name == "depends" {
@@ -432,6 +449,7 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 		Headless   bool   `json:"include_headless"`
 		LiveOnly   bool   `json:"live_only"`
 		StallAfter int    `json:"stall_after_minutes"`
+		Parent     string `json:"parent"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -468,6 +486,15 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 			}
 			rows = kept
 		}
+		if a.Parent != "" {
+			kept := rows[:0]
+			for _, r := range rows {
+				if r.Parent == a.Parent {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
+		}
 		return triageJSON(rows, stall), nil
 	}
 	if name != "read_session" && !a.Headless { // read_session reads any session by id
@@ -493,7 +520,17 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 			}
 			convs = kept
 		}
-		return mcpList(convs, live, clampInt(a.Limit, 20, 100)), nil
+		parents := sessions.ParentNames(convs)
+		if a.Parent != "" {
+			kept := convs[:0:0]
+			for _, c := range convs {
+				if parents[c.SessionID] == a.Parent {
+					kept = append(kept, c)
+				}
+			}
+			convs = kept
+		}
+		return mcpList(convs, live, parents, clampInt(a.Limit, 20, 100)), nil
 	case "read_session":
 		return mcpRead(convs, a.SessionID, a.Query, a.Offset, clampInt(a.Limit, 40, 200))
 	}
@@ -577,7 +614,7 @@ func mcpSearch(convs []transcript.Conversation, query string, n int) (string, er
 	return b.String(), nil
 }
 
-func mcpList(convs []transcript.Conversation, live map[string]sessions.LiveSession, n int) string {
+func mcpList(convs []transcript.Conversation, live map[string]sessions.LiveSession, parents map[string]string, n int) string {
 	now := time.Now()
 	sort.SliceStable(convs, func(i, j int) bool { return convs[i].LastTimestamp > convs[j].LastTimestamp })
 	var b strings.Builder
@@ -588,6 +625,9 @@ func mcpList(convs []transcript.Conversation, live map[string]sessions.LiveSessi
 	b.WriteString("\n")
 	for i, c := range convs[:min(n, len(convs))] {
 		fmt.Fprintf(&b, "\n%d. %s\n", i+1, Header(c))
+		if p := parents[c.SessionID]; p != "" {
+			fmt.Fprintf(&b, "  parent: %s\n", p)
+		}
 		if l, ok := live[c.SessionID]; ok {
 			b.WriteString(sessionRow(c, l, true, now).liveLine(now) + "\n")
 		}

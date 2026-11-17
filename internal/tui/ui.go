@@ -38,6 +38,9 @@ type listItem struct {
 	state       int    // its liveGroup as of the last sortList
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
 	sectioned   bool   // familyState is set: listed under a section heading (nestFamilies)
+	kids        int    // sessions launched under it (a coordinator's tree), any depth
+	hiddenKids  int    // of those, how many its fold hides
+	roll        rollup // what its tree holds: waiting, stalled, done
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -200,7 +203,16 @@ type model struct {
 	coordAsked bool             // the open offer came from ^X O
 	coordSince time.Time        // when the offer last came on screen: keys wait for its grace
 	coordID    string           // the coordinator session, listed in its own section
-	hideCoord  bool             // ^X C: the coordinator isn't listed and never offered (saved)
+	// Coordinator trees (tree.go): launch-parents.json as last read, each
+	// listed session's resolved parent, and the folded trees' sessions,
+	// kept out of m.filtered until the next updateFilter or sortList.
+	launchRecs   sessions.ParentsFile
+	launchMod    time.Time
+	launchLoaded bool
+	launchRes    map[string]string
+	launchResN   int
+	foldedAway   []string
+	hideCoord    bool // ^X C: the coordinator isn't listed and never offered (saved)
 	// hideSidebar (^X L): the sidebar layout shows only the preview, full width (saved).
 	hideSidebar bool
 	// Each session's PRs (prs.go): what GitHub said, by address.
@@ -453,6 +465,7 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 }
 
 func (m *model) updateFilter() {
+	m.foldedAway = nil // rebuilt from m.items, folded sessions included
 	queryLower := strings.ToLower(m.textInput.Value())
 	if queryLower == "" {
 		// Make a copy to avoid sharing backing array with m.items
@@ -542,6 +555,18 @@ func (m *model) sortList() {
 		return
 	}
 	id := m.filtered[min(m.cursor, len(m.filtered)-1)].conv.SessionID
+	if len(m.foldedAway) > 0 { // back in, as they are now, to be nested and counted again
+		away := map[string]bool{}
+		for _, a := range m.foldedAway {
+			away[a] = true
+		}
+		for _, it := range m.items {
+			if away[it.conv.SessionID] {
+				m.filtered = append(m.filtered, it)
+			}
+		}
+		m.foldedAway = nil
+	}
 	for i := range m.filtered { // once each: the comparisons below run n log n times
 		m.filtered[i].state = m.liveGroup(m.filtered[i].conv)
 	}
@@ -576,6 +601,7 @@ func (m *model) sortList() {
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
 		m.cursor = i
 	}
+	m.cursor = max(0, min(m.cursor, len(m.filtered)-1))
 }
 
 // sortItems stable-sorts items by less through an index, so a comparison
@@ -630,8 +656,16 @@ func (m *model) nestFamilies() {
 	}
 	parent := make([]int, n)
 	kids := map[int][]int{}
+	launched := m.launchParents()
+	coord := make([]bool, n) // started others through ccs launch: a coordinator
 	for i, it := range m.filtered {
 		parent[i] = -1
+		if p, ok := at[launched[it.conv.SessionID]]; ok && p != i {
+			parent[i] = p
+			kids[p] = append(kids[p], i)
+			coord[p] = true
+			continue
+		}
 		if _, bg := m.bg[it.conv.SessionID]; it.conv.Spawned || bg {
 			if p, ok := at[m.spawnParent(it.conv)]; ok && p != i {
 				parent[i] = p
@@ -662,12 +696,27 @@ func (m *model) nestFamilies() {
 		walk(r, 0, m.filtered[r].conv.Cwd)
 		walk(i, 0, m.filtered[i].conv.Cwd) // only reached by a cycle
 	}
+	isCoord := make([]bool, len(order)) // coord, in the new order
+	for at, i := range order {
+		isCoord[at] = coord[i]
+	}
 	permute(m.filtered, order)
 	out := m.filtered
+	now := time.Now()
 	for start := 0; start < len(out); { // families are contiguous, each from its depth-0 session
 		end := start + 1
 		for end < len(out) && out[end].depth > 0 {
 			end++
+		}
+		launches := slices.Contains(isCoord[start:end], true)
+		if launches { // each session's tree below it: how many, and what needs a look
+			for i := end - 1; i >= start; i-- {
+				out[i].kids, out[i].hiddenKids, out[i].roll = 0, 0, rollup{}
+				for j := i + 1; j < end && out[j].depth > out[i].depth; j++ {
+					out[i].kids++
+					out[i].roll.add(m.rollupOf(&out[j], now))
+				}
+			}
 		}
 		state := out[start].state
 		for i := start + 1; i < end; i++ {
@@ -676,7 +725,7 @@ func (m *model) nestFamilies() {
 		if pin := m.familyPin(out[start:end]); pin >= 0 { // above every state, in pin order
 			state = pin - len(m.marks.Pinned)
 		}
-		if m.coordID != "" && slices.ContainsFunc(out[start:end], func(it listItem) bool { return it.conv.SessionID == m.coordID }) {
+		if launches || m.coordID != "" && slices.ContainsFunc(out[start:end], func(it listItem) bool { return it.conv.SessionID == m.coordID }) {
 			state = coordFamily // above the pins too
 		}
 		for i := start; i < end; i++ {
@@ -684,6 +733,32 @@ func (m *model) nestFamilies() {
 		}
 		start = end
 	}
+	m.foldTrees()
+}
+
+// foldTrees takes the sessions under each folded coordinator out of
+// m.filtered into m.foldedAway (sortList puts them back before the next
+// sort), and counts them on its row. A search folds nothing, so every match
+// shows.
+func (m *model) foldTrees() {
+	if m.marks == nil || len(m.marks.Folded) == 0 || m.searching() {
+		return
+	}
+	kept := m.filtered[:0]
+	under := -1 // depth of the folded row whose tree is being skipped
+	for i := range m.filtered {
+		it := m.filtered[i]
+		if under >= 0 && it.depth > under {
+			m.foldedAway = append(m.foldedAway, it.conv.SessionID)
+			continue
+		}
+		under = -1
+		if it.kids > 0 && m.folded(it.conv.SessionID) {
+			it.hiddenKids, under = it.kids, it.depth
+		}
+		kept = append(kept, it)
+	}
+	m.filtered = kept
 }
 
 // familyPin is the first pin place of a family's sessions, -1 if none is pinned.
@@ -1080,6 +1155,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.syncCoordinator()
+		m.reloadParents() // a launch or adoption from any session
 		// Keep sessions ccs just opened live until claude's own file shows up.
 		for id, t := range m.opened {
 			if msg.live[id] || time.Since(t) >= sessions.OpenedGrace {
@@ -1652,6 +1728,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.togglePin()
 			return m, nil
 		}
+		if k == "^x b" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			m.toggleFold()
+			return m, nil
+		}
 		if (k == "alt+up" || k == "alt+down") && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen && !m.chatFocus {
 			m.movePin(map[string]int{"alt+up": -1, "alt+down": 1}[k])
 			return m, nil
@@ -2187,6 +2268,13 @@ func (m model) shortcuts() [][2]string {
 	group("^X then a letter: this session")
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top of the list")
 	add(pinned, "^X P", "unpin it")
+	if sel && m.filtered[m.cursor].kids > 0 {
+		if m.filtered[m.cursor].hiddenKids > 0 {
+			add(true, "^X B", "unfold its branch: show the sessions it launched")
+		} else {
+			add(true, "^X B", "fold its branch to its own row (its counts stay)")
+		}
+	}
 	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned sessions")
 	if sel && m.marks != nil {
 		if m.putAway(m.filtered[m.cursor].conv) != awake {
@@ -2643,10 +2731,11 @@ func (m model) formatListItem(item listItem, selected bool) string {
 		marks, colouredMarks, mw = "  "+marks, "  "+colouredMarks, colMarks+2
 	}
 	tw := m.topicColWidth()
-	nest := nestPrefix(item.depth)
+	nest := nestPrefix(item.depth) + item.foldGlyph()
 	topic := nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest))
-	if tasks := m.taskCell(item.conv, false); tasks != "" { // running background tasks, after the title
-		topic = nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest)-ansi.StringWidth(tasks)-1) + " " + tasks
+	// running background tasks, then a coordinator's counts, after the title
+	if after := strings.TrimSpace(m.taskCell(item.conv, false) + " " + rollupCell(item.roll, false)); after != "" {
+		topic = nest + listTopic(item.conv, tw-mw-ansi.StringWidth(nest)-ansi.StringWidth(after)-1) + " " + after
 	}
 
 	// transcript.Message count
@@ -2823,7 +2912,9 @@ func (m model) listRows() []listRow {
 	sections := map[int]int{}
 	for i := range m.filtered {
 		counts[groupOf(&m.filtered[i])]++
-		sections[sectionOf(m.filtered[i].familyState)]++
+		if s := sectionOf(m.filtered[i].familyState); s != coordinatorSec || m.filtered[i].depth == 0 {
+			sections[s]++ // the coordinator section counts its trees
+		}
 	}
 	rows := make([]listRow, 0, len(m.filtered)*m.rowsPerItem()+2*len(sections)+len(counts))
 	for i := range m.filtered {
@@ -2833,6 +2924,9 @@ func (m model) listRows() []listRow {
 			switch {
 			case s == coordinatorSec:
 				sec = coordinatorSection
+				if sections[s] > 1 {
+					sec.name += "s"
+				}
 			case s >= 0:
 				sec = stateSections[min(s, len(stateSections)-1)]
 			}
@@ -2900,6 +2994,9 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if tasks := m.taskCell(conv, false); tasks != "" {
 		hits, colouredHits = strings.TrimSpace(tasks+" "+hits), strings.TrimSpace(m.taskCell(conv, true)+" "+colouredHits)
 	}
+	if r := rollupCell(item.roll, false); r != "" { // a coordinator's tree: waiting, stalled, done
+		hits, colouredHits = strings.TrimSpace(r+" "+hits), strings.TrimSpace(rollupCell(item.roll, true)+" "+colouredHits)
+	}
 	// One space before the marks, so their glyphs sit under the search's >;
 	// with ^X G two more, so sessions sit in from their folder's header.
 	lead := " "
@@ -2907,7 +3004,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		lead = "   "
 	}
 	tw := w - len(lead) - colMarks - ansi.StringWidth(hits) - 1
-	nest := nestPrefix(item.depth)
+	nest := nestPrefix(item.depth) + item.foldGlyph()
 	topic := padRight(nest+listTopic(conv, tw-ansi.StringWidth(nest)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
 	stats := strings.TrimSuffix(transcript.FormatAgo(conv.LastTimestamp, time.Now()), " ago")

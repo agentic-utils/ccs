@@ -104,6 +104,9 @@ def fixtures(home):
         ("assistant", "Opened https://github.com/example/infra/pull/97 with the lock timeout and a retry with backoff. Waiting for its checks."),
     ], title="staging-deploy-timeout", custom=True, ctx=95_000, ago=timedelta(minutes=6), prs=[gh + "infra/pull/97"]),
         "staging-deploy-timeout", "busy"))
+    with open(os.path.join(cfg, "launch-parents.json"), "w") as f:  # the coordinator launched the three
+        json.dump({"parents": {name: {"child": name, "parent": "coordinator", "parent_id": coord, "at": "2026-01-01T00:00:00Z"}
+                               for _, name, _ in live[1:]}}, f)
     write_conv(home, "/Users/you/code/payments-api", [
         ("user", "add retries to the webhook sender"),
         ("assistant", "Webhooks now retry 5 times with exponential backoff (1s to 16s), and give up with an alert after that."),
@@ -146,7 +149,10 @@ KEYS = [  # (delay before, keys)
     (2.0, "\x0f"),        # ^O its links and PRs
     (2.5, ESC),
     (1.0, DOWN),          # busy, checks running
-    (1.8, DOWN),
+    (1.5, UP + UP + UP),  # back to the coordinator
+    (1.5, "\x18b"),       # ^X B folds its tree to one row, its counts kept
+    (2.5, "\x18b"),       # and unfolds it
+    (1.8, DOWN * 4),
     (1.0, DOWN),
     (1.2, ""),
     *[(0.12, c) for c in "flaky"],

@@ -1,7 +1,7 @@
 package mcp
 
 // ccs serve: the sessions, their triage, transcripts and PRs as a small web
-// page for a phone, with sending, answering, launching, closing and
+// page for a phone, with sending, launching, closing and
 // restarting behind --allow-write. It listens on loopback only and is meant
 // to sit behind a Cloudflare Tunnel with a Cloudflare Access policy; it
 // checks Access's signed token on every request itself (access.go), so it
@@ -64,9 +64,6 @@ type server struct {
 	limits  *rateLimits
 	now     func() time.Time
 
-	answerMu sync.Mutex      // one answer at a time
-	answered map[string]bool // session id + question id: each question is answered once from here
-
 	loadMu   sync.Mutex
 	inflight *loadCall     // the scan running now, which concurrent requests share
 	slots    chan struct{} // requests being served at once
@@ -124,7 +121,7 @@ func (s *server) loader(ctx context.Context) mcpSource {
 func newServer(cfg serveConfig) *server {
 	key := make([]byte, 32)
 	rand.Read(key)
-	return &server{cfg: cfg, csrfKey: key, limits: newRateLimits(), now: time.Now, answered: map[string]bool{}, slots: make(chan struct{}, serveSlots)}
+	return &server{cfg: cfg, csrfKey: key, limits: newRateLimits(), now: time.Now, slots: make(chan struct{}, serveSlots)}
 }
 
 // RunServe is `ccs serve`.
@@ -136,7 +133,7 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 	team := fs.String("team", "", "Cloudflare Access team domain, e.g. me.cloudflareaccess.com (required)")
 	aud := fs.String("aud", "", "the Access application's AUD tag (required)")
 	emails := fs.String("email", "", "comma-separated emails allowed in (required)")
-	write := fs.Bool("allow-write", false, "allow sending, answering, launching, closing and restarting (read-only without it)")
+	write := fs.Bool("allow-write", false, "allow sending, launching, closing and restarting (read-only without it)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: ccs serve --host <hostname> --team <team> --aud <tag> --email <you@example.com> [--addr 127.0.0.1:7467] [--allow-write]")
 		fmt.Fprintln(stderr, "Serves ccs's sessions to a browser through a Cloudflare Tunnel with Access in front. See docs/remote.md.")
@@ -411,11 +408,12 @@ type sessionView struct {
 	Ask                    *askView
 }
 
+// askView is a waiting session's pending question, shown but never answered
+// from here: typing a digit into its terminal could land on whatever is on
+// screen by then (a permission prompt), and Claude Code has no way yet for
+// ccs to answer a prompt by its id.
 type askView struct {
 	ID, Question string
-	Since        int64 // the wait's statusUpdatedAt, epoch ms: an answer is for this wait only
-	Options      []string
-	Answerable   bool // one single-choice question: a digit in its terminal picks it
 }
 
 func (s *server) session(r *http.Request) (sessionView, int, error) {
@@ -451,29 +449,12 @@ func (s *server) session(r *http.Request) (sessionView, int, error) {
 	}
 	if v.Live {
 		if conv, ok := s.conv(r.Context(), id); ok {
-			if qs := conv.Questions(); len(qs) > 0 && conv.Pending != nil {
-				a := &askView{ID: conv.Pending.ID, Since: waitSince(id), Question: transcript.CleanText(qs[0].Question), Answerable: len(qs) == 1 && !qs[0].MultiSelect}
-				for i, o := range qs[0].Options {
-					if i < 9 {
-						a.Options = append(a.Options, transcript.CleanText(o.Label))
-					}
-				}
-				if len(qs) > 1 {
-					a.Question = conv.PendingAsk()
-				}
-				v.Ask = a
+			if len(conv.Questions()) > 0 && conv.Pending != nil {
+				v.Ask = &askView{ID: conv.Pending.ID, Question: conv.PendingAsk()}
 			}
 		}
 	}
 	return v, http.StatusOK, nil
-}
-
-// waitSince is the running session's status time (epoch ms), 0 if unknown.
-func waitSince(id string) int64 {
-	if ls, ok := liveByID(id); ok && !ls.Stat.Since.IsZero() {
-		return ls.Stat.Since.UnixMilli()
-	}
-	return 0
 }
 
 func (s *server) conv(ctx context.Context, id string) (transcript.Conversation, bool) {
@@ -543,15 +524,15 @@ func (s *server) launchPage(w http.ResponseWriter, r *http.Request) {
 // went.
 
 type action struct {
-	Kind, ID, Name, Text, Ask, Option, Cwd, Brief, Since string
-	Codex, Graceful                                      bool
+	Kind, ID, Name, Text, Cwd, Brief string
+	Codex, Graceful                  bool
 }
 
 func formAction(r *http.Request) action {
 	f := r.PostFormValue
 	return action{
-		Kind: f("action"), ID: f("id"), Name: f("name"), Text: f("text"), Ask: f("ask"),
-		Option: f("option"), Cwd: f("cwd"), Brief: f("brief"), Since: f("since"),
+		Kind: f("action"), ID: f("id"), Name: f("name"), Text: f("text"),
+		Cwd: f("cwd"), Brief: f("brief"),
 		Codex: f("codex") == "on", Graceful: f("graceful") == "on",
 	}
 }
@@ -561,8 +542,6 @@ func (a action) describe() (string, error) {
 	switch a.Kind {
 	case "send":
 		return fmt.Sprintf("Send this message to %s, as you:\n\n%s", a.Name, a.Text), nil
-	case "answer":
-		return fmt.Sprintf("Answer %s's question with option %s, by pressing %s in its terminal.", a.Name, a.Option, a.Option), nil
 	case "launch":
 		kind := "Claude Code"
 		if a.Codex {
@@ -625,8 +604,6 @@ func (s *server) do(ctx context.Context, a action) (string, error) {
 	switch a.Kind {
 	case "send":
 		return s.send(a)
-	case "answer":
-		return s.answer(ctx, a)
 	case "launch":
 		args, _ := json.Marshal(map[string]any{"name": a.Name, "cwd": a.Cwd, "brief": a.Brief, "codex": a.Codex})
 		return serveCall("launch_session", args, s.loader(ctx))
@@ -710,85 +687,6 @@ func (s *server) send(a action) (string, error) {
 		note += " It's on a menu, so the message waits until that's answered."
 	}
 	return note, nil
-}
-
-// answer picks an option of a waiting session's question by pressing its
-// digit in the terminal, as the TUI's overlay does, only while it's still
-// waiting on the same question the page showed, and only for one
-// single-choice question (a permission prompt or a multi-part menu is never
-// answered from afar).
-func (s *server) answer(ctx context.Context, a action) (string, error) {
-	n, err := strconv.Atoi(a.Option)
-	if err != nil || n < 1 || n > 9 {
-		return "", errors.New("pick an option from 1 to 9")
-	}
-	s.answerMu.Lock()
-	defer s.answerMu.Unlock()
-	once := a.ID + " " + a.Ask
-	if s.answered[once] {
-		return "", fmt.Errorf("that question of %s's was already answered from here", a.Name)
-	}
-	ls, ok := liveByID(a.ID)
-	if !ok || ls.Codex {
-		return "", fmt.Errorf("%s isn't a running Claude Code session", a.Name)
-	}
-	if ls.Unverified {
-		return "", fmt.Errorf("%s's process couldn't be checked against its session file, so no keys were pressed", a.Name)
-	}
-	since, err := strconv.ParseInt(a.Since, 10, 64)
-	if err != nil || since <= 0 {
-		return "", fmt.Errorf("the page didn't say which wait of %s's it showed: reload it", a.Name)
-	}
-	if err := waitingOn(a, ls.PID, since); err != nil {
-		return "", err
-	}
-	conv, ok := s.conv(ctx, a.ID)
-	if !ok || conv.Pending == nil || conv.Pending.ID != a.Ask {
-		return "", fmt.Errorf("%s isn't asking that question any more: reload its page", a.Name)
-	}
-	qs := conv.Questions()
-	if len(qs) != 1 || qs[0].MultiSelect || n > len(qs[0].Options) {
-		return "", fmt.Errorf("%s's question can only be answered in its tab", a.Name)
-	}
-	// The terminal lookup (ps, tmux) and the scan above take a while, so the
-	// session file is read once more after them, the last thing before the
-	// keys: the same wait (its status time unchanged since the page was
-	// drawn), on a question menu. Answering the menu in its tab, or anything
-	// else coming up, changes the status and its time.
-	term := sessions.FindTerminal(ls.PID)
-	if term.Kind == "" {
-		return "", fmt.Errorf("couldn't find %s's terminal (tmux or iTerm): no keys were pressed", a.Name)
-	}
-	if err := waitingOn(a, ls.PID, since); err != nil {
-		return "", err
-	}
-	s.answered[once] = true // before the keys: a second press must never reach whatever comes next
-	if err := sessions.SendKeys(term, strconv.Itoa(n), false); err != nil {
-		return "", fmt.Errorf("pressing %d in %s's %s may have failed: %v", n, a.Name, term.Kind, err)
-	}
-	return fmt.Sprintf("Pressed %d in %s's %s: %s", n, a.Name, term.Kind, qs[0].Options[n-1].Label), nil
-}
-
-// answerableWait is the waitingFor Claude Code writes while a question menu
-// (AskUserQuestion) is up. Anything else, unknown or missing included, is
-// never answered from afar.
-const answerableWait = "input needed"
-
-// waitingOn reads pid's session file: still session a.ID, waiting on a
-// question menu, the wait that began at since (epoch ms).
-func waitingOn(a action, pid int, since int64) error {
-	f, err := readSessionFile(pid)
-	switch {
-	case err != nil || f.SessionID != a.ID:
-		return fmt.Errorf("%s's session has changed: no keys were pressed", a.Name)
-	case f.Status != "waiting":
-		return fmt.Errorf("%s isn't waiting on its menu now: no keys were pressed", a.Name)
-	case f.WaitingFor != answerableWait:
-		return fmt.Errorf("%s is waiting on %s, not a question menu: answer it in its tab; no keys were pressed", a.Name, orDash(f.WaitingFor))
-	case f.StatusUpdatedAt != since:
-		return fmt.Errorf("%s's menu has changed since the page was drawn: reload it; no keys were pressed", a.Name)
-	}
-	return nil
 }
 
 // ServeMain is `ccs serve` from the command line.

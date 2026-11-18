@@ -155,7 +155,7 @@ Each run is written to the activity log with its plan. `ccs adopt` corrects any 
 
 ## Use it from your phone
 
-`ccs serve` shows your sessions, their questions, transcripts and PRs as a web page, and with `--allow-write` sends messages, answers single-choice questions and launches, closes or restarts sessions. It listens on loopback only, behind a Cloudflare Tunnel with Cloudflare Access, and checks Access's signed token on every request itself:
+`ccs serve` shows your sessions, their questions, transcripts and PRs as a web page, and with `--allow-write` sends messages and launches, closes or restarts sessions. It shows questions but doesn't answer them yet. It listens on loopback only, behind a Cloudflare Tunnel with Cloudflare Access, and checks Access's signed token on every request itself:
 
 ```bash
 ccs serve --host ccs.example.com --team <team> --aud <AUD tag> --email you@example.com [--allow-write]

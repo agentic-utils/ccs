@@ -681,7 +681,7 @@ func TestCloseStopsThenClosesTheTab(t *testing.T) {
 	exited := make(chan struct{})
 	go func() { child.Wait(); close(exited) }()
 	pid := child.Process.Pid
-	write("a.json", pid, "worker")
+	write(fmt.Sprintf("%d.json", pid), pid, "worker") // as Claude Code names it: the final stop reads it
 	oldTTY, oldSig, oldTab, oldWait := proc.TTYOf, proc.SignalPID, CloseTab, CloseWait
 	t.Cleanup(func() {
 		proc.TTYOf, proc.SignalPID, CloseTab, CloseWait = oldTTY, oldSig, oldTab, oldWait
@@ -725,12 +725,13 @@ func TestCloseRefusals(t *testing.T) {
 	if _, err := CloseByName("twin"); err == nil || !strings.Contains(err.Error(), "2 running sessions") {
 		t.Errorf("two sessions with one name are left alone: %v", err)
 	}
-	write("c.json", os.Getpid(), "stuck")
+	write(fmt.Sprintf("%d.json", os.Getpid()), os.Getpid(), "stuck")
+	stuck := fmt.Sprintf("id-stuck-%d", os.Getpid())
 	oldTTY, oldSig, oldTab, oldWait := proc.TTYOf, proc.SignalPID, CloseTab, CloseWait
 	t.Cleanup(func() {
 		proc.TTYOf, proc.SignalPID, CloseTab, CloseWait = oldTTY, oldSig, oldTab, oldWait
 	})
-	if _, err := CloseSession("stuck", os.Getpid()); err == nil || !strings.Contains(err.Error(), "no terminal") {
+	if _, err := CloseSession("stuck", os.Getpid(), stuck); err == nil || !strings.Contains(err.Error(), "no terminal") {
 		t.Errorf("no tty (an app or claude --bg): %v", err)
 	}
 	proc.TTYOf = func(int) string { return "/dev/ttys045" }
@@ -738,8 +739,17 @@ func TestCloseRefusals(t *testing.T) {
 	CloseWait = 200 * time.Millisecond
 	tabClosed := false
 	CloseTab = func(string) bool { tabClosed = true; return true }
-	if _, err := CloseSession("stuck", os.Getpid()); err == nil || !strings.Contains(err.Error(), "still running") || tabClosed {
+	if _, err := CloseSession("stuck", os.Getpid(), stuck); err == nil || !strings.Contains(err.Error(), "still running") || tabClosed {
 		t.Errorf("a process that won't exit keeps its tab: %v, closed %v", err, tabClosed)
+	}
+	// The final stop checks which session the pid runs just before the
+	// signal: another one, or none it can tell, stops nothing.
+	signalled := false
+	proc.SignalPID = func(int, syscall.Signal) error { signalled = true; return nil }
+	for _, id := range []string{"", "id-someone-else"} {
+		if _, err := CloseSession("stuck", os.Getpid(), id); err == nil || !strings.Contains(err.Error(), "nothing was stopped") || signalled {
+			t.Errorf("id %q: %v, signalled %v", id, err, signalled)
+		}
 	}
 }
 

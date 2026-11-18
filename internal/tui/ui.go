@@ -2205,7 +2205,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if b, bg := m.bg[id]; bg {
 					return m, stopCmd(m.sessionName(conv), b)
 				}
-				return m, closeCmd(m.sessionName(conv), m.livePIDs[id])
+				return m, closeCmd(m.sessionName(conv), m.livePIDs[id], id)
 			case "n", "N", "esc":
 				m.confirmStop = ""
 				return m, nil

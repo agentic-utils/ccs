@@ -242,3 +242,28 @@ func TestGracefulCloseLeavesAReplacedConversationRunning(t *testing.T) {
 		t.Errorf("the new conversation must keep running: signalled %d, tabs %v", g.signalled, g.tabs)
 	}
 }
+
+// The graceful close's deadline passes with its session file unreadable:
+// the final stop can't tell which session the pid runs, so nothing is stopped.
+func TestGracefulCloseStopsNothingWhenItCantTellTheSession(t *testing.T) {
+	g := newGracefulFixture(t)
+	file := filepath.Join(GetSessionsDir(), fmt.Sprintf("%d.json", g.pid))
+	SendCloseNotice = func(_ int, _ SessionFile, text string) error {
+		g.say("user", text)
+		os.WriteFile(file, []byte(`{"pid":`), 0o600)
+		return nil
+	}
+	_, err := CloseGracefully("worker", 60*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") || g.signalled != 0 || !proc.PIDAlive(g.pid) {
+		t.Errorf("an unreadable session at the deadline is left running: %v, signalled %d", err, g.signalled)
+	}
+}
+
+// A restart checks the session again at the stop, not only when it found it.
+func TestRestartStopsNothingOnceThePIDRunsAnotherSession(t *testing.T) {
+	g := newGracefulFixture(t)
+	_, err := stopAndResume(RestartOpts{Name: "worker"}, restartTarget{pid: g.pid, id: "id-before", tty: "/dev/ttys050", cwd: "/code/app"}, false)
+	if err == nil || !strings.Contains(err.Error(), "nothing was stopped") || g.signalled != 0 {
+		t.Errorf("restart of a pid that now runs another session: %v, signalled %d", err, g.signalled)
+	}
+}

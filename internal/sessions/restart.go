@@ -297,7 +297,7 @@ var launch = LaunchSession
 func stopAndResume(o RestartOpts, t restartTarget, exited bool) (string, error) {
 	if exited {
 		CloseTab(t.tty)
-	} else if _, err := CloseSession(o.Name, t.pid); err != nil && proc.PIDAlive(t.pid) {
+	} else if _, err := CloseSession(o.Name, t.pid, t.id); err != nil && proc.PIDAlive(t.pid) {
 		return "", fmt.Errorf("couldn't stop %s, so it wasn't restarted: %v", o.Name, err)
 	} else if err != nil {
 		state.LogActivity("restart %s: stopped, but %v", o.Name, err) // its tab, most likely: the resume goes on

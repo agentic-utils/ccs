@@ -137,7 +137,8 @@ Key bindings:
  Ctrl+X then a letter: this session
   Ctrl+X P        Pin it to the top of the list (again to unpin)
   Alt+Up/Down     Move it among the pinned sessions
-  Ctrl+X B        Fold an orchestrator's branch to its own row (again to unfold)
+  Ctrl+X B        On a session with others under it: show its closed ones, then fold
+                  its branch to its own row, then back to its live ones
   Ctrl+X S        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
   Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)

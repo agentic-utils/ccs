@@ -521,10 +521,19 @@ func TestServePreview(t *testing.T) {
 			t.Errorf("%v: code %d", args, code)
 		}
 	}
+	var last *httptest.ResponseRecorder
 	convs := []transcript.Conversation{{SessionID: "s-1", Title: "worker", Cwd: "/r", LastTimestamp: time.Now().UTC().Format(time.RFC3339)}}
 	load := func() ([]transcript.Conversation, error) { return convs, nil }
 	do := func(s *server, method, host string, form url.Values, hdr map[string]string) *httptest.ResponseRecorder {
 		var req *http.Request
+		defer func() {
+			if hdr["no-cookie"] == "" {
+				req.AddCookie(&http.Cookie{Name: previewCookie, Value: s.cfg.token})
+			}
+			w := httptest.NewRecorder()
+			s.handler().ServeHTTP(w, req)
+			last = w
+		}()
 		if form != nil {
 			req = httptest.NewRequest(method, "http://"+host+"/act", strings.NewReader(form.Encode()))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -532,46 +541,67 @@ func TestServePreview(t *testing.T) {
 			req = httptest.NewRequest(method, "http://"+host+"/", nil)
 		}
 		for k, v := range hdr {
-			req.Header.Set(k, v)
+			if k != "no-cookie" {
+				req.Header.Set(k, v)
+			}
 		}
-		w := httptest.NewRecorder()
-		s.handler().ServeHTTP(w, req)
-		return w
+		return nil
 	}
-	ro := newServer(serveConfig{preview: true, load: load})
+	call := func(s *server, method, host string, form url.Values, hdr map[string]string) *httptest.ResponseRecorder {
+		do(s, method, host, form, hdr)
+		return last
+	}
+	ro := newServer(serveConfig{preview: true, token: "tok-ro", load: load})
+	// The link logs in: its token becomes a cookie, then the page.
+	req := httptest.NewRequest("GET", "http://127.0.0.1:7467/prs?token=tok-ro", nil)
+	w := httptest.NewRecorder()
+	ro.handler().ServeHTTP(w, req)
+	ck := w.Result().Cookies()
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/prs" || len(ck) != 1 || ck[0].Value != "tok-ro" || !ck[0].HttpOnly || ck[0].SameSite != http.SameSiteStrictMode {
+		t.Errorf("the link: %d %v %v", w.Code, w.Header(), ck)
+	}
+	w = httptest.NewRecorder()
+	ro.handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7467/?token=wrong", nil))
+	if w.Code != http.StatusForbidden || len(w.Result().Cookies()) != 0 {
+		t.Errorf("a wrong link: %d", w.Code)
+	}
+	// Without the cookie (another user on this Mac, any local client): nothing.
+	if w := call(ro, "GET", "127.0.0.1:7467", nil, map[string]string{"no-cookie": "1"}); w.Code != http.StatusForbidden {
+		t.Errorf("no cookie: %d", w.Code)
+	}
 	for _, host := range []string{"127.0.0.1:7467", "localhost:7467", "[::1]:7467"} {
-		if w := do(ro, "GET", host, nil, nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "local preview, read-only") {
+		if w := call(ro, "GET", host, nil, nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "local preview, read-only") {
 			t.Errorf("%s: %d", host, w.Code)
 		}
 	}
-	if w := do(ro, "GET", "evil.example", nil, nil); w.Code != http.StatusMisdirectedRequest {
+	if w := call(ro, "GET", "evil.example", nil, nil); w.Code != http.StatusMisdirectedRequest {
 		t.Errorf("a rebound host: %d", w.Code)
 	}
-	if w := do(ro, "GET", "127.0.0.1:7467", nil, nil); strings.Contains(w.Body.String(), `action="/act"`) {
+	if w := call(ro, "GET", "127.0.0.1:7467", nil, nil); strings.Contains(w.Body.String(), `action="/act"`) {
 		t.Error("a read-only preview shows no forms")
 	}
 	same := map[string]string{"Origin": "http://127.0.0.1:7467", "Sec-Fetch-Site": "same-origin"}
 	send := url.Values{"action": {"send"}, "id": {"s-1"}, "name": {"worker"}, "text": {"hi"}, "confirm": {"yes"}, "csrf": {ro.csrf(previewUser)}}
-	if w := do(ro, "POST", "127.0.0.1:7467", send, same); w.Code != http.StatusForbidden {
+	if w := call(ro, "POST", "127.0.0.1:7467", send, same); w.Code != http.StatusForbidden {
 		t.Errorf("a write to a read-only preview: %d", w.Code)
 	}
 
-	rw := newServer(serveConfig{preview: true, allowWrite: true, load: load})
+	rw := newServer(serveConfig{preview: true, allowWrite: true, token: "tok-rw", load: load})
 	got := stubSend(t, "idle")
-	if w := do(rw, "GET", "127.0.0.1:7467", nil, nil); !strings.Contains(w.Body.String(), "local preview, read and write") {
+	if w := call(rw, "GET", "127.0.0.1:7467", nil, nil); !strings.Contains(w.Body.String(), "local preview, read and write") {
 		t.Errorf("a read-write preview says so: %s", w.Body)
 	}
 	send.Set("csrf", rw.csrf(previewUser))
 	for _, hdr := range []map[string]string{{}, {"Origin": "https://evil.example"}, {"Origin": "http://127.0.0.1:7467", "Sec-Fetch-Site": "cross-site"}} {
-		if w := do(rw, "POST", "127.0.0.1:7467", send, hdr); w.Code != http.StatusForbidden || len(*got) != 0 {
+		if w := call(rw, "POST", "127.0.0.1:7467", send, hdr); w.Code != http.StatusForbidden || len(*got) != 0 {
 			t.Errorf("%v: %d", hdr, w.Code)
 		}
 	}
 	forged := url.Values{"action": {"send"}, "id": {"s-1"}, "name": {"worker"}, "text": {"hi"}, "confirm": {"yes"}, "csrf": {"forged"}}
-	if w := do(rw, "POST", "127.0.0.1:7467", forged, same); w.Code != http.StatusForbidden || len(*got) != 0 {
+	if w := call(rw, "POST", "127.0.0.1:7467", forged, same); w.Code != http.StatusForbidden || len(*got) != 0 {
 		t.Errorf("a forged token: %d", w.Code)
 	}
-	if w := do(rw, "POST", "127.0.0.1:7467", send, same); w.Code != http.StatusOK || len(*got) != 1 {
+	if w := call(rw, "POST", "127.0.0.1:7467", send, same); w.Code != http.StatusOK || len(*got) != 1 {
 		t.Errorf("a same-origin confirmed send: %d %v", w.Code, *got)
 	}
 }

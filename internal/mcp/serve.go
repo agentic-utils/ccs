@@ -151,6 +151,7 @@ func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 		fmt.Fprintln(stderr, "usage: ccs serve --host <hostname> --team <team> --aud <tag> --email <you@example.com> [--addr 127.0.0.1:7467] [--allow-write]")
 		fmt.Fprintln(stderr, "       ccs serve --preview [--allow-write] [--addr 127.0.0.1:7467]")
 		fmt.Fprintln(stderr, "       ccs serve install <the same flags> | uninstall | start | stop | status   (a launchd agent)")
+		fmt.Fprintln(stderr, "       ccs serve qr   the installed agent's address as a QR code, for a phone's camera")
 		fmt.Fprintln(stderr, "Serves ccs's sessions to a browser through a Cloudflare Tunnel with Access in front. See docs/remote.md.")
 		fs.PrintDefaults()
 	}
@@ -203,18 +204,8 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 		fmt.Fprintln(stderr, "ccs serve:", err)
 		return 1
 	}
-	mode := "read-only"
-	if *write {
-		mode = "read and write"
-	}
-	if *preview {
-		link := fmt.Sprintf("http://%s/?token=%s", ln.Addr(), s.cfg.token)
-		fmt.Fprintf(stdout, "ccs serve: %s preview, this Mac only (^C stops it). Open it with this link, which only you have:\n  %s\n", mode, link)
+	if link := s.announce(stdout, ln.Addr().String()); link != "" {
 		go openPreview(link)
-		state.LogActivity("serve: started, %s preview, on %s", mode, ln.Addr())
-	} else {
-		fmt.Fprintf(stdout, "ccs serve: %s on http://%s for https://%s (Access team %s)\n", mode, ln.Addr(), s.cfg.host, s.cfg.access.team)
-		state.LogActivity("serve: started, %s, on %s for %s", mode, ln.Addr(), s.cfg.host)
 	}
 	srv := &http.Server{
 		Handler:           s.handler(),
@@ -228,6 +219,27 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 		return 1
 	}
 	return 0
+}
+
+// announce says where ccs serve is: a preview's secret link (returned, to
+// open in the browser), never a QR code, since 127.0.0.1 on a phone is the
+// phone; the remote mode's address with a QR code of https://<host>/ for a
+// phone's camera.
+func (s *server) announce(w io.Writer, addr string) (link string) {
+	mode := "read-only"
+	if s.cfg.allowWrite {
+		mode = "read and write"
+	}
+	if s.cfg.preview {
+		link = fmt.Sprintf("http://%s/?token=%s", addr, s.cfg.token)
+		fmt.Fprintf(w, "ccs serve: %s preview, this Mac only (^C stops it). Open it with this link, which only you have:\n  %s\n", mode, link)
+		state.LogActivity("serve: started, %s preview, on %s", mode, addr)
+		return link
+	}
+	fmt.Fprintf(w, "ccs serve: %s on http://%s for https://%s (Access team %s)\n", mode, addr, s.cfg.host, s.cfg.access.team)
+	printQR(w, "https://"+s.cfg.host+"/")
+	state.LogActivity("serve: started, %s, on %s for %s", mode, addr, s.cfg.host)
+	return ""
 }
 
 // loopbackOnly refuses any address but a loopback one: the tunnel connects

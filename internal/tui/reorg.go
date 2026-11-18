@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -84,7 +85,7 @@ func reorgRows(convs []transcript.Conversation, live map[string]sessions.LiveSes
 	var rows []reorgRow
 	keys := map[string]bool{}
 	for _, c := range convs {
-		if c.Headless() {
+		if c.Headless() || isReorgRun(c.Title) {
 			continue
 		}
 		key := c.SessionID
@@ -150,17 +151,21 @@ func shortTime(ts string) string {
 	return "-"
 }
 
-// reorgModel runs the model on prompt: claude -p with Sonnet, kept apart
-// from the user's setup as far as the CLI allows without dropping their
-// login (--bare would): no tools, MCP servers, settings files (so no
-// CLAUDE.md), hooks or commands, nothing saved, the plan as structured
-// output. cmd.Output keeps stderr for the error. Stubbed in tests.
-var reorgModel = func(ctx context.Context, prompt string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", "sonnet", "--tools", "", "--strict-mcp-config",
+// reorgModel runs the model on prompt as the session name: claude -p with
+// Sonnet, kept apart from the user's setup as far as the CLI allows without
+// dropping their login (--bare would): no tools, MCP servers, settings files
+// (so no CLAUDE.md, even in the orchestrator's folder), hooks or commands,
+// the plan as structured output. It is saved and named, so it's an ordinary
+// session in the list (a name keeps it from counting as headless), under the
+// top orchestrator, with the prompt and the plan in its transcript.
+// cmd.Output keeps stderr for the error. Stubbed in tests.
+var reorgModel = func(ctx context.Context, name, prompt string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", "sonnet", "--name", name, "--tools", "", "--strict-mcp-config",
 		"--setting-sources", "", "--settings", `{"disableAllHooks":true}`, "--disable-slash-commands",
-		"--no-session-persistence", "--system-prompt", reorgSystem, "--output-format", "json", "--json-schema", reorgSchema)
+		"--system-prompt", reorgSystem, "--output-format", "json", "--json-schema", reorgSchema)
 	cmd.Stdin = strings.NewReader(prompt)
-	cmd.Dir = os.TempDir()
+	cmd.Dir = orchestratorDir()
+	os.MkdirAll(cmd.Dir, 0o700)
 	cmd.WaitDelay = 5 * time.Second
 	return cmd.Output()
 }
@@ -225,6 +230,7 @@ type reorgResult struct {
 	Launched              []string
 	Moved, Told           int
 	Errs                  []string
+	Backup                string // the parents as they were, for ccs reorg --undo
 }
 
 func (r reorgResult) String() string {
@@ -235,6 +241,9 @@ func (r reorgResult) String() string {
 	s += fmt.Sprintf("; %d sessions moved, %d live ones told", r.Moved, r.Told)
 	if len(r.Errs) > 0 {
 		s += "; problems: " + strings.Join(r.Errs, "; ")
+	}
+	if r.Backup != "" && r.Moved > 0 {
+		s += "; ccs reorg --undo puts the old parents back"
 	}
 	return s
 }
@@ -498,9 +507,11 @@ func expandHome(p string) string {
 	return p
 }
 
-// applyReorg carries out a checked plan: launches the new orchestrators,
-// saves every change, then (only once that's saved) tells the live sessions
-// whose place changed.
+// applyReorg carries out a checked plan: saves every change first (a new
+// orchestrator by name, its id unknown until it runs), then launches the new
+// orchestrators, putting back the records of one whose launch failed, and
+// only then tells the live sessions whose place changed. A failed save
+// launches and tells nothing.
 func applyReorg(p reorgProposal) reorgResult {
 	var res reorgResult
 	byName := map[string]reorgRow{}
@@ -510,12 +521,32 @@ func applyReorg(p reorgProposal) reorgResult {
 		}
 	}
 	res.Orchestrators = len(p.orchs)
-	callers := map[string]sessions.Caller{}
+	var recs []sessions.ParentRec
 	for _, o := range p.orchs {
 		res.Topics += len(o.Topics)
+		me := byName[o.Name] // the zero row for a new one: by name only
+		if o.Parent != "" {
+			pr := byName[o.Parent]
+			recs = append(recs, sessions.ParentRec{Child: o.Name, ChildID: me.Conv.SessionID, Parent: o.Parent, ParentID: pr.Conv.SessionID, ParentKind: pr.Conv.Kind, Source: "reorg"})
+		}
+		for _, m := range o.Moving {
+			recs = append(recs, sessions.ParentRec{Child: m.Conv.Title, ChildID: m.Conv.SessionID, Parent: o.Name, ParentID: me.Conv.SessionID, ParentKind: me.Conv.Kind, Source: "reorg"})
+		}
+	}
+	backup, err := sessions.BackupParents(time.Now())
+	if err != nil {
+		res.Errs = append(res.Errs, "couldn't back up the parents first, so nothing changed: "+err.Error())
+		return res
+	}
+	res.Backup = backup
+	if err := sessions.SetParents(recs); err != nil {
+		res.Errs = append(res.Errs, "couldn't save the new parents, so nothing was launched or told: "+err.Error())
+		return res
+	}
+
+	failed := map[string]bool{}
+	for _, o := range p.orchs {
 		if !o.New {
-			r := byName[o.Name]
-			callers[o.Name] = sessions.Caller{ID: r.Conv.SessionID, Name: o.Name, Kind: r.Conv.Kind}
 			continue
 		}
 		var live, closed []string
@@ -528,39 +559,37 @@ func applyReorg(p reorgProposal) reorgResult {
 		}
 		l, err := reorgLaunch(sessions.LaunchOpts{Name: o.Name, Cwd: o.Folder, Brief: orchestratorBriefFor(o.Name, o.Parent, o.Topics, live, closed)})
 		if err != nil && l.PID == 0 {
-			res.Errs = append(res.Errs, fmt.Sprintf("couldn't launch %s: %v", o.Name, err))
+			failed[o.Name] = true
+			res.Errs = append(res.Errs, fmt.Sprintf("couldn't launch %s, so its sessions stay where they were: %v", o.Name, err))
+			sessions.WithParents(func(f *sessions.ParentsFile) bool {
+				delete(f.Parents, o.Name)
+				for _, m := range o.Moving {
+					key := cmp.Or(m.Conv.Title, m.Conv.SessionID)
+					if m.Parent == "" {
+						delete(f.Parents, key)
+						continue
+					}
+					old := byName[m.Parent]
+					f.Parents[key] = sessions.ParentRec{Child: m.Conv.Title, ChildID: m.Conv.SessionID, Parent: m.Parent, ParentID: old.Conv.SessionID, ParentKind: old.Conv.Kind, At: time.Now().UTC()}
+				}
+				return true
+			})
 			continue
 		}
 		res.Launched = append(res.Launched, o.Name)
-		id := ""
-		for sid, s := range sessions.ScanSessions(nil) {
-			if l.PID > 0 && s.PID == l.PID {
-				id = sid
-			}
-		}
-		callers[o.Name] = sessions.Caller{ID: id, Name: o.Name}
 	}
 
-	// Save first: nobody hears of a move that wasn't recorded.
-	var recs []sessions.ParentRec
 	type notice struct {
-		pid  int
-		text string
-		who  string
+		pid       int
+		text, who string
 	}
 	var notices []notice
 	gains, losses := map[string][]string{}, map[string][]string{}
 	for _, o := range p.orchs {
-		me, ok := callers[o.Name]
-		if !ok {
-			continue // its launch failed: its sessions stay where they were
-		}
-		if o.Parent != "" {
-			pr := byName[o.Parent]
-			recs = append(recs, sessions.ParentRec{Child: o.Name, ChildID: me.ID, Parent: o.Parent, ParentID: pr.Conv.SessionID, ParentKind: pr.Conv.Kind, Source: "reorg"})
+		if failed[o.Name] {
+			continue
 		}
 		for _, m := range o.Moving {
-			recs = append(recs, sessions.ParentRec{Child: m.Conv.Title, ChildID: m.Conv.SessionID, Parent: o.Name, ParentID: me.ID, ParentKind: me.Kind, Source: "reorg"})
 			res.Moved++
 			if !m.Live {
 				continue
@@ -572,12 +601,6 @@ func applyReorg(p reorgProposal) reorgResult {
 			notices = append(notices, notice{m.PID, fmt.Sprintf("ccs reorg regrouped the user's sessions by topic. From now on you report to %s, not %s: send it your status and questions for the user.", o.Name, cmp.Or(m.Parent, "no one")), m.name()})
 		}
 	}
-	if err := sessions.SetParents(recs); err != nil {
-		res.Errs = append(res.Errs, "couldn't save the new parents, so nobody was told: "+err.Error())
-		res.Moved = 0
-		return res
-	}
-
 	topics := map[string][]string{}
 	for _, o := range p.orchs {
 		topics[o.Name] = o.Topics
@@ -616,13 +639,35 @@ func applyReorg(p reorgProposal) reorgResult {
 	return res
 }
 
+// reorgRunName names one reorg's planning session, so it shows in the list.
+func reorgRunName(now time.Time) string { return "reorg-" + now.Format("0102-1504") }
+
+// isReorgRun: a reorg's own planning session, which a later reorg leaves out.
+var isReorgRun = regexp.MustCompile(`^reorg-\d{4}-\d{4}$`).MatchString
+
+// topOrchestrator is the session the planning run goes under: the one
+// ccs orchestrator set up, else none.
+func topOrchestrator(convs []transcript.Conversation) transcript.Conversation {
+	id := loadOrchestrator().SessionID
+	for _, c := range convs {
+		if id != "" && c.SessionID == id {
+			return c
+		}
+	}
+	return transcript.Conversation{}
+}
+
 // planReorg asks the model for a plan over convs and checks it. Nothing
 // changes yet.
 func planReorg(convs []transcript.Conversation) (reorgProposal, error) {
 	rows := reorgRows(convs, sessions.ScanSessions(nil))
 	ctx, cancel := context.WithTimeout(context.Background(), reorgTimeout)
 	defer cancel()
-	out, err := reorgModel(ctx, reorgPrompt(rows))
+	name := reorgRunName(time.Now())
+	if top := topOrchestrator(convs); top.SessionID != "" {
+		sessions.SetParents([]sessions.ParentRec{{Child: name, Parent: cmp.Or(top.Title, top.SessionID), ParentID: top.SessionID, Source: "reorg"}})
+	}
+	out, err := reorgModel(ctx, name, reorgPrompt(rows))
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
@@ -732,6 +777,11 @@ func stale(p reorgProposal, live map[string]sessions.LiveSession) string {
 		} else if names, _ := sessions.Named(o.Name); len(names) > 0 {
 			return o.Name + " started"
 		}
+		if r, ok := byName[o.Parent]; o.Parent != "" && ok {
+			if s := check(r); s != "" {
+				return s
+			}
+		}
 		for _, r := range o.Moving {
 			if s := check(r); s != "" {
 				return s
@@ -775,17 +825,22 @@ func applyProposal(p reorgProposal) (reorgResult, error) {
 
 // runReorgCLI is `ccs reorg [--dry-run] [--yes]`: the plan, then y/N.
 func runReorgCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, interactive bool) int {
-	dry, yes := false, false
+	dry, yes, undo := false, false, false
 	for _, a := range args {
 		switch a {
+		case "--undo":
+			undo = true
 		case "--dry-run", "-n":
 			dry = true
 		case "--yes", "-y":
 			yes = true
 		default:
-			fmt.Fprintf(stderr, "usage: ccs reorg [--dry-run] [--yes]\n  regroups every session by topic with one Sonnet call, so no orchestrator looks after more than %d topics.\n  Shows the plan and asks before it launches orchestrators and tells live sessions who they report to.\n  --dry-run shows the plan only; --yes applies it without asking\n", reorgMaxTopics)
+			fmt.Fprintf(stderr, "usage: ccs reorg [--dry-run] [--yes] | --undo\n  regroups every session by topic with one Sonnet call, so no orchestrator looks after more than %d topics.\n  Shows the plan and asks before it launches orchestrators and tells live sessions who they report to.\n  --dry-run shows the plan only; --yes applies it without asking.\n  --undo puts back the parents as they were before the last reorg (sessions it launched keep running)\n", reorgMaxTopics)
 			return 2
 		}
+	}
+	if undo {
+		return reorgUndo(stdout, stderr)
 	}
 	convs, err := transcript.GetConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, []string{"observer-sessions"})
 	if err != nil {
@@ -824,6 +879,24 @@ func runReorgCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, inter
 	return 0
 }
 
+// reorgUndo is `ccs reorg --undo`: the newest backup of the parents put
+// back (the current ones backed up first, so this can be undone too). It
+// changes only the records: nothing is closed or told.
+func reorgUndo(stdout, stderr io.Writer) int {
+	backups := sessions.ParentBackups()
+	if len(backups) == 0 {
+		fmt.Fprintln(stderr, "ccs reorg --undo: no backup of the parents to put back")
+		return 1
+	}
+	if err := sessions.RestoreParents(backups[0]); err != nil {
+		fmt.Fprintln(stderr, "ccs reorg --undo:", err)
+		return 1
+	}
+	state.LogActivity("reorg undo: parents put back from %s", backups[0])
+	fmt.Fprintf(stdout, "Put back the parents from %s.\nOrchestrators a reorg launched are still running, and nobody was told: close or message them yourself.\n", sessions.TildePath(backups[0]))
+	return 0
+}
+
 // reorgPlannedMsg is the model's plan, to show; reorgDoneMsg a finished one.
 type (
 	reorgPlannedMsg struct {
@@ -853,6 +926,22 @@ func reorgApplyCmd(p reorgProposal) tea.Cmd {
 		res, err := applyProposal(p)
 		return reorgDoneMsg{res, err}
 	}
+}
+
+// reorgTypingPause is how long since the last key press a ready plan waits
+// before its popup opens: it owns the keyboard, so it must never land in the
+// middle of typing and swallow letters or an enter meant for a text box.
+const reorgTypingPause = 2 * time.Second
+
+// openReadyReorg opens a ready plan's popup once the user has stopped
+// typing and nothing else is being asked; called after every message, and
+// the live tick comes every 2s.
+func (m *model) openReadyReorg() {
+	if m.reorgReady == nil || m.reorgPlan != nil || time.Since(m.lastKeyAt) < reorgTypingPause || m.prompting() ||
+		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
+		return
+	}
+	m.reorgPlan, m.reorgReady, m.reorgShownAt, m.reorgScroll = m.reorgReady, nil, time.Now(), 0
 }
 
 // reorgPopupLines is the popup's text wrapped to its width, every line of

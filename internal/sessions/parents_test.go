@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -117,5 +118,42 @@ func TestResolveParents(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Errorf("a child not listed is left out: %v", got)
+	}
+}
+
+// A backup keeps the records as they were; restoring one puts them back and
+// backs up what it replaced, so a restore can be undone too.
+func TestBackupAndRestoreParents(t *testing.T) {
+	os.Remove(ParentsPath())
+	t.Cleanup(func() {
+		os.Remove(ParentsPath())
+		for _, b := range ParentBackups() {
+			os.Remove(b)
+		}
+	})
+	SetParents([]ParentRec{{Child: "w", Parent: "hub"}})
+	backup, err := BackupParents(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetParents([]ParentRec{{Child: "w", Parent: "other"}, {Child: "x", Parent: "other"}})
+	if err := RestoreParents(backup); err != nil {
+		t.Fatal(err)
+	}
+	if f := LoadParents(); f.Parents["w"].Parent != "hub" || len(f.Parents) != 1 {
+		t.Errorf("put back: %+v", f.Parents)
+	}
+	if b := ParentBackups(); len(b) != 2 || b[1] != backup {
+		t.Fatalf("the restore backed up what it replaced, newest first: %v", b)
+	}
+	if err := RestoreParents(ParentBackups()[0]); err != nil || LoadParents().Parents["x"].Parent != "other" {
+		t.Errorf("and that can be put back too: %v %+v", err, LoadParents().Parents)
+	}
+	for range parentBackupKeep + 5 {
+		BackupParents(time.Now())
+		time.Sleep(time.Millisecond)
+	}
+	if n := len(ParentBackups()); n != parentBackupKeep {
+		t.Errorf("keeps the newest %d: %d", parentBackupKeep, n)
 	}
 }

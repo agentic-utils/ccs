@@ -126,6 +126,7 @@ type model struct {
 	confirmRestart  string                        // ^X R asked whether to restart this session: y restarts it
 	reorgPlan       *reorgProposal                // ^X M's plan, shown in its popup until enter applies it or esc drops it
 	reorgShownAt    time.Time                     // when it came on screen: enter waits updateKeyGrace
+	reorgReady      *reorgProposal                // a plan that came back while the user was typing: it opens once they pause
 	reorgScroll     int                           // the popup's first line in view
 	reorgBusy       string                        // what ^X M is doing: "planning", "reorganising", or ""
 	restartForce    bool                          // with confirmRestart: it was mid-turn when asked, so y forces it
@@ -1024,6 +1025,7 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	res, cmd := m.update(msg)
 	n := res.(model)
+	n.openReadyReorg()
 	if !movesOnly(msg) {
 		n.sortList()
 	}
@@ -1157,7 +1159,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if msg.p.moves() == 0 {
 			m.note(fmt.Sprintf("reorg: nothing to move (%d suggestions left out)", len(msg.p.dropped)))
 		} else {
-			m.reorgPlan, m.reorgShownAt, m.reorgScroll = &msg.p, time.Now(), 0
+			m.reorgReady = &msg.p // opens once typing pauses (openReadyReorg)
+			m.note("reorg: plan ready; it opens when you stop typing")
 		}
 		return m, nil
 

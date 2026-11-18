@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -173,6 +174,18 @@ func TestApplyReorg(t *testing.T) {
 	if res.Moved != 3 || res.Told != 3 || res.Orchestrators != 2 || !strings.Contains(res.String(), "launched billing-orchestrator") {
 		t.Errorf("result: %+v %s", res, res)
 	}
+	if res.Backup == "" || !strings.Contains(res.String(), "ccs reorg --undo") {
+		t.Errorf("the parents were backed up first: %+v", res)
+	}
+	var out, errb strings.Builder
+	if code := runReorgCLI([]string{"--undo"}, nil, &out, &errb, false); code != 0 || len(sessions.LoadParents().Parents) != 0 || !strings.Contains(out.String(), "still running") {
+		t.Errorf("--undo puts back the empty records it replaced: %d %q %q %+v", code, out.String(), errb.String(), sessions.LoadParents().Parents)
+	}
+	t.Cleanup(func() {
+		for _, b := range sessions.ParentBackups() {
+			os.Remove(b)
+		}
+	})
 
 	// A save that fails tells nobody.
 	told = map[int]string{}
@@ -181,9 +194,38 @@ func TestApplyReorg(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "file")
 	os.WriteFile(blocker, nil, 0o600)
 	sessions.ParentsPath = func() string { return filepath.Join(blocker, "launch-parents.json") }
-	p = checkPlan(reorgPlan{Topics: []reorgTopic{{Topic: "infra", Orchestrator: "hub", Members: []string{"c"}}}}, rows)
-	if res := applyReorg(p); len(told) > 0 || res.Moved != 0 || !strings.Contains(res.String(), "nobody was told") {
-		t.Errorf("unsaved, untold: %v %s", told, res)
+	launched = nil
+	p = checkPlan(reorgPlan{Topics: []reorgTopic{{Topic: "infra", Orchestrator: "hub", Members: []string{"c"}}, {Topic: "x", Orchestrator: "x-orchestrator", Members: []string{"a"}}}}, rows)
+	if res := applyReorg(p); len(told) > 0 || len(launched) > 0 || res.Moved != 0 || !strings.Contains(res.String(), ", so nothing") {
+		t.Errorf("unsaved: nothing launched or told: %v %v %s", launched, told, res)
+	}
+}
+
+// A new orchestrator that fails to launch leaves its sessions where they
+// were, and nobody hears of it.
+func TestReorgFailedLaunchPutsSessionsBack(t *testing.T) {
+	os.Remove(sessions.ParentsPath())
+	t.Cleanup(func() { os.Remove(sessions.ParentsPath()) })
+	sessions.SetParents([]sessions.ParentRec{{Child: "api-fix", Parent: "hub"}})
+	told := 0
+	oldLaunch, oldNotify := reorgLaunch, reorgNotify
+	t.Cleanup(func() { reorgLaunch, reorgNotify = oldLaunch, oldNotify })
+	reorgLaunch = func(o sessions.LaunchOpts) (sessions.Launched, error) {
+		return sessions.Launched{}, errors.New("no terminal")
+	}
+	reorgNotify = func(int, string) error { told++; return nil }
+	rows := []reorgRow{
+		{Key: "h", Conv: transcript.Conversation{SessionID: "h-id", Title: "hub"}, Live: true, PID: 1},
+		{Key: "a", Conv: transcript.Conversation{SessionID: "a-id", Title: "api-fix"}, Live: true, PID: 2, Parent: "hub"},
+		{Key: "c", Conv: transcript.Conversation{SessionID: "c-id", Title: "loose"}, Live: true, PID: 3},
+	}
+	res := applyReorg(checkPlan(reorgPlan{Topics: []reorgTopic{{Topic: "x", Orchestrator: "x-orchestrator", Parent: "hub", Members: []string{"a", "c"}}}}, rows))
+	f := sessions.LoadParents()
+	if f.Parents["api-fix"].Parent != "hub" || f.Parents["loose"].Parent != "" || f.Parents["x-orchestrator"].Parent != "" {
+		t.Errorf("records put back: %+v", f.Parents)
+	}
+	if told != 0 || res.Moved != 0 || !strings.Contains(res.String(), "couldn't launch x-orchestrator") {
+		t.Errorf("nobody told: %d %s", told, res)
 	}
 }
 
@@ -200,6 +242,11 @@ func TestReorgRefusesAStalePlan(t *testing.T) {
 	if _, err := applyProposal(p); err == nil || !strings.Contains(err.Error(), "api-fix stopped") {
 		t.Errorf("api-fix isn't running any more: %v", err)
 	}
+	hub := reorgRow{Key: "h", Conv: transcript.Conversation{SessionID: "h-id", Title: "hub"}, Live: true}
+	p = reorgProposal{rows: []reorgRow{hub}, orchs: []reorgOrch{{Name: "x-orchestrator", New: true, Parent: "hub", Topics: []string{"x"}}}}
+	if _, err := applyProposal(p); err == nil || !strings.Contains(err.Error(), "hub stopped") {
+		t.Errorf("the orchestrator it goes under stopped: %v", err)
+	}
 }
 
 // ^X M asks the model and shows its checked plan in a popup that owns the
@@ -210,7 +257,7 @@ func TestReorgKey(t *testing.T) {
 	m := treeModel(t)
 	oldModel, oldLaunch, oldNotify := reorgModel, reorgLaunch, reorgNotify
 	t.Cleanup(func() { reorgModel, reorgLaunch, reorgNotify = oldModel, oldLaunch, oldNotify })
-	reorgModel = func(ctx context.Context, prompt string) ([]byte, error) {
+	reorgModel = func(ctx context.Context, name, prompt string) ([]byte, error) {
 		return []byte(`{"type":"result","structured_output":{"topics":[{"topic":"lonely work","orchestrator":"loner-orchestrator","parent":"","folder":"","members":["loner-id","leaf-id","fresh-id"]},` +
 			`{"topic":"a","orchestrator":"bad one","parent":"","folder":"","members":[]},{"topic":"b","orchestrator":"bad two","parent":"","folder":"","members":[]},` +
 			`{"topic":"c","orchestrator":"bad three","parent":"","folder":"","members":[]},{"topic":"d","orchestrator":"bad four","parent":"","folder":"","members":[]}]}}`), nil
@@ -243,6 +290,12 @@ func TestReorgKey(t *testing.T) {
 			t.Fatalf("^X M asks for a plan and the header says so: %q", m.reorgBusy)
 		}
 		m = run(m, cmd)
+		if m.reorgPlan != nil || m.reorgReady == nil {
+			t.Fatal("a plan that lands just after a key press waits")
+		}
+		m.lastKeyAt = time.Now().Add(-time.Minute)
+		next, _ = m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m = next.(model)
 		if v := strip2(m.View()); m.reorgPlan == nil || !strings.Contains(v, "lonely work → loner-orchestrator (new, in") || !strings.Contains(v, "moving in: loner (closed), leaf (from sub) (closed)") {
 			t.Fatalf("the plan shows in its popup:\n%s", v)
 		}

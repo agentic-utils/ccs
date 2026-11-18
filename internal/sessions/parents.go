@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -93,6 +94,63 @@ func WithParents(f func(p *ParentsFile) bool) error {
 		return err
 	}
 	return nil
+}
+
+// parentBackupKeep is how many backups of launch-parents.json are kept.
+const parentBackupKeep = 20
+
+// ParentBackups is the backups of launch-parents.json beside it, newest first.
+func ParentBackups() []string {
+	found, _ := filepath.Glob(filepath.Join(filepath.Dir(ParentsPath()), "launch-parents-*.json.bak"))
+	slices.Sort(found) // timestamped names sort by time
+	slices.Reverse(found)
+	return found
+}
+
+// BackupParents saves the records as they are now to a timestamped file
+// beside them, before a change to many at once (ccs reorg), keeping the
+// newest parentBackupKeep. It returns the backup's path.
+func BackupParents(now time.Time) (string, error) {
+	path := filepath.Join(filepath.Dir(ParentsPath()), "launch-parents-"+now.UTC().Format("20060102T150405.000Z")+".json.bak")
+	var werr error
+	err := WithParents(func(f *ParentsFile) bool {
+		data, err := json.MarshalIndent(f, "", " ")
+		if err == nil {
+			err = os.WriteFile(path, data, 0o600)
+		}
+		werr = err
+		return false
+	})
+	if err = cmp.Or(err, werr); err != nil {
+		return "", err
+	}
+	for _, old := range ParentBackups()[min(parentBackupKeep, len(ParentBackups())):] {
+		os.Remove(old)
+	}
+	return path, nil
+}
+
+// RestoreParents puts a backup's records back in place of the current ones,
+// first backing those up too, so a restore can itself be undone.
+func RestoreParents(backup string) error {
+	data, err := os.ReadFile(backup)
+	if err != nil {
+		return err
+	}
+	var b ParentsFile
+	if err := json.Unmarshal(data, &b); err != nil {
+		return fmt.Errorf("%s: %w", backup, err)
+	}
+	if _, err := BackupParents(time.Now()); err != nil {
+		return err
+	}
+	return WithParents(func(f *ParentsFile) bool {
+		f.Parents = b.Parents
+		if f.Parents == nil {
+			f.Parents = map[string]ParentRec{}
+		}
+		return true
+	})
 }
 
 // Caller is the session a ccs command or MCP call runs under.

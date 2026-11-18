@@ -216,7 +216,10 @@ func (s *server) handler() http.Handler {
 		h := rec.Header()
 		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
+		// same-origin, not no-referrer: under no-referrer a browser sends
+		// "Origin: null" on the page's own form posts, which the origin
+		// check below refuses. Other sites still get no referrer.
+		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cache-Control", "no-store")
 		r.Body = http.MaxBytesReader(rec, r.Body, 64<<10)
 		email, err := s.check(r)

@@ -174,7 +174,9 @@ func TestServeTriageEscapesAndHasSecurityHeaders(t *testing.T) {
 	if strings.Contains(body, "<script>alert") || !strings.Contains(body, "&lt;script&gt;") {
 		t.Errorf("titles must be escaped:\n%s", body)
 	}
-	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "default-src 'none'") || w.Header().Get("Cache-Control") != "no-store" {
+	// Referrer-Policy must keep the page's own origin on its form posts
+	// (no-referrer makes browsers send "Origin: null", which is refused).
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "default-src 'none'") || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Referrer-Policy") != "same-origin" {
 		t.Errorf("security headers missing: %v", w.Header())
 	}
 	if strings.Contains(body, `action="/act"`) || !strings.Contains(body, "read-only") {

@@ -28,6 +28,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/stats"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -650,7 +651,14 @@ func eventLines(events []any) (string, error) {
 		line, _ := json.Marshal(e)
 		b.Write(line)
 		b.WriteByte('\n')
+		var kind struct {
+			Event string `json:"event"`
+		}
+		if json.Unmarshal(line, &kind) == nil {
+			stats.Record(stats.Feature("watch."+kind.Event), "") // dropped unless a registered kind
+		}
 	}
+	defer stats.Flush()
 	path := PREventsPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err

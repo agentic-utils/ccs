@@ -50,6 +50,7 @@ func appendTo(t *testing.T, path, s string) {
 }
 
 func TestMain(m *testing.M) {
+	os.Setenv("CCS_NO_STATS", "1") // feature stats are tested in internal/stats; nothing else writes them
 	// Not in iTerm unless a test says so: inITerm also reads these, and a
 	// test must never drive the real iTerm (open tabs, type into sessions).
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID"} {

@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/agentic-utils/ccs/internal/proc"
+	"github.com/agentic-utils/ccs/internal/stats"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -806,6 +807,7 @@ func (m model) acctKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.switchTo(m.accts[m.acctCursor])
 		}
 	case key == "+":
+		stats.Record("tui.account_add", stats.Key)
 		return m, m.cswapActionCmd("adding the current login", "Added the current login", "add")
 	case len(key) == 1 && key[0] >= '1' && key[0] <= '9':
 		n := int(key[0] - '0')
@@ -825,6 +827,7 @@ func (m *model) switchTo(a cswapAccount) tea.Cmd {
 		m.acctMsg = a.Email + " is already active"
 		return nil
 	}
+	stats.Record("tui.account_switch", stats.Key)
 	return m.cswapActionCmd("switching to "+a.Email, "Switched to "+a.Email, "switch", strconv.Itoa(a.Number))
 }
 

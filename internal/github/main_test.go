@@ -13,6 +13,7 @@ import (
 // TestMain keeps tests off the machine's own files and gh, as in tui's
 // TestMain: logs, settings and the watcher's state go to a temp folder.
 func TestMain(m *testing.M) {
+	os.Setenv("CCS_NO_STATS", "1") // feature stats are tested in internal/stats; nothing else writes them
 	dir, _ := os.MkdirTemp("", "ccs-test-github")
 	state.UpdateLogPath = filepath.Join(dir, "update.log")
 	state.ActivityLogPath = filepath.Join(dir, "activity.log")

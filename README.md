@@ -28,6 +28,7 @@ Launch, watch, search and resume your coding CLI sessions: [Claude Code](https:/
 - Record which session owns each PR, and list your open PRs with their owners (`ccs claim`, `ccs prs`)
 - Tell the session that claimed a PR when its checks fail, it conflicts or it gains unresolved threads (`ccs watch`)
 - Pass flags through to `claude` (e.g., `--plan`)
+- Count which ccs features you use, on your machine only (`ccs stats`)
 - Usage screen (`Tab`): the last 12 hours of token usage across all sessions (including subagents) as three charts (cache-write disposition, context assembly, output), a summary with effective tokens, and your live 5-hour and weekly allowance. The allowance reads Claude Code's stored login read-only (macOS Keychain, else `~/.claude/.credentials.json`); ccs never refreshes or writes it, so if it has expired, open `claude` to refresh it
 - Checks for new releases at startup and every 2 minutes (update steps are logged to `~/Library/Logs/ccs/update.log`) and offers to update and restart from a popup (via `brew upgrade` for Homebrew installs, otherwise by replacing the binary with the checksum-verified release). Every update, Homebrew included, is checked against a signature that only ccs's release pipeline on `main` can make, so a release uploaded any other way is refused
 
@@ -415,6 +416,16 @@ ccs prs --merged         # what merged in the last week, and which session merge
 `ccs prs --merged` answers "who merged that?": each PR `ccs watch` saw merge in the last week, with `merged by <session>`, `auto-merge, turned on by <session>` or `not merged by a local session`.
 
 `--statusline` never asks GitHub, so it is quick enough for Claude Code's status line; it prints nothing when there is nothing to count, and adds `(stale)` when `ccs watch` hasn't refreshed the state for 10 minutes.
+
+## Feature stats
+
+ccs counts how often you use each of its features, so you can see which ones are hard to find or never used. `ccs stats` lists every feature used, with its count over 7 and 30 days, how often it was reached by key or by mouse, and its first and last use, then the features never used since the oldest record kept (`--json` for scripts).
+
+Each record is a feature id from a fixed list (such as `tui.pin` or `mcp.list_prs`), the time, the ccs version, where it ran (`tui`, `cli`, `mcp` or `watch`) and, in the list, `key` or `mouse`. Nothing else can be written: no session names, prompts, paths, repos, PRs or message text, and no flag values. The records stay in `stats/YYYY-MM.jsonl` beside the settings (`~/Library/Application Support/ccs/` on macOS), one file a month, 12 months kept, each capped at 5MB. ccs never sends them anywhere.
+
+It is on by default. Turn it off with `ccs stats --off` (which writes `"feature_stats": false` to `settings.json`; `--on` reverses it) or by setting `CCS_NO_STATS=1`. Off means nothing more is written; the files already kept stay until you delete them.
+
+Recording costs almost nothing: a use is added to an in-memory buffer, and the buffer is appended to the file in one write every 5 seconds and before ccs exits or hands over to `claude`. `ccs prs --statusline` isn't counted, since a status line runs it every few seconds.
 
 ## How it works
 

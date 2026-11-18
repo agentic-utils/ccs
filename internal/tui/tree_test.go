@@ -86,16 +86,16 @@ func TestOrchestratorTrees(t *testing.T) {
 	for _, it := range m.filtered {
 		switch it.conv.Title {
 		case "hub":
-			if it.kids != 4 || it.roll != (rollup{waiting: 1, stalled: 1, done: 1}) {
-				t.Errorf("hub's counts: %d %+v", it.kids, it.roll)
+			if it.kids != 4 {
+				t.Errorf("hub's tree: %d", it.kids)
 			}
 		case "worker":
-			if it.kids != 2 || it.roll != (rollup{stalled: 1}) {
-				t.Errorf("a sub-orchestrator counts its own tree: %d %+v", it.kids, it.roll)
+			if it.kids != 2 {
+				t.Errorf("a sub-orchestrator counts its own tree: %d", it.kids)
 			}
 		case "loner":
-			if it.kids != 0 || rollupCell(it.roll, false) != "" {
-				t.Errorf("no tree, no counts: %+v", it.roll)
+			if it.kids != 0 {
+				t.Errorf("no tree: %d", it.kids)
 			}
 		}
 	}
@@ -174,50 +174,18 @@ func TestTreeAlignment(t *testing.T) {
 	}
 }
 
-// ^X C's third view folds every tree to its top row, which keeps its
-// counts; a search still shows a folded match.
-func TestFoldOrchestratorTree(t *testing.T) {
-	m := treeModel(t)
-	for i, it := range m.filtered {
-		if it.conv.Title == "hub" {
-			m.cursor = i
-		}
+// A setting saved by an older ccs on the folded view (2) reads as hidden.
+func TestOldFoldedViewReadsAsHidden(t *testing.T) {
+	treeModel(t)
+	saveSettings(settings{TreeView: 2})
+	if v := loadSettings().TreeView; v != 2 {
+		t.Fatalf("setup: %d", v)
 	}
-	m, _ = chord(m, "c")
-	m, _ = chord(m, "c")
-	got := strings.Join(order(m), ",")
-	if strings.Contains(got, "worker") || strings.Contains(got, "leaf") || strings.Contains(got, "deploy") {
-		t.Fatalf("every tree folds to its top row, hub's and ops's: %s", got)
+	if v := loadSettings().treeView(); v != treeLive {
+		t.Errorf("the old folded view is hidden now: %d", v)
 	}
-	if m.filtered[m.cursor].conv.Title != "hub" {
-		t.Errorf("the cursor stays on hub")
-	}
-	hub := m.filtered[m.cursor]
-	if hub.hiddenKids != 4 || hub.roll != (rollup{waiting: 1, stalled: 1, done: 1}) {
-		t.Errorf("folded, its counts stay: %d %+v", hub.hiddenKids, hub.roll)
-	}
-	if v := strip2(m.View()); !strings.Contains(v, "▸4 hub") || !strings.Contains(v, "●1 ◦1 ✓1") {
-		t.Errorf("▸ with how many it hides\n%s", v)
-	}
-	m.sortList()
-	m.sortList()
-	if hub := m.filtered[m.cursor]; hub.roll.waiting != 1 {
-		t.Errorf("sorting again keeps counting what the fold hides: %+v", hub.roll)
-	}
-	if loadSettings().TreeView != treeFolded {
-		t.Error("the view is saved")
-	}
-
-	m.textInput.SetValue("leaf")
-	m.updateFilter()
-	if !strings.Contains(strings.Join(order(m), ","), "leaf") {
-		t.Errorf("a search shows a folded match: %v", order(m))
-	}
-	m.textInput.SetValue("")
-	m.updateFilter()
-	m, _ = chord(m, "c")
-	if got := strings.Join(order(m), ","); !strings.Contains(got, "leaf") || !strings.Contains(got, "deploy") {
-		t.Errorf("^X C again unfolds every tree: %v", got)
+	if v := (settings{TreeView: treeClosed}).treeView(); v != treeClosed {
+		t.Errorf("shown stays shown: %d", v)
 	}
 }
 
@@ -244,8 +212,8 @@ func TestTreeFollowsAdoption(t *testing.T) {
 // A launched session whose tree has nothing running waits behind its
 // parent's "▸ N closed" line, at the end of the parent's branch, so it isn't
 // one click from being resumed. ^X C shows every tree's closed sessions at
-// once, beside their live siblings under a ▾ line, then folds every tree,
-// then hides them again. Both lines name ^X C. A search shows everything.
+// once, beside their live siblings under a ▾ line, and again hides them.
+// Both lines name ^X C. A search shows everything.
 func TestClosedSessionsBehindALine(t *testing.T) {
 	m := treeModel(t)
 	m.width, m.height = 110, 40
@@ -278,12 +246,11 @@ func TestClosedSessionsBehindALine(t *testing.T) {
 		t.Error("showing them is saved")
 	}
 	m, _ = chord(m, "c")
-	if got := titles(); strings.Contains(got, "worker") || strings.Contains(view(), "1 closed") {
-		t.Errorf("^X C again folds every tree, closed lines with them: %s", got)
+	if got := titles(); !strings.Contains(got, "worker") || strings.Contains(got, "fresh") || !strings.Contains(view(), "▸ 1 closed · ^X C") {
+		t.Errorf("^X C again hides them: %s", got)
 	}
-	m, _ = chord(m, "c")
-	if got := titles(); !strings.Contains(got, "worker") || strings.Contains(got, "fresh") {
-		t.Errorf("and again: live only: %s", got)
+	if loadSettings().TreeView != treeLive || !strings.Contains(m.errorMsg, "^X C shows them") {
+		t.Errorf("hiding is saved and the note says how to show them: %q", m.errorMsg)
 	}
 	m.textInput.SetValue("fresh")
 	m.updateFilter()

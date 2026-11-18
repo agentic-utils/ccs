@@ -13,14 +13,9 @@ import (
 // Orchestrator trees: a session that started others through launch_session
 // or ccs launch (or adopted them, ccs adopt / adopt_session) is a
 // orchestrator. Its family sits in the orchestrator section as a tree, the
-// sessions it launched indented under it, sub-orchestrators' under theirs,
-// and its row counts what its tree holds: waiting on you, stalled, done.
-// ^X C shows or hides closed sessions and folds every tree, all trees at
-// once (saved in the settings); a search shows every match, folded or not.
-
-// rollupStall is how long an idle session with nothing unread waits before
-// its orchestrator's row counts it stalled: session_triage's default.
-const rollupStall = 15 * time.Minute
+// sessions it launched indented under it, sub-orchestrators' under theirs.
+// ^X C shows or hides closed sessions in every tree at once (saved in the
+// settings); a search shows every match, closed or not.
 
 // reloadParents rereads launch-parents.json when it changed, from each
 // live tick, so a launch or adoption from any session shows up.
@@ -57,31 +52,37 @@ func (m *model) launchParents() map[string]string {
 	return m.launchRes
 }
 
-// The tree views, one for every tree at once: ^X C cycles them, saved in
-// the settings (TreeView).
+// The tree views, one for every tree at once: ^X C toggles them, saved in
+// the settings (TreeView). A view saved by an older ccs that folded every
+// tree (2) reads as treeLive.
 const (
 	treeLive   = iota // closed sessions wait behind each parent's "▸ N closed" line
 	treeClosed        // closed sessions shown where they belong, beside the live ones
-	treeFolded        // every tree folded to its top row, which keeps its counts
 )
 
-// folded: it is a tree's top row, folded with the rest.
-func (m model) folded(it listItem) bool { return m.treeView == treeFolded && it.depth == 0 }
+// treeView is the saved ^X C view: shown, or else hidden, the old folded
+// view (2) included.
+func (s settings) treeView() int {
+	if s.TreeView == treeClosed {
+		return treeClosed
+	}
+	return treeLive
+}
 
 // showingClosed: closed sessions are listed in their trees.
 func (m model) showingClosed() bool { return m.treeView == treeClosed }
 
-// cycleTrees is ^X C: live sessions only, then closed ones too, then every
-// tree folded, then back.
-func (m *model) cycleTrees() {
-	m.treeView = (m.treeView + 1) % 3
+// toggleClosed is ^X C: closed sessions shown in every tree, or hidden.
+func (m *model) toggleClosed() {
+	if m.treeView == treeClosed {
+		m.treeView = treeLive
+		m.note("closed sessions hidden; ^X C shows them")
+	} else {
+		m.treeView = treeClosed
+		m.note("closed sessions shown; ^X C hides them")
+	}
 	saveSettings(m.settings())
 	m.sortList()
-	m.note(map[int]string{
-		treeLive:   "closed sessions hidden; ^X C shows them",
-		treeClosed: "closed sessions shown; ^X C folds every tree",
-		treeFolded: "every tree folded; ^X C unfolds them",
-	}[m.treeView])
 }
 
 // closedLineText draws a closed line, all dim and lined up with the rows'
@@ -98,52 +99,6 @@ func (m model) closedLineText(l closedLine) string {
 		conn, mark = "├", "▾"
 	}
 	return fmt.Sprintf("%s%s\033[90m%s%s %s %d closed · ^X C\033[0m", lead, strings.Repeat(" ", colMarks-2), l.guides, conn, mark, l.n)
-}
-
-// rollup counts an orchestrator's tree below it: waiting on you (a menu,
-// prompt or question), stalled (idle past rollupStall, nothing unread) and
-// done (finished since you last looked).
-type rollup struct{ waiting, stalled, done int }
-
-func (m model) rollupOf(it *listItem, now time.Time) rollup {
-	var r rollup
-	switch {
-	case it.state == 0 || it.state == 1:
-		r.waiting++
-	case it.state == 2 && m.unseen(it.conv):
-		r.done++
-	case it.state == 2:
-		if t, err := time.Parse(time.RFC3339, it.conv.LastTimestamp); err == nil && now.Sub(t) >= rollupStall {
-			r.stalled++
-		}
-	}
-	return r
-}
-
-func (r *rollup) add(o rollup) {
-	r.waiting += o.waiting
-	r.stalled += o.stalled
-	r.done += o.done
-}
-
-// rollupCell is an orchestrator row's counts, plain and coloured: ●N waiting
-// on you, ◦N stalled, ✓N done; "" when nothing needs a look.
-func rollupCell(r rollup, coloured bool) string {
-	var parts []string
-	add := func(n int, glyph, colour string) {
-		if n == 0 {
-			return
-		}
-		s := fmt.Sprintf("%s%d", glyph, n)
-		if coloured {
-			s = "\033[" + colour + "m" + s + "\033[0m"
-		}
-		parts = append(parts, s)
-	}
-	add(r.waiting, "●", waitColour)
-	add(r.stalled, "◦", amber)
-	add(r.done, "✓", doneColour)
-	return strings.Join(parts, " ")
 }
 
 // inTree: the session is in the orchestrator section, drawn as a tree.
@@ -169,31 +124,13 @@ func treeLines(it listItem) (title, grey string) {
 // sidebar's tree layout (the table, a spawned session) its connector too.
 func (m model) treePrefix(it listItem) string {
 	if !inTree(it) {
-		return nestPrefix(it.depth) + it.foldGlyph()
+		return nestPrefix(it.depth)
 	}
 	conn, _ := treeLines(it)
 	if !m.table {
 		conn = "" // the sidebar draws it before the agent's glyph (sidebarRow)
 	}
-	return conn + it.foldGlyph()
-}
-
-// treeBadge is a folded tree's counts: what the sessions it hides hold.
-// Unfolded, they show their own.
-func (m model) treeBadge(it listItem, coloured bool) string {
-	if it.hiddenKids > 0 {
-		return rollupCell(it.roll, coloured)
-	}
-	return ""
-}
-
-// foldGlyph marks a folded row: ▸ and how many sessions it hides.
-func (it listItem) foldGlyph() string {
-	switch {
-	case it.hiddenKids > 0:
-		return fmt.Sprintf("▸%d ", it.hiddenKids)
-	}
-	return ""
+	return conn
 }
 
 // titleColour is the colour a row's title says its state in, in place of a

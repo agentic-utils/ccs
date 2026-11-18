@@ -150,9 +150,6 @@ KEYS = [  # (delay before, keys)
     (2.5, ESC),
     (1.0, DOWN),          # busy, checks running
     (1.5, UP + UP + UP),  # back to the orchestrator
-    (0.3, "\x18c"),       # ^X C shows closed sessions (the demo has none)
-    (1.5, "\x18c"),       # ^X C again folds every tree to one row, its counts kept
-    (2.5, "\x18c"),       # and unfolds them
     (1.8, DOWN * 4),
     (1.0, DOWN),
     (1.2, ""),

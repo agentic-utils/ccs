@@ -39,8 +39,6 @@ type listItem struct {
 	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
 	sectioned   bool   // familyState is set: listed under a section heading (nestFamilies)
 	kids        int    // sessions launched under it (an orchestrator's tree), any depth
-	hiddenKids  int    // of those, how many its fold hides
-	roll        rollup // what its tree holds: waiting, stalled, done
 	guides      string // in an orchestrator's tree: the │ and spaces its ancestors draw before its own connector
 	lastKid     bool   // the last of its parent's children: └, not ├
 	closedKids  int    // its launched sessions that have closed (none of their tree running), behind a "N closed" line
@@ -80,7 +78,7 @@ type model struct {
 	grouped         bool              // ^X X G: sessions grouped by folder
 	chordX          bool              // ^X pressed: the next key picks a ccs action
 	byID            map[string]int    // m.items by session id, for shownAncestor; rebuilt when an entry is stale
-	treeView        int               // ^X C: treeLive, treeClosed or treeFolded, for every tree (saved)
+	treeView        int               // ^X C: treeLive or treeClosed, for every tree (saved)
 	headerCollapsed bool              // ^X F or a click on the summary line: the details under it are hidden
 	selectedID      string            // the selected session, to see when it changes
 	selectedAt      time.Time         // when it was selected: its preview waits previewDebounce
@@ -809,7 +807,6 @@ func (m *model) nestFamilies() {
 	}
 	permute(m.filtered, order)
 	out := m.filtered
-	now := time.Now()
 	for start := 0; start < len(out); { // families are contiguous, each from its depth-0 session
 		end := start + 1
 		for end < len(out) && out[end].depth > 0 {
@@ -818,10 +815,9 @@ func (m *model) nestFamilies() {
 		launches := slices.Contains(isOrch[start:end], true)
 		if launches { // each session's tree below it: how many, and what needs a look
 			for i := end - 1; i >= start; i-- {
-				out[i].kids, out[i].hiddenKids, out[i].roll = 0, 0, rollup{}
+				out[i].kids = 0
 				for j := i + 1; j < end && out[j].depth > out[i].depth; j++ {
 					out[i].kids++
-					out[i].roll.add(m.rollupOf(&out[j], now))
 				}
 			}
 		}
@@ -866,11 +862,6 @@ func (m *model) foldTrees() {
 				}
 			}
 			continue
-		}
-		under = -1
-		if it.kids > 0 && m.folded(it) {
-			it.hiddenKids, under = it.kids, it.depth
-			it.linesAfter = slices.DeleteFunc(it.linesAfter, func(l closedLine) bool { return l.owner >= it.depth }) // its own tree is hidden
 		}
 		kept = append(kept, it)
 	}
@@ -1991,7 +1982,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
-			m.cycleTrees()
+			m.toggleClosed()
 			return m, nil
 		}
 		if (k == "alt+up" || k == "alt+down") && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen && !m.chatFocus {
@@ -2561,8 +2552,7 @@ func (m model) shortcuts() [][2]string {
 	add(m.grouped, "^X G", "stop grouping by folder")
 	add(m.reorgBusy == "", "^X M", "move sessions into topics: Sonnet plans, you accept or drop it")
 	add(m.treeView == treeLive, "^X C", "show closed sessions in every tree")
-	add(m.treeView == treeClosed, "^X C", "fold every tree to its top row (its counts stay)")
-	add(m.treeView == treeFolded, "^X C", "unfold every tree, closed sessions hidden again")
+	add(m.treeView == treeClosed, "^X C", "hide closed sessions again")
 	add(!m.table, "^X T", "the full table, every column")
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.table && !m.hideSidebar, "^X L", "hide the list, the preview taking the whole width (↑↓ still move)")
@@ -2997,8 +2987,8 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	tw := m.topicColWidth()
 	nest := m.treePrefix(item)
 	title := listTopic(item.conv, tw-mw-ansi.StringWidth(nest))
-	after := strings.TrimSpace(m.taskCell(item.conv, false) + " " + m.treeBadge(item, false))
-	if after != "" { // running background tasks, then a folded tree's counts or what a child needs, after the title
+	after := m.taskCell(item.conv, false)
+	if after != "" { // running background tasks, after the title
 		title = listTopic(item.conv, tw-mw-ansi.StringWidth(nest)-ansi.StringWidth(after)-1)
 		after = " " + after
 	}
@@ -3258,9 +3248,6 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	if tasks := m.taskCell(conv, false); tasks != "" {
 		hits, colouredHits = strings.TrimSpace(tasks+" "+hits), strings.TrimSpace(m.taskCell(conv, true)+" "+colouredHits)
 	}
-	if b := m.treeBadge(item, false); b != "" { // a folded tree's counts
-		hits, colouredHits = strings.TrimSpace(b+" "+hits), strings.TrimSpace(m.treeBadge(item, true)+" "+colouredHits)
-	}
 	// One space before the marks, so their glyphs sit under the search's >;
 	// with ^X G two more, so sessions sit in from their folder's header.
 	lead := " "
@@ -3306,7 +3293,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	// marks' width and any nesting prefix.
 	gap := strings.Repeat(" ", mw-ansi.StringWidth(greyConn)+ansi.StringWidth(nest))
 	indent, colouredIndent := lead+greyConn+gap, lead+"\033[90m"+greyConn+"\033[0m"+gap
-	if inTree(item) && item.kids > 0 && item.hiddenKids == 0 { // a │ under its glyph joins it to its children's connectors
+	if inTree(item) && item.kids > 0 { // a │ under its glyph joins it to its children's connectors
 		before := strings.Repeat(" ", mw-2-ansi.StringWidth(greyConn))
 		after := strings.Repeat(" ", 1+ansi.StringWidth(nest))
 		indent = lead + greyConn + before + "│" + after
@@ -3485,7 +3472,8 @@ type settings struct {
 	AutoFocus bool `json:"auto_focus,omitempty"`
 	// HideSidebar (^X L): the sidebar layout shows the preview alone.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
-	// TreeView (^X C): closed sessions hidden, shown, or every tree folded.
+	// TreeView (^X C): closed sessions hidden (0) or shown (1); 2, every tree
+	// folded, from an older ccs, reads as hidden.
 	TreeView int `json:"tree_view,omitempty"`
 	// HeaderOpen (^X F): the preview's full details, one line unless chosen.
 	HeaderOpen bool `json:"header_open,omitempty"`

@@ -440,8 +440,9 @@ func RunAdopt(args []string, stdout, stderr io.Writer) int {
 // ResolveParents is each session's recorded parent among convs, by session
 // id: a record's child is the newest session with its name (a /clear makes
 // a new id under the same name), else the one with its id; its parent
-// likewise by name, else id. Records whose ends aren't both listed, and
-// any that would make a loop, are left out.
+// likewise by name, else id. Older sessions with that name follow the
+// newest. Records whose ends aren't both listed, and any that would make a
+// loop, are left out.
 func ResolveParents(convs []transcript.Conversation, f ParentsFile) map[string]string {
 	if len(f.Parents) == 0 {
 		return nil
@@ -473,6 +474,18 @@ func ResolveParents(convs []transcript.Conversation, f ParentsFile) map[string]s
 			continue
 		}
 		out[child] = parent
+	}
+	// The older sessions with a record's name (before a /clear, or the name
+	// used again) go where the newest does, unless a record of their own
+	// says otherwise: records are kept one per name, so they'd have none.
+	for _, c := range convs {
+		if _, ok := out[c.SessionID]; ok || c.Title == "" {
+			continue
+		}
+		n := newest[c.Title]
+		if p := out[n.SessionID]; p != "" && p != c.SessionID && n.SessionID != c.SessionID {
+			out[c.SessionID] = p
+		}
 	}
 	for child := range out { // break any loop the records make
 		seen := map[string]bool{child: true}

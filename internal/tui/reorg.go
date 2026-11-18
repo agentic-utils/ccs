@@ -495,7 +495,7 @@ func checkPlan(plan reorgPlan, rows []reorgRow) reorgProposal {
 		return false
 	})
 
-	placeLeftOut(&p, rows, used, hasKids, isOrch, isTop)
+	placeLeftOut(&p, rows, used, hasKids, isTop)
 	return p
 }
 
@@ -505,8 +505,10 @@ func checkPlan(plan reorgPlan, rows []reorgRow) reorgProposal {
 // It adds no topic, so the topic limit holds. A running session the model
 // left out stays where it is: moving one means telling it, and that takes
 // the model's judgement, not a folder match. A session that already has a
-// parent, has others under it or is an orchestrator stays too.
-func placeLeftOut(p *reorgProposal, rows []reorgRow, used, hasKids map[string]bool, isOrch, isTop func(string) bool) {
+// parent, has others under it or is one of the plan's orchestrators stays
+// too; a closed one that launched others but has none under it now (they
+// moved on) is placed like any other, or it would stay loose for good.
+func placeLeftOut(p *reorgProposal, rows []reorgRow, used, hasKids map[string]bool, isTop func(string) bool) {
 	orchNames := map[string]bool{}
 	for _, o := range p.orchs {
 		orchNames[o.Name] = true
@@ -516,7 +518,7 @@ func placeLeftOut(p *reorgProposal, rows []reorgRow, used, hasKids map[string]bo
 		if used[r.Key] || r.Live || r.Parent != "" || isReorgRun(r.Conv.Title) {
 			continue
 		}
-		if t := r.Conv.Title; t != "" && (hasKids[t] || isOrch(t) || orchNames[t]) {
+		if t := r.Conv.Title; t != "" && (hasKids[t] || orchNames[t]) {
 			continue
 		}
 		loose = append(loose, r)

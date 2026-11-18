@@ -128,6 +128,9 @@ func TestReorgPlacesLeftOut(t *testing.T) {
 		row("x1", "api-one", false, "", api), row("x2", "api-two", false, "", api), row("u", "", false, "", api),
 		row("y", "elsewhere", false, "", other), row("z", "kept", false, "hub", api), row("l", "running", true, "", api),
 	}
+	old := row("m", "mothership", false, "", other) // launched others once, none under it now
+	old.Conv.Launches = []string{"long-gone"}
+	rows = append(rows, old)
 	plan := reorgPlan{Topics: []reorgTopic{{Topic: "API", Orchestrator: "api-orchestrator", Folder: api, Members: []string{"x1"}}}}
 	p := checkPlan(plan, rows)
 	moving := map[string][]string{}
@@ -139,11 +142,11 @@ func TestReorgPlacesLeftOut(t *testing.T) {
 	if got := moving["api-orchestrator"]; !slices.Equal(got, []string{"x1", "x2", "u"}) {
 		t.Errorf("same-folder sessions join the API orchestrator, untitled too: %v", got)
 	}
-	if got := moving["hub"]; !slices.Equal(got, []string{"y"}) {
-		t.Errorf("a folder no orchestrator works in goes to the top one: %v", got)
+	if got := moving["hub"]; !slices.Equal(got, []string{"y", "m"}) {
+		t.Errorf("a folder no orchestrator works in goes to the top one, a closed one-time orchestrator with nobody under it too: %v", got)
 	}
 	lines := strings.Join(reorgLines(p), "\n")
-	for _, want := range []string{"API → api-orchestrator", "moving in: api-one (closed)", "moving in by folder: 2 closed sessions", "no new topic → hub", "moving in by folder: 1 closed"} {
+	for _, want := range []string{"API → api-orchestrator", "moving in: api-one (closed)", "moving in by folder: 2 closed sessions", "no new topic → hub", "moving in by folder: 2 closed sessions with no clear topic\n"} {
 		if !strings.Contains(lines, want) {
 			t.Errorf("popup lacks %q:\n%s", want, lines)
 		}

@@ -235,7 +235,7 @@ func TestScrollingWithoutAMessageBoxSearches(t *testing.T) {
 			t.Errorf("focus=%v search=%q", m.chatFocus, m.textInput.Value())
 		}
 	})
-	t.Run("not open in claude", func(t *testing.T) {
+	t.Run("closed", func(t *testing.T) {
 		m := chatModel(t) // "idle" first, not live
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp})

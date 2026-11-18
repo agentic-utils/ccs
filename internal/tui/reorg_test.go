@@ -174,6 +174,38 @@ func TestOrchestratorBriefCapsClosed(t *testing.T) {
 	}
 }
 
+// A closed session that launched others but has nobody under it now is an
+// ordinary closed session: the model can put it in a topic. One that still
+// has others under it stays an orchestrator and moves only as one.
+func TestReorgClosedExOrchestrator(t *testing.T) {
+	home := t.TempDir()
+	row := func(key, name string, live bool, parent string, launches ...string) reorgRow {
+		return reorgRow{Key: key, Conv: transcript.Conversation{SessionID: key + "-id", Title: name, Cwd: home, Launches: launches}, Live: live, Parent: parent}
+	}
+	rows := []reorgRow{
+		row("h", "hub", true, "", "worker"), row("wk", "worker", true, "hub"),
+		row("m", "mothership", false, "", "long-gone"),                           // nobody under it now
+		row("o", "old-hub", false, "", "kid"), row("k", "kid", false, "old-hub"), // a closed one with a child
+	}
+	plan := reorgPlan{Topics: []reorgTopic{{Topic: "Infra", Orchestrator: "hub", Members: []string{"m", "o"}}}}
+	p := checkPlan(plan, rows)
+	var moving []string
+	for _, o := range p.orchs {
+		for _, r := range o.Moving {
+			if !r.Placed {
+				moving = append(moving, r.Conv.Title)
+			}
+		}
+	}
+	if !slices.Equal(moving, []string{"mothership"}) {
+		t.Errorf("the childless closed ex-orchestrator moves as a member, the one with a child doesn't: %v", moving)
+	}
+	lines := strings.Join(reorgLines(p), "\n")
+	if strings.Contains(lines, "mothership is an orchestrator") || !strings.Contains(lines, "old-hub is an orchestrator: it moves only as one") {
+		t.Errorf("only old-hub is refused:\n%s", lines)
+	}
+}
+
 // Applying launches what the plan shows, saves before telling anyone, and
 // tells only live sessions: a moved one who it reports to now, the old
 // orchestrator what it lost.

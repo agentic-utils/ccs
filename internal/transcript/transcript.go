@@ -1169,7 +1169,6 @@ func GetConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 	if _, err := os.Stat(projectsDir); err != nil {
 		return nil, err
 	}
-
 	var files []string
 	err := filepath.Walk(projectsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -1197,6 +1196,9 @@ func GetConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 	// Worker pool to limit concurrent file operations
 	const numWorkers = 8
 	files = append(files, CodexRollouts()...) // Codex's sessions sit in the same list
+	if err := holdScanSlot(files); err != nil {
+		return nil, err
+	}
 	jobs := make(chan string, len(files))
 	results := make(chan *Conversation, len(files))
 
@@ -1266,6 +1268,7 @@ func DropParseCache() {
 	ParseCacheMu.Lock()
 	ParseCache = make(map[string]parsedFile)
 	ParseCacheMu.Unlock()
+	ReleaseScanSlot() // the memory it stood for is going back
 	debug.FreeOSMemory()
 }
 

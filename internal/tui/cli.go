@@ -303,6 +303,8 @@ func Main(v string) {
 
 	if len(args) > 0 && args[0] == "serve" {
 		load := func() ([]transcript.Conversation, error) {
+			// long-running and keeps its cache: it never holds a scan slot for good
+			defer transcript.ReleaseScanSlot()
 			return transcript.GetConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, []string{"observer-sessions"})
 		}
 		mcp.ServeMain(args[1:], load)
@@ -356,6 +358,7 @@ func Main(v string) {
 	if _, err := os.Stat(projectsDir); !os.IsNotExist(err) {
 		fmt.Fprint(os.Stderr, "Loading conversations...")
 		conversations, err = transcript.GetConversations(cutoff, maxSize, excludeDirs)
+		transcript.ReleaseScanSlot() // the list keeps its cache for good: it never holds a slot for good
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\rError loading conversations: %v\n", err)
 			os.Exit(1)
@@ -421,6 +424,7 @@ func Main(v string) {
 	m.fetchPRs = github.FetchPRs()
 	m.reload = func() ([]listItem, error) {
 		convs, err := transcript.GetConversations(cutoff, maxSize, excludeDirs)
+		transcript.ReleaseScanSlot()
 		if err != nil {
 			return nil, err
 		}

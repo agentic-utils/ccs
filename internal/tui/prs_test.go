@@ -293,7 +293,7 @@ func TestPRCellDraftApartFromWaiting(t *testing.T) {
 // The ? help explains every glyph the list puts before a count.
 func TestHelpLegendNamesEveryCountGlyph(t *testing.T) {
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
-	m.width, m.height = 120, 40
+	m.width, m.height = 120, 45 // the popup doesn't scroll, and the legend is its last part
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	v := strip2(m.View())
 	for _, want := range []string{"⧗ commands and monitors running", "◆ subagents running", "⌕ search hits",

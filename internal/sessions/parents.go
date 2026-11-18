@@ -29,6 +29,8 @@ type ParentRec struct {
 	ParentID   string    `json:"parent_id"`          // and its session id
 	ParentKind string    `json:"parent_kind,omitempty"`
 	At         time.Time `json:"at"`
+	// Source is what set it: "" a launch or adopt, "reorg" ccs reorg.
+	Source string `json:"source,omitempty"`
 }
 
 // ParentsFile is launch-parents.json: one record per child name, the latest
@@ -170,9 +172,19 @@ func recordLaunchParent(name string, childPID int) {
 }
 
 func setParent(name, childID string, p Caller) error {
+	return SetParents([]ParentRec{{Child: name, ChildID: childID, Parent: p.Name, ParentID: p.ID, ParentKind: p.Kind}})
+}
+
+// SetParents writes recs under one lock, each keyed by its child's name, or
+// its id when it has no name, stamped now.
+func SetParents(recs []ParentRec) error {
+	now := time.Now().UTC()
 	return WithParents(func(f *ParentsFile) bool {
-		f.Parents[name] = ParentRec{Child: name, ChildID: childID, Parent: p.Name, ParentID: p.ID, ParentKind: p.Kind, At: time.Now().UTC()}
-		return true
+		for _, r := range recs {
+			r.At = now
+			f.Parents[cmp.Or(r.Child, r.ChildID)] = r
+		}
+		return len(recs) > 0
 	})
 }
 

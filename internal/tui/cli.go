@@ -58,6 +58,10 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs adopt <name> [--to <parent> | --to none]
                             Move the named session under the calling session (or --to's) in the list;
                             --to none detaches it
+       ccs reorg [--dry-run] [--yes]
+                            Move sessions into topics so no orchestrator looks after more than 3:
+                            one Sonnet call plans it, you see the plan and answer y/N (--yes for scripts);
+                            then it launches the orchestrators it needs and tells live sessions
        ccs close <name>     Stop the named session and close its tab (--graceful asks it to
                             finish and say what's left first)
        ccs restart [--force] <name>
@@ -154,6 +158,7 @@ Key bindings:
   Ctrl+X C        Every orchestrator tree: show closed sessions, then fold every tree
                   to its top row, then back to live sessions only
   Ctrl+X G        Group the list by folder (again to stop)
+  Ctrl+X M        Move sessions into topics (ccs reorg): see Sonnet's plan, enter applies it
   Ctrl+X T        The full table, every column, instead of the sidebar
   Ctrl+X L        Hide or show the session list, the preview taking its place
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
@@ -198,6 +203,9 @@ func Main(v string) {
 	}
 	if len(args) > 0 && isOrchestratorCmd(args[0]) {
 		os.Exit(runOrchestrator(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal()))
+	}
+	if len(args) > 0 && args[0] == "reorg" {
+		os.Exit(runReorgCLI(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinIsTerminal()))
 	}
 	if len(args) > 0 && args[0] == "adopt" {
 		os.Exit(sessions.RunAdopt(args[1:], os.Stdout, os.Stderr))

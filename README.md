@@ -141,6 +141,16 @@ rm -r "$HOME/Library/Application Support/ccs/orchestrator"   # ~/.config/ccs/orc
 
 The orchestrator is always Claude, since Codex sessions can't receive messages from other sessions; it can start Codex sessions to do the work. Outside iTerm and tmux, `ccs orchestrator` runs it in place, but it can't open tabs for its sessions from there. `--yes` sets up without asking, for scripts; without it, a run with no terminal shows the plan and changes nothing.
 
+### Moving sessions into topics
+
+An orchestrator that looks after too many unrelated topics loses track of them. `Ctrl+X M` in the list, or `ccs reorg`, regroups every session by topic so that no orchestrator has more than 3:
+
+1. One `claude -p` call to Sonnet, with no tools and nothing saved, reads one line per session (name, folder, live or closed, when it started and was last active, its recorded parent, the sessions it launched, its first prompt) and proposes topics, each with an orchestrator: an existing one, or a new one where an orchestrator would carry too many.
+2. ccs shows the plan: each topic, its orchestrator (new or not, and under whom) and the sessions moving into it. Nothing launches or moves until you press Enter (`y` in `ccs reorg`); Esc or `n` drops it. `ccs reorg --dry-run` only shows it, and `--yes` applies it without asking.
+3. Applying it launches the new orchestrators in visible tabs, each with a brief naming its topics and sessions, and records every session under its topic's orchestrator (`launch-parents.json`, as `ccs adopt` would). Each live session that moved is told who it reports to now, and each existing orchestrator what it gained or lost, in an envelope marked as an automatic notice from ccs reorg. Closed sessions are only regrouped in the tree: they are never resumed or messaged.
+
+Each run is written to the activity log with its plan. `ccs adopt` corrects any single session afterwards.
+
 ## Installation
 
 ### Homebrew (macOS and Linux)
@@ -223,6 +233,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Ctrl+X P` - Pin the selected session: pinned sessions sit in their own section at the top, whatever their state, in the order you pinned them; `Alt+↑`/`Alt+↓` move one among them. Again to unpin. Kept across restarts
 - `Ctrl+X S` - Put the selected session away: settle it (until its next message) or snooze it (an hour, 4 hours, tomorrow 9:00). It moves to the settled or snoozed section at the bottom, and comes back early if it waits on you. Again to bring it back
 - `Ctrl+X C` - Every orchestrator tree at once: show closed sessions beside the live ones, then fold every tree to its top row (keeping its counts), then back to live sessions only. Kept across restarts (see [Orchestrator trees](#orchestrator-trees))
+- `Ctrl+X M` - Move sessions into topics, at most 3 per orchestrator (see [Moving sessions into topics](#moving-sessions-into-topics)): Sonnet plans it, the plan shows in a popup, Enter applies it and Esc drops it
 - `Ctrl+X G` - Group the list by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^X T layout, and reopens the way you left it
 - `Ctrl+X F` - Show or hide the session's details under the summary line at the top of the preview (name, project, model, context %, PR, task and subagent counts, size). The line starts with ▸ while they are hidden and ▾ while shown, and ends with what the key or a click does (`^X F details` or `^X F hide details`); a narrow preview drops the hint before cutting the facts; clicking anywhere on that line does the same, unless the click is on a link. The line itself never changes place. Hidden by default, remembered across restarts
 - `Ctrl+X T` - Switch between the sidebar (sessions in a narrow column beside the conversation, the default; each on two rows: the title, then a grey line of when it was last active, its context, project and PR counts) and the full-width table with every column (when, project, model, size, context, messages, hits, PRs). The list and the conversation each have a scrollbar whose thumb is the share in view

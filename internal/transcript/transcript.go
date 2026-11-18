@@ -90,6 +90,7 @@ type Conversation struct {
 	PRs         []string       // its PRs, first touched first: Claude Code's pr-link records, and those gh pr create/merge printed (ghPRCall)
 	GHCalls     []string       // gh pr create/merge calls awaiting their output
 	Spawns      []SpawnCmd     // claude -p commands it ran, to find the sessions they started
+	Launches    []string       // names it started with launch_session or ccs launch, oldest first: evidence for ccs reorg
 	Peers       []PeerRef      // its messages to and from other sessions, to link the two ends
 	outputs     []replyOutput  // each reply's output tokens, for the working line's count this turn
 	Tools       []ToolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
@@ -716,12 +717,23 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string, line []b
 			if call.Name == "AskUserQuestion" {
 				noteAsk(conv, call, ts)
 			}
+			if strings.HasSuffix(call.Name, "launch_session") {
+				var in struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal(call.Input, &in) == nil {
+					noteLaunch(conv, in.Name)
+				}
+			}
 			if call.Name == "Bash" {
 				var in struct {
 					Command string `json:"command"`
 				}
 				if json.Unmarshal(call.Input, &in) == nil && IsSpawn(in.Command) {
 					conv.Spawns = append(conv.Spawns, SpawnCmd{ts, SpawnText(in.Command)})
+				}
+				for _, n := range LaunchNames(in.Command) {
+					noteLaunch(conv, n)
 				}
 				if GHPRCall(in.Command) {
 					conv.GHCalls = append(slices.Clone(conv.GHCalls), call.ID)
@@ -832,6 +844,25 @@ type SpawnCmd struct{ Ts, Text string }
 func IsSpawn(cmd string) bool {
 	return strings.Contains(cmd, "claude") && (strings.Contains(cmd, " -p") || strings.Contains(cmd, "--print") || strings.Contains(cmd, "--bg") || strings.Contains(cmd, "--background")) ||
 		strings.Contains(cmd, "cswap run") || strings.Contains(cmd, "codex exec ") || strings.Contains(cmd, "codex e ")
+}
+
+// launchName finds each `ccs launch … --name X` (or --name=X) in a command.
+var launchName = regexp.MustCompile(`\bccs\s+launch\b[^;&|\n]*?--name[= ]['"]?([A-Za-z0-9._-]{1,64})`)
+
+// LaunchNames is every session name a shell command starts with ccs launch.
+func LaunchNames(cmd string) []string {
+	var out []string
+	for _, m := range launchName.FindAllStringSubmatch(cmd, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// noteLaunch adds a launched name once, keeping the first launch's place.
+func noteLaunch(conv *Conversation, name string) {
+	if name != "" && !slices.Contains(conv.Launches, name) {
+		conv.Launches = append(slices.Clone(conv.Launches), name)
+	}
 }
 
 // SpawnText is s lowercased, without quotes or backslashes and with runs of
@@ -1576,10 +1607,14 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 			}
 		case rec.Type == "event_msg" && p.Type == "item_completed" && p.Item != nil:
 			if p.Item.Type == "CommandExecution" {
-				if cmd := codexCommand(p.Item.Command); GHPRCall(cmd) {
+				cmd := codexCommand(p.Item.Command)
+				if GHPRCall(cmd) {
 					for _, u := range GHOutputPRs(p.Item.Output) {
 						addPR(conv, u)
 					}
+				}
+				for _, n := range LaunchNames(cmd) {
+					noteLaunch(conv, n)
 				}
 			}
 			noteCodexTool(conv, p, ts)

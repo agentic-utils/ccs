@@ -162,8 +162,7 @@ Key bindings:
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder
   Ctrl+X O        Open the orchestrator, setting one up if there is none
-  Ctrl+X C        Every orchestrator tree: show closed sessions, then fold every tree
-                  to its top row, then back to live sessions only
+  Ctrl+X C        Every orchestrator tree: show closed sessions, or hide them again
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X M        Move sessions into topics (ccs reorg): see Sonnet's plan, enter applies it
   Ctrl+X T        The full table, every column, instead of the sidebar
@@ -378,7 +377,7 @@ func Main(v string) {
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideSidebar
-	m.treeView = min(max(s.TreeView, treeLive), treeFolded)
+	m.treeView = s.treeView()
 	m.headerCollapsed = !s.HeaderOpen
 	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
 	if s.AutoUpdate == nil && s.found {

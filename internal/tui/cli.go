@@ -256,6 +256,7 @@ func Main(v string) {
 		load := func() ([]transcript.Conversation, error) {
 			return transcript.GetConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, []string{"observer-sessions"})
 		}
+		mcp.UseLiveLoads()
 		os.Exit(mcp.RunSessions(args[1:], os.Stdout, os.Stderr, load))
 	}
 

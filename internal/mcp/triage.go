@@ -289,7 +289,7 @@ func cmpOr(a, b string) string {
 // (bucketOrder), then the longest idle.
 func TriageRows(convs []transcript.Conversation, live map[string]sessions.LiveSession, now time.Time, stallAfter time.Duration) []TriageRow {
 	prs := ownedPRs(now)
-	parents := sessions.ParentNames(convs)
+	parents := sessions.ParentNamesLoaded(convs)
 	byID := map[string]transcript.Conversation{}
 	for _, c := range convs {
 		byID[c.SessionID] = c

@@ -6,7 +6,10 @@ package tui
 // header shows `^X B browser on` while launchd says the agent runs.
 
 import (
+	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -42,15 +45,18 @@ func (m *model) serveCheckCmd() tea.Cmd {
 	return func() tea.Msg { return serveStatusMsg{serveStatus()} }
 }
 
-// serveKey is ^X B: a note when there's no agent, a y/n before stopping it,
-// else it starts it.
+// serveURL is the agent's address (its --host); stubbed in tests.
+var serveURL = mcp.ServeURL
+
+// serveKey is ^X B: a note when there's no agent, the QR popup while it
+// runs (S there asks y/n and stops it), else it starts it.
 func (m *model) serveKey() tea.Cmd {
 	switch {
 	case !m.serve.Installed:
 		m.note("^X B runs ccs serve in the background: set it up first with ccs serve install <flags> (docs/remote.md)")
 		return nil
 	case m.serve.Running:
-		m.confirmServeStop = true
+		m.openServeQR()
 		return nil
 	}
 	return func() tea.Msg {
@@ -81,4 +87,53 @@ func (m *model) applyServe(msg tea.Msg) tea.Cmd {
 		return m.serveCheckCmd()
 	}
 	return nil
+}
+
+// openServeQR opens the ^X B popup: the agent's address and its QR code.
+func (m *model) openServeQR() {
+	m.serveQROpen, m.serveQR, m.serveQRWidth, m.serveQRURL, m.serveQRErr = true, "", 0, "", ""
+	url, err := serveURL()
+	if err != nil {
+		m.serveQRErr = err.Error()
+		return
+	}
+	m.serveQRURL = url
+	if text, w, err := mcp.QRCode(url); err == nil {
+		m.serveQR, m.serveQRWidth = strings.TrimRight(text, "\n"), w
+	}
+}
+
+// serveQRKey handles a key while the ^X B popup is open: S stops ccs serve
+// (after the usual y/n), esc or ^X B closes it.
+func (m model) serveQRKey(k string) (tea.Model, tea.Cmd) {
+	switch k {
+	case "s", "S":
+		m.serveQROpen, m.confirmServeStop = false, true
+	case "esc", "^x b", "q":
+		m.serveQROpen = false
+	case "ctrl+x": // a chord can't start while a popup is open, so this one starts its own: ^X B closes it
+		m.chordX = true
+	}
+	return m, nil
+}
+
+// serveQRPopup is the ^X B popup. The QR code is drawn only when it fits
+// the window; otherwise the address alone, and a note saying so.
+func (m model) serveQRPopup() string {
+	var b strings.Builder
+	b.WriteString("\033[1mccs serve is running\033[0m\n\n")
+	switch {
+	case m.serveQRErr != "":
+		b.WriteString(m.serveQRErr + "\n")
+	case m.serveQR != "" && m.serveQRWidth+8 <= m.width && (m.serveQRWidth+1)/2+12 <= m.height:
+		b.WriteString(m.serveQR + "\n\nScan it with your phone's camera, or open\n" + m.serveQRURL + "\n")
+	default:
+		b.WriteString("Open " + m.serveQRURL + "\n\n\033[90mthe window is too small for its QR code: make it bigger, or run ccs serve qr\033[0m\n")
+	}
+	b.WriteString("\n\033[90m" + hints("s", "stop it", "^X B/"+keyEsc, "close") + "\033[0m")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 2).
+		Render(b.String())
 }

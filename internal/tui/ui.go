@@ -127,6 +127,11 @@ type model struct {
 	agentsAt         time.Time                     // when claude agents was last asked
 	confirmStop      string                        // ^X K asked whether to stop this session: y stops it
 	confirmServeStop bool                          // ^X B asked whether to stop ccs serve's agent: y stops it
+	serveQROpen      bool                          // ^X B's popup while the agent runs: its address and QR code
+	serveQR          string                        // the QR code, drawn
+	serveQRWidth     int                           // its width in cells
+	serveQRURL       string                        // the address it encodes
+	serveQRErr       string                        // why there's no address, if not
 	serve            mcp.ServiceStatus             // ccs serve's launchd agent, as last read (serveCheckCmd)
 	serveCheckedAt   time.Time
 	serveChecking    bool
@@ -1771,6 +1776,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.snoozeOpen { // owns the keyboard until closed
 			return m.snoozeKey(k)
 		}
+		if m.serveQROpen { // owns the keyboard until closed
+			return m.serveQRKey(k)
+		}
 		if k == "^x s" && len(m.filtered) > 0 && m.marks != nil && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			if c := m.filtered[m.cursor].conv; m.putAway(c) != awake {
@@ -2568,6 +2576,7 @@ func (m model) overPopups() []popup {
 		{m.notesOpen, model.notesPopup},
 		{m.linksOpen, model.linksPopup},
 		{m.snoozeOpen, model.snoozePopup},
+		{m.serveQROpen, model.serveQRPopup},
 		{len(m.reopen) > 0, model.reopenPopup},
 		{m.reorgPlan != nil, model.reorgPopup},
 		{m.offerShown(), model.orchestratorPopup},
@@ -2680,7 +2689,7 @@ func (m model) shortcuts() [][2]string {
 	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
 	add(m.autoFocus, "^X A", "stop switching to sessions that wait on you")
 	add(!m.serve.Running, "^X B", "start ccs serve, the sessions in a browser (its launchd agent)")
-	add(m.serve.Running, "^X B", "stop ccs serve (asks first)")
+	add(m.serve.Running, "^X B", "ccs serve's address and QR code for your phone; s there stops it (asks first)")
 	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
 	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
 	add(m.profileStop == nil, "^X Q", "record a CPU profile, for when ccs feels slow")

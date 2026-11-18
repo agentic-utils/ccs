@@ -39,10 +39,14 @@ ccs serve doesn't answer questions or permission prompts. The only way it could 
 `ccs serve install <the same flags as ccs serve>` writes a per-user launchd agent (`~/Library/LaunchAgents/io.github.agentic-utils.ccs-serve.plist`, 0600 since it holds the Access values), checking the flags as `ccs serve` does. Its output goes to `serve.log` beside the update log. Then:
 
 - `ccs serve start` runs it and `ccs serve stop` stops it; `ccs serve status` says whether it runs, from `launchctl print`; `ccs serve uninstall` stops it and removes the plist.
-- In the TUI, ^X B starts it, or asks y/n and stops it. Once installed, the header shows `^X B browser on` or `off`, read from launchd's state at most every 10 seconds, not just whether the plist exists.
+- In the TUI, ^X B starts it; while it runs, ^X B shows its address and a QR code (S there asks y/n and stops it). Once installed, the header shows `^X B browser on` or `off`, read from launchd's state at most every 10 seconds, not just whether the plist exists.
 - It never starts at login (`RunAtLoad` false). launchd restarts it only after a crash (`KeepAlive` `{SuccessfulExit: false}`), and stop unloads it (`launchctl bootout`), so a stopped agent stays stopped.
 - It isn't hosted inside the TUI, which restarts on every auto-update and stops when it quits: remote access would drop with it.
 - Changing its flags: `ccs serve install <new flags>`, then stop and start it.
+
+## Opening it on your phone
+
+`ccs serve` prints a QR code of `https://<--host>/` when it starts, `ccs serve qr` prints it again from the installed agent's plist, and ^X B shows it in the TUI while the agent runs. Point the phone's camera at it, and it opens the page through Cloudflare Access. The code is drawn in black on white whatever the terminal's colours, so it scans on a dark or a light theme; a window too small for it shows the address alone. A `--preview` never gets one: its link is `http://127.0.0.1:...`, which on a phone means the phone itself.
 
 The tunnel is its own service: `brew services start cloudflared`.
 

@@ -26,8 +26,9 @@ func run(m model, cmd tea.Cmd) model {
 
 func TestServeChord(t *testing.T) {
 	var started, stopped int
-	oldStatus, oldStart, oldStop := serveStatus, startServe, stopServe
-	t.Cleanup(func() { serveStatus, startServe, stopServe = oldStatus, oldStart, oldStop })
+	oldStatus, oldStart, oldStop, oldURL := serveStatus, startServe, stopServe, serveURL
+	t.Cleanup(func() { serveStatus, startServe, stopServe, serveURL = oldStatus, oldStart, oldStop, oldURL })
+	serveURL = func() (string, error) { return "https://ccs.example.com/", nil }
 	st := mcp.ServiceStatus{}
 	serveStatus = func() mcp.ServiceStatus { return st }
 	startServe = func() (string, error) { started++; st.Loaded, st.Running = true, true; return "started ccs serve", nil }
@@ -67,9 +68,31 @@ func TestServeChord(t *testing.T) {
 		t.Errorf("running: %q", head)
 	}
 
-	// Running: ^X B asks first; n keeps it, y stops it.
+	// Running: ^X B shows its address and QR code; esc closes it.
 	m, cmd = chordB(m)
-	if cmd != nil || !m.confirmServeStop || !strings.Contains(strip2(m.View()), "Stop ccs serve?") {
+	view := strip2(m.View())
+	if cmd != nil || !m.serveQROpen || !strings.Contains(view, "https://ccs.example.com/") || !strings.Contains(view, "▀") {
+		t.Fatalf("running: the QR popup: open %v\n%s", m.serveQROpen, view)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.serveQROpen || stopped != 0 {
+		t.Error("esc closes the popup and stops nothing")
+	}
+	// A window too small for the code shows the address alone.
+	m.width, m.height = 60, 20
+	m, _ = chordB(m)
+	if v := strip2(m.View()); strings.Contains(v, "▀") || !strings.Contains(v, "too small for its QR code") || !strings.Contains(v, "https://ccs.example.com/") {
+		t.Errorf("a small window:\n%s", v)
+	}
+	m, _ = chordB(m) // ^X B closes it too
+	if m.serveQROpen {
+		t.Error("^X B closes the popup")
+	}
+	m.width, m.height = 160, 30
+	// s in the popup asks first; n keeps it, y stops it.
+	m, _ = chordB(m)
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd != nil || m.serveQROpen || !m.confirmServeStop || !strings.Contains(strip2(m.View()), "Stop ccs serve?") {
 		t.Fatalf("stopping asks first")
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
@@ -77,6 +100,7 @@ func TestServeChord(t *testing.T) {
 		t.Errorf("n keeps it running")
 	}
 	m, _ = chordB(m)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = run(m, cmd)
 	if stopped != 1 || m.confirmServeStop || !strings.Contains(m.errorMsg, "stopped ccs serve") {

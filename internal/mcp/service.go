@@ -67,13 +67,13 @@ func serviceTarget() string { return serviceDomain() + "/" + ServeLabel }
 
 func isServiceCommand(a string) bool {
 	switch a {
-	case "install", "uninstall", "start", "stop", "status":
+	case "install", "uninstall", "start", "stop", "status", "qr":
 		return true
 	}
 	return false
 }
 
-// RunService is `ccs serve install|uninstall|start|stop|status`.
+// RunService is `ccs serve install|uninstall|start|stop|status|qr`.
 func RunService(args []string, stdout, stderr io.Writer) int {
 	var msg string
 	var err error
@@ -90,6 +90,14 @@ func RunService(args []string, stdout, stderr io.Writer) int {
 		msg, err = StartServeService()
 	case "stop":
 		msg, err = StopServeService()
+	case "qr":
+		url, err := ServeURL()
+		if err != nil {
+			fmt.Fprintln(stderr, "ccs serve:", err)
+			return 1
+		}
+		printQR(stdout, url)
+		return 0
 	case "status":
 		st := ServeServiceStatus()
 		switch {

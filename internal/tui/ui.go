@@ -125,6 +125,8 @@ type model struct {
 	confirmStop     string                        // ^X K asked whether to stop this session: y stops it
 	confirmRestart  string                        // ^X R asked whether to restart this session: y restarts it
 	reorgPlan       *reorgProposal                // ^X M's plan, shown in its popup until enter applies it or esc drops it
+	reorgShownAt    time.Time                     // when it came on screen: enter waits updateKeyGrace
+	reorgScroll     int                           // the popup's first line in view
 	reorgBusy       string                        // what ^X M is doing: "planning", "reorganising", or ""
 	restartForce    bool                          // with confirmRestart: it was mid-turn when asked, so y forces it
 
@@ -1152,10 +1154,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reorgBusy = ""
 		if msg.err != nil {
 			m.errorMsg = "reorg: " + msg.err.Error()
-		} else if len(msg.p.plan.Topics) == 0 {
-			m.note("reorg: nothing to regroup")
+		} else if msg.p.moves() == 0 {
+			m.note(fmt.Sprintf("reorg: nothing to move (%d suggestions left out)", len(msg.p.dropped)))
 		} else {
-			m.reorgPlan = &msg.p
+			m.reorgPlan, m.reorgShownAt, m.reorgScroll = &msg.p, time.Now(), 0
 		}
 		return m, nil
 
@@ -1620,9 +1622,24 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.reorgPlan != nil { // owns the keyboard until answered
 			switch msg.String() {
 			case "enter":
+				if time.Since(m.reorgShownAt) < updateKeyGrace {
+					return m, nil // a key already on its way when the plan appeared
+				}
+				if !m.reorgAtEnd() {
+					m.scrollReorg(m.reorgRoom())
+					return m, nil
+				}
 				p := *m.reorgPlan
 				m.reorgPlan, m.reorgBusy = nil, "reorganising"
 				return m, reorgApplyCmd(p)
+			case "up", "ctrl+p":
+				m.scrollReorg(-1)
+			case "down", "ctrl+n":
+				m.scrollReorg(1)
+			case "pgup":
+				m.scrollReorg(-m.reorgRoom())
+			case "pgdown":
+				m.scrollReorg(m.reorgRoom())
 			case "esc":
 				m.reorgPlan = nil
 				m.note("reorg cancelled: nothing moved")

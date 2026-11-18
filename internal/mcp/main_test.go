@@ -33,6 +33,7 @@ func TestMain(m *testing.M) {
 	sessions.CloseTab = func(string) bool { return false }
 	sessions.SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }
 	sessions.FocusTTY = func(string, bool) bool { return false }
+	sessions.TypeKeys = func(int, string, bool) (string, error) { return "", errors.New("tests type into no terminals") }
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil }
 	liveSessions = func() map[string]sessions.LiveSession { return nil }

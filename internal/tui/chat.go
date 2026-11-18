@@ -3,13 +3,11 @@ package tui
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -420,48 +418,7 @@ func typeIntoSession(pid int, text string) (where string, err error) {
 // typeKeys is typeIntoSession with Enter optional: a digit alone picks a
 // question menu's option.
 func typeKeys(pid int, text string, enter bool) (where string, err error) {
-	if strings.ContainsFunc(text, func(r rune) bool { return r < 0x20 || r == 0x7f || r == utf8.RuneError }) {
-		return "terminal", errors.New("the message contains control characters")
-	}
-	out, err := proc.RunBounded(2*time.Second, nil, "ps", "-o", "tty=", "-p", strconv.Itoa(pid))
-	tty := strings.TrimSpace(string(out))
-	if err != nil || tty == "" || tty == "??" {
-		return "", nil
-	}
-	tty = "/dev/" + tty
-	if os.Getenv("TMUX") != "" {
-		panes, err := proc.RunBounded(5*time.Second, nil, "tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}")
-		if target := sessions.TmuxPaneForTTY(string(panes), tty); err == nil && target != "" {
-			if _, err := proc.RunBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "-l", "--", text); err != nil || !enter {
-				return "tmux pane", err
-			}
-			_, err := proc.RunBounded(5*time.Second, nil, "tmux", "send-keys", "-t", target, "Enter")
-			return "tmux pane", err
-		}
-	}
-	if !sessions.InITerm() {
-		return "", nil
-	}
-	script := fmt.Sprintf(`tell application "iTerm2"
-	repeat with w in windows
-		repeat with t in tabs of w
-			repeat with s in sessions of t
-				if tty of s is %q then
-					tell s to write text %q newline %t
-					return "typed"
-				end if
-			end repeat
-		end repeat
-	end repeat
-end tell`, tty, text, enter)
-	out, err = proc.RunBounded(5*time.Second, nil, "osascript", "-e", script)
-	if err != nil {
-		return "iTerm tab", err
-	}
-	if strings.TrimSpace(string(out)) != "typed" {
-		return "", nil
-	}
-	return "iTerm tab", nil
+	return sessions.TypeKeys(pid, text, enter)
 }
 
 // checkDelivered clears a pending message once it shows up in the session's

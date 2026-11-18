@@ -125,41 +125,69 @@ func newServer(cfg serveConfig) *server {
 	return &server{cfg: cfg, csrfKey: key, limits: newRateLimits(), now: time.Now, slots: make(chan struct{}, serveSlots)}
 }
 
-// RunServe is `ccs serve`.
-func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript.Conversation, error)) int {
+// serveFlags are `ccs serve`'s flags, checked: what RunServe runs with and
+// what `ccs serve install` writes into its launchd agent.
+type serveFlags struct {
+	addr, host, team, aud, emails string
+	write, preview                bool
+}
+
+// parseServeFlags parses and checks `ccs serve`'s flags, refusing what
+// RunServe would never run with; code is 0 when they're good, else the
+// exit code (the reason is on stderr).
+func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	addr := fs.String("addr", "127.0.0.1:7467", "loopback address to listen on")
-	host := fs.String("host", "", "the public hostname the tunnel serves, e.g. ccs.example.com (required)")
-	team := fs.String("team", "", "Cloudflare Access team domain, e.g. me.cloudflareaccess.com (required)")
-	aud := fs.String("aud", "", "the Access application's AUD tag (required)")
-	emails := fs.String("email", "", "comma-separated emails allowed in (required)")
-	write := fs.Bool("allow-write", false, "allow sending, launching, closing and restarting (read-only without it)")
-	preview := fs.Bool("preview", false, "a preview for this Mac's browser at http://127.0.0.1:<port>, with no Cloudflare Access (read-only unless --allow-write)")
+	fs.StringVar(&f.addr, "addr", "127.0.0.1:7467", "loopback address to listen on")
+	fs.StringVar(&f.host, "host", "", "the public hostname the tunnel serves, e.g. ccs.example.com (required)")
+	fs.StringVar(&f.team, "team", "", "Cloudflare Access team domain, e.g. me.cloudflareaccess.com (required)")
+	fs.StringVar(&f.aud, "aud", "", "the Access application's AUD tag (required)")
+	fs.StringVar(&f.emails, "email", "", "comma-separated emails allowed in (required)")
+	fs.BoolVar(&f.write, "allow-write", false, "allow sending, launching, closing and restarting (read-only without it)")
+	fs.BoolVar(&f.preview, "preview", false, "a preview for this Mac's browser at http://127.0.0.1:<port>, with no Cloudflare Access (read-only unless --allow-write)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: ccs serve --host <hostname> --team <team> --aud <tag> --email <you@example.com> [--addr 127.0.0.1:7467] [--allow-write]")
 		fmt.Fprintln(stderr, "       ccs serve --preview [--allow-write] [--addr 127.0.0.1:7467]")
+		fmt.Fprintln(stderr, "       ccs serve install <the same flags> | uninstall | start | stop | status   (a launchd agent)")
 		fmt.Fprintln(stderr, "Serves ccs's sessions to a browser through a Cloudflare Tunnel with Access in front. See docs/remote.md.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return f, 2
 	}
-	if *preview {
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "ccs serve: unexpected %q\n", fs.Arg(0))
+		return f, 2
+	}
+	if f.preview {
 		// This Mac only, with no Access: the Access flags would suggest
 		// otherwise, so they're refused.
-		if *host != "" || *team != "" || *aud != "" || *emails != "" {
+		if f.host != "" || f.team != "" || f.aud != "" || f.emails != "" {
 			fmt.Fprintln(stderr, "ccs serve: --preview is for this Mac only, with no Cloudflare Access: it takes no --host, --team, --aud or --email")
-			return 2
+			return f, 2
 		}
-	} else if *host == "" || *team == "" || *aud == "" || *emails == "" {
+	} else if f.host == "" || f.team == "" || f.aud == "" || f.emails == "" {
 		fmt.Fprintln(stderr, "ccs serve: --host, --team, --aud and --email are all required: it never runs without Cloudflare Access in front (or try --preview, on this Mac only)")
-		return 2
+		return f, 2
 	}
-	if err := loopbackOnly(*addr); err != nil {
+	if err := loopbackOnly(f.addr); err != nil {
 		fmt.Fprintln(stderr, "ccs serve:", err)
-		return 2
+		return f, 2
 	}
+	return f, 0
+}
+
+// RunServe is `ccs serve`, and `ccs serve install|uninstall|start|stop|status`
+// for its launchd agent (service.go).
+func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript.Conversation, error)) int {
+	if len(args) > 0 && isServiceCommand(args[0]) {
+		return RunService(args, stdout, stderr)
+	}
+	f, code := parseServeFlags(args, stderr)
+	if code != 0 {
+		return code
+	}
+	addr, host, team, aud, emails, write, preview := &f.addr, &f.host, &f.team, &f.aud, &f.emails, &f.write, &f.preview
 	cfg := serveConfig{addr: *addr, host: strings.ToLower(*host), allowWrite: *write, load: load}
 	if *preview {
 		cfg.preview = true

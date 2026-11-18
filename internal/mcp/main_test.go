@@ -35,6 +35,8 @@ func TestMain(m *testing.M) {
 	sessions.SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }
 	sessions.FocusTTY = func(string, bool) bool { return false }
 	sessions.FindTerminal = func(int) sessions.Terminal { return sessions.Terminal{} }
+	Launchctl = func(...string) (string, error) { return "", errors.New("tests run no launchctl") }
+	LaunchAgentsDir = func() string { return filepath.Join(dir, "LaunchAgents") }
 	sessions.SendKeys = func(sessions.Terminal, string, bool) error { return errors.New("tests type into no terminals") }
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil }

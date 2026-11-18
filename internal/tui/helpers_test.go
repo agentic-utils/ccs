@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
@@ -90,6 +91,8 @@ func TestMain(m *testing.M) {
 	namedTranscript = func(string) string { return "" }
 	orchestratorProbe = func() tea.Msg { return nil }
 	proc.PsAll = func() (string, error) { return "", nil }
+	serveStatus = func() mcp.ServiceStatus { return mcp.ServiceStatus{} } // never launchd
+	mcp.Launchctl = func(...string) (string, error) { return "", errors.New("tests run no launchctl") }
 	proc.PsTree = func() (string, error) { return "", nil } // never the machine's own processes
 	sessions.CallingSession = func() (sessions.Caller, bool) { return sessions.Caller{}, false }
 	// never the real Codex: its data folder is a temp one, and nothing is queued.

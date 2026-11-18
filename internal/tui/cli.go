@@ -170,6 +170,7 @@ Key bindings:
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
   Ctrl+X A        Switch to a session's tab when it starts waiting on you
+  Ctrl+X B        Start or stop ccs serve's launchd agent (ccs serve install sets it up; stopping asks y/n)
   Ctrl+X I        Install ccs updates on their own once you're away (off by
                   default)
   Ctrl+X R        Record a CPU profile, for when ccs feels slow; again to stop

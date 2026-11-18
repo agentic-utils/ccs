@@ -104,6 +104,7 @@ var Registry = []Info{
 	{"tui.update_auto", "an update installed itself while away"},
 	{"tui.reopen", "reopen sessions after a restart"},
 	{"tui.profile", "^X Q record a CPU profile"},
+	{"tui.serve", "^X B start or stop ccs serve (its launchd agent)"},
 	{"tui.account", "^X U or click: the account switcher"},
 	{"tui.account_switch", "switch Claude account"},
 	{"tui.account_add", "add a Claude account"},

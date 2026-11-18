@@ -63,7 +63,16 @@ What happens to each prompt:
 - **The answer is tied to that prompt.** ccs serve must acknowledge the prompt within 2 seconds, echoing a random nonce the hook sent. Its answer must carry the same nonce, so a reply meant for another prompt, or replayed, settles nothing.
 - **ccs serve can't change what runs.** It can say allow or deny, and nothing else. For a question it can also send the chosen labels, which the hook checks against the question's own options. The hook then builds what it gives Claude Code from its own copy of the tool input, so neither ccs serve nor anything posing as it can change a command. Any failed check lets the prompt show in its tab.
 - **A stalled listener only delays the prompt.** One that acknowledges and then goes quiet holds it until `--hook-wait` passes (at most 30 minutes, then it shows in its tab). For the real ccs serve, a key press on the Mac hands it back sooner.
+- **The TUI talks to ccs serve the same way.** Its control socket (`serve-control.sock`) gets the same checks on both ends, and it carries only a choice and labels. A digit in ^X W asks y/n first, as A and D do. A sent answer whose reply never comes back is reported as "outcome unknown", never as failed, because ccs serve may already have settled it.
 - **Programs running as you are out of scope.** Such a program could edit `~/.claude/settings.json`, remove the hook, or run claude itself, so a shared key file or any other check here would not stop it. That's why there's no signing key.
+
+**Answering from the ccs TUI.** A held prompt can also be answered in ccs on this Mac. Its session is marked "held by ccs serve" in the bottom pane of the main view and in ^X W. Enter or a click on the selected session focuses the bottom pane; with ^X A on, ccs selects a session that starts waiting once you've stopped typing in ccs for 2 seconds and focuses its held prompt, dropping keys for its first second or while keys still come under 600ms apart, so typing meant for the search can't answer it. There, and in ^X W:
+
+- a digit picks a single question's option;
+- A allows and D denies a permission prompt, each asking y/n first;
+- T sends it back to its tab (Enter in the bottom pane does that and opens the tab; Esc returns to the search).
+
+ccs never types an answer into a terminal: a menu or prompt it doesn't hold is answered in its own tab. A multi-select or multi-question menu is answered on the page, or sent back with T. The TUI talks to ccs serve over a second socket, `serve-control.sock`, beside the hook's. It's guarded the same way on both ends: this user's private 0600 socket, and the kernel's word that the other end runs as this user. An answer carries only a choice and a question's labels, never tool input. The first answer wins, from the TUI or the page, and the activity log names the TUI as `tui (this Mac)`. Outside `--preview`, a key press on the Mac sends held prompts back to their tabs within seconds, so this matters most in a preview and in those first seconds.
 
 Checked on Claude Code 2.1.327 in a throwaway session: an allow approved a Bash prompt, and an allow with `updatedInput.answers` answered an AskUserQuestion menu without it being shown. The session got the chosen answer. Answers to a multi-select are the chosen labels joined with ", ".
 

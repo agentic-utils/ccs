@@ -127,12 +127,22 @@ type model struct {
 	agentsAt         time.Time                     // when claude agents was last asked
 	confirmStop      string                        // ^X K asked whether to stop this session: y stops it
 	confirmServeStop bool                          // ^X B asked whether to stop ccs serve's agent: y stops it
-	serveQROpen      bool                          // ^X B's popup while the agent runs: its address and QR code
-	serveQR          string                        // the QR code, drawn
-	serveQRWidth     int                           // its width in cells
-	serveQRURL       string                        // the address it encodes
-	serveQRErr       string                        // why there's no address, if not
-	serve            mcp.ServiceStatus             // ccs serve's launchd agent, as last read (serveCheckCmd)
+	heldPrompt       map[string]mcp.HeldPrompt     // prompts ccs serve holds for its page, by session (held.go)
+	heldAt           time.Time
+	heldBusy         bool
+	heldConfirmed    *heldConfirm      // a digit, A or D, waiting for y/n
+	heldFocus        bool              // the bottom pane's held prompt has the keys
+	heldAutoAt       time.Time         // when an auto-select focused it (zero: by hand, or the guard has passed)
+	heldNote         string            // the pane's last held-prompt outcome
+	heldErr          string            // the pane's last held-prompt error
+	selectHandled    map[string]string // SessionID -> the wait (or held prompt) auto-select has dealt with
+	waitNote         string            // the overlay's last outcome, shown until the next key
+	serveQROpen      bool              // ^X B's popup while the agent runs: its address and QR code
+	serveQR          string            // the QR code, drawn
+	serveQRWidth     int               // its width in cells
+	serveQRURL       string            // the address it encodes
+	serveQRErr       string            // why there's no address, if not
+	serve            mcp.ServiceStatus // ccs serve's launchd agent, as last read (serveCheckCmd)
 	serveCheckedAt   time.Time
 	serveChecking    bool
 	confirmRestart   string         // ^X R asked whether to restart this session: y restarts it
@@ -379,6 +389,10 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 	case tea.MouseButtonLeft:
 		if msg.Y == 1 { // the search row
 			m.chatFocus = false
+			return m
+		}
+		if _, _, held := m.selectedHeld(); held && m.chatRows() > 0 && msg.Y >= m.height-m.chatRows() && msg.X >= paneX { // the held prompt's pane
+			m.heldFocus, m.heldAutoAt = true, time.Time{}
 			return m
 		}
 		if m.chatRows() > 0 && !m.boxHidden() && msg.Y >= m.height-3 && msg.X >= paneX { // the message box
@@ -1195,6 +1209,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if n.chatFocus && (!n.selectedLive() || n.boxHidden()) {
 		n.chatFocus = false
 	}
+	if _, _, held := n.selectedHeld(); n.heldFocus && !held {
+		n.heldFocus, n.heldAutoAt = false, time.Time{}
+	}
+	n.autoSelect()
 	if pr := n.prCmd(); pr != nil {
 		cmd = tea.Batch(cmd, pr)
 	}
@@ -1393,15 +1411,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case answerDoneMsg:
-		switch {
-		case msg.err != nil:
-			m.waitErr = "Answering " + msg.name + " failed (" + msg.err.Error() + "): answer it in its tab"
-		case msg.where == "":
-			m.waitErr = "Couldn't find " + msg.name + "'s terminal: answer it in its tab"
-		}
-		return m, nil
-
 	case t3DoneMsg:
 		m.resuming = false
 		if msg.err != nil {
@@ -1424,7 +1433,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ask {
 			m.agentsAt = time.Now()
 		}
-		return m, tea.Batch(m.liveCmd(ask), m.serveCheckCmd())
+		return m, tea.Batch(m.liveCmd(ask), m.serveCheckCmd(), m.heldCmd())
+
+	case heldMsg:
+		m.applyHeld(msg)
+		return m, nil
+
+	case heldDoneMsg:
+		m.applyHeldDone(msg)
+		if !m.waitOpen && m.waitNote != "" { // answered from the bottom pane's ^X W hint? show it there too
+			m.note(m.waitNote)
+		}
+		return m, m.heldCmd()
 
 	case liveMsg:
 		m.live = msg.live
@@ -1737,7 +1757,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		prevKey := m.lastKeyAt
 		m.lastKeyAt = time.Now()
+		if m.heldFocus && !m.waitOpen && !m.helpOpen && !m.prompting() {
+			if cmd, done := m.heldPaneKey(msg, prevKey); done {
+				return m, cmd
+			}
+		}
 		if msg.Type == tea.KeyRunes && (mouseLeak.MatchString(string(msg.Runes)) || m.mouseFragment(msg)) {
 			return m, nil // a fragmented mouse report, not typing
 		}
@@ -2389,6 +2415,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatFocus = true
 				return m, nil
 			}
+			if _, _, held := m.selectedHeld(); held { // answer it here, not in its tab (it isn't there)
+				stats.Record("tui.held_pane", stats.Key)
+				m.heldFocus, m.heldAutoAt = true, time.Time{}
+				return m, nil
+			}
 			// A live session's tab is focused, not resumed again (resumeCmd checks).
 			stats.Record("tui.open", stats.Key)
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, false)
@@ -2634,6 +2665,14 @@ func (m model) shortcuts() [][2]string {
 		add(true, keyEnter, "send the message; on an empty box, go to its tab")
 		add(true, keyEsc, "leave the message box for the search")
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
+	case m.heldFocus:
+		add(true, "1-9", "answer its question with that option (asks y/n)")
+		add(true, "A D", "allow or deny the permission prompt ccs serve holds (asks y/n)")
+		add(true, "T", "send the prompt back to its tab")
+		add(true, keyEnter, "send it back to its tab and open the tab")
+		add(true, keyEsc, "leave it for the search")
+	case live && m.boxHidden() && m.heldPrompt[m.filtered[m.cursor].conv.SessionID].ID != "":
+		add(true, keyEnter, "answer the prompt ccs serve holds for it, here: a digit, A allow or D deny (y/n), T back to its tab")
 	case live && m.boxHidden():
 		add(true, keyEnter, "go to its tab to answer it")
 	case live:
@@ -2924,6 +2963,8 @@ func (m model) viewScreen() string {
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
 		pairs, keep = chordPairs, 1
+	} else if m.heldFocus {
+		pairs, keep = []string{"1-9 A D", "answer", "T", "its tab", keyEsc, "search", "?", "help"}, 1
 	} else if m.chatFocus {
 		send := "send"
 		if strings.TrimSpace(m.chatInput.Value()) == "" {

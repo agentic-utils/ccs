@@ -1,0 +1,222 @@
+package mcp
+
+// The control socket: how the ccs TUI on this Mac lists the prompts ccs
+// serve holds for the page (serve_prompts.go) and answers one by its id,
+// never by typing into a terminal. It lives beside the hook socket and is
+// guarded the same way on both ends: a 0600 socket in this user's private
+// folder (trustedSocket), and the kernel's word that the other end runs as
+// this user (peerUID). An answer carries only a choice and a question's
+// labels; it goes through promptDecision like the page's, and the hook
+// builds what it hands Claude Code from its own input.
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
+)
+
+// ControlSockPath is the control socket, beside the hook socket.
+var ControlSockPath = func() string { return filepath.Join(filepath.Dir(hookSockPath()), "serve-control.sock") }
+
+// tuiUser is who the activity log names for an answer from the TUI.
+const tuiUser = "tui (this Mac)"
+
+// HeldPrompt is a prompt ccs serve holds, as the TUI shows it.
+type HeldPrompt struct {
+	ID        string         `json:"id"`
+	Session   string         `json:"session"`
+	Tool      string         `json:"tool"`
+	Summary   string         `json:"summary,omitempty"`
+	Questions []HeldQuestion `json:"questions,omitempty"` // an AskUserQuestion's; none for a permission prompt
+}
+
+// HeldQuestion is one question of a held AskUserQuestion.
+type HeldQuestion struct {
+	Question string   `json:"question"`
+	Multi    bool     `json:"multi,omitempty"`
+	Options  []string `json:"options"`
+}
+
+// controlRequest is a line the TUI sends. It has no field for tool input:
+// unknown fields are dropped when it's read, so nothing can be smuggled in.
+type controlRequest struct {
+	Op      string              `json:"op"` // list, answer
+	Prompt  string              `json:"prompt,omitempty"`
+	Choice  string              `json:"choice,omitempty"`  // allow, deny, mac, answer
+	Answers map[string][]string `json:"answers,omitempty"` // q<i> → labels
+}
+
+type controlReply struct {
+	Prompts []HeldPrompt `json:"prompts,omitempty"`
+	Text    string       `json:"text,omitempty"`
+	Error   string       `json:"error,omitempty"`
+}
+
+// listenControl opens the control socket (with --allow-write, beside the
+// hook socket listenHooks opened); returns a stop function.
+func (s *server) listenControl() (func(), error) {
+	path := ControlSockPath()
+	os.Remove(path) // listenHooks refused a second ccs serve already
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go s.serveControl(c)
+		}
+	}()
+	return func() { ln.Close(); os.Remove(path) }, nil
+}
+
+func (s *server) serveControl(c net.Conn) {
+	defer c.Close()
+	if uid, err := peerUID(c); err != nil || uid != uint32(os.Getuid()) {
+		state.LogActivity("serve: refused a control connection from uid %d (%v)", uid, err)
+		return
+	}
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	sc := bufio.NewScanner(c)
+	sc.Buffer(make([]byte, 4096), 64<<10)
+	if !sc.Scan() {
+		return
+	}
+	var req controlRequest
+	var reply controlReply
+	if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
+		reply.Error = "bad request"
+	} else {
+		reply = s.control(req)
+	}
+	json.NewEncoder(c).Encode(reply)
+}
+
+func (s *server) control(req controlRequest) controlReply {
+	switch req.Op {
+	case "list":
+		return controlReply{Prompts: s.heldPrompts()}
+	case "answer":
+		gone := "that prompt isn't waiting any more (answered, shown in its tab, or ended): nothing was sent"
+		p := s.prompts.get(req.Prompt)
+		if p == nil {
+			return controlReply{Error: gone}
+		}
+		reply, what, err := promptDecision(p, req.Choice, req.Answers, tuiUser)
+		if err != nil {
+			return controlReply{Error: err.Error()}
+		}
+		if p = s.prompts.take(req.Prompt); p == nil { // the page got there first
+			return controlReply{Error: gone}
+		}
+		p.reply <- reply
+		state.LogActivity("serve: %s settled %s's %s prompt %s: %s", tuiUser, shortID(p.req.SessionID), p.req.ToolName, p.id, req.Choice)
+		return controlReply{Text: what}
+	}
+	return controlReply{Error: fmt.Sprintf("unknown op %q", req.Op)}
+}
+
+func (s *server) heldPrompts() []HeldPrompt {
+	var out []HeldPrompt
+	for _, p := range s.prompts.list("") {
+		h := HeldPrompt{ID: p.id, Session: p.req.SessionID, Tool: p.req.ToolName}
+		if p.req.ToolName == "AskUserQuestion" {
+			var in askInput
+			json.Unmarshal(p.req.ToolInput, &in)
+			for _, q := range in.Questions {
+				hq := HeldQuestion{Question: transcript.CleanText(q.Question), Multi: q.MultiSelect}
+				for _, o := range q.Options {
+					hq.Options = append(hq.Options, transcript.CleanText(o.Label))
+				}
+				h.Questions = append(h.Questions, hq)
+			}
+		} else {
+			h.Summary = transcript.CleanText(transcript.ToolSummary(p.req.ToolInput))
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// ErrNoServe: no ccs serve is holding prompts.
+var ErrNoServe = errors.New("no ccs serve is holding prompts")
+
+// ErrOutcomeUnknown: the request reached ccs serve but its reply didn't
+// come back, so an answer may or may not have gone through.
+var ErrOutcomeUnknown = errors.New("sent, but ccs serve's reply never came: the outcome is unknown")
+
+// controlCall sends one request to ccs serve's control socket, trusting it
+// only as the hook does: this user's private socket, and a listener the
+// kernel says runs as this user.
+func controlCall(req controlRequest) (controlReply, error) {
+	path := ControlSockPath()
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return controlReply{}, ErrNoServe
+	}
+	if err := trustedSocket(path); err != nil {
+		return controlReply{}, err
+	}
+	c, err := net.DialTimeout("unix", path, 500*time.Millisecond)
+	if err != nil {
+		return controlReply{}, ErrNoServe
+	}
+	defer c.Close()
+	if uid, err := peerUID(c); err != nil || uid != uint32(os.Getuid()) {
+		return controlReply{}, errors.New("the control socket isn't ccs serve's (another user's process)")
+	}
+	c.SetDeadline(time.Now().Add(3 * time.Second))
+	line, _ := json.Marshal(req)
+	if _, err := c.Write(append(line, '\n')); err != nil {
+		return controlReply{}, err
+	}
+	// From here the request was sent: ccs serve may already have settled the
+	// prompt, so a missing or unreadable reply is never "failed".
+	sc := bufio.NewScanner(c)
+	sc.Buffer(make([]byte, 64<<10), 4<<20)
+	if !sc.Scan() {
+		return controlReply{}, ErrOutcomeUnknown
+	}
+	var reply controlReply
+	if err := json.Unmarshal(sc.Bytes(), &reply); err != nil {
+		return controlReply{}, ErrOutcomeUnknown
+	}
+	if reply.Error != "" {
+		return reply, errors.New(reply.Error)
+	}
+	return reply, nil
+}
+
+// HeldPrompts lists the prompts ccs serve holds; ErrNoServe when none
+// runs. A var so TUI tests stub it.
+var HeldPrompts = func() ([]HeldPrompt, error) {
+	r, err := controlCall(controlRequest{Op: "list"})
+	return r.Prompts, err
+}
+
+// AnswerHeld answers a held prompt by its id: choice allow, deny, mac (show
+// it in its tab) or answer, with a question's chosen labels by its index.
+// It says what was done. A var so TUI tests stub it.
+var AnswerHeld = func(id, choice string, labels map[int][]string) (string, error) {
+	answers := map[string][]string{}
+	for i, ls := range labels {
+		answers["q"+strconv.Itoa(i)] = ls
+	}
+	r, err := controlCall(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: answers})
+	return r.Text, err
+}

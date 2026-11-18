@@ -365,3 +365,28 @@ func TestCodexToolCallsInPreview(t *testing.T) {
 		t.Errorf("only the path of a file change, and no non-tool items:\n%s", plain)
 	}
 }
+
+// An agent-team teammate nests under its team's lead: the lead its team's
+// config names, else, the config gone, the session the team's name points at.
+func TestTeammateNestsUnderItsLead(t *testing.T) {
+	old := transcript.TeamsDir
+	dir := t.TempDir()
+	transcript.TeamsDir = func() string { return dir }
+	t.Cleanup(func() { transcript.TeamsDir = old })
+	lead := transcript.Conversation{SessionID: "f3356504-9a4c-435e-ac3a-771f5928bac3", Title: "orchestrator"}
+	mate := transcript.Conversation{SessionID: "35494c10-d3f0-4c9f-b7e3-c2c34da967be", Spawned: true, Team: "session-f3356504"}
+	var m model
+	m.items = buildItems([]transcript.Conversation{lead, mate})
+	if p := m.spawnParent(mate); p != lead.SessionID {
+		t.Errorf("no config: the session the team's name points at: %q", p)
+	}
+
+	other := transcript.Conversation{SessionID: "76f154c8-0000-0000-0000-000000000000", Title: "ccs-orchestrator"}
+	os.MkdirAll(filepath.Join(dir, "session-f3356504"), 0o755)
+	os.WriteFile(filepath.Join(dir, "session-f3356504", "config.json"), []byte(`{"leadSessionId":"`+other.SessionID+`"}`), 0o644)
+	var m2 model
+	m2.items = buildItems([]transcript.Conversation{lead, other, mate})
+	if p := m2.spawnParent(mate); p != other.SessionID {
+		t.Errorf("the config's leadSessionId wins: %q", p)
+	}
+}

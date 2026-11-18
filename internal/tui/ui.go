@@ -950,6 +950,11 @@ func (m *model) spawnParent(c transcript.Conversation) string {
 	if c.ParentID != "" { // a Codex subagent names its parent thread
 		return c.ParentID
 	}
+	if c.Team != "" { // an agent-team teammate: its team's lead
+		if p := teamLeadOf(c, m.items); p != "" {
+			return p
+		}
+	}
 	if c.Kind == transcript.KindCodex {
 		if p := sessions.ExecParentOf(c.SessionID); p != "" { // a codex exec seen running under that session
 			return p
@@ -1032,6 +1037,25 @@ func (m *model) shownAncestor(id string, at map[string]int, launched map[string]
 			return next
 		}
 		id = next
+	}
+	return ""
+}
+
+// teamLeadOf is the lead session of teammate c's team: the team's config
+// names it (leadSessionId), else, the config gone, the listed session whose
+// id starts as the team's name says ("session-f3356504"). Never c itself.
+func teamLeadOf(c transcript.Conversation, items []listItem) string {
+	if p := transcript.TeamLead(c.Team); p != "" && p != c.SessionID {
+		return p
+	}
+	prefix := transcript.TeamSessionPrefix(c.Team)
+	if prefix == "" {
+		return ""
+	}
+	for _, it := range items {
+		if id := it.conv.SessionID; id != c.SessionID && strings.HasPrefix(id, prefix) {
+			return id
+		}
 	}
 	return ""
 }

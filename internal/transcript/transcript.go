@@ -47,6 +47,7 @@ type Conversation struct {
 	Title          string     `json:"title"`           // custom-title (user-set) or ai-title
 	IsCustomTitle  bool       `json:"is_custom_title"` // true only when Title came from a user-set custom-title
 	Spawned        bool       `json:"spawned"`         // started by a script/another session (sdk-cli) or a team lead, not typed by you
+	Team           string     `json:"team,omitempty"`  // a teammate's team (teamName), whose lead started it: TeamLead
 	Cwd            string     `json:"cwd"`
 	FirstTimestamp string     `json:"first_timestamp"`
 	LastTimestamp  string     `json:"last_timestamp"`
@@ -557,6 +558,7 @@ func ParseLine(conv *Conversation, line []byte) bool {
 			// The first user line says how the session was started.
 			conv.sawUser = true
 			conv.Spawned = raw.Entrypoint == "sdk-cli" || raw.TeamName != ""
+			conv.Team = raw.TeamName
 			conv.sdkCLI = raw.Entrypoint == "sdk-cli"
 		}
 		if raw.PromptID != "" {

@@ -346,9 +346,13 @@ func checkPlan(plan reorgPlan, rows []reorgRow) reorgProposal {
 			byName[r.Conv.Title] = r
 		}
 	}
+	// An orchestrator has others under it, or is running and launched some.
+	// A closed one that launched others but has nobody under it now is an
+	// ordinary closed session: it moves like any other, or it would sit
+	// loose for good.
 	isOrch := func(name string) bool {
 		r, ok := byName[name]
-		return ok && (hasKids[name] || len(r.Conv.Launches) > 0)
+		return ok && (hasKids[name] || len(r.Conv.Launches) > 0 && r.Live)
 	}
 	isTop := func(name string) bool { return isOrch(name) && byName[name].Parent == "" && byName[name].Live }
 	drop := func(format string, a ...any) { p.dropped = append(p.dropped, fmt.Sprintf(format, a...)) }

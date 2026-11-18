@@ -305,7 +305,8 @@ func TestSpawnedNestUnderNearestShownAncestor(t *testing.T) {
 		{SessionID: "lost-id", Kind: transcript.KindCodex, Spawned: true, ParentID: "gone-id", Title: "orphan", LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "c"}}},
 	}
 	m := initialModel(buildItems(convs), "", nil)
-	m.parents = map[string]string{"exec-id": "rev-id"} // the exec was seen running under review-keda
+	m.parents = map[string]string{"exec-id": "rev-id"}         // the exec was seen running under review-keda
+	m.live = map[string]bool{"sub1-id": true, "sub2-id": true} // running, so not behind a closed line
 	m.refilter()
 	depth := map[string]int{}
 	for _, it := range m.filtered {
@@ -316,5 +317,36 @@ func TestSpawnedNestUnderNearestShownAncestor(t *testing.T) {
 	}
 	if depth["sub1-id"] != 1 || depth["sub2-id"] != 1 || depth["rev-id"] != 0 || depth["lost-id"] != 0 {
 		t.Errorf("both subagents under review-keda, an orphan stays flat: %v", depth)
+	}
+}
+
+// A closed codex subagent nested under the session that ran its exec waits
+// behind the closed line like a closed launched session; a running one shows.
+func TestClosedSpawnedChildIsHidden(t *testing.T) {
+	os.Remove(sessions.ParentsPath())
+	now := time.Now().UTC().Format(time.RFC3339)
+	convs := []transcript.Conversation{
+		{SessionID: "rev-id", Title: "review-keda", LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "review it"}}},
+		{SessionID: "exec-id", Kind: transcript.KindCodex, CodexExec: true, Spawned: true, LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "second opinion"}}},
+		{SessionID: "run-id", Kind: transcript.KindCodex, Spawned: true, ParentID: "exec-id", Title: "Adversarial review running", LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "a"}}},
+		{SessionID: "done-id", Kind: transcript.KindCodex, Spawned: true, ParentID: "exec-id", Title: "Adversarial review done", LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "b"}}},
+	}
+	old := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	convs[3].LastTimestamp = old // done an hour ago; run-id wrote just now, inside its exec
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 110, 30
+	m.parents = map[string]string{"exec-id": "rev-id"}
+	m.live = map[string]bool{"rev-id": true}
+	m.refilter()
+	got := strings.Join(order(m), ",")
+	if !strings.Contains(got, "running") || strings.Contains(got, "review done") {
+		t.Fatalf("the closed codex child is hidden, the running one shows: %s", got)
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "└ ▸ 1 closed · ^X C") {
+		t.Errorf("behind review-keda's closed line:\n%s", v)
+	}
+	m, _ = chord(m, "c")
+	if got := strings.Join(order(m), ","); !strings.Contains(got, "review done") {
+		t.Errorf("^X C shows it: %s", got)
 	}
 }

@@ -132,6 +132,49 @@ func TestCodexExecNestsUnderTheClaudeSessionThatRanIt(t *testing.T) {
 	}
 }
 
+// codex-delegate runs codex-run.sh -f prompt.md, often from a subagent, so
+// the prompt is on no command line: the run goes to the session whose own or
+// subagent's Bash started codex closest before it began.
+func TestCodexExecFromAPromptFileNestsByTime(t *testing.T) {
+	start := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	at := func(d time.Duration) string { return start.Add(d).Format(time.RFC3339) }
+	child := transcript.Conversation{SessionID: cxA, Kind: transcript.KindCodex, CodexExec: true, Spawned: true, FirstTimestamp: at(0),
+		Messages: []transcript.Message{{Role: "user", Text: "Adversarially review the uncommitted plan"}}}
+	run := `~/.claude/plugins/cache/x/skills/codex-delegate/codex-run.sh -o "$OUT" -e high -f prompt.md`
+	if !transcript.IsSpawn(run) || !transcript.StartsCodex(run) {
+		t.Fatal("codex-run.sh starts codex")
+	}
+	dir := t.TempDir()
+	conv := func(id string, spawnAt time.Duration) transcript.Conversation {
+		return transcript.Conversation{SessionID: id, FilePath: filepath.Join(dir, id+".jsonl"), FirstTimestamp: at(-time.Hour), LastTimestamp: at(time.Minute),
+			Spawns: []transcript.SpawnCmd{{Ts: at(spawnAt), Text: transcript.SpawnText(run)}}}
+	}
+	far, near := conv("far", -40*time.Second), conv("near", -3*time.Second)
+	if p := findSpawnParent(child, buildItems([]transcript.Conversation{far, near, child})); p != "near" {
+		t.Errorf("the closest codex start wins: %q", p)
+	}
+	if p := findSpawnParent(child, buildItems([]transcript.Conversation{conv("old", -5*time.Minute), child})); p != "" {
+		t.Errorf("a codex start too long before isn't its parent: %q", p)
+	}
+
+	// From a subagent's transcript.
+	quiet := transcript.Conversation{SessionID: "quiet", FilePath: filepath.Join(dir, "quiet.jsonl"), FirstTimestamp: at(-time.Hour), LastTimestamp: at(time.Minute)}
+	sub := filepath.Join(dir, "quiet", "subagents")
+	os.MkdirAll(sub, 0o755)
+	line, _ := json.Marshal(map[string]any{"timestamp": at(-2 * time.Second), "message": map[string]any{"content": []map[string]any{{"type": "tool_use", "name": "Bash", "input": map[string]string{"command": run}}}}})
+	os.WriteFile(filepath.Join(sub, "agent-1.jsonl"), append(line, '\n'), 0o644)
+	if p := findSpawnParent(child, buildItems([]transcript.Conversation{far, quiet, child})); p != "quiet" {
+		t.Errorf("a subagent's codex start counts for its session: %q", p)
+	}
+
+	// A Codex TUI session isn't an exec run: no time match.
+	tui := child
+	tui.CodexExec = false
+	if p := findSpawnParent(tui, buildItems([]transcript.Conversation{near, tui})); p != "" {
+		t.Errorf("only an exec run is matched by time: %q", p)
+	}
+}
+
 func TestCodexSessionsInTheScan(t *testing.T) {
 	codexFixture(t, cxA, "/w", "cli")
 	old := transcript.GetProjectsDir

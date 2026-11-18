@@ -843,7 +843,114 @@ type SpawnCmd struct{ Ts, Text string }
 // claude --bg, cswap run … -p).
 func IsSpawn(cmd string) bool {
 	return strings.Contains(cmd, "claude") && (strings.Contains(cmd, " -p") || strings.Contains(cmd, "--print") || strings.Contains(cmd, "--bg") || strings.Contains(cmd, "--background")) ||
-		strings.Contains(cmd, "cswap run") || strings.Contains(cmd, "codex exec ") || strings.Contains(cmd, "codex e ")
+		strings.Contains(cmd, "cswap run") || StartsCodex(cmd)
+}
+
+// StartsCodex: a command that starts a codex exec run, directly or through
+// the codex-delegate skill's codex-run.sh, whose prompt is in a file.
+func StartsCodex(cmd string) bool {
+	return strings.Contains(cmd, "codex exec ") || strings.Contains(cmd, "codex e ") || strings.Contains(cmd, "codex-run.sh")
+}
+
+// SubagentSpawns is the codex runs conv's subagents started (StartsCodex),
+// from <session>/subagents/ and its workflows: a session often hands a
+// codex run to a subagent. Reread at most every subagentSpawnsTTL, and then
+// only what each transcript appended.
+func SubagentSpawns(conv Conversation) []SpawnCmd {
+	if conv.FilePath == "" {
+		return nil
+	}
+	dir := filepath.Join(strings.TrimSuffix(conv.FilePath, ".jsonl"), "subagents")
+	subSpawns.Lock()
+	defer subSpawns.Unlock()
+	if r, ok := subSpawns.dirs[dir]; ok && time.Since(r.at) < subagentSpawnsTTL {
+		return r.spawns
+	}
+	paths, _ := filepath.Glob(filepath.Join(dir, "agent-*.jsonl"))
+	more, _ := filepath.Glob(filepath.Join(dir, "workflows", "*", "agent-*.jsonl"))
+	var out []SpawnCmd
+	for _, path := range append(paths, more...) {
+		f := subSpawns.files[path]
+		if f == nil {
+			f = &subSpawnFile{}
+			subSpawns.files[path] = f
+		}
+		f.read(path)
+		out = append(out, f.spawns...)
+	}
+	subSpawns.dirs[dir] = subSpawnsRead{time.Now(), out}
+	return out
+}
+
+const subagentSpawnsTTL = 10 * time.Second
+
+var subSpawns = struct {
+	sync.Mutex
+	dirs  map[string]subSpawnsRead
+	files map[string]*subSpawnFile
+}{dirs: map[string]subSpawnsRead{}, files: map[string]*subSpawnFile{}}
+
+type subSpawnsRead struct {
+	at     time.Time
+	spawns []SpawnCmd
+}
+
+// subSpawnFile is how far one subagent transcript has been read: complete
+// lines up to off, and the codex runs found in them.
+type subSpawnFile struct {
+	off    int64
+	spawns []SpawnCmd
+}
+
+// read takes in what path appended since the last read; a file that shrank
+// is read again from the start.
+func (f *subSpawnFile) read(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	if info, err := file.Stat(); err != nil || info.Size() == f.off {
+		return
+	} else if info.Size() < f.off {
+		*f = subSpawnFile{}
+	}
+	if _, err := file.Seek(f.off, io.SeekStart); err != nil {
+		return
+	}
+	r := bufio.NewReaderSize(file, 1<<16)
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil { // an unfinished line waits for the next read
+			return
+		}
+		f.off += int64(len(line))
+		if !bytes.Contains(line, []byte("codex")) || !bytes.Contains(line, []byte(`"Bash"`)) {
+			continue
+		}
+		var rec struct {
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &rec) != nil || len(rec.Message.Content) == 0 || rec.Message.Content[0] != '[' {
+			continue
+		}
+		var blocks []struct {
+			Type  string                   `json:"type"`
+			Name  string                   `json:"name"`
+			Input struct{ Command string } `json:"input"`
+		}
+		if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type == "tool_use" && b.Name == "Bash" && StartsCodex(b.Input.Command) {
+				f.spawns = append(f.spawns, SpawnCmd{rec.Timestamp, SpawnText(b.Input.Command)})
+			}
+		}
+	}
 }
 
 // launchName finds each `ccs launch … --name X` (or --name=X) in a command.

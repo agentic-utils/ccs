@@ -58,10 +58,11 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs adopt <name> [--to <parent> | --to none]
                             Move the named session under the calling session (or --to's) in the list;
                             --to none detaches it
-       ccs reorg [--dry-run] [--yes]
+       ccs reorg [--dry-run] [--yes] | --undo
                             Move sessions into topics so no orchestrator looks after more than 3:
                             one Sonnet call plans it, you see the plan and answer y/N (--yes for scripts);
-                            then it launches the orchestrators it needs and tells live sessions
+                            then it launches the orchestrators it needs and tells live sessions;
+                            --undo puts back the parents from before the last one
        ccs close <name>     Stop the named session and close its tab (--graceful asks it to
                             finish and say what's left first)
        ccs restart [--force] <name>

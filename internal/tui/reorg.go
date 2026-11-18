@@ -54,6 +54,7 @@ type reorgRow struct {
 	Live   bool
 	PID    int
 	Parent string // its recorded parent's name, before the reorg
+	Placed bool   // left out by the model, placed by folder (placeLeftOut)
 }
 
 func (r reorgRow) name() string { return cmp.Or(r.Conv.Title, r.Conv.SessionID) }
@@ -120,7 +121,7 @@ func reorgPrompt(rows []reorgRow) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `Regroup these sessions by topic so that no orchestrator looks after more than %d topics.
 
-- A topic is one area of work, such as one repository's feature or one investigation. Put every session that is clearly about a topic in its members, by key. Leave out sessions with no clear topic, such as one-off questions.
+- A topic is one area of work, such as one repository's feature or one investigation. Put every session in exactly one topic's members, by key, one-off questions and closed sessions too: one with no clear topic goes in the topic nearest its folder and work. ccs places any key you leave out by its folder, which is a worse guess than yours.
 - Each topic has an orchestrator, named in "orchestrator": an existing session (by name) that already runs that work (see "launched" and "parent"), or a new session for you to name: short plain words ending in -orchestrator. For a new one, "folder" is where it should start: the folder most of its members work in. For an existing one, "folder" is "".
 - No orchestrator may have more than %d topics. Where one would, split its topics between new orchestrators placed under it.
 - "parent" is the orchestrator above this topic's orchestrator, by name, or "" at the top. Keep the existing top orchestrator (the one that launched most and has no parent) at the top.
@@ -263,10 +264,19 @@ func orchestratorBriefFor(name, parent string, topics []string, live, closed []s
 		fmt.Fprintf(&b, "Running sessions now yours (they've been told to report to you): %s. Read `ccs sessions --json` for what each is doing.\n", strings.Join(live, ", "))
 	}
 	if len(closed) > 0 {
-		fmt.Fprintf(&b, "Earlier sessions on your topics, now closed (read them with read_session if you need their history; don't resume them unasked): %s.\n", strings.Join(closed, ", "))
+		more := ""
+		if len(closed) > reorgBriefClosed {
+			more = fmt.Sprintf(" and %d more (`ccs sessions --all --json`)", len(closed)-reorgBriefClosed)
+			closed = closed[:reorgBriefClosed]
+		}
+		fmt.Fprintf(&b, "Earlier sessions on your topics, now closed (read them with read_session if you need their history; don't resume them unasked): %s%s.\n", strings.Join(closed, ", "), more)
 	}
 	return b.String()
 }
+
+// reorgBriefClosed caps the closed sessions a new orchestrator's brief
+// names: once reorg places every closed session, there can be hundreds.
+const reorgBriefClosed = 30
 
 // reorgTopicRunes caps a topic's text: it goes into a brief and the popup.
 const reorgTopicRunes = 60
@@ -484,7 +494,96 @@ func checkPlan(plan reorgPlan, rows []reorgRow) reorgProposal {
 		}
 		return false
 	})
+
+	placeLeftOut(&p, rows, used, hasKids, isOrch, isTop)
 	return p
+}
+
+// placeLeftOut gives every closed session the plan left with no parent one:
+// the orchestrator whose sessions most often work in its folder, else the
+// top orchestrator, so a reorg leaves no closed session loose in the list.
+// It adds no topic, so the topic limit holds. A running session the model
+// left out stays where it is: moving one means telling it, and that takes
+// the model's judgement, not a folder match. A session that already has a
+// parent, has others under it or is an orchestrator stays too.
+func placeLeftOut(p *reorgProposal, rows []reorgRow, used, hasKids map[string]bool, isOrch, isTop func(string) bool) {
+	orchNames := map[string]bool{}
+	for _, o := range p.orchs {
+		orchNames[o.Name] = true
+	}
+	var loose []reorgRow
+	for _, r := range rows {
+		if used[r.Key] || r.Live || r.Parent != "" || isReorgRun(r.Conv.Title) {
+			continue
+		}
+		if t := r.Conv.Title; t != "" && (hasKids[t] || isOrch(t) || orchNames[t]) {
+			continue
+		}
+		loose = append(loose, r)
+	}
+	if len(loose) == 0 {
+		return
+	}
+
+	// Each orchestrator's folders: where the sessions it will have work.
+	folders := make([]map[string]int, len(p.orchs))
+	for i, o := range p.orchs {
+		folders[i] = map[string]int{}
+		for _, r := range o.Moving {
+			folders[i][groupKey(r.Conv.Cwd)]++
+		}
+	}
+	moving := map[string]bool{}
+	for _, o := range p.orchs {
+		for _, r := range o.Moving {
+			moving[r.Key] = true
+		}
+	}
+	for _, r := range rows {
+		if i := slices.IndexFunc(p.orchs, func(o reorgOrch) bool { return o.Name == r.Parent }); i >= 0 && !moving[r.Key] {
+			folders[i][groupKey(r.Conv.Cwd)]++
+		}
+	}
+
+	// The top orchestrator: a top one, the one with the most under it.
+	top, most := "", -1
+	under := map[string]int{}
+	for _, r := range rows {
+		under[r.Parent]++
+	}
+	for _, r := range rows {
+		if t := r.Conv.Title; t != "" && isTop(t) && under[t] > most {
+			top, most = t, under[t]
+		}
+	}
+
+	var unplaced int
+	for _, r := range loose {
+		f := groupKey(r.Conv.Cwd)
+		best, n := -1, 0
+		for i := range p.orchs {
+			if c := folders[i][f]; c > n {
+				best, n = i, c
+			}
+		}
+		if best < 0 && top != "" {
+			best = slices.IndexFunc(p.orchs, func(o reorgOrch) bool { return o.Name == top })
+			if best < 0 {
+				p.orchs = append(p.orchs, reorgOrch{Name: top})
+				folders = append(folders, map[string]int{})
+				best = len(p.orchs) - 1
+			}
+		}
+		if best < 0 {
+			unplaced++
+			continue
+		}
+		r.Placed = true
+		p.orchs[best].Moving = append(p.orchs[best].Moving, r)
+	}
+	if unplaced > 0 {
+		p.dropped = append(p.dropped, fmt.Sprintf("%d closed sessions with no topic: no orchestrator to put them under", unplaced))
+	}
 }
 
 // byKeyFolder is the folder the model gave name's first topic.
@@ -701,7 +800,7 @@ func planReorg(convs []transcript.Conversation) (reorgProposal, error) {
 func reorgLines(p reorgProposal) []string {
 	var out []string
 	for _, o := range p.orchs {
-		head := strings.Join(o.Topics, "; ") + " → " + o.Name
+		head := cmp.Or(strings.Join(o.Topics, "; "), "no new topic") + " → " + o.Name
 		var notes []string
 		if o.New {
 			notes = append(notes, "new, in "+sessions.TildePath(o.Folder))
@@ -714,7 +813,12 @@ func reorgLines(p reorgProposal) []string {
 		}
 		out = append(out, head)
 		var moving []string
+		placed := 0
 		for _, r := range o.Moving {
+			if r.Placed {
+				placed++
+				continue
+			}
 			what := r.name()
 			if r.Parent != "" {
 				what += " (from " + r.Parent + ")"
@@ -726,6 +830,9 @@ func reorgLines(p reorgProposal) []string {
 		}
 		if len(moving) > 0 {
 			out = append(out, "  moving in: "+strings.Join(moving, ", "))
+		}
+		if placed > 0 {
+			out = append(out, fmt.Sprintf("  moving in by folder: %d closed sessions with no clear topic", placed))
 		}
 		if o.Staying > 0 {
 			out = append(out, fmt.Sprintf("  staying: %d", o.Staying))

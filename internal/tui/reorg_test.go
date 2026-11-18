@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -111,6 +112,62 @@ func TestCheckPlan(t *testing.T) {
 		if !strings.Contains(lines, want) {
 			t.Errorf("popup lacks %q:\n%s", want, lines)
 		}
+	}
+}
+
+// A closed session the model left out with no parent still gets one: the
+// orchestrator whose sessions work in its folder, else the top one. Running
+// ones, ones with a parent and orchestrators stay where they are.
+func TestReorgPlacesLeftOut(t *testing.T) {
+	api, other := t.TempDir(), t.TempDir()
+	row := func(key, name string, live bool, parent, cwd string) reorgRow {
+		return reorgRow{Key: key, Conv: transcript.Conversation{SessionID: key + "-id", Title: name, Cwd: cwd}, Live: live, Parent: parent}
+	}
+	rows := []reorgRow{
+		row("h", "hub", true, "", other), row("wk", "worker", true, "hub", other),
+		row("x1", "api-one", false, "", api), row("x2", "api-two", false, "", api), row("u", "", false, "", api),
+		row("y", "elsewhere", false, "", other), row("z", "kept", false, "hub", api), row("l", "running", true, "", api),
+	}
+	plan := reorgPlan{Topics: []reorgTopic{{Topic: "API", Orchestrator: "api-orchestrator", Folder: api, Members: []string{"x1"}}}}
+	p := checkPlan(plan, rows)
+	moving := map[string][]string{}
+	for _, o := range p.orchs {
+		for _, r := range o.Moving {
+			moving[o.Name] = append(moving[o.Name], r.Key)
+		}
+	}
+	if got := moving["api-orchestrator"]; !slices.Equal(got, []string{"x1", "x2", "u"}) {
+		t.Errorf("same-folder sessions join the API orchestrator, untitled too: %v", got)
+	}
+	if got := moving["hub"]; !slices.Equal(got, []string{"y"}) {
+		t.Errorf("a folder no orchestrator works in goes to the top one: %v", got)
+	}
+	lines := strings.Join(reorgLines(p), "\n")
+	for _, want := range []string{"API → api-orchestrator", "moving in: api-one (closed)", "moving in by folder: 2 closed sessions", "no new topic → hub", "moving in by folder: 1 closed"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("popup lacks %q:\n%s", want, lines)
+		}
+	}
+	if strings.Contains(lines, "running") || strings.Contains(lines, "kept") {
+		t.Errorf("a running session or one with a parent never moves by folder:\n%s", lines)
+	}
+
+	// With no orchestrator anywhere, nothing can take them: said, not hidden.
+	p = checkPlan(reorgPlan{}, []reorgRow{row("y", "elsewhere", false, "", other)})
+	if len(p.orchs) != 0 || !slices.ContainsFunc(p.dropped, func(d string) bool { return strings.Contains(d, "1 closed sessions with no topic") }) {
+		t.Errorf("no orchestrator to place under: %+v", p)
+	}
+}
+
+func TestOrchestratorBriefCapsClosed(t *testing.T) {
+	closed := make([]string, reorgBriefClosed+5)
+	for i := range closed {
+		closed[i] = fmt.Sprintf("closed-%02d", i)
+	}
+	b := orchestratorBriefFor("x-orchestrator", "", []string{"t"}, nil, closed)
+	last := fmt.Sprintf("closed-%02d", reorgBriefClosed-1)
+	if !strings.Contains(b, last+" and 5 more") || strings.Contains(b, fmt.Sprintf("closed-%02d", reorgBriefClosed)) {
+		t.Errorf("closed sessions capped at %d:\n%s", reorgBriefClosed, b)
 	}
 }
 

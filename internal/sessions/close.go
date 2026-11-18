@@ -216,7 +216,7 @@ func CloseGracefullyNotifyID(name, id string, timeout time.Duration, onSent func
 		CloseTab(tty)
 		return fmt.Sprintf("%s (pid %d): %s%s", name, pid, how, said), nil
 	}
-	msg, err := CloseSession(name, pid)
+	msg, err := CloseSession(name, pid, f.SessionID)
 	if err != nil {
 		return "", fmt.Errorf("%s: %s; then %v", name, how, err)
 	}

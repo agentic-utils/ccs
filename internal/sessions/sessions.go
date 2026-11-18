@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"net"
 	"net/url"
@@ -1392,24 +1393,47 @@ func containsInt(s []int, v int) bool {
 // CloseByName closes the one running session called name.
 func CloseByName(name string) (string, error) { return CloseByNameID(name, "") }
 
-// SameSession refuses unless pid's session file names session id (when id
-// is set): a caller that chose a session by id, such as ccs serve's page,
-// must never stop another that has taken its name since.
+// SameSession refuses unless pid is still session id (when id is set): a
+// caller that chose a session by id, such as ccs serve's page, must never
+// stop another that has taken its name since.
 func SameSession(name string, pid int, id string) error {
 	if id == "" {
 		return nil
 	}
-	if f, err := ReadSessionFile(pid); err == nil {
-		if f.SessionID != id {
-			return fmt.Errorf("%s (pid %d) isn't session %s any more: nothing was stopped", name, pid, id)
+	got, err := IdentityOf(pid)
+	if err != nil || got != id {
+		return fmt.Errorf("%s (pid %d) isn't session %s any more: nothing was stopped", name, pid, id)
+	}
+	return nil
+}
+
+// IdentityOf is the session pid runs now: its session file's id (read a
+// few times, since a file caught mid-rewrite reads short), else for a Codex
+// session the thread a fresh look (never the cached one) ties to pid.
+func IdentityOf(pid int) (string, error) {
+	var err error
+	for try := 0; try < 3; try++ {
+		var f SessionFile
+		if f, err = ReadSessionFile(pid); err == nil && f.SessionID != "" {
+			return f.SessionID, nil
 		}
-		return nil
+		if errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		Sleep(50 * time.Millisecond)
 	}
-	// No session file: a Codex session, whose live thread names its pid.
-	if ls, ok := LiveCodexSessions()[id]; ok && ls.PID == pid {
-		return nil
+	if errors.Is(err, fs.ErrNotExist) {
+		CodexLiveCache.Lock()
+		CodexLiveCache.Out = nil
+		CodexLiveCache.Unlock()
+		for id, ls := range LiveCodexSessions() {
+			if ls.PID == pid {
+				return id, nil
+			}
+		}
+		return "", fmt.Errorf("pid %d runs no session ccs can name", pid)
 	}
-	return fmt.Errorf("%s (pid %d) isn't session %s any more: nothing was stopped", name, pid, id)
+	return "", fmt.Errorf("couldn't read pid %d's session file: %v", pid, err)
 }
 
 // CloseByNameID is CloseByName, refused unless the session is still id
@@ -1426,20 +1450,33 @@ func CloseByNameID(name, id string) (string, error) {
 	default:
 		return "", fmt.Errorf("%d running sessions are named %s (pids %v): close one by hand", len(pids), name, pids)
 	}
-	if err := SameSession(name, pids[0], id); err != nil {
-		return "", err
+	if id == "" { // ccs close by name: the session it is now, checked again just before the stop
+		got, err := IdentityOf(pids[0])
+		if err != nil {
+			return "", fmt.Errorf("%s (pid %d): %v: nothing was stopped", name, pids[0], err)
+		}
+		id = got
 	}
-	return CloseSession(name, pids[0])
+	return CloseSession(name, pids[0], id)
 }
 
 // CloseSession stops pid (SIGTERM, as quitting does), confirms it exited,
 // then closes its tab: the tmux pane, or the iTerm session on its tty, one
 // osascript call per tab (closing several in one loop shifts the indexes).
 // Stopping first means iTerm never asks whether to close a running job.
-func CloseSession(name string, pid int) (string, error) {
+// id is the session the caller means to stop (a Codex session's thread):
+// it's checked against what pid runs immediately before the signal, and
+// anything else (another session, or one that can't be read) stops nothing.
+func CloseSession(name string, pid int, id string) (string, error) {
 	tty := proc.TTYOf(pid)
 	if tty == "" {
 		return "", fmt.Errorf("%s (pid %d) has no terminal: an app or claude --bg started it, close it there", name, pid)
+	}
+	if id == "" {
+		return "", fmt.Errorf("%s (pid %d): which session it should be isn't known, so nothing was stopped", name, pid)
+	}
+	if err := SameSession(name, pid, id); err != nil {
+		return "", err
 	}
 	if err := proc.SignalPID(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return "", fmt.Errorf("couldn't stop %s (pid %d): %v", name, pid, err)

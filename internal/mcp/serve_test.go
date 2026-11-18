@@ -197,18 +197,6 @@ func postAct(t *testing.T, s *server, form url.Values) *httptest.ResponseRecorde
 	return request(s, "POST", "/act", signJWT(t, testKey, "RS256", goodClaims()), form, map[string]string{"Origin": "https://" + testHost, "Sec-Fetch-Site": "same-origin"})
 }
 
-// testSince is the stub session file's statusUpdatedAt: the wait a page shows.
-const testSince = int64(1762000000000)
-
-// waitingFor is what Claude Code writes beside a waiting status for a
-// question menu (AskUserQuestion).
-func waitingFor(status string) string {
-	if status == "waiting" {
-		return answerableWait
-	}
-	return ""
-}
-
 type sent struct{ socket, token, sender, note, text string }
 
 func stubSend(t *testing.T, status string) *[]sent {
@@ -223,11 +211,11 @@ func stubSend(t *testing.T, status string) *[]sent {
 		return "id", nil
 	}
 	readSessionFile = func(pid int) (sessions.SessionFile, error) {
-		return sessions.SessionFile{SessionID: "s-1", Status: status, WaitingFor: waitingFor(status), StatusUpdatedAt: testSince, Socket: "/tmp/cc-socks/42.sock"}, nil
+		return sessions.SessionFile{SessionID: "s-1", Status: status, Socket: "/tmp/cc-socks/42.sock"}, nil
 	}
 	peerToken = func(int, string) string { return "tok" }
 	liveSessions = func() map[string]sessions.LiveSession {
-		return map[string]sessions.LiveSession{"s-1": {PID: 42, Stat: sessions.SessionStat{Status: status, Since: time.UnixMilli(testSince)}}}
+		return map[string]sessions.LiveSession{"s-1": {PID: 42, Stat: sessions.SessionStat{Status: status}}}
 	}
 	t.Cleanup(func() { sendEnvelope, readSessionFile, peerToken, liveSessions = oldSend, oldRead, oldToken, oldLive })
 	return &got
@@ -323,67 +311,6 @@ func waitingConv(t *testing.T, multi bool) transcript.Conversation {
 	return conv
 }
 
-func TestServeAnswer(t *testing.T) {
-	s, _ := testServer(t, true, []transcript.Conversation{waitingConv(t, false)})
-	stubSend(t, "waiting")
-	var pressed []string
-	stubTerminal(t, func(term sessions.Terminal, text string, enter bool) error {
-		if enter || term.Target != "%42" {
-			t.Errorf("terminal %v enter %v", term, enter)
-		}
-		pressed = append(pressed, text)
-		return nil
-	})
-
-	page := request(s, "GET", "/session?id=s-1", signJWT(t, testKey, "RS256", goodClaims()), nil, nil).Body.String()
-	if !strings.Contains(page, "Merge now?") || !strings.Contains(page, `name="ask" value="q1"`) || !strings.Contains(page, `name="since" value="1762000000000"`) || !strings.Contains(page, "1. Merge") {
-		t.Errorf("the page should offer the question's options:\n%s", page)
-	}
-	ans := func(ask, opt string) *httptest.ResponseRecorder {
-		return postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {ask}, "since": {strconv.FormatInt(testSince, 10)}, "option": {opt}, "confirm": {"yes"}})
-	}
-	if w := ans("q0", "1"); w.Code != http.StatusConflict || len(pressed) != 0 {
-		t.Errorf("a stale question must not be answered: %d", w.Code)
-	}
-	if w := ans("q1", "3"); w.Code != http.StatusConflict || len(pressed) != 0 {
-		t.Errorf("an option it doesn't have: %d", w.Code)
-	}
-	// Not waiting any more (answered in its tab meanwhile): no keys.
-	waiting := readSessionFile
-	readSessionFile = func(int) (sessions.SessionFile, error) {
-		return sessions.SessionFile{SessionID: "s-1", Status: "busy"}, nil
-	}
-	if w := ans("q1", "1"); w.Code != http.StatusConflict || len(pressed) != 0 {
-		t.Errorf("not waiting: %d", w.Code)
-	}
-	s.limits = newRateLimits() // past the write burst; the limit has its own test
-	// A wait it can't name (no waitingFor, or anything but a question menu),
-	// or another wait than the page showed, gets no keys either.
-	for _, f := range []sessions.SessionFile{
-		{SessionID: "s-1", Status: "waiting", StatusUpdatedAt: testSince},
-		{SessionID: "s-1", Status: "waiting", WaitingFor: "dialog open", StatusUpdatedAt: testSince},
-		{SessionID: "s-1", Status: "waiting", WaitingFor: answerableWait, StatusUpdatedAt: testSince + 1},
-	} {
-		readSessionFile = func(int) (sessions.SessionFile, error) { return f, nil }
-		if w := ans("q1", "1"); w.Code != http.StatusConflict || len(pressed) != 0 {
-			t.Errorf("%+v: %d", f, w.Code)
-		}
-	}
-	readSessionFile = waiting
-	s.limits = newRateLimits() // past the write burst; the limit has its own test
-	if w := postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "option": {"1"}, "confirm": {"yes"}}); w.Code != http.StatusConflict || len(pressed) != 0 {
-		t.Errorf("an answer that doesn't say which wait it's for: %d", w.Code)
-	}
-	if w := ans("q1", "2"); w.Code != http.StatusOK || len(pressed) != 1 || pressed[0] != "2" {
-		t.Errorf("answer: %d %v %s", w.Code, pressed, w.Body)
-	}
-	// Each question once: a second press (a double tap, or two confirm pages)
-	// could land on whatever menu comes next.
-	if w := ans("q1", "1"); w.Code != http.StatusConflict || len(pressed) != 1 || !strings.Contains(w.Body.String(), "already answered") {
-		t.Errorf("answered twice: %d %v", w.Code, pressed)
-	}
-}
-
 // stubTerminal makes every session's terminal tmux pane %<pid> and sends its
 // keys to send.
 func stubTerminal(t *testing.T, send func(sessions.Terminal, string, bool) error) {
@@ -396,34 +323,26 @@ func stubTerminal(t *testing.T, send func(sessions.Terminal, string, bool) error
 	t.Cleanup(func() { sessions.FindTerminal, sessions.SendKeys = oldFind, oldSend })
 }
 
-// The session file is read again after the terminal lookup and the scan,
-// the last thing before the keys: a permission prompt up instead, or the
-// menu answered in its tab and another wait begun, gets no keys.
-func TestServeAnswerChecksAgainAfterTheLookup(t *testing.T) {
+// Requests at once share one scan of the transcripts.
+// A waiting session's question is shown, never answered: no form, and an
+// answer posted anyway is an unknown action that presses nothing.
+func TestServeShowsQuestionsButNeverAnswers(t *testing.T) {
 	s, _ := testServer(t, true, []transcript.Conversation{waitingConv(t, false)})
+	stubSend(t, "waiting")
 	stubTerminal(t, func(sessions.Terminal, string, bool) error { t.Error("pressed keys"); return nil })
-	ans := func() *httptest.ResponseRecorder {
-		return postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "since": {strconv.FormatInt(testSince, 10)}, "option": {"1"}, "confirm": {"yes"}})
+	page := request(s, "GET", "/session?id=s-1", signJWT(t, testKey, "RS256", goodClaims()), nil, nil).Body.String()
+	if !strings.Contains(page, "Merge now?") || !strings.Contains(page, "1. Merge") || !strings.Contains(page, "Answer it in its tab") {
+		t.Errorf("the page should show the question and where to answer it:\n%s", page)
 	}
-	find := sessions.FindTerminal
-	for want, f := range map[string]sessions.SessionFile{
-		"not a question menu":        {SessionID: "s-1", Status: "waiting", WaitingFor: "permission prompt", StatusUpdatedAt: testSince},
-		"has changed since the page": {SessionID: "s-1", Status: "waiting", WaitingFor: answerableWait, StatusUpdatedAt: testSince + 5000},
-		"waiting on its menu now":    {SessionID: "s-1", Status: "busy", StatusUpdatedAt: testSince + 5000},
-		"session has changed":        {SessionID: "s-2", Status: "waiting", WaitingFor: answerableWait, StatusUpdatedAt: testSince},
-	} {
-		stubSend(t, "waiting")
-		sessions.FindTerminal = func(pid int) sessions.Terminal {
-			readSessionFile = func(int) (sessions.SessionFile, error) { return f, nil }
-			return find(pid)
-		}
-		if w := ans(); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), want) {
-			t.Errorf("%s: %d %s", want, w.Code, w.Body)
-		}
+	if strings.Contains(page, `value="answer"`) {
+		t.Error("no answer form")
+	}
+	w := postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "option": {"1"}, "confirm": {"yes"}})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("an answer posted anyway: %d", w.Code)
 	}
 }
 
-// Requests at once share one scan of the transcripts.
 func TestServeSharesOneLoad(t *testing.T) {
 	s, _ := testServer(t, false, nil)
 	release := make(chan struct{})
@@ -473,16 +392,6 @@ func TestServeLoadStopsWaitingWhenTheClientLeaves(t *testing.T) {
 	close(release)
 	if convs, err := s.load(context.Background()); err != nil || len(convs) != 1 {
 		t.Errorf("the next request: %v %v", convs, err)
-	}
-}
-
-func TestServeAnswerRefusesMultiSelect(t *testing.T) {
-	s, _ := testServer(t, true, []transcript.Conversation{waitingConv(t, true)})
-	stubSend(t, "waiting")
-	stubTerminal(t, func(sessions.Terminal, string, bool) error { t.Error("pressed keys"); return nil })
-	w := postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "since": {strconv.FormatInt(testSince, 10)}, "option": {"1"}, "confirm": {"yes"}})
-	if w.Code != http.StatusConflict {
-		t.Errorf("multi-select: %d", w.Code)
 	}
 }
 

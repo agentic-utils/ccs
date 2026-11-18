@@ -42,9 +42,9 @@ func restartCmd(name string, force bool) tea.Cmd {
 // restartSession is sessions.RestartSession, stubbed in tests.
 var restartSession = sessions.RestartSession
 
-func closeCmd(name string, pid int) tea.Cmd {
+func closeCmd(name string, pid int, id string) tea.Cmd {
 	return func() tea.Msg {
-		text, err := sessions.CloseSession(name, pid)
+		text, err := sessions.CloseSession(name, pid, id)
 		return closeDoneMsg{text, err}
 	}
 }

@@ -5,7 +5,7 @@ read_before: changing ccs serve, its checks, or anything it can do to a session
 
 # Using ccs remotely: `ccs serve`
 
-`ccs serve` lets you use ccs from a browser, such as your phone's. It shows the sessions grouped by what they need from you, lets you read any session and lists your PRs. With `--allow-write` it can also send a message to a session, answer its question, and launch, close or restart sessions.
+`ccs serve` lets you use ccs from a browser, such as your phone's. It shows the sessions grouped by what they need from you, lets you read any session and lists your PRs. With `--allow-write` it can also send a message to a session, and launch, close or restart sessions. It shows a waiting session's question but doesn't answer it: see [Answering from afar](#answering-from-afar).
 
 It controls a machine that runs agents with your credentials, so it never trusts the network in front of it:
 
@@ -23,15 +23,16 @@ What each write does:
 | Write | How | Never |
 | --- | --- | --- |
 | Send a message | the session's own message socket, as the TUI's message box does (`the user, via ccs`), or Codex's queue | types into a terminal: from afar you can't see what's on the screen it would land in |
-| Answer a question | the page records the wait it shows (the session file's `statusUpdatedAt`). ccs checks the session file (waiting, `waitingFor` "input needed", the same wait) and the transcript (the same question pending), finds its tmux pane (by its pane id) or iTerm tab, reads the session file once more as the very last step, and presses the option's digit, as the TUI's overlay does: one answer at a time, each question once | answers a permission prompt, any `waitingFor` but "input needed" (missing or unknown included), a multi-select or a multi-question menu |
-| Close, restart | with the session's id, which the close and the restart check against its session file (a Codex session: its live thread) just before stopping it | stops a session that has taken the name since, or a conversation that replaced it in the same process during a graceful close |
+| Close, restart | with the session's id. Every stop (here, `ccs close`, `ccs restart`, ^X K and the tools) checks which session the pid runs immediately before the signal: its session file, or for Codex a fresh look at its live thread | stops a session that has taken the name since, a conversation that replaced it in the same process, or one whose session file can't be read at that moment |
 | Launch, close, restart | the `launch_session`, `close_session` and `restart_session` MCP tools; tabs open on the Mac | anything those tools refuse |
-
-Claude Code (checked in 2.1.327) writes `waitingFor` "input needed" while an AskUserQuestion menu (or another `dialog:` tool) is up and "permission prompt" for every other tool, so only "input needed" is answered. Answering the menu in its tab changes the session file's status and its time, so the last read catches it. One gap no check can close remains: the digit is typed into the terminal, so if the same question is answered in its tab between that last read and the keypress (the time one `tmux send-keys` or one osascript call takes), and a permission prompt comes up in that time before Claude Code's session file says so, the digit lands on the prompt. Answering a question both remotely and at the Mac at the same moment is the only way to hit it.
 
 The signing keys are fetched again every hour (and at once for a key id not seen yet, at most every 30 seconds), so a key Cloudflare retires stops working here too. If the fetch fails, keys up to 6 hours old are still used, then every request is refused. That's deliberate: a Cloudflare outage of a few hours shouldn't lock you out, and a retired key stops working at the next successful fetch, within the hour.
 
 Every launch path (`ccs serve`, the `launch_session` tool, `ccs launch`) passes a brief that starts with `-` with a newline in front, so claude or codex reads it as the prompt, never as an option such as `--dangerously-skip-permissions`.
+
+## Answering from afar
+
+ccs serve doesn't answer questions or permission prompts. The only way it could today is by typing the option's digit into the session's terminal, and whatever is on screen by the time the key lands (a permission prompt, say) would get it; no check can close that gap. Claude Code 2.1.327 has no way to answer a prompt by its id over the session socket (it takes only messages and renames), `--permission-prompt-tool` works only with `claude -p`, and `claude attach` has no answer command. The planned route is a PermissionRequest hook, which Claude Code itself names for answering prompts from a script: it would hand each prompt to ccs serve and answer it by its request id.
 
 ## Setting it up
 

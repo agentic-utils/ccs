@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/stats"
@@ -626,15 +625,7 @@ const autoFocusIdle = 2 * time.Second
 // userIdle is how long since the last key press (macOS, through CoreGraphics:
 // kCGEventSourceStateHIDSystemState, kCGEventKeyDown); not ok when unknown,
 // and then auto-focus never switches.
-var userIdle = func() (time.Duration, bool) {
-	out, err := proc.RunBounded(2*time.Second, nil, "osascript", "-l", "JavaScript", "-e",
-		"ObjC.import('CoreGraphics'); $.CGEventSourceSecondsSinceLastEventType(1, 10)")
-	secs, perr := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	if err != nil || perr != nil {
-		return 0, false
-	}
-	return time.Duration(secs * float64(time.Second)), true
-}
+var userIdle = sessions.KeyIdle
 
 // autoFocusTab selects a session's tab or pane without bringing iTerm in front.
 var autoFocusTab = func(pid int) bool { return sessions.FocusSession(pid, false) }

@@ -155,7 +155,7 @@ Each run is written to the activity log with its plan. `ccs adopt` corrects any 
 
 ## Use it from your phone
 
-`ccs serve` shows your sessions, their questions, transcripts and PRs as a web page, and with `--allow-write` sends messages and launches, closes or restarts sessions. It shows questions but doesn't answer them yet. It listens on loopback only, behind a Cloudflare Tunnel with Cloudflare Access, and checks Access's signed token on every request itself:
+`ccs serve` shows your sessions, their questions, transcripts and PRs as a web page, and with `--allow-write` sends messages and launches, closes or restarts sessions. With `ccs hook install` (Claude Code's PermissionRequest hook), prompts and questions wait on the page to be answered by their id while `ccs serve --allow-write` runs, and go back to their tab when you press a key on the Mac. It listens on loopback only, behind a Cloudflare Tunnel with Cloudflare Access, and checks Access's signed token on every request itself:
 
 ```bash
 ccs serve --host ccs.example.com --team <team> --aud <AUD tag> --email you@example.com [--allow-write]

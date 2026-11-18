@@ -27,6 +27,7 @@ button{font:inherit;padding:8px 14px;border-radius:6px;border:1px solid var(--ac
 button.quiet{background:transparent;color:var(--accent)}
 button.danger{border-color:var(--bad);background:var(--bad)}
 .ask{border-left:4px solid var(--warn)}
+fieldset{border:1px solid var(--line);border-radius:6px;margin:8px 0}
 </style></head><body>
 <nav><a href="{{$.Base}}/">Sessions</a><a href="{{$.Base}}/prs">PRs</a>{{if .Write}}<a href="{{$.Base}}/launch">Launch</a>{{end}}<span class="dim">{{if .Preview}}local preview, {{if .Write}}read and write{{else}}read-only{{end}}{{else if .Write}}read and write{{else}}read-only{{end}}</span></nav>
 {{end}}
@@ -36,8 +37,10 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 {{define "csrf"}}<input type="hidden" name="csrf" value="{{.}}">{{end}}
 
 {{define "triage"}}{{template "head" .}}
+{{with .Body.Prompts}}<div class="row ask"><strong>Waiting for you here:</strong>
+{{range .}}<div><a href="{{$.Base}}/session?id={{.Session}}">{{.Name}}</a> · {{.Tool}} · {{.Age}}</div>{{end}}</div>{{end}}
 <h2>Sessions</h2>
-{{range .Body}}<div class="row">
+{{range .Body.Rows}}<div class="row">
 <div class="bucket">{{.Bucket}}</div>
 <h3><a href="{{$.Base}}/session?id={{.Session}}">{{.Name}}</a></h3>
 <div class="dim">{{if .Status}}{{.Status}} {{end}}{{if .Idle}}for {{.Idle}} · {{end}}{{.Reason}}</div>
@@ -49,8 +52,22 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 {{define "session"}}{{template "head" .}}{{$csrf := .CSRF}}{{$write := .Write}}{{with .Body}}
 <h2>{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</h2>
 <div class="dim">{{if .Live}}running{{if .Status}}, {{.Status}}{{end}}{{else}}not running{{end}}</div>
-{{if .Ask}}<div class="row ask"><strong>Asking:</strong><pre>{{.Ask.Question}}</pre>
-<div class="dim">Answer it in its tab, at the Mac: ccs serve shows questions but doesn't answer them.</div>
+{{$sid := .ID}}{{$sname := .Name}}{{range .Prompts}}<div class="row ask"><strong>Waiting for you here: {{.Tool}}</strong> <span class="dim">{{.Age}}</span>
+{{if .Questions}}<form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}
+<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="answer"><input type="hidden" name="prompt" value="{{.ID}}">
+<input type="hidden" name="id" value="{{$sid}}"><input type="hidden" name="name" value="{{$sname}}">
+{{range .Questions}}{{$key := .Key}}{{$multi := .Multi}}<fieldset><legend>{{.Question}}{{if .Multi}} (pick any){{end}}</legend>
+{{range .Options}}<label><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="{{.Label}}"> {{.Label}}{{if .Description}} <span class="dim">· {{.Description}}</span>{{end}}</label><br>{{end}}
+</fieldset>{{end}}
+<button>Answer</button></form>
+{{else}}<pre>{{.Summary}}</pre>{{if .Input}}<details><summary class="dim">full input</summary><pre>{{.Input}}</pre></details>{{end}}
+<form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="allow"><input type="hidden" name="prompt" value="{{.ID}}"><input type="hidden" name="id" value="{{$sid}}"><input type="hidden" name="name" value="{{$sname}}"><button>Allow</button></form>
+<form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="deny"><input type="hidden" name="prompt" value="{{.ID}}"><input type="hidden" name="id" value="{{$sid}}"><input type="hidden" name="name" value="{{$sname}}"><button class="danger">Deny</button></form>
+{{end}}
+<form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="mac"><input type="hidden" name="prompt" value="{{.ID}}"><input type="hidden" name="id" value="{{$sid}}"><input type="hidden" name="name" value="{{$sname}}"><button class="quiet">Show it in its tab instead</button></form>
+</div>{{end}}
+{{if and .Ask (not .Prompts)}}<div class="row ask"><strong>Asking:</strong><pre>{{.Ask.Question}}</pre>
+<div class="dim">Answer it in its tab, at the Mac: with the ccs hook installed (ccs hook install), ccs serve holds new prompts here to answer (docs/remote.md).</div>
 </div>{{end}}
 <p><a href="{{$.Base}}/session?id={{.ID}}&offset={{.Prev}}">older</a> · <a href="{{$.Base}}/session?id={{.ID}}">latest</a> · {{if .HasNext}}<a href="{{$.Base}}/session?id={{.ID}}&offset={{.Next}}">newer</a>{{else}}<span class="dim">newest</span>{{end}}</p>
 <pre>{{.Text}}</pre>
@@ -86,7 +103,7 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 <h2>Confirm</h2><pre>{{.What}}</pre>
 <form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}<input type="hidden" name="confirm" value="yes">
 <input type="hidden" name="action" value="{{.A.Kind}}"><input type="hidden" name="id" value="{{.A.ID}}"><input type="hidden" name="name" value="{{.A.Name}}">
-<input type="hidden" name="text" value="{{.A.Text}}">
+<input type="hidden" name="text" value="{{.A.Text}}"><input type="hidden" name="prompt" value="{{.A.Prompt}}"><input type="hidden" name="choice" value="{{.A.Choice}}">{{range .A.AnswerFields}}<input type="hidden" name="{{index . 0}}" value="{{index . 1}}">{{end}}
 <input type="hidden" name="cwd" value="{{.A.Cwd}}"><input type="hidden" name="brief" value="{{.A.Brief}}">
 {{if .A.Codex}}<input type="hidden" name="codex" value="on">{{end}}{{if .A.Graceful}}<input type="hidden" name="graceful" value="on">{{end}}
 <button>Yes, do it</button></form>

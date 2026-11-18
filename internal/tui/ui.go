@@ -1039,6 +1039,42 @@ func findSpawnParent(c transcript.Conversation, items []listItem) string {
 			}
 		}
 	}
+	if best == "" && c.Kind == transcript.KindCodex && c.CodexExec {
+		best = codexStarter(start, c.SessionID, items)
+	}
+	return best
+}
+
+// codexStartWindow is how long before a codex exec run began the command
+// that started it may be: a few seconds in practice.
+const codexStartWindow = time.Minute
+
+// codexStarter finds the session that started a codex exec run when its
+// prompt isn't on the command line (codex-delegate's codex-run.sh -f
+// prompt.md): the one whose Bash call, its own or a subagent's, started
+// codex closest before the run began, within codexStartWindow. Only sessions
+// active then are read, so a run doesn't open every session's subagents.
+// ponytail: two sessions starting codex in the same moment can't be told
+// apart; the closer call wins.
+func codexStarter(start time.Time, self string, items []listItem) string {
+	best, bestGap := "", codexStartWindow
+	for _, it := range items {
+		c := it.conv
+		if c.SessionID == self || c.Kind == transcript.KindCodex {
+			continue
+		}
+		first, err1 := time.Parse(time.RFC3339, c.FirstTimestamp)
+		last, err2 := time.Parse(time.RFC3339, c.LastTimestamp)
+		if err1 != nil || err2 != nil || first.After(start) || last.Before(start.Add(-codexStartWindow)) {
+			continue
+		}
+		for _, s := range append(slices.Clone(c.Spawns), transcript.SubagentSpawns(c)...) {
+			t, err := time.Parse(time.RFC3339, s.Ts)
+			if gap := start.Sub(t); err == nil && transcript.StartsCodex(s.Text) && gap > -5*time.Second && gap < bestGap {
+				best, bestGap = c.SessionID, max(gap, -gap)
+			}
+		}
+	}
 	return best
 }
 

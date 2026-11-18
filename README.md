@@ -41,7 +41,7 @@ Launch, watch, search and resume your coding CLI sessions: [Claude Code](https:/
 claude mcp add --scope user ccs -- ccs mcp
 ```
 
-Claude starts it when needed (no ccs window has to be open, no network port). It has twelve tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first, a running session with what it is doing as `ccs sessions` gives it, `live_only` for just those; both leave out headless runs unless `include_headless`) `read_session` (a session's messages, paged, optionally only those around a search term; each AskUserQuestion it asked shows as its own messages: the question with its numbered options, then the answer chosen and any notes, so a reader can tell what the user picked), `launch_session` / `close_session` / `restart_session`, which do what `ccs launch`, `ccs close` and `ccs restart` do (below), `adopt_session`, which is `ccs adopt`, `list_prs`, which is `ccs prs --json` (with `merged`, `ccs prs --merged --json`: the last week's merges, each with `merge` (`local`, `auto_merge` or `not_local`) and `merged_by`, the session's name and id), `claim_pr`, which is `ccs claim` for your own session or, with `session`, for the running session of that name, and `depends`, which is `ccs depends`: record, drop or list the order PRs must merge in (`list_prs` shows a waiting PR's `blocked_by`). `session_triage` is `ccs sessions --triage --json` (below): every running session in one bucket with why, for an orchestrator looking for the stuck ones (`stall_after_minutes`, default 15; `project` or `parent` to narrow it). `orchestrator_report` is `ccs orchestrator-report --json` (below). Every row of `list_sessions` has the session's kind, id, folder, last message time and resume command, running or not, so a crashed terminal's sessions can be brought back from it. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
+Claude starts it when needed (no ccs window has to be open, no network port). It has thirteen tools: `search_sessions` (every word must appear; sessions named after the query first, then by matching messages and recency, each with a snippet and its resume command), `list_sessions` (most recent first, a running session with what it is doing as `ccs sessions` gives it, `live_only` for just those; both leave out headless runs unless `include_headless`) `read_session` (a session's messages, paged, optionally only those around a search term; each AskUserQuestion it asked shows as its own messages: the question with its numbered options, then the answer chosen and any notes, so a reader can tell what the user picked), `launch_session` / `close_session` / `restart_session`, which do what `ccs launch`, `ccs close` and `ccs restart` do (below), `adopt_session`, which is `ccs adopt`, `list_prs`, which is `ccs prs --json` (with `merged`, `ccs prs --merged --json`: the last week's merges, each with `merge` (`local`, `auto_merge` or `not_local`) and `merged_by`, the session's name and id), `claim_pr`, which is `ccs claim` for your own session or, with `session`, for the running session of that name, and `depends`, which is `ccs depends`: record, drop or list the order PRs must merge in (`list_prs` shows a waiting PR's `blocked_by`). `session_triage` is `ccs sessions --triage --json` (below): every running session in one bucket with why, for an orchestrator looking for the stuck ones (`stall_after_minutes`, default 15; `project` or `parent` to narrow it). `orchestrator_report` is `ccs orchestrator-report --json` and `child_notices` turns child-turn notices on or off (both below). Every row of `list_sessions` has the session's kind, id, folder, last message time and resume command, running or not, so a crashed terminal's sessions can be brought back from it. It searches the same window as the TUI (60 days, files under 1GB); use `ccs mcp --all` or `--max-age=N` to change it.
 
 ## Start and close sessions
 
@@ -379,6 +379,28 @@ An orchestrator is the session `ccs orchestrator` set up, and any session that l
 | sessions now | When the period ends now: its running sessions, how many are stalled, done or idle, and how many report to it directly. |
 
 It also flags more than 6 direct sessions (put a workstream under a sub-orchestrator) and a tree deeper than 2. Each run saves the scorecards as the day's, in `reports/<orchestrator>/<YYYY-MM-DD>.json` beside ccs's settings (`--no-save` doesn't), and compares each line with the newest earlier day: ▲ better, ▼ worse. MCP `orchestrator_report` is `ccs orchestrator-report --json` (`since_hours`, `orchestrator`, `save`).
+
+## Child-turn notices
+
+With ccs's Stop hook installed (`ccs hook install` adds it beside the PermissionRequest hook), an orchestrator is told each time a session it launched or adopted finishes a turn, without waiting for the 15-minute stall:
+
+```
+<cross-session-message from-name="ccs hook">
+[Automatic notice from ccs: a session you launched or adopted finished its turn. Not typed by the user ...]
+
+fix-login-tests finished a turn · now waiting_on_user (its last message asks: Should I also bump the timeout?)
+last: "Fixed the flake. Should I also bump the timeout?"
+PRs: app#12 checks running
+</cross-session-message>
+```
+
+- Claude Code runs `ccs hook stop` the moment a turn ends, so it works with the TUI and `ccs watch` closed. It reads only the parent records, the session files in `~/.claude/sessions` and the last 1 MB of the child's own transcript, never runs ps or loads other transcripts, and gives up after 5 seconds; it never prints anything, so it can't keep a turn going. Measured with 17 sessions running and 1,152 transcripts: about 10 ms and 17 MB peak for a session with no parent, about 35 ms and 22 MB for a child.
+- The notice carries the child's name, its bucket now as `session_triage` would put it (`waiting_on_user`, `waiting_on_external`, `done` or `idle`) with why, its last message cut to 300 characters, and its open PRs. It goes over the parent's own socket in ccs's automatic-notice envelope, never the user's, and only to a running parent: by its recorded id, else the one running session with its name (two with that name get nothing). There is no typing fallback and nothing is queued for a closed parent.
+- Each notice is also a `child_turn` line in `pr-events.jsonl`: `{at, event, session, session_id, parent, parent_id, bucket, reason, last, prs, delivered, error}`; `error` says why it wasn't delivered (`parent not running`, or the send's error).
+- Not told: a turn started only by an automatic ccs notice (a child-turn notice, a `ccs watch` nudge, `ccs reorg` or `ccs close`), so a turn doesn't cascade up the tree; a turn whose last tool call was a `SendMessage` to the parent; the same bucket again within 30 seconds of the last notice; and orchestrators that turned them off with `ccs hook child-notices off` (`--orchestrator <name>`, default the calling session) or MCP `child_notices` (`enabled`, `orchestrator`), kept in `child-notices.json` beside ccs's settings.
+- `session_stalled` and `session_done` still fire after the stall threshold: a child left idle after its notice is one nobody acted on.
+
+Running sessions pick the hook up only after a restart.
 
 ## Merge order
 

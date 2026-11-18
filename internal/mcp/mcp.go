@@ -273,6 +273,41 @@ var mcpTools = []map[string]any{
 			},
 		},
 	},
+	{
+		"name":        "child_notices",
+		"description": "Turn child-turn notices on or off for an orchestrator (as ccs hook child-notices on|off). With ccs's Stop hook installed (ccs hook install), each time a session you launched or adopted finishes a turn you get an automatic notice from \"ccs hook\": its name, its bucket now (waiting_on_user, waiting_on_external, done or idle), its last message cut to 300 characters and its open PRs, and a child_turn line goes to pr-events.jsonl. Turns started only by an automatic ccs notice, turns that ended with a SendMessage to you, and a repeat in the same bucket within 30 seconds aren't told. On by default.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"enabled":      map[string]any{"type": "boolean", "description": "true to be told, false to stop"},
+				"orchestrator": map[string]any{"type": "string", "description": "the orchestrator's session name; default your own session"},
+			},
+			"required": []string{"enabled"},
+		},
+	},
+}
+
+// childNoticesCall runs child_notices.
+func childNoticesCall(raw json.RawMessage) (string, error) {
+	var a struct {
+		Enabled      *bool  `json:"enabled"`
+		Orchestrator string `json:"orchestrator"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.Enabled == nil {
+		return "", errors.New("enabled (true or false) is required")
+	}
+	name := strings.TrimSpace(a.Orchestrator)
+	if name == "" {
+		c, ok := sessions.CallingSession()
+		if !ok || c.Name == "" {
+			return "", errors.New("couldn't tell which session is calling; pass orchestrator")
+		}
+		name = c.Name
+	}
+	if err := SetChildNotices(name, *a.Enabled, time.Now()); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("child-turn notices %s for %s", map[bool]string{true: "on", false: "off"}[*a.Enabled], name), nil
 }
 
 // reportCall runs orchestrator_report.
@@ -488,6 +523,9 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	}
 	if name == "orchestrator_report" {
 		return reportCall(raw)
+	}
+	if name == "child_notices" {
+		return childNoticesCall(raw)
 	}
 	var a struct {
 		Query      string `json:"query"`

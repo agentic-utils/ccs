@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 )
 
@@ -78,18 +79,25 @@ var hookAckWait = 2 * time.Second
 // RunHook is `ccs hook`.
 func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: ccs hook permission | ccs hook install [--print] | ccs hook uninstall")
+		fmt.Fprintln(stderr, hookUsage)
 		return 2
 	}
 	switch args[0] {
 	case "permission":
 		permissionHook(stdin, stdout)
 		return 0 // never fail the prompt: no output means Claude Code asks as usual
+	case "stop":
+		stopHook(stdin, time.Now())
+		return 0 // never fail the turn's end, and print nothing: output could keep it going
+	case "child-notices":
+		return runChildNotices(args[1:], stdout, stderr)
 	case "install", "uninstall":
 		path := claudeSettingsPath()
 		if slices.Contains(args[1:], "--print") {
-			b, _ := json.MarshalIndent(hookEntry(hookCommand()), "", "  ")
-			fmt.Fprintf(stdout, "Add this under hooks.PermissionRequest in %s:\n%s\n", path, b)
+			for _, h := range ourHooks {
+				b, _ := json.MarshalIndent(hookEntryFor(h, hookCommandFor(h.Sub)), "", "  ")
+				fmt.Fprintf(stdout, "Add this under hooks.%s in %s:\n%s\n", h.Event, path, b)
+			}
 			return 0
 		}
 		msg, err := editHookSettings(path, args[0] == "install")
@@ -102,6 +110,39 @@ func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stderr, "ccs hook: unknown command", args[0])
 	return 2
+}
+
+const hookUsage = "usage: ccs hook permission | ccs hook stop | ccs hook child-notices on|off [--orchestrator <name>] | ccs hook install [--print] | ccs hook uninstall"
+
+// runChildNotices is `ccs hook child-notices on|off`: whether an
+// orchestrator (the calling session, unless --orchestrator names one) is
+// told each time a session under it finishes a turn.
+func runChildNotices(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || (args[0] != "on" && args[0] != "off") {
+		fmt.Fprintln(stderr, hookUsage)
+		return 2
+	}
+	name := ""
+	if len(args) == 3 && args[1] == "--orchestrator" {
+		name = args[2]
+	} else if len(args) != 1 {
+		fmt.Fprintln(stderr, hookUsage)
+		return 2
+	}
+	if name == "" {
+		c, ok := sessions.CallingSession()
+		if !ok || c.Name == "" {
+			fmt.Fprintln(stderr, "ccs hook child-notices: not run from a named session; pass --orchestrator <name>")
+			return 1
+		}
+		name = c.Name
+	}
+	if err := SetChildNotices(name, args[0] == "on", time.Now()); err != nil {
+		fmt.Fprintln(stderr, "ccs hook child-notices:", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "child-turn notices %s for %s\n", args[0], name)
+	return 0
 }
 
 // permissionHook hands the prompt on stdin to ccs serve and prints the
@@ -250,16 +291,35 @@ var claudeSettingsPath = func() string {
 	return filepath.Join(dir, "settings.json")
 }
 
-// hookCommand is the command the settings run: this ccs by its full path
+// ourHook is one hook `ccs hook install` manages: the Claude Code event,
+// the `ccs hook` subcommand it runs, its timeout and whether it takes a
+// matcher (tool events do; Stop doesn't).
+type ourHook struct {
+	Event, Sub string
+	Timeout    int
+	Matcher    bool
+}
+
+// ourHooks: the permission prompt hand-off to ccs serve, and the child-turn
+// notice to a session's orchestrator.
+var ourHooks = []ourHook{
+	{Event: "PermissionRequest", Sub: "permission", Timeout: hookTimeout, Matcher: true},
+	{Event: "Stop", Sub: "stop", Timeout: stopHookTimeout},
+}
+
+// hookCommand is the command the settings run for the permission hook.
+func hookCommand() string { return hookCommandFor("permission") }
+
+// hookCommandFor is the command the settings run: this ccs by its full path
 // (Claude Code runs hooks without the user's shell functions).
-func hookCommand() string {
+func hookCommandFor(sub string) string {
 	bin, err := exec.LookPath("ccs")
 	if err != nil {
 		if bin, err = os.Executable(); err != nil {
 			bin = "ccs"
 		}
 	}
-	return shellWord(bin) + " hook permission"
+	return shellWord(bin) + " hook " + sub
 }
 
 func shellWord(s string) string {
@@ -269,29 +329,40 @@ func shellWord(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-func hookEntry(command string) map[string]any {
-	return map[string]any{"matcher": "*", "hooks": []any{map[string]any{"type": "command", "command": command, "timeout": hookTimeout}}}
+func hookEntry(command string) map[string]any { return hookEntryFor(ourHooks[0], command) }
+
+func hookEntryFor(h ourHook, command string) map[string]any {
+	e := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command, "timeout": h.Timeout}}}
+	if h.Matcher {
+		e["matcher"] = "*"
+	}
+	return e
 }
 
 // isOurCommand: a hook command that is ccs's own `<path>/ccs hook permission`.
+func isOurCommand(c string) bool { return isOurCommandFor(c, "permission") }
+
+// isOurCommandFor: a hook command that is ccs's own `<path>/ccs hook <sub>`.
 // Install and uninstall both go by it: exactly what install writes
-// (hookCommand, whatever this binary is called), or any ccs's.
-func isOurCommand(c string) bool {
-	if c == hookCommand() {
+// (hookCommandFor, whatever this binary is called), or any ccs's.
+func isOurCommandFor(c, sub string) bool {
+	if c == hookCommandFor(sub) {
 		return true
 	}
-	bin, ok := strings.CutSuffix(c, " hook permission")
+	bin, ok := strings.CutSuffix(c, " hook "+sub)
 	bin = strings.Trim(bin, "'")
 	return ok && (bin == "ccs" || strings.HasSuffix(bin, "/ccs"))
 }
 
 // isOurHook: a PermissionRequest group with ccs's hook in it.
-func isOurHook(entry any) bool {
+func isOurHook(entry any) bool { return isOurHookFor(entry, "permission") }
+
+func isOurHookFor(entry any, sub string) bool {
 	m, _ := entry.(map[string]any)
 	hs, _ := m["hooks"].([]any)
 	for _, h := range hs {
 		if hm, ok := h.(map[string]any); ok {
-			if c, _ := hm["command"].(string); isOurCommand(c) {
+			if c, _ := hm["command"].(string); isOurCommandFor(c, sub) {
 				return true
 			}
 		}
@@ -299,21 +370,24 @@ func isOurHook(entry any) bool {
 	return false
 }
 
-// withoutOurs drops ccs's hook from each group, keeping every other hook,
+// withoutOurs drops ccs's permission hook from each group.
+func withoutOurs(entries []any) []any { return withoutOursFor(entries, "permission") }
+
+// withoutOursFor drops ccs's hook from each group, keeping every other hook,
 // and a group only when nothing is left in it.
-func withoutOurs(entries []any) []any {
+func withoutOursFor(entries []any, sub string) []any {
 	var out []any
 	for _, e := range entries {
 		m, ok := e.(map[string]any)
 		hs, _ := m["hooks"].([]any)
-		if !ok || !isOurHook(e) {
+		if !ok || !isOurHookFor(e, sub) {
 			out = append(out, e)
 			continue
 		}
 		var kept []any
 		for _, h := range hs {
 			if hm, ok := h.(map[string]any); ok {
-				if c, _ := hm["command"].(string); isOurCommand(c) {
+				if c, _ := hm["command"].(string); isOurCommandFor(c, sub) {
 					continue
 				}
 			}
@@ -327,9 +401,9 @@ func withoutOurs(entries []any) []any {
 	return out
 }
 
-// editHookSettings adds (or removes) ccs's PermissionRequest hook in
-// Claude Code's settings, keeping everything else as it was and a copy of
-// the old file beside it.
+// editHookSettings adds (or removes) ccs's hooks (ourHooks) in Claude
+// Code's settings, keeping everything else as it was and a copy of the old
+// file beside it.
 func editHookSettings(path string, install bool) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -345,22 +419,29 @@ func editHookSettings(path string, install bool) (string, error) {
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	entries, _ := hooks["PermissionRequest"].([]any)
-	had := slices.ContainsFunc(entries, isOurHook)
-	kept := withoutOurs(entries)
+	var changed []string
+	for _, h := range ourHooks {
+		entries, _ := hooks[h.Event].([]any)
+		had := slices.ContainsFunc(entries, func(e any) bool { return isOurHookFor(e, h.Sub) })
+		if had == install {
+			continue
+		}
+		changed = append(changed, h.Event)
+		kept := withoutOursFor(entries, h.Sub)
+		if install {
+			kept = append(kept, hookEntryFor(h, hookCommandFor(h.Sub)))
+		}
+		if len(kept) == 0 {
+			delete(hooks, h.Event)
+		} else {
+			hooks[h.Event] = kept
+		}
+	}
 	switch {
-	case install && had:
-		return "ccs's PermissionRequest hook is already in " + path, nil
-	case !install && !had:
-		return "ccs's PermissionRequest hook isn't in " + path, nil
-	}
-	if install {
-		kept = append(kept, hookEntry(hookCommand()))
-	}
-	if len(kept) == 0 {
-		delete(hooks, "PermissionRequest")
-	} else {
-		hooks["PermissionRequest"] = kept
+	case install && len(changed) == 0:
+		return "ccs's hooks are already in " + path, nil
+	case !install && len(changed) == 0:
+		return "ccs's hooks aren't in " + path, nil
 	}
 	if len(hooks) == 0 {
 		delete(settings, "hooks")
@@ -388,9 +469,9 @@ func editHookSettings(path string, install bool) (string, error) {
 		return "", err
 	}
 	if install {
-		return "added ccs's PermissionRequest hook to " + path + " (the old file is beside it, .before-ccs-hook). Sessions started from now on use it; restart running ones to pick it up.", nil
+		return "added ccs's " + strings.Join(changed, " and ") + " hook to " + path + " (the old file is beside it, .before-ccs-hook). Sessions started from now on use it; restart running ones to pick it up.", nil
 	}
-	return "removed ccs's PermissionRequest hook from " + path, nil
+	return "removed ccs's " + strings.Join(changed, " and ") + " hook from " + path, nil
 }
 
 func newPromptID() string {

@@ -93,8 +93,10 @@ Usage: ccs [filter] [-- claude-flags...]
                             your nudges and corrections, hands-on work, merges, span
        ccs serve --host <h> --team <t> --aud <tag> --email <e> [--allow-write]
                             the sessions as a web page, behind Cloudflare Access (docs/remote.md)
-       ccs hook install|uninstall [--print]   ccs's Claude Code PermissionRequest hook: while
-                            ccs serve --allow-write runs, prompts wait there to be answered
+       ccs hook install|uninstall [--print]   ccs's Claude Code hooks: PermissionRequest (while
+                            ccs serve --allow-write runs, prompts wait there to be answered) and
+                            Stop (an orchestrator is told each time a session under it ends a turn;
+                            ccs hook child-notices on|off turns that off for one)
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
        ccs stats [--json]   How often you use each ccs feature, and the ones never used;

@@ -174,6 +174,8 @@ func TestTreeAlignment(t *testing.T) {
 	}
 }
 
+// ^X C's third view folds every tree to its top row, which keeps its
+// counts; a search still shows a folded match.
 func TestFoldOrchestratorTree(t *testing.T) {
 	m := treeModel(t)
 	for i, it := range m.filtered {
@@ -181,10 +183,11 @@ func TestFoldOrchestratorTree(t *testing.T) {
 			m.cursor = i
 		}
 	}
-	m, _ = chord(m, "b")
+	m, _ = chord(m, "c")
+	m, _ = chord(m, "c")
 	got := strings.Join(order(m), ",")
-	if strings.Contains(got, "worker") || strings.Contains(got, "leaf") {
-		t.Fatalf("^X B folds hub's tree to its row: %s", got)
+	if strings.Contains(got, "worker") || strings.Contains(got, "leaf") || strings.Contains(got, "deploy") {
+		t.Fatalf("every tree folds to its top row, hub's and ops's: %s", got)
 	}
 	if m.filtered[m.cursor].conv.Title != "hub" {
 		t.Errorf("the cursor stays on hub")
@@ -196,16 +199,13 @@ func TestFoldOrchestratorTree(t *testing.T) {
 	if v := strip2(m.View()); !strings.Contains(v, "▸4 hub") || !strings.Contains(v, "●1 ◦1 ✓1") {
 		t.Errorf("▸ with how many it hides\n%s", v)
 	}
-	if !strings.Contains(strings.Join(order(m), ","), "deploy") {
-		t.Error("ops's tree isn't folded")
-	}
 	m.sortList()
 	m.sortList()
 	if hub := m.filtered[m.cursor]; hub.roll.waiting != 1 {
 		t.Errorf("sorting again keeps counting what the fold hides: %+v", hub.roll)
 	}
-	if !slices.Contains(loadMarks().Folded, "hub-id") {
-		t.Error("the fold is saved")
+	if loadSettings().TreeView != treeFolded {
+		t.Error("the view is saved")
 	}
 
 	m.textInput.SetValue("leaf")
@@ -215,24 +215,9 @@ func TestFoldOrchestratorTree(t *testing.T) {
 	}
 	m.textInput.SetValue("")
 	m.updateFilter()
-	for i, it := range m.filtered {
-		if it.conv.Title == "hub" {
-			m.cursor = i
-		}
-	}
-	m, _ = chord(m, "b")
-	if !strings.Contains(strings.Join(order(m), ","), "leaf") {
-		t.Errorf("^X B again unfolds: %v", order(m))
-	}
-
-	for i, it := range m.filtered {
-		if it.conv.Title == "loner" {
-			m.cursor = i
-		}
-	}
-	m, _ = chord(m, "b")
-	if !strings.Contains(m.errorMsg, "nothing launched") {
-		t.Errorf("nothing to fold: %q", m.errorMsg)
+	m, _ = chord(m, "c")
+	if got := strings.Join(order(m), ","); !strings.Contains(got, "leaf") || !strings.Contains(got, "deploy") {
+		t.Errorf("^X C again unfolds every tree: %v", got)
 	}
 }
 
@@ -258,8 +243,9 @@ func TestTreeFollowsAdoption(t *testing.T) {
 
 // A launched session whose tree has nothing running waits behind its
 // parent's "▸ N closed" line, at the end of the parent's branch, so it isn't
-// one click from being resumed; ^X B on the parent cycles: closed shown,
-// tree folded, live only. A search shows everything.
+// one click from being resumed. ^X C shows every tree's closed sessions at
+// once, beside their live siblings, then folds every tree, then hides them
+// again. A search shows everything.
 func TestClosedSessionsBehindALine(t *testing.T) {
 	m := treeModel(t)
 	m.width, m.height = 110, 40
@@ -274,26 +260,28 @@ func TestClosedSessionsBehindALine(t *testing.T) {
 	if v := view(); !strings.Contains(v, "│   └ ▸ 1 closed") || !strings.Contains(v, " └ ▸ 1 closed") || !strings.Contains(v, "├ ✻ worker") {
 		t.Errorf("each parent's closed line ends its branch, its last live child a ├:\n%s", v)
 	}
-	for i, it := range m.filtered {
-		if it.conv.Title == "hub" {
-			m.cursor = i
-		}
+	m, _ = chord(m, "c")
+	if got := titles(); !strings.Contains(got, "fresh") || !strings.Contains(got, "leaf") {
+		t.Errorf("^X C shows every tree's closed sessions: %s", got)
 	}
-	m, _ = chord(m, "b")
-	if got := titles(); !strings.Contains(got, "fresh") || strings.Contains(got, "leaf") {
-		t.Errorf("^X B shows hub's closed sessions, not sub's: %s", got)
+	depth := map[string]int{}
+	for _, it := range m.filtered {
+		depth[it.conv.Title] = it.depth
 	}
-	if v := view(); !strings.Contains(v, " └ ▾ 1 closed") || !strings.Contains(v, "   └ ✻ fresh") {
-		t.Errorf("shown under a ▾ line:\n%s", v)
+	if depth["fresh"] != depth["worker"] || depth["leaf"] != depth["sub"]+1 {
+		t.Errorf("closed sessions sit at their live siblings' level: %v", depth)
 	}
-	if !slices.Contains(loadMarks().ShowClosed, "hub-id") {
+	if v := view(); strings.Contains(v, "1 closed") || !strings.Contains(v, " └ ✻ fresh") {
+		t.Errorf("shown, with no closed line, the last one a └:\n%s", v)
+	}
+	if loadSettings().TreeView != treeClosed {
 		t.Error("showing them is saved")
 	}
-	m, _ = chord(m, "b")
+	m, _ = chord(m, "c")
 	if got := titles(); strings.Contains(got, "worker") || strings.Contains(view(), "1 closed") {
-		t.Errorf("^X B again folds the tree, its closed lines with it: %s", got)
+		t.Errorf("^X C again folds every tree, closed lines with them: %s", got)
 	}
-	m, _ = chord(m, "b")
+	m, _ = chord(m, "c")
 	if got := titles(); !strings.Contains(got, "worker") || strings.Contains(got, "fresh") {
 		t.Errorf("and again: live only: %s", got)
 	}

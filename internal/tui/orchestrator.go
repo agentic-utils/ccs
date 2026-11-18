@@ -821,36 +821,7 @@ func (m *model) syncOrchestrator() {
 	}
 	if rec.SessionID != m.orchID {
 		m.orchID = rec.SessionID
-		if m.hideOrch {
-			m.refilter() // a new orchestrator is hidden too
-		} else {
-			m.sortList()
-		}
-	}
-}
-
-// hideOrchestrator drops the orchestrator from m.filtered while ^X C hides it,
-// unless it was asked for by name (selectSession).
-func (m *model) hideOrchestrator() {
-	if !m.hideOrch || m.orchID == "" || m.revealed[m.orchID] {
-		return
-	}
-	m.filtered = slices.DeleteFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == m.orchID })
-}
-
-// toggleHideOrchestrator is ^X C: hide the orchestrator's row and the offer to
-// set one up, or show them again. Saved, so ccs reopens as it was left.
-func (m *model) toggleHideOrchestrator() {
-	m.hideOrch = !m.hideOrch
-	if m.hideOrch {
-		m.orchOffer = nil
-		delete(m.revealed, m.orchID)
-	}
-	saveSettings(m.settings())
-	sel := m.selectedSession()
-	m.refilter()
-	if m.selectedSession() != sel { // hiding the selected orchestrator moved the selection
-		m.selectionMoved()
+		m.sortList()
 	}
 }
 

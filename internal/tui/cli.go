@@ -137,8 +137,6 @@ Key bindings:
  Ctrl+X then a letter: this session
   Ctrl+X P        Pin it to the top of the list (again to unpin)
   Alt+Up/Down     Move it among the pinned sessions
-  Ctrl+X B        On a session with others under it: show its closed ones, then fold
-                  its branch to its own row, then back to its live ones
   Ctrl+X S        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
   Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
@@ -153,10 +151,11 @@ Key bindings:
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder
   Ctrl+X O        Open the orchestrator, setting one up if there is none
+  Ctrl+X C        Every orchestrator tree: show closed sessions, then fold every tree
+                  to its top row, then back to live sessions only
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X T        The full table, every column, instead of the sidebar
   Ctrl+X L        Hide or show the session list, the preview taking its place
-  Ctrl+X C        Hide or show the orchestrator and the offer to set one up
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
   Ctrl+X A        Switch to a session's tab when it starts waiting on you
@@ -339,7 +338,7 @@ func Main(v string) {
 
 	items := buildItems(conversations)
 	// Nothing to list: open only if there's an orchestrator to offer.
-	if len(items) == 0 && (loadSettings().HideOrchestrator || !orchestratorOfferable()) {
+	if len(items) == 0 && !orchestratorOfferable() {
 		fmt.Fprintf(os.Stderr, "No conversations found in %s\n", projectsDir)
 		fmt.Fprintf(os.Stderr, "Start one with claude, or set up an orchestrator with ccs orchestrator.\n")
 		os.Exit(1)
@@ -351,7 +350,8 @@ func Main(v string) {
 	go sessions.RefreshLinkApp()
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
-	m.table, m.grouped, m.autoFocus, m.hideOrch, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideOrchestrator, s.HideSidebar
+	m.table, m.grouped, m.autoFocus, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideSidebar
+	m.treeView = min(max(s.TreeView, treeLive), treeFolded)
 	m.headerCollapsed = !s.HeaderOpen
 	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
 	if s.AutoUpdate == nil && s.found {
@@ -363,7 +363,6 @@ func Main(v string) {
 	}
 	m.marks = loadMarks()                     // when each session was last looked at
 	m.orchID = loadOrchestrator().SessionID   // listed above everything
-	m.hideOrchestrator()                      // unless ^X C hides it
 	if handled, ok := loadFocusRecord(); ok { // waits it switched to before a restart aren't switched to again
 		m.focusHandled, m.focusNoted = handled, map[string]bool{}
 	}

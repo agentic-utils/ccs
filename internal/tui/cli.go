@@ -137,8 +137,6 @@ Key bindings:
  Ctrl+X then a letter: this session
   Ctrl+X P        Pin it to the top of the list (again to unpin)
   Alt+Up/Down     Move it among the pinned sessions
-  Ctrl+X B        On a session with others under it: show its closed ones, then fold
-                  its branch to its own row, then back to its live ones
   Ctrl+X S        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
   Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
@@ -153,6 +151,8 @@ Key bindings:
   Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder
   Ctrl+X O        Open the orchestrator, setting one up if there is none
+  Ctrl+X C        Every orchestrator tree: show closed sessions, then fold every tree
+                  to its top row, then back to live sessions only
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X T        The full table, every column, instead of the sidebar
   Ctrl+X L        Hide or show the session list, the preview taking its place
@@ -351,6 +351,7 @@ func Main(v string) {
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideSidebar
+	m.treeView = min(max(s.TreeView, treeLive), treeFolded)
 	m.headerCollapsed = !s.HeaderOpen
 	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
 	if s.AutoUpdate == nil && s.found {

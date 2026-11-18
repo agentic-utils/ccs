@@ -772,7 +772,7 @@ func TestOrchestratorHasItsOwnSectionAbovePinned(t *testing.T) {
 
 // TestOldHideSettingIgnored: ^X C hid the orchestrator before the trees
 // landed. A saved hide_orchestrator (or hide_coordinator) no longer hides it,
-// ^X C does nothing, the header has no toggle for it, and a save drops the key.
+// the header has no toggle for it, and a save drops the key.
 func TestOldHideSettingIgnored(t *testing.T) {
 	orchestratorFixture(t)
 	os.MkdirAll(filepath.Dir(state.SettingsPath), 0o700)
@@ -785,9 +785,8 @@ func TestOldHideSettingIgnored(t *testing.T) {
 	m.width, m.height = 140, 30
 	orchestratorRecord{SessionID: "c"}.save()
 	m.syncOrchestrator()
-	m, _ = chord(m, "c")
-	if v := strip2(m.View()); len(m.filtered) != 2 || m.filtered[0].conv.SessionID != "c" || strings.Contains(v, "^X C") {
-		t.Errorf("the orchestrator stays listed first, with no ^X C toggle:\n%s", v)
+	if v := strip2(m.View()); len(m.filtered) != 2 || m.filtered[0].conv.SessionID != "c" || strings.Contains(v, "orchestrator on") || strings.Contains(v, "orchestrator off") {
+		t.Errorf("the orchestrator stays listed first, with no toggle for it:\n%s", v)
 	}
 	saveSettings(loadSettings())
 	if b, _ := os.ReadFile(state.SettingsPath); strings.Contains(string(b), "hide_") {

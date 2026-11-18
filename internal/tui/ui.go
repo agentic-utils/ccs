@@ -44,7 +44,7 @@ type listItem struct {
 	guides      string // in an orchestrator's tree: the │ and spaces its ancestors draw before its own connector
 	lastKid     bool   // the last of its parent's children: └, not ├
 	closedKids  int    // its launched sessions that have closed (none of their tree running), behind a "N closed" line
-	hideClosed  bool   // closed, behind its parent's "▸ N closed" line until ^X B shows them
+	hideClosed  bool   // closed, behind its parent's "▸ N closed" line until ^X C shows them
 	linesAfter  []closedLine
 }
 
@@ -55,7 +55,6 @@ type listItem struct {
 type closedLine struct {
 	guides string
 	n      int
-	open   bool
 	owner  int
 }
 
@@ -79,6 +78,7 @@ type model struct {
 	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
 	grouped         bool              // ^X X G: sessions grouped by folder
 	chordX          bool              // ^X pressed: the next key picks a ccs action
+	treeView        int               // ^X C: treeLive, treeClosed or treeFolded, for every tree (saved)
 	headerCollapsed bool              // ^X F or a click on the summary line: the details under it are hidden
 	selectedID      string            // the selected session, to see when it changes
 	selectedAt      time.Time         // when it was selected: its preview waits previewDebounce
@@ -744,26 +744,29 @@ func (m *model) nestFamilies() {
 				open = append(open, k)
 			}
 		}
-		for j, k := range open {
-			walk(k, depth+1, cwd, below, j == len(open)-1 && len(shut) == 0)
+		// Shown, closed sessions follow the live ones at the same level.
+		// Hidden, a "N closed" line ends the branch after the last row so
+		// far, and they wait behind it until ^X C shows them.
+		showing := m.showingClosed()
+		walkKids := open
+		if showing {
+			walkKids = append(slices.Clone(open), shut...)
 		}
-		if len(shut) == 0 {
+		for j, k := range walkKids {
+			walk(k, depth+1, cwd, below, j == len(walkKids)-1 && (showing || len(shut) == 0))
+		}
+		it.closedKids = len(shut)
+		if showing || len(shut) == 0 {
 			return
 		}
-		// The "N closed" line ends its branch, after the last row so far;
-		// the closed sessions sit under it, hidden until ^X B shows them.
-		showing := m.showingClosed(it.conv.SessionID)
 		at := order[len(order)-1]
-		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), showing, depth})
-		it.closedKids = len(shut)
+		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth})
 		from := len(order)
 		for j, k := range shut {
-			walk(k, depth+2, cwd, below+"  ", j == len(shut)-1)
+			walk(k, depth+1, cwd, below, j == len(shut)-1)
 		}
-		if !showing {
-			for _, k := range order[from:] {
-				m.filtered[k].hideClosed = true
-			}
+		for _, k := range order[from:] {
+			m.filtered[k].hideClosed = true
 		}
 	}
 	for i := range m.filtered {
@@ -839,7 +842,7 @@ func (m *model) foldTrees() {
 			continue
 		}
 		under = -1
-		if it.kids > 0 && m.folded(it.conv.SessionID) {
+		if it.kids > 0 && m.folded(it) {
 			it.hiddenKids, under = it.kids, it.depth
 			it.linesAfter = slices.DeleteFunc(it.linesAfter, func(l closedLine) bool { return l.owner >= it.depth }) // its own tree is hidden
 		}
@@ -1810,9 +1813,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.togglePin()
 			return m, nil
 		}
-		if k == "^x b" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
-			m.toggleFold()
+			m.cycleTrees()
 			return m, nil
 		}
 		if (k == "alt+up" || k == "alt+down") && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen && !m.chatFocus {
@@ -2350,16 +2353,6 @@ func (m model) shortcuts() [][2]string {
 	group("^X then a letter: this session")
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top of the list")
 	add(pinned, "^X P", "unpin it")
-	if sel && (m.filtered[m.cursor].kids > 0 || m.filtered[m.cursor].closedKids > 0) {
-		switch it := m.filtered[m.cursor]; {
-		case it.hiddenKids > 0:
-			add(true, "^X B", "unfold its branch: its live sessions")
-		case it.closedKids > 0 && !m.showingClosed(it.conv.SessionID):
-			add(true, "^X B", "show its closed sessions too")
-		default:
-			add(true, "^X B", "fold its branch to its own row (its counts stay)")
-		}
-	}
 	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned sessions")
 	if sel && m.marks != nil {
 		if m.putAway(m.filtered[m.cursor].conv) != awake {
@@ -2389,6 +2382,9 @@ func (m model) shortcuts() [][2]string {
 	add(sessions.CanOpenTabs(), "^X O", "open the orchestrator, setting one up if there is none")
 	add(!m.grouped, "^X G", "group the list by folder")
 	add(m.grouped, "^X G", "stop grouping by folder")
+	add(m.treeView == treeLive, "^X C", "show closed sessions in every tree")
+	add(m.treeView == treeClosed, "^X C", "fold every tree to its top row (its counts stay)")
+	add(m.treeView == treeFolded, "^X C", "unfold every tree, closed sessions hidden again")
 	add(!m.table, "^X T", "the full table, every column")
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.table && !m.hideSidebar, "^X L", "hide the list, the preview taking the whole width (↑↓ still move)")
@@ -2449,6 +2445,12 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 
 // toggleHint is a mode's key, name and state for the header: grey, with
 // only "on" in green, so the modes that are on stand out.
+// chordPairs is the hint row while ^X waits for its second key: each letter
+// and what it does, never a mode's on/off (that shows when no chord is
+// pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
+// which is left unadvertised (headless runs stay out of the header).
+var chordPairs = []string{"A", "auto-focus", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}
+
 func toggleHint(key, label string, on bool) string {
 	state := "off"
 	if on {
@@ -2597,9 +2599,10 @@ func (m model) viewScreen() string {
 	if m.profileStop != nil { // a reminder: it records until stopped
 		status += " · " + key("^X Q") + "\033[31mrecording profile\033[33m"
 	}
-	// The modes ^X toggles, on the right beside the key hints.
+	// The modes ^X toggles, on the right beside the key hints. Not while a
+	// chord is pending: then the row lists only what the next key does.
 	var toggles []string
-	if !m.showUsage {
+	if !m.showUsage && !m.chordX {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
 		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
 			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
@@ -2617,7 +2620,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "orchestrator", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "open orchestrator", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
+		pairs, keep = chordPairs, 1
 	} else if m.chatFocus {
 		send := "send"
 		if strings.TrimSpace(m.chatInput.Value()) == "" {
@@ -3301,6 +3304,8 @@ type settings struct {
 	AutoFocus bool `json:"auto_focus,omitempty"`
 	// HideSidebar (^X L): the sidebar layout shows the preview alone.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
+	// TreeView (^X C): closed sessions hidden, shown, or every tree folded.
+	TreeView int `json:"tree_view,omitempty"`
 	// HeaderOpen (^X F): the preview's full details, one line unless chosen.
 	HeaderOpen bool `json:"header_open,omitempty"`
 	// AutoUpdate (^X I) installs new versions once you're away instead of
@@ -3323,7 +3328,7 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideSidebar: m.hideSidebar, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideSidebar: m.hideSidebar, TreeView: m.treeView, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.

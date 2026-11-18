@@ -1654,6 +1654,18 @@ func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
 	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "A auto-focus") || !strings.Contains(head, "esc cancel") {
 		t.Errorf("after ^X the header lists what comes next: %q", head)
+	} else if strings.Contains(head, "^X") || strings.Contains(head, " on ") || strings.Contains(head, " off ") {
+		t.Errorf("after ^X only the next keys show, no ^X prefix and no on/off: %q", head)
+	}
+	// Every chord the ? help can offer is in the ^X hint row.
+	listed := map[string]bool{}
+	for i := 0; i < len(chordPairs); i += 2 {
+		listed[chordPairs[i]] = true
+	}
+	for _, s := range m.shortcuts() {
+		if l, ok := strings.CutPrefix(s[0], "^X "); ok && l != "H" && !listed[l] { // ^X H stays out of the header
+			t.Errorf("%s is missing from the ^X hint row", s[0])
+		}
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlA})
 	if !m.autoFocus || m.textInput.Value() != "fix the login " {

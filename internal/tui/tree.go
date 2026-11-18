@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -16,8 +15,8 @@ import (
 // orchestrator. Its family sits in the orchestrator section as a tree, the
 // sessions it launched indented under it, sub-orchestrators' under theirs,
 // and its row counts what its tree holds: waiting on you, stalled, done.
-// ^X B folds a tree to its orchestrator row and unfolds it again (saved in
-// the marks); a search shows every match, folded or not.
+// ^X C shows or hides closed sessions and folds every tree, all trees at
+// once (saved in the settings); a search shows every match, folded or not.
 
 // rollupStall is how long an idle session with nothing unread waits before
 // its orchestrator's row counts it stalled: session_triage's default.
@@ -58,63 +57,41 @@ func (m *model) launchParents() map[string]string {
 	return m.launchRes
 }
 
-// folded: the orchestrator's tree is folded to its own row.
-func (m model) folded(id string) bool {
-	return m.marks != nil && slices.Contains(m.marks.Folded, id)
-}
+// The tree views, one for every tree at once: ^X C cycles them, saved in
+// the settings (TreeView).
+const (
+	treeLive   = iota // closed sessions wait behind each parent's "▸ N closed" line
+	treeClosed        // closed sessions shown where they belong, beside the live ones
+	treeFolded        // every tree folded to its top row, which keeps its counts
+)
 
-// toggleFold is ^X B on a session with others under it, a cycle: its live
-// sessions only, then its closed ones too (when it has any), then its whole
-// tree folded to its row, then back to live only. Saved in the marks.
-func (m *model) toggleFold() {
-	if m.marks == nil || len(m.filtered) == 0 {
-		return
-	}
-	it := m.filtered[m.cursor]
-	if it.kids == 0 && it.closedKids == 0 {
-		m.note("nothing launched under this session to fold")
-		return
-	}
-	id := it.conv.SessionID
-	drop := func(list *[]string) {
-		if i := slices.Index(*list, id); i >= 0 {
-			*list = slices.Delete(*list, i, i+1)
-		}
-	}
-	switch {
-	case m.folded(id):
-		drop(&m.marks.Folded)
-		drop(&m.marks.ShowClosed)
-		m.note("its live sessions; ^X B again shows the closed ones too")
-	case it.closedKids > 0 && !m.showingClosed(id):
-		m.marks.ShowClosed = append(m.marks.ShowClosed, id)
-		m.note(fmt.Sprintf("showing its %d closed; ^X B again folds the tree", it.closedKids))
-	default:
-		drop(&m.marks.ShowClosed)
-		m.marks.Folded = append(m.marks.Folded, id)
-		m.note("folded; ^X B again shows its live sessions")
-	}
-	m.marks.save()
+// folded: it is a tree's top row, folded with the rest.
+func (m model) folded(it listItem) bool { return m.treeView == treeFolded && it.depth == 0 }
+
+// showingClosed: closed sessions are listed in their trees.
+func (m model) showingClosed() bool { return m.treeView == treeClosed }
+
+// cycleTrees is ^X C: live sessions only, then closed ones too, then every
+// tree folded, then back.
+func (m *model) cycleTrees() {
+	m.treeView = (m.treeView + 1) % 3
+	saveSettings(m.settings())
 	m.sortList()
+	m.note(map[int]string{
+		treeLive:   "closed sessions hidden; ^X C shows them",
+		treeClosed: "closed sessions shown; ^X C folds every tree",
+		treeFolded: "every tree folded; ^X C unfolds them",
+	}[m.treeView])
 }
 
-// showingClosed: ^X B has shown this parent's closed sessions.
-func (m model) showingClosed(id string) bool {
-	return m.marks != nil && slices.Contains(m.marks.ShowClosed, id)
-}
-
-// closedLineText draws a closed line: the tree's guides, then └ and ▸ (or
-// ▾ when shown) N closed, all dim, lined up with the rows' connectors.
+// closedLineText draws a closed line: the tree's guides, then └ ▸ N closed,
+// all dim, lined up with the rows' connectors.
 func (m model) closedLineText(l closedLine) string {
 	lead := " "
 	if m.grouped {
 		lead = "   "
 	}
-	mark := "▸"
-	if l.open {
-		mark = "▾"
-	}
-	return fmt.Sprintf("%s%s\033[90m%s└ %s %d closed\033[0m", lead, strings.Repeat(" ", colMarks-2), l.guides, mark, l.n)
+	return fmt.Sprintf("%s%s\033[90m%s└ ▸ %d closed\033[0m", lead, strings.Repeat(" ", colMarks-2), l.guides, l.n)
 }
 
 // rollup counts an orchestrator's tree below it: waiting on you (a menu,

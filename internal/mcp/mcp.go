@@ -23,6 +23,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/stats"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -96,6 +97,7 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, map[string]any{"code": -32602, "message": "invalid params"}
 		}
+		stats.Record(stats.Feature("mcp."+p.Name), "") // dropped unless a registered tool
 		text, err := Call(p.Name, p.Arguments, load)
 		if err != nil {
 			return map[string]any{"content": []any{map[string]any{"type": "text", "text": err.Error()}}, "isError": true}, nil
@@ -856,7 +858,9 @@ func Main(cutoff time.Time, maxSize int64, excludeDirs []string) {
 	load := func() ([]transcript.Conversation, error) {
 		return transcript.GetConversations(cutoff, maxSize, excludeDirs)
 	}
-	if err := RunMCP(os.Stdin, os.Stdout, load); err != nil {
+	err := RunMCP(os.Stdin, os.Stdout, load)
+	stats.Flush()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "ccs mcp:", err)
 		os.Exit(1)
 	}

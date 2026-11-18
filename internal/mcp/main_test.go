@@ -18,6 +18,7 @@ import (
 // and close_session reach sessions' tab and process hooks, so those are
 // stubbed, and logs, settings and Codex's folder go to a temp folder.
 func TestMain(m *testing.M) {
+	os.Setenv("CCS_NO_STATS", "1") // feature stats are tested in internal/stats; nothing else writes them
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID"} {
 		os.Unsetenv(k)
 	}

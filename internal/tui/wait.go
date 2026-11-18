@@ -18,6 +18,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/stats"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -407,9 +408,11 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case !m.live[conv.SessionID]:
 			m.waitErr = m.sessionName(conv) + " has exited"
 		case strings.TrimSpace(m.waitInput.Value()) == "": // go to its tab, e.g. to answer a menu
+			stats.Record("tui.open", stats.Key)
 			m.closeWait()
 			return m, m.focusCmd(conv)
 		default:
+			stats.Record("tui.send", stats.Key)
 			return m, m.sendTo(conv, true)
 		}
 	default:
@@ -526,6 +529,7 @@ type answerDoneMsg struct {
 // answerCmd picks option n of a waiting session's question by pressing the
 // digit in its terminal, as typing it there would.
 func (m model) answerCmd(conv transcript.Conversation, n int) tea.Cmd {
+	stats.Record("tui.answer", stats.Key)
 	pid, name := m.livePIDs[conv.SessionID], m.sessionName(conv)
 	return func() tea.Msg {
 		where, err := typeKeys(pid, strconv.Itoa(n), false)
@@ -712,6 +716,7 @@ func (m *model) applyAutoFocus(msg autoFocusMsg) {
 	case !msg.tried:
 		m.noteFocus(msg.id, "busy", "auto-focus: you're typing (last key %.1fs ago); switching to %s once you've stopped for %v", msg.idle.Seconds(), name, autoFocusIdle)
 	case msg.focused:
+		stats.Record("tui.auto_focus_switch", stats.Auto)
 		state.LogActivity("auto-focus: switched to %s", name)
 	default:
 		state.LogActivity("auto-focus: couldn't find %s's tab or pane", name)

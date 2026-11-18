@@ -24,6 +24,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/stats"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -341,6 +342,7 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 	}
 	if msg.Button == tea.MouseButtonLeft && msg.Y == 1 && cswapPath() != "" {
 		if start, end, ok := m.accountSpan(); ok && msg.X >= start && msg.X < end {
+			stats.Record("tui.account", stats.Mouse)
 			m.acctOpen, m.acctMsg, m.acctCursor = true, "", 0
 			m.acctBusy = true
 			m.acctPending = true // Update starts the list command (handleMouse can't return one)
@@ -371,6 +373,9 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			return m
 		}
 		if m.chatRows() > 0 && !m.boxHidden() && msg.Y >= m.height-3 && msg.X >= paneX { // the message box
+			if !m.chatFocus {
+				stats.Record("tui.box", stats.Mouse)
+			}
 			m.chatFocus = true
 			return m
 		}
@@ -381,7 +386,10 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 				m.linkPending = linkAt(lines[row], msg.X-paneX)
 				// A click anywhere on the summary line (its first) shows or hides
 				// the details; the detail rows below it hold links and stay put.
-				if m.linkPending == "" && row == 0 {
+				if m.linkPending != "" {
+					stats.Record("tui.link_open", stats.Mouse)
+				} else if row == 0 {
+					stats.Record("tui.details", stats.Mouse)
 					m.toggleHeader()
 				}
 			}
@@ -1581,6 +1589,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, autoUpdateTick()
 		}
 		state.LogUpdate("auto-update: installing %s while you're away", m.updateTo)
+		stats.Record("tui.update_auto", stats.Auto)
 		m.autoInstalling = true
 		return m, m.startInstall()
 
@@ -1691,6 +1700,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if msg.Type == tea.KeyCtrlV {
+				stats.Record("tui.paste_image", stats.Key)
 				return m, clipImageCmd
 			}
 		}
@@ -1723,8 +1733,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^x s" && len(m.filtered) > 0 && m.marks != nil && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
 			if c := m.filtered[m.cursor].conv; m.putAway(c) != awake {
+				stats.Record("tui.wake", stats.Key)
 				m.wake(c.SessionID)
 			} else {
+				stats.Record("tui.snooze", stats.Key)
 				m.snoozeOpen, m.snoozeCursor = true, 0
 			}
 			return m, nil
@@ -1739,6 +1751,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.scrollReorg(m.reorgRoom())
 					return m, nil
 				}
+				stats.Record("tui.reorg_apply", stats.Key)
 				p := *m.reorgPlan
 				m.reorgPlan, m.reorgBusy = nil, "reorganising"
 				return m, reorgApplyCmd(p)
@@ -1766,6 +1779,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.errorMsg = "Still opening the last one..."
 					return m, nil
 				}
+				stats.Record("tui.reopen", stats.Key)
 				convs := m.reopen
 				m.reopen = nil
 				return m, m.reopenCmd(convs)
@@ -1788,6 +1802,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch msg.String() {
 			case "enter":
+				stats.Record("tui.orchestrator_setup", stats.Key)
 				p := *m.orchOffer
 				m.orchOffer, m.orchBusy = nil, true
 				markOrchestratorAnswered()
@@ -1838,6 +1853,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.linksCursor = min(m.linksCursor+1, len(m.linksShown())-1)
 			case "enter":
 				if shown := m.linksShown(); len(shown) > 0 { // stays open for the next
+					stats.Record("tui.link_open", stats.Key)
 					u := shown[min(m.linksCursor, len(shown)-1)].url
 					if id, ok := strings.CutPrefix(u, sessionLink); ok { // a session: select it, done here
 						m.linksOpen = false
@@ -1858,29 +1874,34 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.table", stats.Key)
 			m.helpOpen, m.table = false, !m.table
 			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
 		if k == "^x l" && !m.table && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.hide_list", stats.Key)
 			m.helpOpen, m.hideSidebar = false, !m.hideSidebar
 			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
 		if k == "^x f" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.details", stats.Key)
 			m.helpOpen = false
 			m.toggleHeader()
 			return m, nil
 		}
 		if k == "^x a" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.auto_focus", stats.Key)
 			m.helpOpen, m.autoFocus = false, !m.autoFocus
 			m.focusHeld = ""
 			saveSettings(m.settings())
 			return m, nil
 		}
 		if k == "^x h" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.headless", stats.Key)
 			m.helpOpen, showHeadless = false, !showHeadless
 			sel := ""
 			if len(m.filtered) > 0 {
@@ -1894,6 +1915,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.kill", stats.Key)
 			m.helpOpen = false
 			if conv := m.filtered[m.cursor].conv; m.stoppable(conv.SessionID) {
 				m.confirmStop = conv.SessionID
@@ -1903,6 +1925,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x r" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.restart", stats.Key)
 			m.helpOpen = false
 			if id := m.filtered[m.cursor].conv.SessionID; m.restartable(id) {
 				m.confirmRestart = id
@@ -1914,6 +1937,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.orchestrator", stats.Key)
 			m.helpOpen = false
 			switch {
 			case m.orchBusy || m.resuming:
@@ -1927,6 +1951,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x n" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.new_session", stats.Key)
 			m.helpOpen = false
 			if !sessions.CanOpenTabs() {
 				m.errorMsg = "^X N opens the new session in an iTerm tab or tmux window, and this is neither"
@@ -1943,6 +1968,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x q" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+			stats.Record("tui.profile", stats.Key)
 			m.helpOpen = false
 			if m.profileStop != nil {
 				m.profileStop()
@@ -1961,6 +1987,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x i" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+			stats.Record("tui.auto_update", stats.Key)
 			m.helpOpen, m.autoUpdate = false, !m.autoUpdate
 			saveSettings(m.settings())
 			if !m.autoUpdate {
@@ -1975,11 +2002,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.pin", stats.Key)
 			m.helpOpen = false
 			m.togglePin()
 			return m, nil
 		}
 		if k == "^x m" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.reorg", stats.Key)
 			m.helpOpen = false
 			if m.reorgBusy != "" {
 				m.note("a reorg is already " + m.reorgBusy)
@@ -1990,21 +2019,25 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.reorgPlanCmd()
 		}
 		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.tree_view", stats.Key)
 			m.helpOpen = false
 			m.cycleTrees()
 			return m, nil
 		}
 		if (k == "alt+up" || k == "alt+down") && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen && !m.chatFocus {
+			stats.Record("tui.pin_move", stats.Key)
 			m.movePin(map[string]int{"alt+up": -1, "alt+down": 1}[k])
 			return m, nil
 		}
 		if k == "^x g" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.group", stats.Key)
 			m.helpOpen, m.grouped = false, !m.grouped
 			saveSettings(m.settings())
 			m.sortList()
 			return m, nil
 		}
 		if msg.String() == "ctrl+o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.links", stats.Key)
 			m.helpOpen = false
 			if m.links = m.linksWithPRs(); len(m.links) == 0 {
 				m.errorMsg = "No links in view"
@@ -2015,6 +2048,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+			stats.Record("tui.changelog", stats.Key)
 			m.helpOpen, m.notesOpen, m.notesScroll = false, true, 0
 			if m.notes == nil && !m.notesFetching && m.fetchNotes != nil {
 				m.notesErr = ""
@@ -2043,10 +2077,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			box = m.chatInput.Value()
 		}
 		if msg.String() == "?" && box == "" && !m.prompting() && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.help", stats.Key)
 			m.helpOpen = true
 			return m, nil
 		}
 		if k == "^x u" && !m.prompting() && !m.waitOpen {
+			stats.Record("tui.account", stats.Key)
 			return m.openAccounts()
 		}
 		// The popup waits behind rename/delete/prune prompts, so it never takes
@@ -2073,6 +2109,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.upgrade == nil {
 					return m, nil
 				}
+				stats.Record("tui.update_install", stats.Key)
 				return m, m.startInstall()
 			case "esc":
 				m.updateOpen = false
@@ -2213,6 +2250,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "tab" {
 			m.showUsage = !m.showUsage
 			if m.showUsage {
+				stats.Record("tui.usage_screen", stats.Key)
 				return m, tea.Batch(m.usageCmd(), m.allowanceCmd())
 			}
 			return m, nil
@@ -2229,9 +2267,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				if strings.TrimSpace(m.chatInput.Value()) == "" && len(m.filtered) > 0 {
 					// Enter on an empty box opens the session itself.
+					stats.Record("tui.open", stats.Key)
 					m.chatFocus = false
 					return m, m.focusCmd(m.filtered[m.cursor].conv)
 				}
+				stats.Record("tui.send", stats.Key)
 				return m, m.sendCmd()
 			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+c", "ctrl+f", "ctrl+r", "ctrl+]", "ctrl+\\":
 				// fall through to the list's handling below
@@ -2280,10 +2320,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// in the box, and Enter on the empty box goes to its tab. One waiting
 			// on a menu or prompt has no box, so Enter goes straight there.
 			if m.selectedLive() && !m.boxHidden() {
+				stats.Record("tui.box", stats.Key)
 				m.chatFocus = true
 				return m, nil
 			}
 			// A live session's tab is focused, not resumed again (resumeCmd checks).
+			stats.Record("tui.open", stats.Key)
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, false)
 
 		case "ctrl+f":
@@ -2291,6 +2333,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.filtered) == 0 {
 				return m, nil
 			}
+			stats.Record("tui.fork", stats.Key)
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, true)
 
 		case "^x d":
@@ -2299,12 +2342,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if len(m.filtered) > 0 {
+				stats.Record("tui.delete", stats.Key)
 				m.confirmDelete = true
 				m.deleteIndex = m.cursor
 			}
 			return m, nil
 
 		case "ctrl+r":
+			stats.Record("tui.refresh", stats.Key)
 			return m, m.refreshNow()
 
 		case "^x e":
@@ -2319,6 +2364,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.errorMsg = "Session is open in claude - use /rename there"
 					return m, nil
 				}
+				stats.Record("tui.rename", stats.Key)
 				m.renaming = true
 				m.renameIndex = m.cursor
 				m.renameInput = textinput.New()
@@ -2351,6 +2397,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.errorMsg = fmt.Sprintf("Prune preview failed: %v", err)
 					return m, nil
 				}
+				stats.Record("tui.prune", stats.Key)
 				m.confirmPrune = true
 				m.pruneIndex = m.cursor
 				m.pruneSaved = st.BytesIn - st.BytesOut
@@ -2365,6 +2412,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "ctrl+]", "ctrl+\\": // next / previous search hit
+			stats.Record("tui.hit_jump", stats.Key)
 			m.jumpHit(msg.String() == "ctrl+]")
 			return m, nil
 
@@ -2377,6 +2425,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "^x w":
+			stats.Record("tui.waiting", stats.Key)
 			m.openWait()
 			return m, nil
 		}
@@ -2406,6 +2455,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	prevValue := m.textInput.Value()
 	m.textInput, cmd = editKey(m.textInput, msg)
 	if m.textInput.Value() != prevValue {
+		if prevValue == "" {
+			stats.Record("tui.search", stats.Key) // a search begun, never its words
+		}
 		m.updateFilter()
 	}
 	return m, cmd
@@ -3521,10 +3573,33 @@ func loadSettings() (s settings) {
 	return s
 }
 
+// foreignSettings are the keys of settings.json something other than the
+// list writes (feature_stats, from ccs stats --off): a save carries them
+// over. Every other key is the list's, so one it no longer has (hide_*) goes.
+var foreignSettings = []string{"feature_stats"}
+
+// mergeSettings is s as JSON, with the file's foreign keys kept.
+func mergeSettings(s settings) []byte {
+	own, _ := json.Marshal(s)
+	old := map[string]json.RawMessage{}
+	if b, err := os.ReadFile(state.SettingsPath); err != nil || json.Unmarshal(b, &old) != nil {
+		return own
+	}
+	out := map[string]json.RawMessage{}
+	json.Unmarshal(own, &out)
+	for _, k := range foreignSettings {
+		if v, ok := old[k]; ok {
+			out[k] = v
+		}
+	}
+	data, _ := json.Marshal(out)
+	return data
+}
+
 // saveSettings writes them atomically. A failure only means the next start
 // opens in the default view, so it isn't reported.
 func saveSettings(s settings) {
-	data, _ := json.Marshal(s)
+	data := mergeSettings(s)
 	if os.MkdirAll(filepath.Dir(state.SettingsPath), 0o700) != nil {
 		return
 	}

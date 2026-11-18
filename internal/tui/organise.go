@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/stats"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -202,6 +203,15 @@ func snoozeChoices(now time.Time) []snoozeChoice {
 	}
 }
 
+// snoozeFeatures count each snoozeChoices entry, in its order.
+var snoozeFeatures = []stats.Feature{"tui.snooze_settle", "tui.snooze_1h", "tui.snooze_4h", "tui.snooze_tomorrow"}
+
+func recordSnooze(i int) {
+	if i >= 0 && i < len(snoozeFeatures) {
+		stats.Record(snoozeFeatures[i], stats.Key)
+	}
+}
+
 // putAwayNow settles or snoozes the selected session as chosen in the picker.
 func (m *model) putAwayNow(choice snoozeChoice) {
 	if m.marks == nil || len(m.filtered) == 0 {
@@ -262,10 +272,12 @@ func (m model) snoozeKey(k string) (tea.Model, tea.Cmd) {
 		m.snoozeCursor = min(m.snoozeCursor+1, len(choices)-1)
 	case "enter":
 		m.snoozeOpen = false
+		recordSnooze(m.snoozeCursor)
 		m.putAwayNow(choices[m.snoozeCursor])
 	default:
 		if len(k) == 1 && k[0] >= '1' && int(k[0]-'1') < len(choices) {
 			m.snoozeOpen = false
+			recordSnooze(int(k[0] - '1'))
 			m.putAwayNow(choices[k[0]-'1'])
 		}
 	}

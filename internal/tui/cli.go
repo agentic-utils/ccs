@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/pprof"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/stats"
 	"github.com/agentic-utils/ccs/internal/transcript"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -93,6 +95,8 @@ Usage: ccs [filter] [-- claude-flags...]
                             the sessions as a web page, behind Cloudflare Access (docs/remote.md)
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
+       ccs stats [--json]   How often you use each ccs feature, and the ones never used;
+                            recorded on this machine only (--off / --on, or CCS_NO_STATS=1)
 
 Arguments:
   filter           Initial search query (optional)
@@ -196,6 +200,11 @@ Key bindings:
 func Main(v string) {
 	state.Version = v
 	args := os.Args[1:]
+	recordCLI(args)
+
+	if len(args) > 0 && args[0] == "stats" {
+		os.Exit(stats.Run(args[1:], os.Stdout, os.Stderr))
+	}
 
 	if len(args) > 0 && args[0] == "prune" {
 		transcript.RunPrune(args[1:])
@@ -428,6 +437,7 @@ func Main(v string) {
 		m.profileStop, m.profilePath = stop, path
 	}
 	finalModel, err := p.Run()
+	stats.Flush() // before any exec or exit below, which skip the background flush
 	// After a panic bubbletea hands back no model, only the error.
 	final, _ := finalModel.(model)
 	if stop := final.profileStop; stop != nil {
@@ -525,3 +535,55 @@ func (e eraseSavedLines) Write(p []byte) (int, error) {
 // WriteString too: io.WriteString (bubbletea's clears) would otherwise use
 // the embedded file's WriteString and skip Write.
 func (e eraseSavedLines) WriteString(s string) (int, error) { return e.Write([]byte(s)) }
+
+// cliCommands are the subcommands counted by name; any other first word is a
+// search, so it counts as the list.
+var cliCommands = map[string]stats.Feature{
+	"prune": "cli.prune", "launch": "cli.launch", orchestratorName: "cli.orchestrator",
+	state.LegacyOrchestratorName: "cli.orchestrator", "reorg": "cli.reorg", "adopt": "cli.adopt",
+	"close": "cli.close", "restart": "cli.restart", "link": "cli.link", "watch": "cli.watch",
+	"claim": "cli.claim", "review": "cli.review", "prs": "cli.prs",
+	"orchestrator-report": "cli.orchestrator_report", "depends": "cli.depends",
+	"sessions": "cli.sessions", "mcp": "cli.mcp", "stats": "cli.stats",
+}
+
+// recordCLI counts the command (and, for the list, its flags, never their
+// values) and writes it straight away, since most commands end in os.Exit.
+// A status line's call isn't a use, and runs every few seconds, so it's left
+// out.
+func recordCLI(args []string) {
+	if slices.Contains(args, "--statusline") {
+		return
+	}
+	defer stats.Flush()
+	if len(args) > 0 {
+		if f, ok := cliCommands[args[0]]; ok {
+			stats.Record(f, "")
+			return
+		}
+	}
+	for _, arg := range args {
+		switch {
+		case arg == "-h" || arg == "--help":
+			stats.Record("cli.help", "")
+			return
+		case arg == "-v" || arg == "--version":
+			stats.Record("cli.version", "")
+			return
+		}
+	}
+	stats.Record("cli.tui", "")
+	for _, arg := range args {
+		switch {
+		case arg == "--":
+			stats.Record("cli.claude_args", "")
+			return // the rest are claude's
+		case arg == "--all":
+			stats.Record("cli.all", "")
+		case strings.HasPrefix(arg, "--max-age="):
+			stats.Record("cli.max_age", "")
+		case arg == "--dump":
+			stats.Record("cli.dump", "")
+		}
+	}
+}

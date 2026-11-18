@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -68,70 +69,74 @@ var selectedStyle = lipgloss.NewStyle().
 
 // model is the bubbletea application state
 type model struct {
-	items           []listItem
-	filtered        []listItem
-	textInput       textinput.Model
-	cursor          int
-	previewScroll   int // lines scrolled back from the newest message; 0 shows the latest at the bottom
-	width           int
-	table           bool              // ^X T: the full-width table instead of the sidebar
-	parents         map[string]string // spawned SessionID -> the session whose claude -p started it
-	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
-	grouped         bool              // ^X X G: sessions grouped by folder
-	chordX          bool              // ^X pressed: the next key picks a ccs action
-	byID            map[string]int    // m.items by session id, for shownAncestor; rebuilt when an entry is stale
-	treeView        int               // ^X C: treeLive or treeClosed, for every tree (saved)
-	headerCollapsed bool              // ^X F or a click on the summary line: the details under it are hidden
-	selectedID      string            // the selected session, to see when it changes
-	selectedAt      time.Time         // when it was selected: its preview waits previewDebounce
-	marks           *sessionMarks     // when each session was last looked at (done)
-	blurred         bool              // the terminal says ccs isn't focused: nothing is being seen
-	viewing         string            // the done session selected and seen: marked seen when the selection leaves it
-	snoozeOpen      bool              // the ^X S picker
-	snoozeCursor    int
-	autoFocus       bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)
-	focusBusy       bool                 // an auto-focus attempt is in flight
-	focusHeld       string               // the session auto-focus switched to; none other until it's answered
-	focusHandled    map[string]time.Time // SessionID -> the wait (statusUpdatedAt) auto-focus has dealt with
-	focusNoted      map[string]bool      // auto-focus steps logged, by session, step and wait
-	height          int
-	listHeight      int // Calculated visible list height
-	selected        *transcript.Conversation
-	fork            bool // exec the selected conversation with --fork-session
-	quitting        bool
-	claudeFlags     []string
-	confirmDelete   bool                 // Are we in delete confirmation mode?
-	deleteIndex     int                  // Index of item to delete
-	confirmPrune    bool                 // Are we in prune confirmation mode?
-	pruneIndex      int                  // Index of item to prune
-	pruneSaved      int64                // Bytes the pending prune would reclaim (measured on Ctrl+X X)
-	renaming        bool                 // Are we typing a new name?
-	resuming        bool                 // an Enter/Ctrl+F open is in flight
-	opened          map[string]time.Time // sessions ccs opened in a tab, until their session file appears
-	renameIndex     int                  // Index of item being renamed
-	renameInput     textinput.Model
-	launchStep      int // ^X N: 1 typing the new session's name, 2 its brief
-	launchInput     textinput.Model
-	launchName      string                        // the name typed at step 1
-	launchCwd       string                        // where it starts: the selected session's folder
-	errorMsg        string                        // Show deletion/prune errors
-	noteMsg         string                        // errorMsg set by note(): information, not an error, so not red
-	preview         *previewCache                 // memoised preview lines for the selected conversation
-	hits            *hitCounter                   // memoised per-query hit counts, keyed by SessionID
-	lastFilterQuery string                        // lowercased query the current m.filtered was built from
-	live            map[string]bool               // SessionIDs attached to a running claude process
-	livePIDs        map[string]int                // live SessionID -> claude pid (for its session file and socket)
-	hosts           map[string]string             // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
-	bg              map[string]sessions.BgSession // background sessions (claude --bg), opened with claude attach
-	agentsAt        time.Time                     // when claude agents was last asked
-	confirmStop     string                        // ^X K asked whether to stop this session: y stops it
-	confirmRestart  string                        // ^X R asked whether to restart this session: y restarts it
-	reorgPlan       *reorgProposal                // ^X M's plan, shown in its popup until enter applies it or esc drops it
-	reorgShownAt    time.Time                     // when it came on screen: enter waits updateKeyGrace
-	reorgReady      *reorgProposal                // a plan that came back while the user was typing: it opens once they pause
-	reorgScroll     int                           // the popup's first line in view
-	reorgBusy       string                        // what ^X M is doing: "planning", "reorganising", or ""
-	restartForce    bool                          // with confirmRestart: it was mid-turn when asked, so y forces it
+	items            []listItem
+	filtered         []listItem
+	textInput        textinput.Model
+	cursor           int
+	previewScroll    int // lines scrolled back from the newest message; 0 shows the latest at the bottom
+	width            int
+	table            bool              // ^X T: the full-width table instead of the sidebar
+	parents          map[string]string // spawned SessionID -> the session whose claude -p started it
+	noParent         map[string]int    // spawned SessionID -> len(items) when no parent was found
+	grouped          bool              // ^X X G: sessions grouped by folder
+	chordX           bool              // ^X pressed: the next key picks a ccs action
+	byID             map[string]int    // m.items by session id, for shownAncestor; rebuilt when an entry is stale
+	treeView         int               // ^X C: treeLive or treeClosed, for every tree (saved)
+	headerCollapsed  bool              // ^X F or a click on the summary line: the details under it are hidden
+	selectedID       string            // the selected session, to see when it changes
+	selectedAt       time.Time         // when it was selected: its preview waits previewDebounce
+	marks            *sessionMarks     // when each session was last looked at (done)
+	blurred          bool              // the terminal says ccs isn't focused: nothing is being seen
+	viewing          string            // the done session selected and seen: marked seen when the selection leaves it
+	snoozeOpen       bool              // the ^X S picker
+	snoozeCursor     int
+	autoFocus        bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)
+	focusBusy        bool                 // an auto-focus attempt is in flight
+	focusHeld        string               // the session auto-focus switched to; none other until it's answered
+	focusHandled     map[string]time.Time // SessionID -> the wait (statusUpdatedAt) auto-focus has dealt with
+	focusNoted       map[string]bool      // auto-focus steps logged, by session, step and wait
+	height           int
+	listHeight       int // Calculated visible list height
+	selected         *transcript.Conversation
+	fork             bool // exec the selected conversation with --fork-session
+	quitting         bool
+	claudeFlags      []string
+	confirmDelete    bool                 // Are we in delete confirmation mode?
+	deleteIndex      int                  // Index of item to delete
+	confirmPrune     bool                 // Are we in prune confirmation mode?
+	pruneIndex       int                  // Index of item to prune
+	pruneSaved       int64                // Bytes the pending prune would reclaim (measured on Ctrl+X X)
+	renaming         bool                 // Are we typing a new name?
+	resuming         bool                 // an Enter/Ctrl+F open is in flight
+	opened           map[string]time.Time // sessions ccs opened in a tab, until their session file appears
+	renameIndex      int                  // Index of item being renamed
+	renameInput      textinput.Model
+	launchStep       int // ^X N: 1 typing the new session's name, 2 its brief
+	launchInput      textinput.Model
+	launchName       string                        // the name typed at step 1
+	launchCwd        string                        // where it starts: the selected session's folder
+	errorMsg         string                        // Show deletion/prune errors
+	noteMsg          string                        // errorMsg set by note(): information, not an error, so not red
+	preview          *previewCache                 // memoised preview lines for the selected conversation
+	hits             *hitCounter                   // memoised per-query hit counts, keyed by SessionID
+	lastFilterQuery  string                        // lowercased query the current m.filtered was built from
+	live             map[string]bool               // SessionIDs attached to a running claude process
+	livePIDs         map[string]int                // live SessionID -> claude pid (for its session file and socket)
+	hosts            map[string]string             // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
+	bg               map[string]sessions.BgSession // background sessions (claude --bg), opened with claude attach
+	agentsAt         time.Time                     // when claude agents was last asked
+	confirmStop      string                        // ^X K asked whether to stop this session: y stops it
+	confirmServeStop bool                          // ^X B asked whether to stop ccs serve's agent: y stops it
+	serve            mcp.ServiceStatus             // ccs serve's launchd agent, as last read (serveCheckCmd)
+	serveCheckedAt   time.Time
+	serveChecking    bool
+	confirmRestart   string         // ^X R asked whether to restart this session: y restarts it
+	reorgPlan        *reorgProposal // ^X M's plan, shown in its popup until enter applies it or esc drops it
+	reorgShownAt     time.Time      // when it came on screen: enter waits updateKeyGrace
+	reorgReady       *reorgProposal // a plan that came back while the user was typing: it opens once they pause
+	reorgScroll      int            // the popup's first line in view
+	reorgBusy        string         // what ^X M is doing: "planning", "reorganising", or ""
+	restartForce     bool           // with confirmRestart: it was mid-turn when asked, so y forces it
 
 	// transcript.Message box for the selected live session (see chat*).
 	chatFocus  bool // typing goes to the message box, not the search
@@ -426,7 +431,7 @@ func (m model) stoppable(id string) bool {
 
 // prompting reports an open rename, delete, prune or stop prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmRestart != "" || m.launchStep > 0
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.launchStep > 0
 }
 
 // restartable reports whether ^X R can restart the session: a live Claude
@@ -1260,6 +1265,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case serveStatusMsg, serveDoneMsg:
+		return m, m.applyServe(msg)
+
 	case closeDoneMsg:
 		if msg.err != nil {
 			m.errorMsg = msg.err.Error()
@@ -1411,7 +1419,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ask {
 			m.agentsAt = time.Now()
 		}
-		return m, m.liveCmd(ask)
+		return m, tea.Batch(m.liveCmd(ask), m.serveCheckCmd())
 
 	case liveMsg:
 		m.live = msg.live
@@ -1926,6 +1934,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleHeader()
 			return m, nil
 		}
+		if k == "^x b" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			stats.Record("tui.serve", stats.Key)
+			m.helpOpen = false
+			return m, m.serveKey()
+		}
 		if k == "^x a" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			stats.Record("tui.auto_focus", stats.Key)
 			m.helpOpen, m.autoFocus = false, !m.autoFocus
@@ -2211,6 +2224,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "n", "N", "esc":
 				m.confirmDelete = false
 				return m, nil
+			}
+			return m, nil // Ignore all other keys
+		}
+
+		if m.confirmServeStop {
+			switch msg.String() {
+			case "y", "Y":
+				m.confirmServeStop = false
+				return m, stopServeCmd()
+			case "n", "N", "esc":
+				m.confirmServeStop = false
 			}
 			return m, nil // Ignore all other keys
 		}
@@ -2655,6 +2679,8 @@ func (m model) shortcuts() [][2]string {
 	add(showHeadless, "^X H", "hide headless runs")
 	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
 	add(m.autoFocus, "^X A", "stop switching to sessions that wait on you")
+	add(!m.serve.Running, "^X B", "start ccs serve, the sessions in a browser (its launchd agent)")
+	add(m.serve.Running, "^X B", "stop ccs serve (asks first)")
 	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
 	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
 	add(m.profileStop == nil, "^X Q", "record a CPU profile, for when ccs feels slow")
@@ -2711,7 +2737,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // and what it does, never a mode's on/off (that shows when no chord is
 // pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
 // which is left unadvertised (headless runs stay out of the header).
-var chordPairs = []string{"A", "auto-focus", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}
+var chordPairs = []string{"A", "auto-focus", "B", "browser (ccs serve)", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}
 
 func toggleHint(key, label string, on bool) string {
 	state := "off"
@@ -2869,6 +2895,9 @@ func (m model) viewScreen() string {
 	var toggles []string
 	if !m.showUsage && !m.chordX {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
+		if m.serve.Installed { // set up for remote use: say whether it's reachable
+			toggles = append(toggles, toggleHint("^X B", "browser", m.serve.Running))
+		}
 		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
 			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
 		}
@@ -2909,6 +2938,12 @@ func (m model) viewScreen() string {
 			Render(fmt.Sprintf("Prune \"%s\"? %s -> %s, saves %s (keeps dialogue).",
 				transcript.Truncate(transcript.GetTopic(conv), 32), transcript.FormatBytes(conv.Size), transcript.FormatBytes(conv.Size-m.pruneSaved), transcript.FormatBytes(m.pruneSaved))) +
 			"  \033[90m" + hints("y", "prune", "n/"+keyEsc, "cancel") + "\033[0m"
+		sections = append(sections, "  "+inputSection)
+	} else if m.confirmServeStop {
+		inputSection = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")). // Red
+			Render("Stop ccs serve? Remote access ends until ^X B starts it again.") +
+			"  \033[90m" + hints("y", "stop", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmStop != "" && it.conv.SessionID == m.confirmStop }); i >= 0 {
 		conv := m.filtered[i].conv

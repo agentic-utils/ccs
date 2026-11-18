@@ -223,3 +223,22 @@ func TestRunCloseArguments(t *testing.T) {
 		}
 	}
 }
+
+// Its conversation ends while the process lives on (/clear, or a resume in
+// place): what runs there now wasn't asked to wrap up, so it's left running.
+func TestGracefulCloseLeavesAReplacedConversationRunning(t *testing.T) {
+	g := newGracefulFixture(t)
+	file := filepath.Join(GetSessionsDir(), fmt.Sprintf("%d.json", g.pid))
+	SendCloseNotice = func(_ int, _ SessionFile, text string) error {
+		g.say("user", text)
+		os.WriteFile(file, []byte(fmt.Sprintf(`{"pid":%d,"sessionId":"a-new-one","name":"worker","status":"idle"}`, g.pid)), 0o600)
+		return nil
+	}
+	_, err := CloseGracefully("worker", 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "now runs another conversation") || !strings.Contains(err.Error(), "nothing was stopped") {
+		t.Errorf("says it was left running: %v", err)
+	}
+	if g.signalled != 0 || len(g.tabs) != 0 || !proc.PIDAlive(g.pid) {
+		t.Errorf("the new conversation must keep running: signalled %d, tabs %v", g.signalled, g.tabs)
+	}
+}

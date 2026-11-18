@@ -54,3 +54,20 @@ func TestCloseAndRestartCheckTheSessionID(t *testing.T) {
 		t.Errorf("restart of a replaced session: %v", err)
 	}
 }
+
+// A Codex session has no session file: SameSession checks its live thread.
+func TestSameSessionForCodex(t *testing.T) {
+	sessionsFixture(t)
+	old := LiveCodexSessions
+	LiveCodexSessions = func() map[string]LiveSession { return map[string]LiveSession{"thread-1": {PID: 4242, Codex: true}} }
+	t.Cleanup(func() { LiveCodexSessions = old })
+	if err := SameSession("coder", 4242, "thread-1"); err != nil {
+		t.Errorf("its own thread: %v", err)
+	}
+	if err := SameSession("coder", 4242, "thread-2"); err == nil {
+		t.Error("another thread must be refused")
+	}
+	if err := SameSession("coder", 4343, "thread-1"); err == nil {
+		t.Error("another pid must be refused")
+	}
+}

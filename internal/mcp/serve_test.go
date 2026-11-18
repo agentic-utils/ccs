@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -196,6 +197,18 @@ func postAct(t *testing.T, s *server, form url.Values) *httptest.ResponseRecorde
 	return request(s, "POST", "/act", signJWT(t, testKey, "RS256", goodClaims()), form, map[string]string{"Origin": "https://" + testHost, "Sec-Fetch-Site": "same-origin"})
 }
 
+// testSince is the stub session file's statusUpdatedAt: the wait a page shows.
+const testSince = int64(1762000000000)
+
+// waitingFor is what Claude Code writes beside a waiting status for a
+// question menu (AskUserQuestion).
+func waitingFor(status string) string {
+	if status == "waiting" {
+		return answerableWait
+	}
+	return ""
+}
+
 type sent struct{ socket, token, sender, note, text string }
 
 func stubSend(t *testing.T, status string) *[]sent {
@@ -210,10 +223,12 @@ func stubSend(t *testing.T, status string) *[]sent {
 		return "id", nil
 	}
 	readSessionFile = func(pid int) (sessions.SessionFile, error) {
-		return sessions.SessionFile{SessionID: "s-1", Status: status, Socket: "/tmp/cc-socks/42.sock"}, nil
+		return sessions.SessionFile{SessionID: "s-1", Status: status, WaitingFor: waitingFor(status), StatusUpdatedAt: testSince, Socket: "/tmp/cc-socks/42.sock"}, nil
 	}
 	peerToken = func(int, string) string { return "tok" }
-	liveSessions = func() map[string]sessions.LiveSession { return map[string]sessions.LiveSession{"s-1": {PID: 42}} }
+	liveSessions = func() map[string]sessions.LiveSession {
+		return map[string]sessions.LiveSession{"s-1": {PID: 42, Stat: sessions.SessionStat{Status: status, Since: time.UnixMilli(testSince)}}}
+	}
 	t.Cleanup(func() { sendEnvelope, readSessionFile, peerToken, liveSessions = oldSend, oldRead, oldToken, oldLive })
 	return &got
 }
@@ -321,11 +336,11 @@ func TestServeAnswer(t *testing.T) {
 	})
 
 	page := request(s, "GET", "/session?id=s-1", signJWT(t, testKey, "RS256", goodClaims()), nil, nil).Body.String()
-	if !strings.Contains(page, "Merge now?") || !strings.Contains(page, `name="ask" value="q1"`) || !strings.Contains(page, "1. Merge") {
+	if !strings.Contains(page, "Merge now?") || !strings.Contains(page, `name="ask" value="q1"`) || !strings.Contains(page, `name="since" value="1762000000000"`) || !strings.Contains(page, "1. Merge") {
 		t.Errorf("the page should offer the question's options:\n%s", page)
 	}
 	ans := func(ask, opt string) *httptest.ResponseRecorder {
-		return postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {ask}, "option": {opt}, "confirm": {"yes"}})
+		return postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {ask}, "since": {strconv.FormatInt(testSince, 10)}, "option": {opt}, "confirm": {"yes"}})
 	}
 	if w := ans("q0", "1"); w.Code != http.StatusConflict || len(pressed) != 0 {
 		t.Errorf("a stale question must not be answered: %d", w.Code)
@@ -341,7 +356,24 @@ func TestServeAnswer(t *testing.T) {
 	if w := ans("q1", "1"); w.Code != http.StatusConflict || len(pressed) != 0 {
 		t.Errorf("not waiting: %d", w.Code)
 	}
+	s.limits = newRateLimits() // past the write burst; the limit has its own test
+	// A wait it can't name (no waitingFor, or anything but a question menu),
+	// or another wait than the page showed, gets no keys either.
+	for _, f := range []sessions.SessionFile{
+		{SessionID: "s-1", Status: "waiting", StatusUpdatedAt: testSince},
+		{SessionID: "s-1", Status: "waiting", WaitingFor: "dialog open", StatusUpdatedAt: testSince},
+		{SessionID: "s-1", Status: "waiting", WaitingFor: answerableWait, StatusUpdatedAt: testSince + 1},
+	} {
+		readSessionFile = func(int) (sessions.SessionFile, error) { return f, nil }
+		if w := ans("q1", "1"); w.Code != http.StatusConflict || len(pressed) != 0 {
+			t.Errorf("%+v: %d", f, w.Code)
+		}
+	}
 	readSessionFile = waiting
+	s.limits = newRateLimits() // past the write burst; the limit has its own test
+	if w := postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "option": {"1"}, "confirm": {"yes"}}); w.Code != http.StatusConflict || len(pressed) != 0 {
+		t.Errorf("an answer that doesn't say which wait it's for: %d", w.Code)
+	}
 	if w := ans("q1", "2"); w.Code != http.StatusOK || len(pressed) != 1 || pressed[0] != "2" {
 		t.Errorf("answer: %d %v %s", w.Code, pressed, w.Body)
 	}
@@ -364,37 +396,30 @@ func stubTerminal(t *testing.T, send func(sessions.Terminal, string, bool) error
 	t.Cleanup(func() { sessions.FindTerminal, sessions.SendKeys = oldFind, oldSend })
 }
 
-// The checks are made again after the terminal lookup, which can take a
-// while: a menu answered meanwhile, or a permission prompt up instead, gets
-// no keys.
+// The session file is read again after the terminal lookup and the scan,
+// the last thing before the keys: a permission prompt up instead, or the
+// menu answered in its tab and another wait begun, gets no keys.
 func TestServeAnswerChecksAgainAfterTheLookup(t *testing.T) {
 	s, _ := testServer(t, true, []transcript.Conversation{waitingConv(t, false)})
-	stubSend(t, "waiting")
 	stubTerminal(t, func(sessions.Terminal, string, bool) error { t.Error("pressed keys"); return nil })
 	ans := func() *httptest.ResponseRecorder {
-		return postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "option": {"1"}, "confirm": {"yes"}})
+		return postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "since": {strconv.FormatInt(testSince, 10)}, "option": {"1"}, "confirm": {"yes"}})
 	}
 	find := sessions.FindTerminal
-	sessions.FindTerminal = func(pid int) sessions.Terminal {
-		readSessionFile = func(int) (sessions.SessionFile, error) {
-			return sessions.SessionFile{SessionID: "s-1", Status: "waiting", WaitingFor: "permission prompt"}, nil
+	for want, f := range map[string]sessions.SessionFile{
+		"not a question menu":        {SessionID: "s-1", Status: "waiting", WaitingFor: "permission prompt", StatusUpdatedAt: testSince},
+		"has changed since the page": {SessionID: "s-1", Status: "waiting", WaitingFor: answerableWait, StatusUpdatedAt: testSince + 5000},
+		"waiting on its menu now":    {SessionID: "s-1", Status: "busy", StatusUpdatedAt: testSince + 5000},
+		"session has changed":        {SessionID: "s-2", Status: "waiting", WaitingFor: answerableWait, StatusUpdatedAt: testSince},
+	} {
+		stubSend(t, "waiting")
+		sessions.FindTerminal = func(pid int) sessions.Terminal {
+			readSessionFile = func(int) (sessions.SessionFile, error) { return f, nil }
+			return find(pid)
 		}
-		return find(pid)
-	}
-	if w := ans(); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "permission prompt") {
-		t.Errorf("a permission prompt up by the time of the keys: %d %s", w.Code, w.Body)
-	}
-	// The question answered in its tab during the lookup: the transcript,
-	// read again, no longer has it pending.
-	stubSend(t, "waiting")
-	answered := waitingConv(t, false)
-	transcript.ParseLine(&answered, []byte(`{"type":"user","timestamp":"2026-11-01T10:02:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"answered"}]}}`))
-	sessions.FindTerminal = func(pid int) sessions.Terminal {
-		s.cfg.load = func() ([]transcript.Conversation, error) { return []transcript.Conversation{answered}, nil }
-		return find(pid)
-	}
-	if w := ans(); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "asking that question any more") {
-		t.Errorf("answered during the lookup: %d %s", w.Code, w.Body)
+		if w := ans(); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), want) {
+			t.Errorf("%s: %d %s", want, w.Code, w.Body)
+		}
 	}
 }
 
@@ -411,7 +436,7 @@ func TestServeSharesOneLoad(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Add(1)
-		go func() { defer wg.Done(); s.load() }()
+		go func() { defer wg.Done(); s.load(context.Background()) }()
 	}
 	for loads.Load() == 0 {
 		time.Sleep(time.Millisecond)
@@ -424,11 +449,38 @@ func TestServeSharesOneLoad(t *testing.T) {
 	}
 }
 
+// A request whose client goes away stops waiting for the scan, freeing its
+// slot; the scan finishes for whoever asks next.
+func TestServeLoadStopsWaitingWhenTheClientLeaves(t *testing.T) {
+	s, _ := testServer(t, false, nil)
+	release := make(chan struct{})
+	s.cfg.load = func() ([]transcript.Conversation, error) {
+		<-release
+		return []transcript.Conversation{{SessionID: "x"}}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := s.load(ctx); done <- err }()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a cancelled request kept waiting for the scan")
+	}
+	close(release)
+	if convs, err := s.load(context.Background()); err != nil || len(convs) != 1 {
+		t.Errorf("the next request: %v %v", convs, err)
+	}
+}
+
 func TestServeAnswerRefusesMultiSelect(t *testing.T) {
 	s, _ := testServer(t, true, []transcript.Conversation{waitingConv(t, true)})
 	stubSend(t, "waiting")
 	stubTerminal(t, func(sessions.Terminal, string, bool) error { t.Error("pressed keys"); return nil })
-	w := postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "option": {"1"}, "confirm": {"yes"}})
+	w := postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "since": {strconv.FormatInt(testSince, 10)}, "option": {"1"}, "confirm": {"yes"}})
 	if w.Code != http.StatusConflict {
 		t.Errorf("multi-select: %d", w.Code)
 	}

@@ -88,24 +88,37 @@ type loadCall struct {
 // load is the sessions, from one scan shared by every request that asks
 // while it runs, so a burst of requests never parses the same transcripts
 // side by side.
-func (s *server) load() ([]transcript.Conversation, error) {
+//
+// The scan runs on its own (the transcript parser takes no context), and
+// every request waiting for it, the one that started it included, stops
+// waiting when its client goes away, freeing its slot; the scan finishes
+// for whoever asks next.
+func (s *server) load(ctx context.Context) ([]transcript.Conversation, error) {
 	s.loadMu.Lock()
-	if c := s.inflight; c != nil {
-		s.loadMu.Unlock()
-		<-c.done
-		return c.convs, c.err
+	c := s.inflight
+	if c == nil {
+		c = &loadCall{done: make(chan struct{})}
+		s.inflight = c
+		go func() {
+			c.convs, c.err = s.cfg.load()
+			s.loadMu.Lock()
+			s.inflight = nil
+			s.loadMu.Unlock()
+			close(c.done)
+		}()
 	}
-	c := &loadCall{done: make(chan struct{})}
-	s.inflight = c
 	s.loadMu.Unlock()
-	defer func() {
-		s.loadMu.Lock()
-		s.inflight = nil
-		s.loadMu.Unlock()
-		close(c.done)
-	}()
-	c.convs, c.err = s.cfg.load()
-	return c.convs, c.err
+	select {
+	case <-c.done:
+		return c.convs, c.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// loader is load for a tool call (an mcpSource), bound to ctx.
+func (s *server) loader(ctx context.Context) mcpSource {
+	return func() ([]transcript.Conversation, error) { return s.load(ctx) }
 }
 
 func newServer(cfg serveConfig) *server {
@@ -358,8 +371,8 @@ func (s *server) fail(w http.ResponseWriter, r *http.Request, code int, msg stri
 	s.renderCode(w, r, code, "message", map[string]string{"Heading": "Couldn't do that", "Text": msg})
 }
 
-func (s *server) triage() ([]TriageRow, error) {
-	convs, err := s.load()
+func (s *server) triage(ctx context.Context) ([]TriageRow, error) {
+	convs, err := s.load(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +380,7 @@ func (s *server) triage() ([]TriageRow, error) {
 }
 
 func (s *server) triagePage(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.triage()
+	rows, err := s.triage(r.Context())
 	if err != nil {
 		s.fail(w, r, http.StatusInternalServerError, "couldn't read sessions: "+err.Error())
 		return
@@ -376,7 +389,7 @@ func (s *server) triagePage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) triageJSON(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.triage()
+	rows, err := s.triage(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -394,12 +407,13 @@ func writeJSON(w http.ResponseWriter, v any) {
 type sessionView struct {
 	ID, Name, Text, Status string
 	Offset, Prev, Next     int
-	HasNext, Live          bool
+	HasNext, Live, Codex   bool
 	Ask                    *askView
 }
 
 type askView struct {
 	ID, Question string
+	Since        int64 // the wait's statusUpdatedAt, epoch ms: an answer is for this wait only
 	Options      []string
 	Answerable   bool // one single-choice question: a digit in its terminal picks it
 }
@@ -418,7 +432,7 @@ func (s *server) session(r *http.Request) (sessionView, int, error) {
 		offset = n
 	}
 	args, _ := json.Marshal(map[string]any{"session_id": id, "offset": offset, "limit": 40})
-	text, err := serveCall("read_session", args, s.load)
+	text, err := serveCall("read_session", args, s.loader(r.Context()))
 	if err != nil {
 		return sessionView{}, http.StatusNotFound, err
 	}
@@ -428,17 +442,17 @@ func (s *server) session(r *http.Request) (sessionView, int, error) {
 	if offset >= 0 {
 		v.Prev = max(0, offset-40)
 	}
-	if rows, err := s.triage(); err == nil {
+	if rows, err := s.triage(r.Context()); err == nil {
 		for _, row := range rows {
 			if row.Session == id {
-				v.Name, v.Status, v.Live = row.Name, row.Status, row.PID > 0
+				v.Name, v.Status, v.Live, v.Codex = row.Name, row.Status, row.PID > 0, row.Kind == transcript.KindCodex
 			}
 		}
 	}
 	if v.Live {
-		if conv, ok := s.conv(id); ok {
+		if conv, ok := s.conv(r.Context(), id); ok {
 			if qs := conv.Questions(); len(qs) > 0 && conv.Pending != nil {
-				a := &askView{ID: conv.Pending.ID, Question: transcript.CleanText(qs[0].Question), Answerable: len(qs) == 1 && !qs[0].MultiSelect}
+				a := &askView{ID: conv.Pending.ID, Since: waitSince(id), Question: transcript.CleanText(qs[0].Question), Answerable: len(qs) == 1 && !qs[0].MultiSelect}
 				for i, o := range qs[0].Options {
 					if i < 9 {
 						a.Options = append(a.Options, transcript.CleanText(o.Label))
@@ -454,8 +468,16 @@ func (s *server) session(r *http.Request) (sessionView, int, error) {
 	return v, http.StatusOK, nil
 }
 
-func (s *server) conv(id string) (transcript.Conversation, bool) {
-	convs, err := s.load()
+// waitSince is the running session's status time (epoch ms), 0 if unknown.
+func waitSince(id string) int64 {
+	if ls, ok := liveByID(id); ok && !ls.Stat.Since.IsZero() {
+		return ls.Stat.Since.UnixMilli()
+	}
+	return 0
+}
+
+func (s *server) conv(ctx context.Context, id string) (transcript.Conversation, bool) {
+	convs, err := s.load(ctx)
 	if err != nil {
 		return transcript.Conversation{}, false
 	}
@@ -487,7 +509,7 @@ func (s *server) sessionJSON(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) textPage(title, tool string, args json.RawMessage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		text, err := serveCall(tool, args, s.load)
+		text, err := serveCall(tool, args, s.loader(r.Context()))
 		if err != nil {
 			s.fail(w, r, http.StatusInternalServerError, err.Error())
 			return
@@ -498,7 +520,7 @@ func (s *server) textPage(title, tool string, args json.RawMessage) http.Handler
 
 func (s *server) textJSON(tool string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		text, err := serveCall(tool, nil, s.load)
+		text, err := serveCall(tool, nil, s.loader(r.Context()))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -521,15 +543,15 @@ func (s *server) launchPage(w http.ResponseWriter, r *http.Request) {
 // went.
 
 type action struct {
-	Kind, ID, Name, Text, Ask, Option, Cwd, Brief string
-	Codex, Graceful                               bool
+	Kind, ID, Name, Text, Ask, Option, Cwd, Brief, Since string
+	Codex, Graceful                                      bool
 }
 
 func formAction(r *http.Request) action {
 	f := r.PostFormValue
 	return action{
 		Kind: f("action"), ID: f("id"), Name: f("name"), Text: f("text"), Ask: f("ask"),
-		Option: f("option"), Cwd: f("cwd"), Brief: f("brief"),
+		Option: f("option"), Cwd: f("cwd"), Brief: f("brief"), Since: f("since"),
 		Codex: f("codex") == "on", Graceful: f("graceful") == "on",
 	}
 }
@@ -580,7 +602,7 @@ func (s *server) act(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, "confirm", map[string]any{"What": what, "A": a})
 		return
 	}
-	text, err := s.do(a)
+	text, err := s.do(r.Context(), a)
 	state.LogActivity("serve: %s %s %s: %s", email, a.Kind, orDash(a.Name), logResult(text, err))
 	if err != nil {
 		s.fail(w, r, http.StatusConflict, err.Error())
@@ -596,7 +618,7 @@ func logResult(text string, err error) string {
 	return text
 }
 
-func (s *server) do(a action) (string, error) {
+func (s *server) do(ctx context.Context, a action) (string, error) {
 	if a.Name == "" {
 		return "", errors.New("which session? (name)")
 	}
@@ -604,22 +626,22 @@ func (s *server) do(a action) (string, error) {
 	case "send":
 		return s.send(a)
 	case "answer":
-		return s.answer(a)
+		return s.answer(ctx, a)
 	case "launch":
 		args, _ := json.Marshal(map[string]any{"name": a.Name, "cwd": a.Cwd, "brief": a.Brief, "codex": a.Codex})
-		return serveCall("launch_session", args, s.load)
+		return serveCall("launch_session", args, s.loader(ctx))
 	case "close":
-		if err := s.sameSession(a); err != nil {
+		if err := s.sameSession(ctx, a); err != nil {
 			return "", err
 		}
 		args, _ := json.Marshal(map[string]any{"name": a.Name, "session_id": a.ID, "graceful": a.Graceful})
-		return serveCall("close_session", args, s.load)
+		return serveCall("close_session", args, s.loader(ctx))
 	case "restart":
-		if err := s.sameSession(a); err != nil {
+		if err := s.sameSession(ctx, a); err != nil {
 			return "", err
 		}
 		args, _ := json.Marshal(map[string]any{"name": a.Name, "session_id": a.ID})
-		return serveCall("restart_session", args, s.load)
+		return serveCall("restart_session", args, s.loader(ctx))
 	}
 	return "", fmt.Errorf("unknown action %q", a.Kind)
 }
@@ -627,8 +649,8 @@ func (s *server) do(a action) (string, error) {
 // sameSession refuses a close or restart unless the name, which the tools
 // act on, is still that of exactly one running session, the one the page
 // showed: another session may have taken the name since.
-func (s *server) sameSession(a action) error {
-	rows, err := s.triage()
+func (s *server) sameSession(ctx context.Context, a action) error {
+	rows, err := s.triage(ctx)
 	if err != nil {
 		return err
 	}
@@ -695,7 +717,7 @@ func (s *server) send(a action) (string, error) {
 // waiting on the same question the page showed, and only for one
 // single-choice question (a permission prompt or a multi-part menu is never
 // answered from afar).
-func (s *server) answer(a action) (string, error) {
+func (s *server) answer(ctx context.Context, a action) (string, error) {
 	n, err := strconv.Atoi(a.Option)
 	if err != nil || n < 1 || n > 9 {
 		return "", errors.New("pick an option from 1 to 9")
@@ -713,7 +735,14 @@ func (s *server) answer(a action) (string, error) {
 	if ls.Unverified {
 		return "", fmt.Errorf("%s's process couldn't be checked against its session file, so no keys were pressed", a.Name)
 	}
-	conv, ok := s.conv(a.ID)
+	since, err := strconv.ParseInt(a.Since, 10, 64)
+	if err != nil || since <= 0 {
+		return "", fmt.Errorf("the page didn't say which wait of %s's it showed: reload it", a.Name)
+	}
+	if err := waitingOn(a, ls.PID, since); err != nil {
+		return "", err
+	}
+	conv, ok := s.conv(ctx, a.ID)
 	if !ok || conv.Pending == nil || conv.Pending.ID != a.Ask {
 		return "", fmt.Errorf("%s isn't asking that question any more: reload its page", a.Name)
 	}
@@ -721,15 +750,16 @@ func (s *server) answer(a action) (string, error) {
 	if len(qs) != 1 || qs[0].MultiSelect || n > len(qs[0].Options) {
 		return "", fmt.Errorf("%s's question can only be answered in its tab", a.Name)
 	}
-	// The terminal lookup (ps, tmux) can take a while, so it comes first and
-	// the checks that matter are made again after it, from a fresh read, just
-	// before the keys: still this session, still waiting on a menu that isn't
-	// a permission prompt, still pending this very question.
+	// The terminal lookup (ps, tmux) and the scan above take a while, so the
+	// session file is read once more after them, the last thing before the
+	// keys: the same wait (its status time unchanged since the page was
+	// drawn), on a question menu. Answering the menu in its tab, or anything
+	// else coming up, changes the status and its time.
 	term := sessions.FindTerminal(ls.PID)
 	if term.Kind == "" {
 		return "", fmt.Errorf("couldn't find %s's terminal (tmux or iTerm): no keys were pressed", a.Name)
 	}
-	if err := s.stillAsking(a, ls.PID); err != nil {
+	if err := waitingOn(a, ls.PID, since); err != nil {
 		return "", err
 	}
 	s.answered[once] = true // before the keys: a second press must never reach whatever comes next
@@ -739,31 +769,26 @@ func (s *server) answer(a action) (string, error) {
 	return fmt.Sprintf("Pressed %d in %s's %s: %s", n, a.Name, term.Kind, qs[0].Options[n-1].Label), nil
 }
 
-// stillAsking re-reads the transcript (bypassing the shared load, which may
-// have begun before) and the session file: the session must still be
-// waiting, not on a permission prompt, with the question the page showed
-// still pending.
-func (s *server) stillAsking(a action, pid int) error {
+// answerableWait is the waitingFor Claude Code writes while a question menu
+// (AskUserQuestion) is up. Anything else, unknown or missing included, is
+// never answered from afar.
+const answerableWait = "input needed"
+
+// waitingOn reads pid's session file: still session a.ID, waiting on a
+// question menu, the wait that began at since (epoch ms).
+func waitingOn(a action, pid int, since int64) error {
 	f, err := readSessionFile(pid)
 	switch {
-	case err != nil || f.SessionID != a.ID || f.Status != "waiting":
+	case err != nil || f.SessionID != a.ID:
+		return fmt.Errorf("%s's session has changed: no keys were pressed", a.Name)
+	case f.Status != "waiting":
 		return fmt.Errorf("%s isn't waiting on its menu now: no keys were pressed", a.Name)
-	case f.WaitingFor == "permission prompt":
-		return fmt.Errorf("%s is on a permission prompt: answer that in its tab; no keys were pressed", a.Name)
+	case f.WaitingFor != answerableWait:
+		return fmt.Errorf("%s is waiting on %s, not a question menu: answer it in its tab; no keys were pressed", a.Name, orDash(f.WaitingFor))
+	case f.StatusUpdatedAt != since:
+		return fmt.Errorf("%s's menu has changed since the page was drawn: reload it; no keys were pressed", a.Name)
 	}
-	convs, err := s.cfg.load()
-	if err != nil {
-		return fmt.Errorf("couldn't read %s's transcript: no keys were pressed", a.Name)
-	}
-	for _, c := range convs {
-		if c.SessionID == a.ID {
-			if c.Pending == nil || c.Pending.ID != a.Ask {
-				break
-			}
-			return nil
-		}
-	}
-	return fmt.Errorf("%s isn't asking that question any more: no keys were pressed", a.Name)
+	return nil
 }
 
 // ServeMain is `ccs serve` from the command line.

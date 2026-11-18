@@ -856,24 +856,31 @@ func TestWaitingQuestionShownAndAnswered(t *testing.T) {
 		}
 	}
 	ask := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Pick a colour","options":[{"label":"red"},{"label":"green","description":"calm"}]}]}}]}}`
-	if !transcript.ParseLine(conv, []byte(ask)) || answerable(*conv) != 2 {
+	if !transcript.ParseLine(conv, []byte(ask)) || len(conv.Questions()) != 1 {
 		t.Fatalf("pending = %+v", conv.Pending)
 	}
 	m.filtered = m.items
 	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "input needed")})
 	pop := strip2(m.waitPopup())
-	for _, want := range []string{"? Pick a colour", "1  red", "2  green", "     calm", "1-2 answer"} {
+	for _, want := range []string{"? Pick a colour", "1  red", "2  green", "     calm"} {
 		if !strings.Contains(pop, want) {
 			t.Errorf("overlay should show %q:\n%s", want, pop)
 		}
 	}
-	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
-	if m = res.(model); cmd == nil || m.waitInput.Value() != "" {
-		t.Error("a digit on an empty box answers, not types")
+	if strings.Contains(pop, "1-2 answer") {
+		t.Error("a menu ccs serve doesn't hold is never answered from ccs")
 	}
-	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("9")})
-	if m = res.(model); m.waitInput.Value() != "9" {
-		t.Error("a digit past the options is typed")
+	// No digit is ever typed into its terminal: it goes in the box like any key.
+	typed := false
+	oldFind, oldSend := sessions.FindTerminal, sessions.SendKeys
+	sessions.FindTerminal = func(int) sessions.Terminal { return sessions.Terminal{Kind: "tmux pane", Target: "%1"} }
+	sessions.SendKeys = func(sessions.Terminal, string, bool) error { typed = true; return nil }
+	t.Cleanup(func() { sessions.FindTerminal, sessions.SendKeys = oldFind, oldSend })
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	m = res.(model)
+	m = run(m, cmd)
+	if typed || m.waitInput.Value() != "2" {
+		t.Errorf("a digit is text in the box, never typed into the terminal: typed %v, box %q", typed, m.waitInput.Value())
 	}
 	// Its result clears it.
 	transcript.ParseLine(conv, []byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"green"}]}}`))

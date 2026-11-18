@@ -226,6 +226,13 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 			return 1
 		}
 		defer stop()
+		stopControl, err := s.listenControl()
+		if err != nil {
+			ln.Close()
+			fmt.Fprintln(stderr, "ccs serve:", err)
+			return 1
+		}
+		defer stopControl()
 		fmt.Fprintf(stdout, "ccs serve: holding prompts from `ccs hook permission` for up to %s each\n", f.hookWait)
 	}
 	srv := &http.Server{

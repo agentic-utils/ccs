@@ -171,7 +171,8 @@ Key bindings:
   Ctrl+X L        Hide or show the session list, the preview taking its place
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
-  Ctrl+X A        Switch to a session's tab when it starts waiting on you
+  Ctrl+X A        When a session starts waiting on you, select it in ccs (and focus a prompt ccs
+                  serve holds, to answer it in the bottom pane) and switch to its tab
   Ctrl+X B        Start ccs serve's launchd agent, or show its address and QR code (s stops it, asking y/n; ccs serve install sets it up)
   Ctrl+X I        Install ccs updates on their own once you're away (off by
                   default)

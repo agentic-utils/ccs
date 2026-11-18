@@ -56,6 +56,7 @@ func (m model) selectedLive() bool {
 // (Esc in the box, or a click on the search row).
 func (m *model) selectionMoved() {
 	m.chatFocus = m.selectedLive() && !m.boxHidden() && !m.showUsage
+	m.heldFocus, m.heldAutoAt, m.heldConfirmed = false, time.Time{}, nil
 }
 
 // syncChatDraft gives the message box the selected session's draft, keeping
@@ -110,6 +111,9 @@ func (m model) chatAsk() []string {
 		return nil
 	}
 	lines := askLines(conv, m.paneWidth()-2)
+	if h, held := m.heldPrompt[conv.SessionID]; held {
+		lines = m.heldPaneLines(h)
+	}
 	for i, l := range lines {
 		lines[i] = "  " + l
 	}
@@ -190,8 +194,6 @@ func (m model) sessionName(conv transcript.Conversation) string {
 func waitingLine(conv transcript.Conversation) string {
 	// The question itself is drawn just above (askLines).
 	switch {
-	case answerable(conv) > 0:
-		return "waiting on you · ^X W answers it by number, " + keyEnter + " opens its tab"
 	case len(conv.Questions()) > 0:
 		return "waiting on you · answer it in its tab: " + keyEnter + " opens it"
 	case conv.Pending != nil:

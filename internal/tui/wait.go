@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -371,8 +370,16 @@ func (m *model) waitStep(by int) {
 
 // waitKey handles a key while the overlay is open.
 func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	m.waitErr = ""
+	m.waitErr, m.waitNote = "", ""
 	conv, ok := m.waitConv()
+	if m.heldConfirmed != nil { // an A or D asked y/n: this key is the answer
+		return m, m.heldConfirmKey(msg.String())
+	}
+	if ok && m.waitInput.Value() == "" {
+		if cmd, done := m.heldKey(msg.String(), conv); done {
+			return m, cmd
+		}
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		m.quitting = true
@@ -415,11 +422,6 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.sendTo(conv, true)
 		}
 	default:
-		if k := msg.String(); ok && len(k) == 1 && k >= "1" && k <= "9" && m.waitInput.Value() == "" && m.waitSignal(conv) == waitPrompt {
-			if n := int(k[0] - '0'); n <= answerable(conv) {
-				return m, m.answerCmd(conv, n)
-			}
-		}
 		var cmd tea.Cmd
 		m.waitInput, cmd = editKey(m.waitInput, msg)
 		return m, cmd
@@ -462,6 +464,9 @@ func (m model) waitAsk() []string {
 		return nil
 	}
 	inner, _ := m.waitLayout()
+	if h, held := m.heldPrompt[conv.SessionID]; held {
+		return heldLines(h, inner)
+	}
 	return askLines(conv, inner)
 }
 
@@ -507,34 +512,8 @@ func askLines(conv transcript.Conversation, width int) []string {
 	return []string{"", cut("\033[1;" + amber + "m? wants to use " + conv.Pending.Name + "\033[0m " + toolSummary(conv.Pending.Input))}
 }
 
-// answerable is how many options a digit can pick: only a single
-// single-choice question, where claude takes the digit as the answer.
-func answerable(conv transcript.Conversation) int {
-	qs := conv.Questions()
-	if len(qs) != 1 || qs[0].MultiSelect {
-		return 0
-	}
-	return min(len(qs[0].Options), 9)
-}
-
 // toolSummary is the part of a tool call's input a person would check first.
 func toolSummary(input json.RawMessage) string { return transcript.ToolSummary(input) }
-
-type answerDoneMsg struct {
-	name, where string
-	err         error
-}
-
-// answerCmd picks option n of a waiting session's question by pressing the
-// digit in its terminal, as typing it there would.
-func (m model) answerCmd(conv transcript.Conversation, n int) tea.Cmd {
-	stats.Record("tui.answer", stats.Key)
-	pid, name := m.livePIDs[conv.SessionID], m.sessionName(conv)
-	return func() tea.Msg {
-		where, err := typeKeys(pid, strconv.Itoa(n), false)
-		return answerDoneMsg{name: name, where: where, err: err}
-	}
-}
 
 // waitPopup draws the overlay: which session and why, its transcript (newest
 // at the bottom), a message box and the keys.
@@ -571,8 +550,13 @@ func (m model) waitPopup() string {
 	if ok && m.unverified[m.waitID] {
 		title += " · \033[90munverified: its process start couldn't be checked\033[0m"
 	}
-	if m.waitErr != "" {
+	switch {
+	case m.heldConfirmed != nil:
+		note = "\033[1;" + amber + "m  " + m.heldConfirmed.what + "\033[0m"
+	case m.waitErr != "":
 		note = "\033[31m  " + m.waitErr + "\033[0m"
+	case m.waitNote != "":
+		note = "\033[32m  " + m.waitNote + "\033[0m"
 	}
 
 	ask := m.waitAsk()
@@ -603,8 +587,8 @@ func (m model) waitPopup() string {
 		enter = "open its tab"
 	}
 	var keys string
-	if n := answerable(conv); ok && n > 0 && m.waitSignal(conv) == waitPrompt && m.waitInput.Value() == "" {
-		keys = hints(fmt.Sprintf("1-%d", n), "answer") + "  "
+	if _, held := m.heldPrompt[conv.SessionID]; ok && held {
+		// its keys are drawn with the prompt (heldLines)
 	}
 	keys += hints(keyEnter, enter, keyEsc, "snooze "+shortDuration(m.snooze), "↑↓ ^N/P", "next/prev", "pgup/dn", "scroll", "^X W", "close", "^C", "quit")
 	b.WriteString("\n\033[90m" + ansi.Truncate(keys, inner, "…") + "\033[0m")

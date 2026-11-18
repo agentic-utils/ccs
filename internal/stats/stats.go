@@ -60,6 +60,7 @@ var Registry = []Info{
 	// TUI: actions, never navigation or typing.
 	{"tui.open", "Enter: resume a session, or go to its tab"},
 	{"tui.box", "Enter/^S/click on a live session: type in its message box"},
+	{"tui.held_pane", "Enter on a session whose prompt ccs serve holds: answer it in the bottom pane"},
 	{"tui.send", "send a message from the message box"},
 	{"tui.paste_image", "^V paste a screenshot into a message"},
 	{"tui.fork", "^F fork a session"},

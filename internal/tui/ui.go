@@ -87,6 +87,7 @@ type model struct {
 	selectedAt       time.Time         // when it was selected: its preview waits previewDebounce
 	marks            *sessionMarks     // when each session was last looked at (done)
 	blurred          bool              // the terminal says ccs isn't focused: nothing is being seen
+	heldInput        string            // a held menu's answers typed in the bottom pane ("1, 1+3")
 	viewing          string            // the done session selected and seen: marked seen when the selection leaves it
 	snoozeOpen       bool              // the ^X S picker
 	snoozeCursor     int
@@ -127,7 +128,7 @@ type model struct {
 	agentsAt         time.Time                     // when claude agents was last asked
 	confirmStop      string                        // ^X K asked whether to stop this session: y stops it
 	confirmServeStop bool                          // ^X B asked whether to stop ccs serve's agent: y stops it
-	heldPrompt       map[string]mcp.HeldPrompt     // prompts ccs serve holds for its page, by session (held.go)
+	heldPrompt       map[string]mcp.HeldPrompt     // prompts held by ccs serve or this ccs, by session (held.go)
 	heldAt           time.Time
 	heldBusy         bool
 	heldConfirmed    *heldConfirm      // a digit, A or D, waiting for y/n
@@ -1500,10 +1501,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.FocusMsg: // terminals that report focus; without it ccs counts as focused
 		m.blurred = false
+		holdFocus(true)
 		return m, nil
 
 	case tea.BlurMsg:
 		m.blurred = true
+		holdFocus(false) // prompts this ccs holds go to their tabs
 		return m, nil
 
 	case autoFocusMsg:
@@ -2667,12 +2670,13 @@ func (m model) shortcuts() [][2]string {
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
 	case m.heldFocus:
 		add(true, "1-9", "answer its question with that option (asks y/n)")
-		add(true, "A D", "allow or deny the permission prompt ccs serve holds (asks y/n)")
+		add(true, "1, 1+3", "several questions or pick-any: one answer per question, then enter (asks y/n)")
+		add(true, "A D", "allow or deny the permission prompt ccs holds (asks y/n)")
 		add(true, "T", "send the prompt back to its tab")
 		add(true, keyEnter, "send it back to its tab and open the tab")
 		add(true, keyEsc, "leave it for the search")
 	case live && m.boxHidden() && m.heldPrompt[m.filtered[m.cursor].conv.SessionID].ID != "":
-		add(true, keyEnter, "answer the prompt ccs serve holds for it, here: a digit, A allow or D deny (y/n), T back to its tab")
+		add(true, keyEnter, "answer the prompt ccs holds for it, here: a digit or typed answers, A allow or D deny (y/n), T back to its tab")
 	case live && m.boxHidden():
 		add(true, keyEnter, "go to its tab to answer it")
 	case live:
@@ -2943,6 +2947,9 @@ func (m model) viewScreen() string {
 	var toggles []string
 	if !m.showUsage && !m.chordX {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
+		if ownHold() != nil { // this ccs holds prompts from the hook for its list
+			toggles = append(toggles, "\033[90mholding prompts\033[0m")
+		}
 		if m.serve.Installed { // set up for remote use: say whether it's reachable
 			toggles = append(toggles, toggleHint("^X B", "browser", m.serve.Running))
 		}

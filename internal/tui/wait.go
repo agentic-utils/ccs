@@ -380,6 +380,15 @@ func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	}
+	// A held menu with several questions or a pick-any one: its typed
+	// answers are the box's text, and Enter parses them, never sends them.
+	if h, held := m.heldPrompt[conv.SessionID]; ok && held && heldTyped(h) && msg.String() == "enter" && strings.TrimSpace(m.waitInput.Value()) != "" {
+		m.heldTypedEnter(h, m.sessionName(conv), m.waitInput.Value())
+		if m.heldConfirmed != nil {
+			m.waitInput.SetValue("")
+		}
+		return m, nil
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		m.quitting = true

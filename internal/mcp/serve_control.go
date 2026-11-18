@@ -13,14 +13,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
-	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -49,7 +46,7 @@ type HeldQuestion struct {
 // controlRequest is a line the TUI sends. It has no field for tool input:
 // unknown fields are dropped when it's read, so nothing can be smuggled in.
 type controlRequest struct {
-	Op      string              `json:"op"` // list, answer
+	Op      string              `json:"op"` // list, answer, yield
 	Prompt  string              `json:"prompt,omitempty"`
 	Choice  string              `json:"choice,omitempty"`  // allow, deny, mac, answer
 	Answers map[string][]string `json:"answers,omitempty"` // q<i> → labels
@@ -61,80 +58,10 @@ type controlReply struct {
 	Error   string       `json:"error,omitempty"`
 }
 
-// listenControl opens the control socket (with --allow-write, beside the
-// hook socket listenHooks opened); returns a stop function.
-func (s *server) listenControl() (func(), error) {
-	path := ControlSockPath()
-	os.Remove(path) // listenHooks refused a second ccs serve already
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
-		return nil, err
-	}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go s.serveControl(c)
-		}
-	}()
-	return func() { ln.Close(); os.Remove(path) }, nil
-}
-
-func (s *server) serveControl(c net.Conn) {
-	defer c.Close()
-	if uid, err := peerUID(c); err != nil || uid != uint32(os.Getuid()) {
-		state.LogActivity("serve: refused a control connection from uid %d (%v)", uid, err)
-		return
-	}
-	c.SetDeadline(time.Now().Add(5 * time.Second))
-	sc := bufio.NewScanner(c)
-	sc.Buffer(make([]byte, 4096), 64<<10)
-	if !sc.Scan() {
-		return
-	}
-	var req controlRequest
-	var reply controlReply
-	if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
-		reply.Error = "bad request"
-	} else {
-		reply = s.control(req)
-	}
-	json.NewEncoder(c).Encode(reply)
-}
-
-func (s *server) control(req controlRequest) controlReply {
-	switch req.Op {
-	case "list":
-		return controlReply{Prompts: s.heldPrompts()}
-	case "answer":
-		gone := "that prompt isn't waiting any more (answered, shown in its tab, or ended): nothing was sent"
-		p := s.prompts.get(req.Prompt)
-		if p == nil {
-			return controlReply{Error: gone}
-		}
-		reply, what, err := promptDecision(p, req.Choice, req.Answers, tuiUser)
-		if err != nil {
-			return controlReply{Error: err.Error()}
-		}
-		if p = s.prompts.take(req.Prompt); p == nil { // the page got there first
-			return controlReply{Error: gone}
-		}
-		p.reply <- reply
-		state.LogActivity("serve: %s settled %s's %s prompt %s: %s", tuiUser, shortID(p.req.SessionID), p.req.ToolName, p.id, req.Choice)
-		return controlReply{Text: what}
-	}
-	return controlReply{Error: fmt.Sprintf("unknown op %q", req.Op)}
-}
-
-func (s *server) heldPrompts() []HeldPrompt {
+// heldList is a book's prompts as the TUI shows them.
+func heldList(b *promptBook) []HeldPrompt {
 	var out []HeldPrompt
-	for _, p := range s.prompts.list("") {
+	for _, p := range b.list("") {
 		h := HeldPrompt{ID: p.id, Session: p.req.SessionID, Tool: p.req.ToolName}
 		if p.req.ToolName == "AskUserQuestion" {
 			var in askInput
@@ -213,10 +140,6 @@ var HeldPrompts = func() ([]HeldPrompt, error) {
 // it in its tab) or answer, with a question's chosen labels by its index.
 // It says what was done. A var so TUI tests stub it.
 var AnswerHeld = func(id, choice string, labels map[int][]string) (string, error) {
-	answers := map[string][]string{}
-	for i, ls := range labels {
-		answers["q"+strconv.Itoa(i)] = ls
-	}
-	r, err := controlCall(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: answers})
+	r, err := controlCall(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: labelAnswers(labels)})
 	return r.Text, err
 }

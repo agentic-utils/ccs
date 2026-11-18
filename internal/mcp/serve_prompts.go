@@ -10,12 +10,9 @@ package mcp
 // own connection, so it settles that prompt and no other.
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -24,7 +21,6 @@ import (
 	"time"
 
 	"github.com/agentic-utils/ccs/internal/sessions"
-	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -85,36 +81,24 @@ func (b *promptBook) list(session string) []*heldPrompt {
 	return out
 }
 
-// listenHooks opens the socket hooks connect to, refusing when another ccs
-// serve already answers there. It returns a stop function.
-func (s *server) listenHooks() (func(), error) {
-	path := hookSockPath()
-	if c, err := net.DialTimeout("unix", path, 500*time.Millisecond); err == nil {
-		c.Close()
-		return nil, fmt.Errorf("another ccs serve already answers prompts on %s", path)
+// listenHooks makes this ccs serve the owner of the hold (both sockets),
+// taking over from a TUI that holds them; another ccs serve refuses. It
+// returns a stop function. listenControl is the same: the holder opens both.
+func (s *server) listenHooks() (func(), error) { return s.ownHold() }
+
+func (s *server) listenControl() (func(), error) { return s.ownHold() }
+
+func (s *server) ownHold() (func(), error) {
+	if s.hold.Owns() {
+		return func() {}, nil
 	}
-	os.Remove(path) // a socket left by one that's gone
-	if err := os.MkdirAll(dirOf(path), 0o700); err != nil {
-		return nil, err
-	}
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
-		return nil, err
-	}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go s.holdPrompt(c)
+	if err := s.hold.Listen(true); err != nil {
+		if errors.Is(err, ErrHeldElsewhere) {
+			return nil, fmt.Errorf("another ccs serve already answers prompts on %s (%v)", hookSockPath(), err)
 		}
-	}()
-	return func() { ln.Close(); os.Remove(path) }, nil
+		return nil, err
+	}
+	return func() { s.hold.Close("ccs serve stopped") }, nil
 }
 
 func dirOf(path string) string {
@@ -122,78 +106,6 @@ func dirOf(path string) string {
 		return path[:i]
 	}
 	return "."
-}
-
-// holdPrompt keeps one hook's prompt until it's answered or let go.
-func (s *server) holdPrompt(c net.Conn) {
-	defer c.Close()
-	// Only this user's own hooks: the socket's 0600 should already see to it.
-	if uid, err := peerUID(c); err != nil || uid != uint32(os.Getuid()) {
-		state.LogActivity("serve: refused a hook connection from uid %d (%v)", uid, err)
-		return
-	}
-	c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	sc := bufio.NewScanner(c)
-	sc.Buffer(make([]byte, 64<<10), 4<<20)
-	if !sc.Scan() {
-		return
-	}
-	var hello hookHello
-	if json.Unmarshal(sc.Bytes(), &hello) != nil || hello.Nonce == "" || hello.Request.SessionID == "" || hello.Request.ToolName == "" {
-		return
-	}
-	req := hello.Request
-	c.SetReadDeadline(time.Time{})
-	c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if json.NewEncoder(c).Encode(hookReply{Nonce: hello.Nonce, Held: true}) != nil {
-		return
-	}
-	p := &heldPrompt{id: newPromptID(), nonce: hello.Nonce, req: req, at: s.now(), reply: make(chan hookReply, 1)}
-	s.prompts.add(p)
-	defer s.prompts.take(p.id)
-	state.LogActivity("serve: holding %s's %s prompt %s for the page", shortID(req.SessionID), req.ToolName, p.id)
-
-	gone := make(chan struct{}) // the hook went away: Claude Code killed it, or the session ended
-	go func() {
-		buf := make([]byte, 1)
-		c.Read(buf)
-		close(gone)
-	}()
-	var back <-chan time.Time
-	if !s.cfg.preview { // in a preview the user is at the Mac by design
-		t := time.NewTicker(keyPoll)
-		defer t.Stop()
-		back = t.C
-	}
-	limit := time.NewTimer(s.cfg.hookWait)
-	defer limit.Stop()
-	letGo := func(why string) {
-		state.LogActivity("serve: let %s's prompt %s go to its tab: %s", shortID(req.SessionID), p.id, why)
-		c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		json.NewEncoder(c).Encode(hookReply{Nonce: p.nonce})
-	}
-	for {
-		select {
-		case r := <-p.reply:
-			r.Nonce = p.nonce
-			c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if err := json.NewEncoder(c).Encode(r); err != nil {
-				state.LogActivity("serve: answering prompt %s failed: %v", p.id, err)
-			}
-			return
-		case <-gone:
-			state.LogActivity("serve: %s's prompt %s ended before an answer", shortID(req.SessionID), p.id)
-			return
-		case <-limit.C:
-			letGo(fmt.Sprintf("no answer within %s", s.cfg.hookWait))
-			return
-		case <-back:
-			if idle, ok := keyIdle(); ok && idle < s.now().Sub(p.at) {
-				letGo("a key was pressed on the Mac")
-				return
-			}
-		}
-	}
 }
 
 func shortID(id string) string {

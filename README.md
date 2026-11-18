@@ -152,6 +152,16 @@ An orchestrator that looks after too many unrelated topics loses track of them. 
 
 Each run is written to the activity log with its plan. `ccs adopt` corrects any single session afterwards, and `ccs reorg --undo` undoes the last reorg not yet undone: it says when that reorg ran and how many records it would put back, asks y/N (`--yes` skips), and puts back only the records that reorg wrote and nothing has changed since, so launches and adopts after it stay. Run it again to undo the reorg before. The orchestrators a reorg launched keep running and nobody is told, so close or message them yourself.
 
+## Use it from your phone
+
+`ccs serve` shows your sessions, their questions, transcripts and PRs as a web page, and with `--allow-write` sends messages, answers single-choice questions and launches, closes or restarts sessions. It listens on loopback only, behind a Cloudflare Tunnel with Cloudflare Access, and checks Access's signed token on every request itself:
+
+```bash
+ccs serve --host ccs.example.com --team <team> --aud <AUD tag> --email you@example.com [--allow-write]
+```
+
+Each write shows what it will do and asks you to confirm first, and every request is logged to the activity log. Setup and the security model: [docs/remote.md](docs/remote.md).
+
 ## Installation
 
 ### Homebrew (macOS and Linux)

@@ -89,6 +89,8 @@ Usage: ccs [filter] [-- claude-flags...]
        ccs orchestrator-report [--since 24h] [--json]   Each orchestrator's scorecard against
                             the previous saved day: response time, stalled and done minutes,
                             your nudges and corrections, hands-on work, merges, span
+       ccs serve --host <h> --team <t> --aud <tag> --email <e> [--allow-write]
+                            the sessions as a web page, behind Cloudflare Access (docs/remote.md)
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
 
@@ -288,6 +290,13 @@ func Main(v string) {
 	var cutoff time.Time
 	if maxAgeDays > 0 {
 		cutoff = time.Now().AddDate(0, 0, -maxAgeDays)
+	}
+
+	if len(args) > 0 && args[0] == "serve" {
+		load := func() ([]transcript.Conversation, error) {
+			return transcript.GetConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, []string{"observer-sessions"})
+		}
+		mcp.ServeMain(args[1:], load)
 	}
 
 	if len(args) > 0 && args[0] == "mcp" {

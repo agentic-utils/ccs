@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
@@ -54,7 +55,8 @@ type serveConfig struct {
 	addr       string // loopback only
 	host       string // the public hostname the tunnel serves
 	allowWrite bool
-	preview    bool // --preview: this Mac's browser only, no Access; writes only with --allow-write, same-origin
+	preview    bool   // --preview: this Mac's browser only, no Access; writes only with --allow-write, same-origin
+	token      string // --preview: the secret in the link it prints, kept as a cookie once opened
 	access     *accessVerifier
 	load       mcpSource
 }
@@ -163,6 +165,7 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 	cfg := serveConfig{addr: *addr, host: strings.ToLower(*host), allowWrite: *write, load: load}
 	if *preview {
 		cfg.preview = true
+		cfg.token = newToken()
 	} else {
 		cfg.access = newAccessVerifier(*team, *aud, strings.Split(*emails, ","))
 	}
@@ -177,7 +180,9 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 		mode = "read and write"
 	}
 	if *preview {
-		fmt.Fprintf(stdout, "ccs serve: %s preview at http://%s (this Mac only, no Access; ^C stops it)\n", mode, ln.Addr())
+		link := fmt.Sprintf("http://%s/?token=%s", ln.Addr(), s.cfg.token)
+		fmt.Fprintf(stdout, "ccs serve: %s preview, this Mac only (^C stops it). Open it with this link, which only you have:\n  %s\n", mode, link)
+		go openPreview(link)
 		state.LogActivity("serve: started, %s preview, on %s", mode, ln.Addr())
 	} else {
 		fmt.Fprintf(stdout, "ccs serve: %s on http://%s for https://%s (Access team %s)\n", mode, ln.Addr(), s.cfg.host, s.cfg.access.team)
@@ -215,6 +220,19 @@ func loopbackOnly(addr string) error {
 
 type ctxKey struct{}
 
+// newToken is a random secret for the preview's link.
+func newToken() string {
+	b := make([]byte, 24)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// openPreview opens the preview's link in the browser; stubbed in tests.
+var openPreview = func(link string) { proc.RunBounded(10*time.Second, nil, "open", link) }
+
+// previewCookie holds the preview's token once its link was opened.
+const previewCookie = "ccs_preview"
+
 // previewUser is who the activity log names for a --preview request.
 const previewUser = "preview (this Mac)"
 
@@ -242,6 +260,9 @@ func (s *server) handler() http.Handler {
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cache-Control", "no-store")
 		r.Body = http.MaxBytesReader(rec, r.Body, 64<<10)
+		if s.previewLogin(rec, r) {
+			return
+		}
 		email, err := s.check(r)
 		if err != nil {
 			http.Error(rec, err.msg, err.code)
@@ -264,6 +285,29 @@ func (s *server) handler() http.Handler {
 	})
 }
 
+// previewLogin: a GET carrying the preview's token (its printed link)
+// stores it as a cookie (HttpOnly, SameSite Strict, so another site's
+// request never carries it) and redirects to the same page without it.
+func (s *server) previewLogin(w http.ResponseWriter, r *http.Request) bool {
+	tok := r.URL.Query().Get("token")
+	if !s.cfg.preview || r.Method != http.MethodGet || tok == "" {
+		return false
+	}
+	if !hmac.Equal([]byte(tok), []byte(s.cfg.token)) {
+		http.Error(w, "forbidden: that isn't this preview's link", http.StatusForbidden)
+		state.LogActivity("serve: refused a preview link with the wrong token")
+		return true
+	}
+	http.SetCookie(w, &http.Cookie{Name: previewCookie, Value: s.cfg.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	u := *r.URL
+	q := u.Query()
+	q.Del("token")
+	u.RawQuery = q.Encode()
+	state.LogActivity("serve: preview opened with its link")
+	http.Redirect(w, r, u.RequestURI(), http.StatusSeeOther)
+	return true
+}
+
 type checkErr struct {
 	code        int
 	msg, detail string
@@ -279,6 +323,13 @@ func (s *server) check(r *http.Request) (string, *checkErr) {
 		// with no writes nothing here acts on a session.
 		if host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "[::1]" {
 			return "", &checkErr{http.StatusMisdirectedRequest, "wrong host", "host " + r.Host}
+		}
+		// Loopback is shared by every user on this Mac, so the preview has a
+		// login of its own: the token in the link it printed, kept as a
+		// cookie (previewLogin sets it).
+		c, err := r.Cookie(previewCookie)
+		if err != nil || !hmac.Equal([]byte(c.Value), []byte(s.cfg.token)) {
+			return "", &checkErr{http.StatusForbidden, "forbidden: open the preview with the link ccs serve printed", "no preview cookie"}
 		}
 		if r.Method == http.MethodPost {
 			// The same as the remote mode's: only this page's own forms,

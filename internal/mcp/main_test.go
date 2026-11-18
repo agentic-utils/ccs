@@ -39,6 +39,7 @@ func TestMain(m *testing.M) {
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil }
 	liveSessions = func() map[string]sessions.LiveSession { return nil }
+	openPreview = func(string) {} // never a real browser
 	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil }

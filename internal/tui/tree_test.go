@@ -291,3 +291,30 @@ func TestClosedSessionsBehindALine(t *testing.T) {
 		t.Errorf("a search shows a closed match where it is, no closed lines: %s", got)
 	}
 }
+
+// Codex subagents of a headless codex exec (hidden) nest under the nearest
+// session that's shown: the Claude session that ran the exec.
+func TestSpawnedNestUnderNearestShownAncestor(t *testing.T) {
+	os.Remove(sessions.ParentsPath())
+	now := time.Now().UTC().Format(time.RFC3339)
+	convs := []transcript.Conversation{
+		{SessionID: "rev-id", Title: "review-keda", LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "review it"}}},
+		{SessionID: "exec-id", Kind: transcript.KindCodex, CodexExec: true, Spawned: true, LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "second opinion"}}},
+		{SessionID: "sub1-id", Kind: transcript.KindCodex, Spawned: true, ParentID: "exec-id", Title: "Adversarial second opinion one", LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "a"}}},
+		{SessionID: "sub2-id", Kind: transcript.KindCodex, Spawned: true, ParentID: "exec-id", Title: "Adversarial second opinion two", LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "b"}}},
+		{SessionID: "lost-id", Kind: transcript.KindCodex, Spawned: true, ParentID: "gone-id", Title: "orphan", LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "c"}}},
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.parents = map[string]string{"exec-id": "rev-id"} // the exec was seen running under review-keda
+	m.refilter()
+	depth := map[string]int{}
+	for _, it := range m.filtered {
+		depth[it.conv.SessionID] = it.depth
+	}
+	if _, shown := depth["exec-id"]; shown {
+		t.Fatal("the headless exec stays hidden")
+	}
+	if depth["sub1-id"] != 1 || depth["sub2-id"] != 1 || depth["rev-id"] != 0 || depth["lost-id"] != 0 {
+		t.Errorf("both subagents under review-keda, an orphan stays flat: %v", depth)
+	}
+}

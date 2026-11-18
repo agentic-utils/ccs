@@ -78,6 +78,7 @@ type model struct {
 	noParent        map[string]int    // spawned SessionID -> len(items) when no parent was found
 	grouped         bool              // ^X X G: sessions grouped by folder
 	chordX          bool              // ^X pressed: the next key picks a ccs action
+	byID            map[string]int    // m.items by session id, for shownAncestor; rebuilt when an entry is stale
 	treeView        int               // ^X C: treeLive, treeClosed or treeFolded, for every tree (saved)
 	headerCollapsed bool              // ^X F or a click on the summary line: the details under it are hidden
 	selectedID      string            // the selected session, to see when it changes
@@ -700,7 +701,7 @@ func (m *model) nestFamilies() {
 			continue
 		}
 		if _, bg := m.bg[it.conv.SessionID]; it.conv.Spawned || bg {
-			if p, ok := at[m.spawnParent(it.conv)]; ok && p != i {
+			if p, ok := at[m.shownAncestor(m.spawnParent(it.conv), at, launched)]; ok && p != i {
 				parent[i] = p
 				kids[p] = append(kids[p], i)
 			}
@@ -960,6 +961,45 @@ func (m *model) spawnParent(c transcript.Conversation) string {
 		m.parents[c.SessionID] = p
 	}
 	return p
+}
+
+// shownAncestor is id, or when id isn't shown (a headless codex exec whose
+// subagents are listed, say), the nearest session above it that is: its
+// launch parent or the session that spawned it, a few levels up at most.
+// So a spawned session nests under what's on screen instead of going flat.
+func (m *model) shownAncestor(id string, at map[string]int, launched map[string]string) string {
+	if _, ok := at[id]; ok || id == "" {
+		return id
+	}
+	find := func(id string) (int, bool) {
+		if i, ok := m.byID[id]; ok && i < len(m.items) && m.items[i].conv.SessionID == id {
+			return i, true
+		}
+		m.byID = make(map[string]int, len(m.items)) // stale or missing: the list changed
+		for i, it := range m.items {
+			m.byID[it.conv.SessionID] = i
+		}
+		i, ok := m.byID[id]
+		return i, ok
+	}
+	for range 5 {
+		i, ok := find(id)
+		if !ok {
+			return ""
+		}
+		next := launched[id]
+		if next == "" {
+			next = m.spawnParent(m.items[i].conv)
+		}
+		if next == "" || next == id {
+			return ""
+		}
+		if _, ok := at[next]; ok {
+			return next
+		}
+		id = next
+	}
+	return ""
 }
 
 // findSpawnParent finds the session that ran a claude -p holding c's first

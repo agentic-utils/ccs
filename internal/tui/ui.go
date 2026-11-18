@@ -2449,6 +2449,12 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 
 // toggleHint is a mode's key, name and state for the header: grey, with
 // only "on" in green, so the modes that are on stand out.
+// chordPairs is the hint row while ^X waits for its second key: each letter
+// and what it does, never a mode's on/off (that shows when no chord is
+// pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
+// which is left unadvertised (headless runs stay out of the header).
+var chordPairs = []string{"A", "auto-focus", "B", "fold", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}
+
 func toggleHint(key, label string, on bool) string {
 	state := "off"
 	if on {
@@ -2597,9 +2603,10 @@ func (m model) viewScreen() string {
 	if m.profileStop != nil { // a reminder: it records until stopped
 		status += " · " + key("^X Q") + "\033[31mrecording profile\033[33m"
 	}
-	// The modes ^X toggles, on the right beside the key hints.
+	// The modes ^X toggles, on the right beside the key hints. Not while a
+	// chord is pending: then the row lists only what the next key does.
 	var toggles []string
-	if !m.showUsage {
+	if !m.showUsage && !m.chordX {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
 		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
 			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
@@ -2617,7 +2624,7 @@ func (m model) viewScreen() string {
 		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = []string{"A", "auto-focus", "C", "orchestrator", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "open orchestrator", "P", "pin", "R", "profile", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "shrink", keyEsc, "cancel"}, 1
+		pairs, keep = chordPairs, 1
 	} else if m.chatFocus {
 		send := "send"
 		if strings.TrimSpace(m.chatInput.Value()) == "" {

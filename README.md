@@ -205,7 +205,7 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 
 ### Keybindings
 
-- Text boxes (the search, the message box) edit like Claude Code's prompt: `Ctrl+A`/`Ctrl+E` start/end, `Ctrl+K`/`Ctrl+U` delete to the end/start, `Ctrl+W` the word before, `Ctrl+Y` puts back what they deleted, `Alt+B`/`Alt+F` move by word. So ccs's own actions are `Ctrl+X` then a letter (`Ctrl+X Ctrl+W` works too)
+- Text boxes (the search, the message box) edit like Claude Code's prompt: `Ctrl+A`/`Ctrl+E` start/end, `Ctrl+K`/`Ctrl+U` delete to the end/start, `Ctrl+W` the word before, `Ctrl+Y` puts back what they deleted, `Alt+B`/`Alt+F` move by word. So ccs's own actions are `Ctrl+X` then a letter (`Ctrl+X Ctrl+W` works too). After `Ctrl+X` the top row lists only the letters and what each does; the on/off modes show there again once the chord is done
 - The rule for which is which: single keys act now and leave nothing behind (move, open, message, fork, refresh); `Ctrl+X` then a letter changes something that stays (a mark, a setting, a file, whether a session runs), and the ones that can't be undone (`Ctrl+X D` delete, `Ctrl+X K` stop, `Ctrl+X X` shrink) ask first
 - `↑/↓` or `Ctrl+P/N` - Move through the list
 - Background sessions (`claude --bg`) show `bg <state>` on the grey row: Enter opens one with `claude attach` in a new tmux window or iTerm tab, and `Ctrl+X K` stops it once you say `y` (on a session in a terminal tab, it stops it and closes the tab). One started from another session's `claude --bg` sits under it

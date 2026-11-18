@@ -708,8 +708,8 @@ func (m *model) nestFamilies() {
 			}
 		}
 	}
-	// A launched session is closed when nothing in its tree runs; in an
-	// orchestrator's tree it waits behind its parent's "N closed" line. A
+	// A nested session, launched or spawned, is closed when nothing in its
+	// tree runs; it waits behind its parent's "N closed" line. A
 	// search shows everything where it is.
 	closed := make([]bool, n)
 	if !m.searching() {
@@ -718,7 +718,7 @@ func (m *model) nestFamilies() {
 		isAlive = func(i, d int) bool {
 			if alive[i] == 0 {
 				alive[i] = 2
-				if m.live[m.filtered[i].conv.SessionID] {
+				if c := m.filtered[i].conv; m.live[c.SessionID] || codexSubagentBusy(c) {
 					alive[i] = 1
 				}
 				for _, k := range kids[i] {
@@ -729,8 +729,10 @@ func (m *model) nestFamilies() {
 			}
 			return alive[i] == 1
 		}
-		for i, it := range m.filtered {
-			if parent[i] >= 0 && launched[it.conv.SessionID] == m.filtered[parent[i]].conv.SessionID {
+		for i := range m.filtered {
+			// Launched or spawned (a codex subagent under the session that
+			// ran it, say): either kind waits behind the line when closed.
+			if parent[i] >= 0 {
 				closed[i] = !isAlive(i, 0)
 			}
 		}
@@ -965,6 +967,17 @@ func (m *model) spawnParent(c transcript.Conversation) string {
 		m.parents[c.SessionID] = p
 	}
 	return p
+}
+
+// codexSubagentBusy: c is a Codex subagent written to within
+// transcript.SubagentIdle. It has no process of its own (it runs inside its
+// exec), so liveness can't say it's running.
+func codexSubagentBusy(c transcript.Conversation) bool {
+	if c.Kind != transcript.KindCodex || c.ParentID == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, c.LastTimestamp)
+	return err == nil && time.Since(t) < transcript.SubagentIdle
 }
 
 // shownAncestor is id, or when id isn't shown (a headless codex exec whose

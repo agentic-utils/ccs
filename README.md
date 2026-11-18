@@ -102,7 +102,7 @@ Whether a link is clickable depends on the app showing it. Browsers ask before o
 
 The orchestrator is one Claude Code session that keeps your other sessions moving and never does the work itself. Tell it what you want done; it starts a named session for each ask, tracks who owns which PR and what order they must merge in, tells you what needs you, and closes sessions when they finish.
 
-It's optional: everything else in ccs works without one. `Ctrl+X C` in the list hides it, both its row and the offer to set one up, and ccs remembers that.
+It's optional: everything else in ccs works without one. ccs offers to set one up once; `Ctrl+X B` on its row folds its tree away.
 
 ```bash
 ccs orchestrator                  # open it: its tab if it's running, resumed if not, set up if there is none
@@ -222,7 +222,6 @@ export CCS_CLAUDE_ARGS="--permission-mode auto"
 - `Ctrl+X A` - Auto-focus: when a session starts waiting on a question or permission prompt, switch to its iTerm tab or tmux pane (without pulling iTerm in front of another app), once you've stopped typing for 2 seconds (moving the mouse doesn't count), and not again until that question is answered. Questions already waiting when ccs starts count too; one it already switched to before a restart doesn't. Off by default, remembered across restarts
 - `Ctrl+X P` - Pin the selected session: pinned sessions sit in their own section at the top, whatever their state, in the order you pinned them; `Alt+↑`/`Alt+↓` move one among them. Again to unpin. Kept across restarts
 - `Ctrl+X B` - On a session with others under it, cycle: show its closed sessions too, fold its tree to its own row (keeping its counts), back to its live sessions. Kept across restarts (see [Orchestrator trees](#orchestrator-trees))
-- `Ctrl+X C` - Hide the orchestrator: its section and row, and the offer to set one up. Again to show it. Kept across restarts. `Ctrl+X O` and `ccs orchestrator` still open it
 - `Ctrl+X S` - Put the selected session away: settle it (until its next message) or snooze it (an hour, 4 hours, tomorrow 9:00). It moves to the settled or snoozed section at the bottom, and comes back early if it waits on you. Again to bring it back
 - `Ctrl+X G` - Group the list by folder within each state section (a worktree under `.claude/worktrees` counts as its repo), the most urgent group first. Again to ungroup. ccs remembers this and the ^X T layout, and reopens the way you left it
 - `Ctrl+X F` - Show or hide the session's details under the summary line at the top of the preview (name, project, model, context %, PR, task and subagent counts, size). The line starts with ▸ while they are hidden and ▾ while shown, and ends with what the key or a click does (`^X F details` or `^X F hide details`); a narrow preview drops the hint before cutting the facts; clicking anywhere on that line does the same, unless the click is on a link. The line itself never changes place. Hidden by default, remembered across restarts

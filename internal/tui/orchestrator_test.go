@@ -770,47 +770,28 @@ func TestOrchestratorHasItsOwnSectionAbovePinned(t *testing.T) {
 	}
 }
 
-func TestHideOrchestrator(t *testing.T) {
+// TestOldHideSettingIgnored: ^X C hid the orchestrator before the trees
+// landed. A saved hide_orchestrator (or hide_coordinator) no longer hides it,
+// ^X C does nothing, the header has no toggle for it, and a save drops the key.
+func TestOldHideSettingIgnored(t *testing.T) {
 	orchestratorFixture(t)
+	os.MkdirAll(filepath.Dir(state.SettingsPath), 0o700)
+	os.WriteFile(state.SettingsPath, []byte(`{"hide_orchestrator":true,"hide_coordinator":true}`), 0o600)
 	at := time.Now().UTC().Format(time.RFC3339)
 	m := initialModel(buildItems([]transcript.Conversation{
 		{SessionID: "b", Title: "another", LastTimestamp: at, Messages: []transcript.Message{{Role: "user", Text: "x"}}},
 		{SessionID: "c", Title: orchestratorName, LastTimestamp: at, Messages: []transcript.Message{{Role: "user", Text: "y"}}},
 	}), "", nil)
 	m.width, m.height = 140, 30
-	if strings.Contains(strip2(m.View()), "^X C orchestrator") {
-		t.Error("no orchestrator, nothing to hide: no ^X C in the header")
-	}
 	orchestratorRecord{SessionID: "c"}.save()
 	m.syncOrchestrator()
-	if v := strip2(m.View()); m.filtered[0].conv.SessionID != "c" || !strings.Contains(v, "^X C orchestrator") {
-		t.Fatalf("listed first, with ^X C in the header:\n%s", v)
-	}
-
 	m, _ = chord(m, "c")
-	if v := strip2(m.View()); slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "c" }) {
-		t.Errorf("^X C hides its section and row:\n%s", v)
+	if v := strip2(m.View()); len(m.filtered) != 2 || m.filtered[0].conv.SessionID != "c" || strings.Contains(v, "^X C") {
+		t.Errorf("the orchestrator stays listed first, with no ^X C toggle:\n%s", v)
 	}
-	if !loadSettings().HideOrchestrator {
-		t.Error("hiding is saved, so the next ccs starts hidden")
-	}
-	next, _ := m.Update(orchestratorOfferMsg{plan: orchestratorPlan{}})
-	if next.(model).orchOffer != nil {
-		t.Error("hidden: the set-up offer doesn't come up on its own")
-	}
-	next, _ = m.Update(orchestratorOfferMsg{plan: orchestratorPlan{}, opened: true})
-	if next.(model).orchOffer == nil {
-		t.Error("^X O still offers it when asked")
-	}
-	orchestratorRecord{SessionID: "b"}.save() // a new orchestrator, say after /clear
-	m.syncOrchestrator()
-	if len(m.filtered) != 1 || m.filtered[0].conv.SessionID != "c" {
-		t.Errorf("a new orchestrator is hidden too, the old one listed again: %v", m.filtered)
-	}
-
-	m, _ = chord(m, "c")
-	if v := strip2(m.View()); !strings.Contains(v, "orchestrator 1") || loadSettings().HideOrchestrator {
-		t.Errorf("^X C again shows it, and saves that:\n%s", v)
+	saveSettings(loadSettings())
+	if b, _ := os.ReadFile(state.SettingsPath); strings.Contains(string(b), "hide_") {
+		t.Errorf("saved: %s", b)
 	}
 }
 
@@ -1270,20 +1251,5 @@ func TestOrchestratorKeepsTheCoordinatorFolder(t *testing.T) {
 	os.MkdirAll(filepath.Join(base, "orchestrator"), 0o700)
 	if got := orchestratorDir(); got != filepath.Join(base, "orchestrator") {
 		t.Errorf("both: %s", got)
-	}
-}
-
-func TestSettingsReadTheOldHideKey(t *testing.T) {
-	orchestratorFixture(t)
-	os.MkdirAll(filepath.Dir(state.SettingsPath), 0o700)
-	os.WriteFile(state.SettingsPath, []byte(`{"hide_coordinator":true}`), 0o600)
-	s := loadSettings()
-	if !s.HideOrchestrator {
-		t.Fatal("hide_coordinator not read")
-	}
-	saveSettings(s)
-	b, _ := os.ReadFile(state.SettingsPath)
-	if !strings.Contains(string(b), `"hide_orchestrator":true`) || strings.Contains(string(b), "hide_coordinator") {
-		t.Errorf("saved: %s", b)
 	}
 }

@@ -228,7 +228,6 @@ type model struct {
 	launchRes    map[string]string
 	launchResN   int
 	foldedAway   []string
-	hideOrch     bool // ^X C: the orchestrator isn't listed and never offered (saved)
 	// hideSidebar (^X L): the sidebar layout shows only the preview, full width (saved).
 	hideSidebar bool
 	// Each session's PRs (prs.go): what GitHub said, by address.
@@ -508,7 +507,6 @@ func (m *model) updateFilter() {
 		m.filtered = next
 	}
 	m.hideHeadless()
-	m.hideOrchestrator()
 	m.sortList()
 	m.lastFilterQuery = queryLower
 	// Keep cursor in bounds
@@ -1146,7 +1144,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case orchestratorOfferMsg:
-		if !msg.opened && (m.hideOrch || m.orchBusy || m.orchOffer != nil || loadOrchestrator().Offered) {
+		if !msg.opened && (m.orchBusy || m.orchOffer != nil || loadOrchestrator().Offered) {
 			return m, nil // answered, or ^X O got there, while the check ran
 		}
 		m.orchBusy = false
@@ -1724,11 +1722,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == sel }); i >= 0 {
 				m.cursor = i
 			}
-			return m, nil
-		}
-		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
-			m.helpOpen = false
-			m.toggleHideOrchestrator()
 			return m, nil
 		}
 		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
@@ -2400,8 +2393,6 @@ func (m model) shortcuts() [][2]string {
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.table && !m.hideSidebar, "^X L", "hide the list, the preview taking the whole width (↑↓ still move)")
 	add(!m.table && m.hideSidebar, "^X L", "show the list beside the preview again")
-	add(!m.hideOrch, "^X C", "hide the orchestrator: its row, and the offer to set one up")
-	add(m.hideOrch, "^X C", "show the orchestrator again")
 	add(!showHeadless, "^X H", "show headless runs (claude -p, codex exec)")
 	add(showHeadless, "^X H", "hide headless runs")
 	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
@@ -2610,9 +2601,6 @@ func (m model) viewScreen() string {
 	var toggles []string
 	if !m.showUsage {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
-		if m.orchID != "" || m.hideOrch { // nothing to hide for someone with no orchestrator
-			toggles = append(toggles, toggleHint("^X C", "orchestrator", !m.hideOrch))
-		}
 		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
 			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
 		}
@@ -3311,11 +3299,6 @@ type settings struct {
 	Table     bool `json:"table,omitempty"`
 	Grouped   bool `json:"grouped,omitempty"`
 	AutoFocus bool `json:"auto_focus,omitempty"`
-	// HideOrchestrator (^X C): no orchestrator row and no offer to set one up.
-	HideOrchestrator bool `json:"hide_orchestrator,omitempty"`
-	// LegacyHide is hide_coordinator, the same setting saved before the rename:
-	// read into HideOrchestrator, never written.
-	LegacyHide bool `json:"hide_coordinator,omitempty"`
 	// HideSidebar (^X L): the sidebar layout shows the preview alone.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
 	// HeaderOpen (^X F): the preview's full details, one line unless chosen.
@@ -3340,16 +3323,14 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideOrchestrator: m.hideOrch, HideSidebar: m.hideSidebar, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideSidebar: m.hideSidebar, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.
 func loadSettings() (s settings) {
 	if b, err := os.ReadFile(state.SettingsPath); err == nil {
 		json.Unmarshal(b, &s)
-		s.found = true
-		s.HideOrchestrator = s.HideOrchestrator || s.LegacyHide
-		s.LegacyHide = false
+		s.found = true // hide_orchestrator, from before ^X C went, is ignored
 	}
 	return s
 }

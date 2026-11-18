@@ -1859,7 +1859,7 @@ func TestHelpStatesTheRule(t *testing.T) {
 	for k, g := range map[string]string{
 		"^F": "this session", "^O": "",
 		"^X D": "^X then a letter: this session", "^X K": "^X then a letter: this session", "^X X": "^X then a letter: this session", "^X F": "^X then a letter: this session",
-		"^X C": "^X then a letter: view and tools", "^X L": "^X then a letter: view and tools",
+		"^X G": "^X then a letter: view and tools", "^X L": "^X then a letter: view and tools",
 	} {
 		if g != "" && in[k] != g {
 			t.Errorf("%s is under %q, want %q", k, in[k], g)

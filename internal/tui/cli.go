@@ -156,7 +156,6 @@ Key bindings:
   Ctrl+X G        Group the list by folder (again to stop)
   Ctrl+X T        The full table, every column, instead of the sidebar
   Ctrl+X L        Hide or show the session list, the preview taking its place
-  Ctrl+X C        Hide or show the orchestrator and the offer to set one up
   Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
   Ctrl+X A        Switch to a session's tab when it starts waiting on you
@@ -339,7 +338,7 @@ func Main(v string) {
 
 	items := buildItems(conversations)
 	// Nothing to list: open only if there's an orchestrator to offer.
-	if len(items) == 0 && (loadSettings().HideOrchestrator || !orchestratorOfferable()) {
+	if len(items) == 0 && !orchestratorOfferable() {
 		fmt.Fprintf(os.Stderr, "No conversations found in %s\n", projectsDir)
 		fmt.Fprintf(os.Stderr, "Start one with claude, or set up an orchestrator with ccs orchestrator.\n")
 		os.Exit(1)
@@ -351,7 +350,7 @@ func Main(v string) {
 	go sessions.RefreshLinkApp()
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
-	m.table, m.grouped, m.autoFocus, m.hideOrch, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideOrchestrator, s.HideSidebar
+	m.table, m.grouped, m.autoFocus, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideSidebar
 	m.headerCollapsed = !s.HeaderOpen
 	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
 	if s.AutoUpdate == nil && s.found {
@@ -363,7 +362,6 @@ func Main(v string) {
 	}
 	m.marks = loadMarks()                     // when each session was last looked at
 	m.orchID = loadOrchestrator().SessionID   // listed above everything
-	m.hideOrchestrator()                      // unless ^X C hides it
 	if handled, ok := loadFocusRecord(); ok { // waits it switched to before a restart aren't switched to again
 		m.focusHandled, m.focusNoted = handled, map[string]bool{}
 	}

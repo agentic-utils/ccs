@@ -50,10 +50,10 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 <h2>{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</h2>
 <div class="dim">{{if .Live}}running{{if .Status}}, {{.Status}}{{end}}{{else}}not running{{end}}</div>
 {{if .Ask}}<div class="row ask"><strong>Asking:</strong><pre>{{.Ask.Question}}</pre>
-{{if and $write .Ask.Answerable}}{{$ask := .Ask.ID}}{{$id := .ID}}{{$name := .Name}}
+{{if and $write .Ask.Answerable .Ask.Since}}{{$ask := .Ask.ID}}{{$since := .Ask.Since}}{{$id := .ID}}{{$name := .Name}}
 {{range $i, $o := .Ask.Options}}<form method="post" action="/act">{{template "csrf" $csrf}}
 <input type="hidden" name="action" value="answer"><input type="hidden" name="id" value="{{$id}}"><input type="hidden" name="name" value="{{$name}}">
-<input type="hidden" name="ask" value="{{$ask}}"><input type="hidden" name="option" value="{{inc $i}}">
+<input type="hidden" name="ask" value="{{$ask}}"><input type="hidden" name="since" value="{{$since}}"><input type="hidden" name="option" value="{{inc $i}}">
 <button>{{inc $i}}. {{$o}}</button></form>{{end}}
 {{else}}<div class="dim">{{if $write}}Answer this one in its tab: only a single single-choice question can be answered from here.{{else}}Read-only: answer it in its tab.{{end}}</div>{{end}}
 </div>{{end}}
@@ -69,7 +69,7 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 <button class="quiet">Restart</button></form>
 <form method="post" action="/act">{{template "csrf" $csrf}}
 <input type="hidden" name="action" value="close"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="name" value="{{.Name}}">
-<label><input type="checkbox" name="graceful" checked> let it wrap up first</label><br>
+{{if not .Codex}}<label><input type="checkbox" name="graceful" checked> let it wrap up first</label><br>{{end}}
 <button class="danger">Close</button></form>
 {{end}}{{end}}
 {{template "foot"}}{{end}}
@@ -91,7 +91,7 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 <h2>Confirm</h2><pre>{{.What}}</pre>
 <form method="post" action="/act">{{template "csrf" $csrf}}<input type="hidden" name="confirm" value="yes">
 <input type="hidden" name="action" value="{{.A.Kind}}"><input type="hidden" name="id" value="{{.A.ID}}"><input type="hidden" name="name" value="{{.A.Name}}">
-<input type="hidden" name="text" value="{{.A.Text}}"><input type="hidden" name="ask" value="{{.A.Ask}}"><input type="hidden" name="option" value="{{.A.Option}}">
+<input type="hidden" name="text" value="{{.A.Text}}"><input type="hidden" name="ask" value="{{.A.Ask}}"><input type="hidden" name="since" value="{{.A.Since}}"><input type="hidden" name="option" value="{{.A.Option}}">
 <input type="hidden" name="cwd" value="{{.A.Cwd}}"><input type="hidden" name="brief" value="{{.A.Brief}}">
 {{if .A.Codex}}<input type="hidden" name="codex" value="on">{{end}}{{if .A.Graceful}}<input type="hidden" name="graceful" value="on">{{end}}
 <button>Yes, do it</button></form>

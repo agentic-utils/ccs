@@ -1399,10 +1399,17 @@ func SameSession(name string, pid int, id string) error {
 	if id == "" {
 		return nil
 	}
-	if f, err := ReadSessionFile(pid); err != nil || f.SessionID != id {
-		return fmt.Errorf("%s (pid %d) isn't session %s any more: nothing was stopped", name, pid, id)
+	if f, err := ReadSessionFile(pid); err == nil {
+		if f.SessionID != id {
+			return fmt.Errorf("%s (pid %d) isn't session %s any more: nothing was stopped", name, pid, id)
+		}
+		return nil
 	}
-	return nil
+	// No session file: a Codex session, whose live thread names its pid.
+	if ls, ok := LiveCodexSessions()[id]; ok && ls.PID == pid {
+		return nil
+	}
+	return fmt.Errorf("%s (pid %d) isn't session %s any more: nothing was stopped", name, pid, id)
 }
 
 // CloseByNameID is CloseByName, refused unless the session is still id

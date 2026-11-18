@@ -169,14 +169,14 @@ func CloseGracefullyNotifyID(name, id string, timeout time.Duration, onSent func
 	// notice is in its transcript, so the idle it's in now isn't the one it
 	// was in before it read it.
 	deadline := sent.Add(timeout)
-	arrived, sawBusy, how := false, false, ""
+	arrived, sawBusy, how, replaced := false, false, "", false
 	for how == "" {
 		Sleep(GracefulPoll)
 		switch cur, err := ReadSessionFile(pid); {
 		case !proc.PIDAlive(pid):
 			how = "it exited by itself"
 		case errors.Is(err, fs.ErrNotExist) || err == nil && cur.SessionID != f.SessionID:
-			how = "its session ended"
+			how, replaced = "its session ended", true
 		case err != nil:
 			// Caught mid-rewrite (written in place, so briefly empty): look again.
 		default:
@@ -205,6 +205,13 @@ func CloseGracefullyNotifyID(name, id string, timeout time.Duration, onSent func
 		}
 	}
 	state.LogActivity("close %s: %s", name, how)
+	// Its conversation ended while the process lives on (/clear, or a resume
+	// in place): whatever runs there now isn't what was asked to wrap up, so
+	// it's left running.
+	if replaced && proc.PIDAlive(pid) {
+		state.LogActivity("close %s: pid %d now runs another conversation, left running", name, pid)
+		return "", fmt.Errorf("%s (pid %d): %s, and the process now runs another conversation, so nothing was stopped", name, pid, how)
+	}
 	if !proc.PIDAlive(pid) {
 		CloseTab(tty)
 		return fmt.Sprintf("%s (pid %d): %s%s", name, pid, how, said), nil

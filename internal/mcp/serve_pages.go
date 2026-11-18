@@ -28,7 +28,7 @@ button.quiet{background:transparent;color:var(--accent)}
 button.danger{border-color:var(--bad);background:var(--bad)}
 .ask{border-left:4px solid var(--warn)}
 </style></head><body>
-<nav><a href="/">Sessions</a><a href="/prs">PRs</a>{{if .Write}}<a href="/launch">Launch</a>{{end}}<span class="dim">{{if .Write}}read and write{{else}}read-only{{end}}</span></nav>
+<nav><a href="/">Sessions</a><a href="/prs">PRs</a>{{if .Write}}<a href="/launch">Launch</a>{{end}}<span class="dim">{{if .Preview}}local preview, {{if .Write}}read and write{{else}}read-only{{end}}{{else if .Write}}read and write{{else}}read-only{{end}}</span></nav>
 {{end}}
 
 {{define "foot"}}</body></html>{{end}}

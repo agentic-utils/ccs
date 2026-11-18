@@ -507,3 +507,71 @@ func TestServeRateLimits(t *testing.T) {
 		t.Error("limits are per email and per kind")
 	}
 }
+
+// --preview is for this Mac's browser: no Access token, only a loopback
+// Host, and writes only with --allow-write, from its own pages.
+func TestServePreview(t *testing.T) {
+	var out, errb strings.Builder
+	for _, args := range [][]string{
+		{"--preview", "--host", "ccs.example.com"},
+		{"--preview", "--team", "t"},
+		{"--preview", "--addr", "0.0.0.0:7467"},
+	} {
+		if code := RunServe(args, &out, &errb, nil); code != 2 {
+			t.Errorf("%v: code %d", args, code)
+		}
+	}
+	convs := []transcript.Conversation{{SessionID: "s-1", Title: "worker", Cwd: "/r", LastTimestamp: time.Now().UTC().Format(time.RFC3339)}}
+	load := func() ([]transcript.Conversation, error) { return convs, nil }
+	do := func(s *server, method, host string, form url.Values, hdr map[string]string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if form != nil {
+			req = httptest.NewRequest(method, "http://"+host+"/act", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		} else {
+			req = httptest.NewRequest(method, "http://"+host+"/", nil)
+		}
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		s.handler().ServeHTTP(w, req)
+		return w
+	}
+	ro := newServer(serveConfig{preview: true, load: load})
+	for _, host := range []string{"127.0.0.1:7467", "localhost:7467", "[::1]:7467"} {
+		if w := do(ro, "GET", host, nil, nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "local preview, read-only") {
+			t.Errorf("%s: %d", host, w.Code)
+		}
+	}
+	if w := do(ro, "GET", "evil.example", nil, nil); w.Code != http.StatusMisdirectedRequest {
+		t.Errorf("a rebound host: %d", w.Code)
+	}
+	if w := do(ro, "GET", "127.0.0.1:7467", nil, nil); strings.Contains(w.Body.String(), `action="/act"`) {
+		t.Error("a read-only preview shows no forms")
+	}
+	same := map[string]string{"Origin": "http://127.0.0.1:7467", "Sec-Fetch-Site": "same-origin"}
+	send := url.Values{"action": {"send"}, "id": {"s-1"}, "name": {"worker"}, "text": {"hi"}, "confirm": {"yes"}, "csrf": {ro.csrf(previewUser)}}
+	if w := do(ro, "POST", "127.0.0.1:7467", send, same); w.Code != http.StatusForbidden {
+		t.Errorf("a write to a read-only preview: %d", w.Code)
+	}
+
+	rw := newServer(serveConfig{preview: true, allowWrite: true, load: load})
+	got := stubSend(t, "idle")
+	if w := do(rw, "GET", "127.0.0.1:7467", nil, nil); !strings.Contains(w.Body.String(), "local preview, read and write") {
+		t.Errorf("a read-write preview says so: %s", w.Body)
+	}
+	send.Set("csrf", rw.csrf(previewUser))
+	for _, hdr := range []map[string]string{{}, {"Origin": "https://evil.example"}, {"Origin": "http://127.0.0.1:7467", "Sec-Fetch-Site": "cross-site"}} {
+		if w := do(rw, "POST", "127.0.0.1:7467", send, hdr); w.Code != http.StatusForbidden || len(*got) != 0 {
+			t.Errorf("%v: %d", hdr, w.Code)
+		}
+	}
+	forged := url.Values{"action": {"send"}, "id": {"s-1"}, "name": {"worker"}, "text": {"hi"}, "confirm": {"yes"}, "csrf": {"forged"}}
+	if w := do(rw, "POST", "127.0.0.1:7467", forged, same); w.Code != http.StatusForbidden || len(*got) != 0 {
+		t.Errorf("a forged token: %d", w.Code)
+	}
+	if w := do(rw, "POST", "127.0.0.1:7467", send, same); w.Code != http.StatusOK || len(*got) != 1 {
+		t.Errorf("a same-origin confirmed send: %d %v", w.Code, *got)
+	}
+}

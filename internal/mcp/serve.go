@@ -54,6 +54,7 @@ type serveConfig struct {
 	addr       string // loopback only
 	host       string // the public hostname the tunnel serves
 	allowWrite bool
+	preview    bool // --preview: this Mac's browser only, no Access; writes only with --allow-write, same-origin
 	access     *accessVerifier
 	load       mcpSource
 }
@@ -134,27 +135,38 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 	aud := fs.String("aud", "", "the Access application's AUD tag (required)")
 	emails := fs.String("email", "", "comma-separated emails allowed in (required)")
 	write := fs.Bool("allow-write", false, "allow sending, launching, closing and restarting (read-only without it)")
+	preview := fs.Bool("preview", false, "a preview for this Mac's browser at http://127.0.0.1:<port>, with no Cloudflare Access (read-only unless --allow-write)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: ccs serve --host <hostname> --team <team> --aud <tag> --email <you@example.com> [--addr 127.0.0.1:7467] [--allow-write]")
+		fmt.Fprintln(stderr, "       ccs serve --preview [--allow-write] [--addr 127.0.0.1:7467]")
 		fmt.Fprintln(stderr, "Serves ccs's sessions to a browser through a Cloudflare Tunnel with Access in front. See docs/remote.md.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *host == "" || *team == "" || *aud == "" || *emails == "" {
-		fmt.Fprintln(stderr, "ccs serve: --host, --team, --aud and --email are all required: it never runs without Cloudflare Access in front")
+	if *preview {
+		// This Mac only, with no Access: the Access flags would suggest
+		// otherwise, so they're refused.
+		if *host != "" || *team != "" || *aud != "" || *emails != "" {
+			fmt.Fprintln(stderr, "ccs serve: --preview is for this Mac only, with no Cloudflare Access: it takes no --host, --team, --aud or --email")
+			return 2
+		}
+	} else if *host == "" || *team == "" || *aud == "" || *emails == "" {
+		fmt.Fprintln(stderr, "ccs serve: --host, --team, --aud and --email are all required: it never runs without Cloudflare Access in front (or try --preview, on this Mac only)")
 		return 2
 	}
 	if err := loopbackOnly(*addr); err != nil {
 		fmt.Fprintln(stderr, "ccs serve:", err)
 		return 2
 	}
-	s := newServer(serveConfig{
-		addr: *addr, host: strings.ToLower(*host), allowWrite: *write,
-		access: newAccessVerifier(*team, *aud, strings.Split(*emails, ",")),
-		load:   load,
-	})
+	cfg := serveConfig{addr: *addr, host: strings.ToLower(*host), allowWrite: *write, load: load}
+	if *preview {
+		cfg.preview = true
+	} else {
+		cfg.access = newAccessVerifier(*team, *aud, strings.Split(*emails, ","))
+	}
+	s := newServer(cfg)
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		fmt.Fprintln(stderr, "ccs serve:", err)
@@ -164,8 +176,13 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 	if *write {
 		mode = "read and write"
 	}
-	fmt.Fprintf(stdout, "ccs serve: %s on http://%s for https://%s (Access team %s)\n", mode, ln.Addr(), s.cfg.host, s.cfg.access.team)
-	state.LogActivity("serve: started, %s, on %s for %s", mode, ln.Addr(), s.cfg.host)
+	if *preview {
+		fmt.Fprintf(stdout, "ccs serve: %s preview at http://%s (this Mac only, no Access; ^C stops it)\n", mode, ln.Addr())
+		state.LogActivity("serve: started, %s preview, on %s", mode, ln.Addr())
+	} else {
+		fmt.Fprintf(stdout, "ccs serve: %s on http://%s for https://%s (Access team %s)\n", mode, ln.Addr(), s.cfg.host, s.cfg.access.team)
+		state.LogActivity("serve: started, %s, on %s for %s", mode, ln.Addr(), s.cfg.host)
+	}
 	srv := &http.Server{
 		Handler:           s.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -197,6 +214,9 @@ func loopbackOnly(addr string) error {
 }
 
 type ctxKey struct{}
+
+// previewUser is who the activity log names for a --preview request.
+const previewUser = "preview (this Mac)"
 
 // handler wraps every route in the checks, in order: the Host, Access's
 // token, the rate limit, then for a POST its origin and CSRF token. Each
@@ -253,6 +273,30 @@ func (s *server) check(r *http.Request) (string, *checkErr) {
 	host := strings.ToLower(r.Host)
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
+	}
+	if s.cfg.preview {
+		// This Mac's browser only: the Host check stops DNS rebinding, and
+		// with no writes nothing here acts on a session.
+		if host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "[::1]" {
+			return "", &checkErr{http.StatusMisdirectedRequest, "wrong host", "host " + r.Host}
+		}
+		if r.Method == http.MethodPost {
+			// The same as the remote mode's: only this page's own forms,
+			// never another site's (the CSRF token is checked in act).
+			if r.Header.Get("Origin") != "http://"+r.Host {
+				return previewUser, &checkErr{http.StatusForbidden, "forbidden: cross-site request", "origin " + r.Header.Get("Origin")}
+			}
+			if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+				return previewUser, &checkErr{http.StatusForbidden, "forbidden: cross-site request", "sec-fetch-site " + site}
+			}
+		} else if r.Method != http.MethodGet {
+			return previewUser, &checkErr{http.StatusMethodNotAllowed, "method not allowed", "preview " + r.Method}
+		}
+		write := r.Method == http.MethodPost && r.PostFormValue("confirm") == "yes"
+		if !s.limits.allow(previewUser, write, s.now()) {
+			return previewUser, &checkErr{http.StatusTooManyRequests, "too many requests, slow down", "rate limit"}
+		}
+		return previewUser, nil
 	}
 	if host != s.cfg.host {
 		return "", &checkErr{http.StatusMisdirectedRequest, "wrong host", "host " + r.Host}
@@ -352,6 +396,7 @@ func (l *rateLimits) allow(email string, write bool, now time.Time) bool {
 type pageData struct {
 	Title, CSRF string
 	Write       bool
+	Preview     bool
 	Body        any
 }
 
@@ -362,7 +407,7 @@ func (s *server) render(w http.ResponseWriter, r *http.Request, name string, bod
 func (s *server) renderCode(w http.ResponseWriter, r *http.Request, code int, name string, body any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(code)
-	if err := pages.ExecuteTemplate(w, name, pageData{Title: name, CSRF: s.csrf(emailOf(r)), Write: s.cfg.allowWrite, Body: body}); err != nil {
+	if err := pages.ExecuteTemplate(w, name, pageData{Title: name, CSRF: s.csrf(emailOf(r)), Write: s.cfg.allowWrite, Preview: s.cfg.preview, Body: body}); err != nil {
 		state.LogActivity("serve: rendering %s: %v", name, err)
 	}
 }

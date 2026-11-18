@@ -22,6 +22,31 @@ import (
 // liveSessions is the sessions running now. Stubbed in tests.
 var liveSessions = func() map[string]sessions.LiveSession { return sessions.ScanSessions(nil) }
 
+// LoadLive, set by ccs itself (UseLiveLoads) and never in tests, parses only
+// the running sessions' transcripts for a question only about them
+// (session_triage, list_sessions live_only, ccs sessions without --all):
+// about 20 transcripts instead of every one, a few MB instead of ~640 MB.
+var LoadLive func() ([]transcript.Conversation, error)
+
+// UseLiveLoads turns LoadLive on.
+func UseLiveLoads() {
+	LoadLive = func() ([]transcript.Conversation, error) {
+		var ids []string
+		for id := range liveSessions() {
+			ids = append(ids, id)
+		}
+		return transcript.GetConversationsFor(ids), nil
+	}
+}
+
+// liveOr is LoadLive when it's on, else load.
+func liveOr(load func() ([]transcript.Conversation, error)) func() ([]transcript.Conversation, error) {
+	if LoadLive != nil {
+		return LoadLive
+	}
+	return load
+}
+
 // watchedOpen is the PRs ccs watch last saw open, nil when it has kept no
 // state: without it, which of a session's PRs are still open isn't known
 // (asking GitHub per session is the watcher's job). The watcher follows one
@@ -293,6 +318,9 @@ func RunSessions(args []string, stdout, stderr io.Writer, load func() ([]transcr
 	if *triage && *all {
 		fmt.Fprintln(stderr, "ccs sessions: --triage is for running sessions only; drop --all")
 		return 2
+	}
+	if !*all {
+		load = liveOr(load)
 	}
 	convs, err := load()
 	if err != nil {

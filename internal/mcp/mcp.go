@@ -33,6 +33,11 @@ const mcpProtocol = "2025-06-18"
 // parseCache makes unchanged files free.
 type mcpSource func() ([]transcript.Conversation, error)
 
+// AfterCall, set by Main and never in tests, runs after each tools/call:
+// transcript.DropParseCache, so an idle server holds a few MB rather than
+// every parsed transcript (~620 MB each, one server per Claude session).
+var AfterCall func()
+
 func RunMCP(in io.Reader, out io.Writer, load mcpSource) error {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
@@ -51,6 +56,9 @@ func RunMCP(in io.Reader, out io.Writer, load mcpSource) error {
 			continue // a notification (initialized, cancelled…): nothing to answer
 		}
 		result, rpcErr := mcpHandle(req.Method, req.Params, load)
+		if AfterCall != nil && req.Method == "tools/call" {
+			AfterCall()
+		}
 		resp := map[string]any{"jsonrpc": "2.0", "id": req.ID}
 		if rpcErr != nil {
 			resp["error"] = rpcErr
@@ -498,6 +506,9 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 			return "", fmt.Errorf("bad arguments: %v", err)
 		}
 	}
+	if name == "session_triage" || name == "list_sessions" && a.LiveOnly {
+		load = liveOr(load)
+	}
 	convs, err := load()
 	if err != nil {
 		return "", fmt.Errorf("couldn't read sessions: %v", err)
@@ -563,7 +574,7 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 			}
 			convs = kept
 		}
-		parents := sessions.ParentNames(convs)
+		parents := sessions.ParentNamesLoaded(convs)
 		if a.Parent != "" {
 			kept := convs[:0:0]
 			for _, c := range convs {
@@ -858,6 +869,8 @@ func Main(cutoff time.Time, maxSize int64, excludeDirs []string) {
 	load := func() ([]transcript.Conversation, error) {
 		return transcript.GetConversations(cutoff, maxSize, excludeDirs)
 	}
+	UseLiveLoads()
+	AfterCall = transcript.DropParseCache
 	err := RunMCP(os.Stdin, os.Stdout, load)
 	stats.Flush()
 	if err != nil {

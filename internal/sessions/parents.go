@@ -487,6 +487,33 @@ func ResolveParents(convs []transcript.Conversation, f ParentsFile) map[string]s
 	return out
 }
 
+// ParentNamesLoaded is ParentNames for a load of only some sessions (the
+// running ones): a child whose parent isn't among convs still gets the name
+// its record gives, so a running session under a closed orchestrator keeps
+// its parent in session_triage and list_sessions.
+func ParentNamesLoaded(convs []transcript.Conversation) map[string]string {
+	out := ParentNames(convs)
+	byName, ids := map[string]string{}, map[string]bool{}
+	for _, c := range convs {
+		ids[c.SessionID] = true
+		if c.Title != "" {
+			if _, ok := byName[c.Title]; !ok {
+				byName[c.Title] = c.SessionID
+			}
+		}
+	}
+	for _, r := range LoadParents().Parents {
+		child := byName[r.Child]
+		if child == "" && ids[r.ChildID] {
+			child = r.ChildID
+		}
+		if child != "" && out[child] == "" && r.Parent != "" {
+			out[child] = r.Parent
+		}
+	}
+	return out
+}
+
 // ParentNames is each session's recorded parent's name, by the child's
 // session id, for list_sessions and session_triage.
 func ParentNames(convs []transcript.Conversation) map[string]string {

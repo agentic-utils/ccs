@@ -1236,6 +1236,39 @@ func GetConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 	return conversations, nil
 }
 
+// GetConversationsFor parses only the sessions with these ids (a Claude
+// session's transcript, else a Codex thread's rollout), newest first: what
+// a question about the running sessions needs, at a few MB instead of the
+// ~650 MB a GetConversations over every transcript holds.
+func GetConversationsFor(ids []string) []Conversation {
+	var out []Conversation
+	for _, id := range ids {
+		path := TranscriptPath(id)
+		if path == "" {
+			path = CodexRollout(id)
+		}
+		if path == "" {
+			continue
+		}
+		if c := parseForScan(path, time.Time{}, 1024*1024*1024); c != nil {
+			out = append(out, *c)
+		}
+	}
+	out = newestPerSession(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].LastTimestamp > out[j].LastTimestamp })
+	return out
+}
+
+// DropParseCache forgets every parsed transcript and hands the memory back
+// to the system, for a process that answers one question and then waits
+// (ccs mcp): kept, every server would hold the whole history for good.
+func DropParseCache() {
+	ParseCacheMu.Lock()
+	ParseCache = make(map[string]parsedFile)
+	ParseCacheMu.Unlock()
+	debug.FreeOSMemory()
+}
+
 func FormatTimestamp(ts string) string {
 	if ts == "" {
 		return ""

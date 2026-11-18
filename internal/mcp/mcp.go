@@ -183,6 +183,7 @@ var mcpTools = []map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"name":            map[string]any{"type": "string", "description": "the session's name"},
+				"session_id":      map[string]any{"type": "string", "description": "optional: refuse unless the session with this name is still this session id (nothing is stopped otherwise)"},
 				"graceful":        map[string]any{"type": "boolean", "description": "ask it to wrap up first and wait for it to go idle; default false. Not for Codex sessions"},
 				"timeout_seconds": map[string]any{"type": "integer", "description": "with graceful: how long to wait before stopping it anyway; default 120, at most 900"},
 			},
@@ -208,6 +209,7 @@ var mcpTools = []map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"name":            map[string]any{"type": "string", "description": "the session's name"},
+				"session_id":      map[string]any{"type": "string", "description": "optional: refuse unless the session with this name is still this session id (nothing is stopped otherwise)"},
 				"force":           map[string]any{"type": "boolean", "description": "restart it even mid-turn; default false"},
 				"timeout_seconds": map[string]any{"type": "integer", "description": "restarting your own session: how long to wait for your turn to end before stopping it anyway; default 120, at most 900"},
 			},
@@ -376,8 +378,9 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 // session to wrap up.
 func closeCall(name string, raw json.RawMessage) (string, error) {
 	var a struct {
-		Graceful bool `json:"graceful"`
-		Timeout  int  `json:"timeout_seconds"`
+		Graceful bool   `json:"graceful"`
+		Timeout  int    `json:"timeout_seconds"`
+		ID       string `json:"session_id"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -385,7 +388,7 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 		}
 	}
 	if !a.Graceful {
-		return sessions.CloseByName(name)
+		return sessions.CloseByNameID(name, a.ID)
 	}
 	// The wrap-up takes minutes and a tool call has far less, so this answers
 	// once the notice is sent, as restart_session answers once its tab is up;
@@ -399,7 +402,7 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 	sent := make(chan int, 1)
 	done := make(chan result, 1)
 	go func() {
-		text, err := closeGracefully(name, timeout, func(pid int) { sent <- pid })
+		text, err := closeGracefully(name, a.ID, timeout, func(pid int) { sent <- pid })
 		done <- result{text, err}
 	}()
 	select {
@@ -418,8 +421,8 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 	}
 }
 
-// closeGracefully is sessions.CloseGracefullyNotify, stubbed in tests.
-var closeGracefully = sessions.CloseGracefullyNotify
+// closeGracefully is sessions.CloseGracefullyNotifyID, stubbed in tests.
+var closeGracefully = sessions.CloseGracefullyNotifyID
 
 // restartSession is sessions.RestartSession, stubbed in tests.
 var restartSession = sessions.RestartSession
@@ -430,8 +433,9 @@ var restartSession = sessions.RestartSession
 // goes to the activity log.
 func restartCall(name string, raw json.RawMessage) (string, error) {
 	var a struct {
-		Force   bool `json:"force"`
-		Timeout int  `json:"timeout_seconds"`
+		Force   bool   `json:"force"`
+		Timeout int    `json:"timeout_seconds"`
+		ID      string `json:"session_id"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -446,7 +450,7 @@ func restartCall(name string, raw json.RawMessage) (string, error) {
 	done := make(chan result, 1)
 	go func() {
 		text, err := restartSession(sessions.RestartOpts{
-			Name: name, Force: a.Force,
+			Name: name, ID: a.ID, Force: a.Force,
 			Timeout: time.Duration(clampInt(a.Timeout, 120, 900)) * time.Second,
 			OnTab:   func(tty string) { tab <- tty },
 		})

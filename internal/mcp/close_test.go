@@ -13,7 +13,7 @@ func TestCloseSessionGraceful(t *testing.T) {
 	t.Cleanup(func() { closeGracefully = old })
 	var name string
 	var timeout time.Duration
-	closeGracefully = func(n string, d time.Duration, _ func(int)) (string, error) {
+	closeGracefully = func(n, _ string, d time.Duration, _ func(int)) (string, error) {
 		name, timeout = n, d
 		return "closed " + n + ": it went idle", nil
 	}
@@ -32,7 +32,7 @@ func TestCloseSessionGraceful(t *testing.T) {
 	// The wait outlives a tool call's deadline: once the notice is sent the
 	// call answers with the pid, and the close finishes in the background.
 	release, finished := make(chan struct{}), make(chan struct{})
-	closeGracefully = func(n string, d time.Duration, onSent func(int)) (string, error) {
+	closeGracefully = func(n, _ string, d time.Duration, onSent func(int)) (string, error) {
 		onSent(4242)
 		<-release
 		defer close(finished)
@@ -50,7 +50,7 @@ func TestCloseSessionGraceful(t *testing.T) {
 		t.Error("the close never finished in the background")
 	}
 	// A notice that can't be sent still fails the call.
-	closeGracefully = func(string, time.Duration, func(int)) (string, error) {
+	closeGracefully = func(string, string, time.Duration, func(int)) (string, error) {
 		return "", errors.New("couldn't ask worker to wrap up: nothing was stopped")
 	}
 	if _, err := Call("close_session", json.RawMessage(`{"name":"worker","graceful":true}`), nil); err == nil || !strings.Contains(err.Error(), "nothing was stopped") {

@@ -1232,7 +1232,7 @@ func TestSidebarAndTable(t *testing.T) {
 	}
 	listTop, _, _ := m.listLayout()
 	sw := m.sidebarWidth()
-	if !strings.Contains(lines[listTop], "not open in claude 40") {
+	if !strings.Contains(lines[listTop], "closed 40") {
 		t.Errorf("the list opens with its state section's header: %q", lines[listTop])
 	}
 	if row := lines[listTop+1]; !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(lines[listTop], sw+1, m.width), "▾ ") {
@@ -1392,7 +1392,7 @@ func TestGroupByFolder(t *testing.T) {
 	listTop, _, _ := m.listLayout()
 	lines := strings.Split(strip2(m.View()), "\n")
 	// State sections first (idle, then not open, after a blank row), folders within each.
-	for at, want := range map[int]string{0: "idle 1", 1: "ccs 1", 5: "not open in claude 3", 6: "api 2", 11: "ccs 1"} {
+	for at, want := range map[int]string{0: "idle 1", 1: "ccs 1", 5: "closed 3", 6: "api 2", 11: "ccs 1"} {
 		if !strings.Contains(lines[listTop+at], want) {
 			t.Errorf("row %d should be the header %q:\n%s", at, want, strings.Join(lines[listTop:listTop+14], "\n"))
 		}

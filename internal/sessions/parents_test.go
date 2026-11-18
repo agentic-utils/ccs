@@ -96,7 +96,8 @@ func TestResolveParents(t *testing.T) {
 		{SessionID: "c1", Title: "orchestrator", LastTimestamp: "2026-11-01T10:00:00Z"},
 		{SessionID: "c2", Title: "orchestrator", LastTimestamp: "2026-11-02T10:00:00Z"}, // after a /clear
 		{SessionID: "w1", Title: "worker", LastTimestamp: "2026-11-02T09:00:00Z"},
-		{SessionID: "u1", LastTimestamp: "2026-11-02T09:00:00Z"}, // unnamed: by id only
+		{SessionID: "w0", Title: "worker", LastTimestamp: "2026-11-01T09:00:00Z"}, // the same name, earlier
+		{SessionID: "u1", LastTimestamp: "2026-11-02T09:00:00Z"},                  // unnamed: by id only
 		{SessionID: "x1", Title: "x", LastTimestamp: "2026-11-02T09:00:00Z"},
 		{SessionID: "y1", Title: "y", LastTimestamp: "2026-11-02T09:00:00Z"},
 	}
@@ -111,13 +112,16 @@ func TestResolveParents(t *testing.T) {
 	if got["w1"] != "c2" {
 		t.Errorf("the parent is the newest session with its name, after a /clear: %v", got)
 	}
+	if got["w0"] != "c2" {
+		t.Errorf("an older session with the record's name goes where the newest does: %v", got)
+	}
 	if got["u1"] != "w1" {
 		t.Errorf("a child with no name is found by id: %v", got)
 	}
 	if got["x1"] != "" && got["y1"] != "" {
 		t.Errorf("a loop is broken: %v", got)
 	}
-	if len(got) != 3 {
+	if len(got) != 4 {
 		t.Errorf("a child not listed is left out: %v", got)
 	}
 }
@@ -165,5 +169,24 @@ func TestUndoReorg(t *testing.T) {
 	}
 	if n := len(ParentBackups()); n != parentBackupKeep {
 		t.Errorf("keeps the newest %d: %d", parentBackupKeep, n)
+	}
+}
+
+// An older session with a record of its own keeps it, rather than following
+// the newest session with its name.
+func TestResolveParentsOwnRecordWins(t *testing.T) {
+	convs := []transcript.Conversation{
+		{SessionID: "a1", Title: "hub-a", LastTimestamp: "2026-11-02T10:00:00Z"},
+		{SessionID: "b1", Title: "hub-b", LastTimestamp: "2026-11-02T10:00:00Z"},
+		{SessionID: "w1", Title: "worker", LastTimestamp: "2026-11-02T09:00:00Z"},
+		{SessionID: "w0", Title: "worker", LastTimestamp: "2026-11-01T09:00:00Z"},
+	}
+	f := ParentsFile{Parents: map[string]ParentRec{
+		"worker": {Child: "worker", Parent: "hub-a"},
+		"w0":     {ChildID: "w0", Parent: "hub-b"},
+	}}
+	got := ResolveParents(convs, f)
+	if got["w1"] != "a1" || got["w0"] != "b1" {
+		t.Errorf("w1 under hub-a by name, w0 under hub-b by its own record: %v", got)
 	}
 }

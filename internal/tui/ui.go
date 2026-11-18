@@ -571,7 +571,7 @@ func (m *model) hideReorgRuns() {
 // liveGroup is where a session sits in the list: waiting on a menu or
 // prompt, then idle with a question in its last message, then idle (done
 // ones too, marked only by colour, so opening one never moves it), then
-// busy, then not open in claude.
+// busy, then closed (not running in claude or codex).
 func (m model) liveGroup(c transcript.Conversation) int {
 	switch {
 	case m.putAway(c) != awake: // the bottom sections: settled, snoozed
@@ -941,7 +941,7 @@ var orchestratorSection = struct{ name, colour string }{orchestratorName, "1;37"
 
 // stateSections name liveGroup's values, the list's sections, and colour them.
 var stateSections = [...]struct{ name, colour string }{
-	{"waiting on you", "1;" + waitColour}, {"asked you something", askedColour}, {"idle", "32"}, {"busy", amber}, {"not open in claude", "90"}, {"settled", "90"}, {"snoozed", "90"},
+	{"waiting on you", "1;" + waitColour}, {"asked you something", askedColour}, {"idle", "32"}, {"busy", amber}, {"closed", "90"}, {"settled", "90"}, {"snoozed", "90"},
 }
 
 // spawnParent is the session whose claude -p started c, "" if none is known.

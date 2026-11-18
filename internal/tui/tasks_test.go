@@ -41,7 +41,7 @@ func TestBackgroundTasks(t *testing.T) {
 	}
 	m := initialModel(nil, "", nil)
 	if len(m.runningTasks(conv)) != 0 {
-		t.Error("a session not open in claude has no running tasks")
+		t.Error("a closed session has no running tasks")
 	}
 	conv.SessionID = "s"
 	m.live = map[string]bool{"s": true}

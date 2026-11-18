@@ -149,6 +149,7 @@ var Registry = []Info{
 	{"mcp.claim_pr", "claim_pr"},
 	{"mcp.depends", "depends"},
 	{"mcp.orchestrator_report", "orchestrator_report"},
+	{"mcp.child_notices", "child_notices"},
 
 	// ccs watch events and nudges.
 	{"watch.watch_started", "watch started"},
@@ -176,6 +177,7 @@ var Registry = []Info{
 	{"watch.session_active", "a session active again"},
 	{"watch.session_started", "a session started"},
 	{"watch.session_ended", "a session ended"},
+	{"watch.child_turn", "an orchestrator told a child finished a turn"},
 	{"watch.nudged", "a session nudged about its PR"},
 	{"watch.nudge_failed", "a nudge failed"},
 }

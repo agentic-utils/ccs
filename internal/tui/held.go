@@ -84,10 +84,12 @@ var tuiHold struct {
 	h *mcp.Holder
 }
 
-// tuiFocused mirrors !m.blurred for the holder, which asks off the UI goroutine.
-var tuiFocused atomic.Bool
-
-func init() { tuiFocused.Store(true) }
+// tuiFocused mirrors the terminal's focus for the holder, which asks off the
+// UI goroutine; tuiFocusKnown says a focus report has come at all. Unlike
+// the rest of ccs (where a terminal that doesn't report focus counts as
+// focused), holding starts unfocused: until the terminal says ccs has
+// focus, this ccs never claims the hold, so prompts go to their tabs.
+var tuiFocused, tuiFocusKnown atomic.Bool
 
 // tuiHoldWait is how long this ccs holds a prompt: you're at the Mac, so short.
 const tuiHoldWait = 120 * time.Second
@@ -116,7 +118,12 @@ func ownHold() *mcp.Holder {
 // claimHold makes this ccs the owner when nothing else holds (the lock is
 // free): at startup and from the live tick, at heldCmd's pace. A var:
 // tests must never take the real lock.
-var claimHold = func() {
+var claimHold = claimHoldReal
+
+func claimHoldReal() {
+	if !tuiFocusKnown.Load() {
+		return // focus unknown: never hold
+	}
 	tuiHold.Lock()
 	defer tuiHold.Unlock()
 	if tuiHold.h != nil && tuiHold.h.Owns() {
@@ -142,6 +149,7 @@ func releaseHold(why string) {
 // holdFocus is the terminal's focus as the holder sees it; losing it lets
 // held prompts go to their tabs.
 func holdFocus(focused bool) {
+	tuiFocusKnown.Store(true)
 	tuiFocused.Store(focused)
 	if !focused {
 		if h := ownHold(); h != nil {

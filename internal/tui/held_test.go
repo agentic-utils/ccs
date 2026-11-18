@@ -390,12 +390,29 @@ func TestHeldPaneTypedAnswers(t *testing.T) {
 	}
 }
 
-// Losing the terminal's focus lets what this ccs holds go to the tabs.
-func TestHoldFocusReleases(t *testing.T) {
-	t.Cleanup(func() { tuiFocused.Store(true) })
+// Focus starts unknown: until the terminal reports it, this ccs never
+// claims the hold and says so in the header; losing focus lets what it
+// holds go to the tabs.
+func TestHoldFocus(t *testing.T) {
+	t.Cleanup(func() { tuiFocused.Store(false); tuiFocusKnown.Store(false) })
+	tuiFocused.Store(false)
+	tuiFocusKnown.Store(false)
+	made := 0
+	old := newTUIHolder
+	newTUIHolder = func() *mcp.Holder { made++; return old() }
+	t.Cleanup(func() { newTUIHolder = old })
+	claimHoldReal()
+	if made != 0 || ownHold() != nil {
+		t.Fatal("focus unknown: no hold is claimed")
+	}
+	m := waitModel(t)
+	m.width, m.height = 160, 40
+	if v := strip2(m.View()); !strings.Contains(v, "not holding: focus unknown") {
+		t.Errorf("the header says why it isn't holding:\n%s", v)
+	}
 	holdFocus(false)
-	if tuiFocused.Load() {
-		t.Error("unfocused, this ccs holds nothing new")
+	if !tuiFocusKnown.Load() || tuiFocused.Load() {
+		t.Error("a blur report: known, unfocused")
 	}
 	holdFocus(true)
 	if !tuiFocused.Load() {

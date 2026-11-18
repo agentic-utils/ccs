@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -71,6 +72,21 @@ var ErrHeldElsewhere = errors.New("another ccs already holds prompts")
 
 func holdLockPath() string { return filepath.Join(filepath.Dir(hookSockPath()), "serve-hook.lock") }
 
+// takeoverPath marks a ccs serve taking the hold over: while it's fresh
+// (takeoverFresh), no TUI claims the lock, so a TUI can't grab it in the
+// moment between another TUI yielding and serve locking.
+func takeoverPath() string { return filepath.Join(filepath.Dir(hookSockPath()), "serve-hook.takeover") }
+
+const takeoverFresh = 10 * time.Second
+
+// takeoverWait bounds how long ccs serve keeps asking owners to yield.
+var takeoverWait = 5 * time.Second
+
+func takeoverPending() bool {
+	fi, err := os.Stat(takeoverPath())
+	return err == nil && time.Since(fi.ModTime()) < takeoverFresh
+}
+
 // tryLock takes the ownership lock without waiting.
 func tryLock() (*os.File, error) {
 	path := holdLockPath()
@@ -92,14 +108,26 @@ func tryLock() (*os.File, error) {
 // owner to yield first and waiting up to 3s for it) and opens both
 // sockets. ErrHeldElsewhere when another owns them.
 func (h *Holder) Listen(takeOver bool) error {
+	if !takeOver && takeoverPending() {
+		return ErrHeldElsewhere // ccs serve is taking the hold
+	}
 	lock, err := tryLock()
 	if errors.Is(err, ErrHeldElsewhere) && takeOver {
-		if _, yerr := controlCall(controlRequest{Op: "yield"}); yerr != nil {
-			return fmt.Errorf("%w: %v", ErrHeldElsewhere, yerr)
+		// Mark the takeover, so no TUI claims meanwhile, then ask whoever
+		// owns now to yield, again each round, until the lock is ours or
+		// takeoverWait passes. A ccs serve owner refuses: that's final.
+		if f, ferr := os.OpenFile(takeoverPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); ferr == nil {
+			f.Close()
 		}
-		for deadline := time.Now().Add(3 * time.Second); errors.Is(err, ErrHeldElsewhere) && time.Now().Before(deadline); {
-			time.Sleep(50 * time.Millisecond)
-			lock, err = tryLock()
+		defer os.Remove(takeoverPath())
+		for deadline := time.Now().Add(takeoverWait); errors.Is(err, ErrHeldElsewhere) && time.Now().Before(deadline); {
+			if _, yerr := controlCall(controlRequest{Op: "yield"}); yerr != nil && strings.Contains(yerr.Error(), "doesn't yield") {
+				return fmt.Errorf("%w: %v", ErrHeldElsewhere, yerr)
+			}
+			for retry := time.Now().Add(200 * time.Millisecond); errors.Is(err, ErrHeldElsewhere) && time.Now().Before(retry); {
+				time.Sleep(5 * time.Millisecond)
+				lock, err = tryLock()
+			}
 		}
 	}
 	if err != nil {
@@ -119,6 +147,7 @@ func (h *Holder) Listen(takeOver bool) error {
 	}
 	h.mu.Lock()
 	h.lock, h.stops, h.closing = lock, []func(){stopControl, stopHook}, false
+	h.rel = make(chan struct{})
 	h.mu.Unlock()
 	state.LogActivity("%s: holding prompts from ccs hook permission", h.cfg.Who)
 	return nil
@@ -165,11 +194,18 @@ func (h *Holder) ReleaseAll(why string) {
 }
 
 // Close lets every held prompt go, closes both sockets and unlocks.
+// closing and the release happen together, so no prompt registers in
+// between and stays held.
 func (h *Holder) Close(why string) {
-	h.ReleaseAll(why)
 	h.mu.Lock()
+	if len(h.book.list("")) > 0 {
+		state.LogActivity("%s: letting every held prompt go to its tab: %s", h.cfg.Who, why)
+	}
+	h.closing = true
+	close(h.rel)
+	h.rel = make(chan struct{})
 	stops, lock := h.stops, h.lock
-	h.stops, h.lock, h.closing = nil, nil, true
+	h.stops, h.lock = nil, nil
 	h.mu.Unlock()
 	for _, stop := range stops {
 		stop()
@@ -184,6 +220,10 @@ func (h *Holder) release() <-chan struct{} {
 	defer h.mu.Unlock()
 	return h.rel
 }
+
+// holdSeam runs between holdPrompt's may-hold check and its registration,
+// under the holder's lock; nil but in tests.
+var holdSeam func(*Holder)
 
 // holdPrompt keeps one hook's prompt until it's answered or let go.
 func (h *Holder) holdPrompt(c net.Conn) {
@@ -214,13 +254,22 @@ func (h *Holder) holdPrompt(c net.Conn) {
 		c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		json.NewEncoder(c).Encode(hookReply{Nonce: hello.Nonce})
 	}
-	if h.cfg.MayHold != nil && !h.cfg.MayHold() {
+	// The may-hold check and the registration happen under one lock, the
+	// one ReleaseAll and Close take, so a blur or a yield either comes
+	// before (and it isn't held) or closes the very channel it captured.
+	p := &heldPrompt{id: newPromptID(), nonce: hello.Nonce, req: req, at: h.cfg.Now(), reply: make(chan hookReply, 1)}
+	h.mu.Lock()
+	if h.closing || (h.cfg.MayHold != nil && !h.cfg.MayHold()) {
+		h.mu.Unlock()
 		letGo("not holding now")
 		return
 	}
-	rel := h.release()
-	p := &heldPrompt{id: newPromptID(), nonce: hello.Nonce, req: req, at: h.cfg.Now(), reply: make(chan hookReply, 1)}
+	if holdSeam != nil {
+		holdSeam(h)
+	}
+	rel := h.rel
 	h.book.add(p)
+	h.mu.Unlock()
 	defer h.book.take(p.id)
 	state.LogActivity("%s: holding %s's %s prompt %s", h.cfg.Who, shortID(req.SessionID), req.ToolName, p.id)
 
@@ -239,6 +288,20 @@ func (h *Holder) holdPrompt(c net.Conn) {
 	wait := h.cfg.Wait()
 	limit := time.NewTimer(wait)
 	defer limit.Stop()
+	// letGoOrAnswer: let it go to its tab, unless an answer has already
+	// taken it from the book (confirmed with y, about to be delivered): an
+	// answer you've confirmed goes through even if ccs loses focus or the
+	// wait ends a moment later, never reported as sent but dropped.
+	letGoOrAnswer := func(why string) {
+		if h.book.take(p.id) != nil {
+			letGo(why)
+			return
+		}
+		r := <-p.reply
+		r.Nonce = p.nonce
+		c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		json.NewEncoder(c).Encode(r)
+	}
 	for {
 		select {
 		case r := <-p.reply:
@@ -252,21 +315,14 @@ func (h *Holder) holdPrompt(c net.Conn) {
 			state.LogActivity("%s: %s's prompt %s ended before an answer", h.cfg.Who, shortID(req.SessionID), p.id)
 			return
 		case <-rel:
-			// Answered meanwhile? The answer wins over letting it go.
-			select {
-			case r := <-p.reply:
-				r.Nonce = p.nonce
-				json.NewEncoder(c).Encode(r)
-			default:
-				letGo("released")
-			}
+			letGoOrAnswer("released")
 			return
 		case <-limit.C:
-			letGo(fmt.Sprintf("no answer within %s", wait))
+			letGoOrAnswer(fmt.Sprintf("no answer within %s", wait))
 			return
 		case <-back:
 			if idle, ok := keyIdle(); ok && idle < h.cfg.Now().Sub(p.at) {
-				letGo("a key was pressed on the Mac")
+				letGoOrAnswer("a key was pressed on the Mac")
 				return
 			}
 		}

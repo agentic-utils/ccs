@@ -175,3 +175,72 @@ func TestServeNeverYields(t *testing.T) {
 		t.Errorf("a second ccs serve: %v", err)
 	}
 }
+
+// A blur between the may-hold check and the registration can't leave the
+// prompt held: the release closes the very channel it captured.
+func TestHoldBlurDuringRegistration(t *testing.T) {
+	f := focusedNow()
+	h := tuiHolder(t, f, time.Minute)
+	holdSeam = func(h *Holder) {
+		f.Store(false)
+		go h.ReleaseAll("ccs lost focus") // runs once the registration lets the lock go
+	}
+	t.Cleanup(func() { holdSeam = nil })
+	start := time.Now()
+	if out := hookOutput(t, runHook(t, bashHook)); out != "" || time.Since(start) > 2*time.Second {
+		t.Errorf("let go undecided at once: %q after %s", out, time.Since(start))
+	}
+	if len(h.List()) != 0 {
+		t.Error("nothing stays held")
+	}
+}
+
+// An answer confirmed with y (taken from the book) goes through even if the
+// prompt is released a moment before it's delivered.
+func TestHoldConfirmedAnswerSurvivesRelease(t *testing.T) {
+	h := tuiHolder(t, focusedNow(), time.Minute)
+	out := runHook(t, bashHook)
+	id := waitList(t, h)[0].ID
+	p := h.book.take(id) // the answer took it
+	h.ReleaseAll("ccs lost focus")
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		p.reply <- hookReply{Behavior: "allow"}
+	}()
+	if d := decisionOf(t, hookOutput(t, out)); d["behavior"] != "allow" {
+		t.Errorf("the confirmed answer: %v", d)
+	}
+}
+
+// ccs serve wins against TUIs racing for the hold: while it takes over no
+// TUI claims, and it asks whoever owns each round.
+func TestServeWinsAgainstRacingTUIs(t *testing.T) {
+	first := tuiHolder(t, focusedNow(), time.Minute)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var second *Holder
+	go func() { // a second TUI claiming as fast as it can
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			h := NewHolder(HoldConfig{Who: "tui", Yields: true})
+			if h.Listen(false) == nil {
+				second = h
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	s := hookServer(t, time.Minute)
+	close(stop)
+	<-done
+	if !s.hold.Owns() || first.Owns() || (second != nil && second.Owns()) {
+		t.Errorf("serve owns: %v; first %v", s.hold.Owns(), first.Owns())
+	}
+	if second != nil {
+		second.Close("test over")
+	}
+}

@@ -161,7 +161,7 @@ Each run is written to the activity log with its plan. `ccs adopt` corrects any 
 ccs serve --host ccs.example.com --team <team> --aud <AUD tag> --email you@example.com [--allow-write]
 ```
 
-Each write shows what it will do and asks you to confirm first, and every request is logged to the activity log. Setup and the security model: [docs/remote.md](docs/remote.md).
+`ccs serve --preview [--allow-write]` shows the same pages at http://127.0.0.1:7467, with no Access, to try them on this Mac first. Each write shows what it will do and asks you to confirm first, and every request is logged to the activity log. Setup and the security model: [docs/remote.md](docs/remote.md).
 
 ## Installation
 

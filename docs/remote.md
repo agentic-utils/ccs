@@ -34,6 +34,10 @@ Every launch path (`ccs serve`, the `launch_session` tool, `ccs launch`) passes 
 
 ccs serve doesn't answer questions or permission prompts. The only way it could today is by typing the option's digit into the session's terminal, and whatever is on screen by the time the key lands (a permission prompt, say) would get it; no check can close that gap. Claude Code 2.1.327 has no way to answer a prompt by its id over the session socket (it takes only messages and renames), `--permission-prompt-tool` works only with `claude -p`, and `claude attach` has no answer command. The planned route is a PermissionRequest hook, which Claude Code itself names for answering prompts from a script: it would hand each prompt to ccs serve and answer it by its request id.
 
+## Previewing it on this Mac
+
+`ccs serve --preview` serves the same pages at `http://127.0.0.1:7467` with no Cloudflare Access, to try them before setting the tunnel up. It refuses the Access flags, answers only requests whose Host is `127.0.0.1`, `localhost` or `::1` (which stops DNS rebinding), and is read-only unless you add `--allow-write`. With it, writes work as they do remotely: same-origin only (`Origin` and `Sec-Fetch-Site`), with the form token, the confirm page, the limits and the activity log, so another website can't post to it. Anything on this Mac can use it while it runs, as it can already run ccs itself, so stop it with ^C when you're done.
+
 ## Setting it up
 
 1. Install cloudflared: `brew install cloudflared`, then `cloudflared tunnel login`.

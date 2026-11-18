@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -188,5 +189,25 @@ func TestServeAgentLogIsPrivate(t *testing.T) {
 	privateServeLog()
 	if fi, _ := os.Stat(log); fi.Mode().Perm() != 0o600 {
 		t.Errorf("an existing log is tightened: %v", fi.Mode())
+	}
+	// An existing folder anyone can read is tightened too.
+	os.Chmod(filepath.Dir(log), 0o755)
+	if err := privateServeLog(); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Dir(log)); fi.Mode().Perm() != 0o700 {
+		t.Errorf("an existing log folder is tightened: %v", fi.Mode())
+	}
+	// A symlinked log is never followed.
+	other := filepath.Join(t.TempDir(), "elsewhere.log")
+	os.WriteFile(other, nil, 0o644)
+	os.Remove(log)
+	os.Symlink(other, log)
+	defer os.Remove(log)
+	if err := privateServeLog(); err == nil {
+		t.Error("a symlinked log is refused")
+	}
+	if fi, _ := os.Stat(other); fi.Mode().Perm() != 0o644 {
+		t.Error("what a symlinked log points at is left alone")
 	}
 }

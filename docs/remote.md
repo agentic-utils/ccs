@@ -30,6 +30,15 @@ The signing keys are fetched again every hour (and at once for a key id not seen
 
 Every launch path (`ccs serve`, the `launch_session` tool, `ccs launch`) passes a brief that starts with `-` with a newline in front, so claude or codex reads it as the prompt, never as an option such as `--dangerously-skip-permissions`.
 
+## The page
+
+It's built for a phone and has no scripts at all.
+
+- **Sessions page:** a bar shows how many sessions wait on you. Prompts held for you come first, then the sessions grouped by what they need, each as a card with its status, how long it's been, why, the last thing said, and its PRs.
+- **Session page:** any held prompt sits on top, with its options as big rows (or Allow, Deny and "Show it in its tab instead"). Below it the conversation shows as message bubbles, newest at the bottom: long ones folded, code in its own scrolling block. A message box is pinned to the bottom, and Restart and Close sit under "More actions".
+- **Refreshing:** with no scripts, the sessions page and a waiting session's page reload every 10 seconds. A session that isn't waiting never reloads, so a message being typed isn't lost; while it waits, its message box is hidden.
+- **Home screen:** it can be added to a phone's home screen, with its own name, icon and full-screen display.
+
 ## Answering from afar
 
 `ccs serve` never types into a terminal to answer anything: whatever is on screen by the time the key lands (a permission prompt, say) would get it. It answers through Claude Code's own PermissionRequest hook instead, which Claude Code runs for each permission prompt and AskUserQuestion menu before showing it, and which can settle it with a decision.
@@ -77,6 +86,8 @@ The tunnel is its own service: `brew services start cloudflared`.
 ## Previewing it on this Mac
 
 `ccs serve --preview` serves the same pages on this Mac with no Cloudflare Access, to try them before setting the tunnel up.
+
+It opens its link with `open <url>`, so the token is briefly in that process's arguments, which macOS doesn't let other users read.
 
 Loopback is shared by every user on a Mac, so the preview has a login of its own. Each start makes a random secret, and every page and form lives under `http://127.0.0.1:7467/p/<secret>/`. ccs prints that link and opens it in your browser. A request without the secret, or with a wrong one, gets a 404 and nothing else, and the secret is never written to the activity log. The secret is kept in the path, not a cookie, because a browser sends a 127.0.0.1 cookie to every port, so another user's service on another port would receive it. The pages' `Referrer-Policy: same-origin` keeps the path from being sent to other origins too.
 

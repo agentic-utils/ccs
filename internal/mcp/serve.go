@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -306,10 +307,13 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/session", s.sessionJSON)
 	mux.HandleFunc("GET /api/prs", s.textJSON("list_prs"))
 	mux.HandleFunc("POST /act", s.act)
+	mux.HandleFunc("GET /manifest.webmanifest", s.manifest)
+	mux.HandleFunc("GET /icon.svg", s.iconSVG)
+	mux.HandleFunc("GET /icon/{size}", s.iconPNG)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		rec := &statusWriter{ResponseWriter: w, status: http.StatusOK, base: s.base()}
 		h := rec.Header()
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; manifest-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		// same-origin, not no-referrer: under no-referrer a browser sends
 		// "Origin: null" on the page's own form posts, which the origin
@@ -446,10 +450,18 @@ func orDash(s string) string {
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	base   string // a preview's /p/<token>, put back on a redirect's Location
 }
 
+// WriteHeader records the status, and in a preview puts the secret path
+// back in front of a redirect to a path on this site (the mux's own
+// redirects, and http.Redirect, see the path with the prefix stripped), so
+// a redirect never lands on a 404.
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
+	if loc := w.Header().Get("Location"); w.base != "" && strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") && !strings.HasPrefix(loc, w.base+"/") {
+		w.Header().Set("Location", w.base+loc)
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
@@ -508,6 +520,9 @@ type pageData struct {
 	Write       bool
 	Preview     bool
 	Base        string // what every link and form starts with (base)
+	Waiting     int    // sessions waiting on the user, for the bar's badge (-1 unknown)
+	Updated     string // when the page was drawn, hh:mm
+	Refresh     bool   // the page reloads itself (refreshes)
 	Body        any
 }
 
@@ -518,9 +533,31 @@ func (s *server) render(w http.ResponseWriter, r *http.Request, name string, bod
 func (s *server) renderCode(w http.ResponseWriter, r *http.Request, code int, name string, body any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(code)
-	if err := pages.ExecuteTemplate(w, name, pageData{Title: name, CSRF: s.csrf(emailOf(r)), Write: s.cfg.allowWrite, Preview: s.cfg.preview, Base: s.base(), Body: body}); err != nil {
+	waiting := -1
+	if rows, err := s.triage(r.Context()); err == nil {
+		waiting = waitingOnYou(rows)
+	}
+	d := pageData{Title: pageTitle(name), CSRF: s.csrf(emailOf(r)), Write: s.cfg.allowWrite, Preview: s.cfg.preview, Base: s.base(),
+		Waiting: waiting, Updated: s.now().Local().Format("15:04"), Refresh: refreshes(name, body), Body: body}
+	if err := pages.ExecuteTemplate(w, name, d); err != nil {
 		state.LogActivity("serve: rendering %s: %v", name, err)
 	}
+}
+
+func pageTitle(name string) string {
+	switch name {
+	case "triage":
+		return "Sessions"
+	case "session":
+		return "Session"
+	case "text":
+		return "PRs"
+	case "launch":
+		return "Launch"
+	case "confirm":
+		return "Confirm"
+	}
+	return "ccs"
 }
 
 func (s *server) fail(w http.ResponseWriter, r *http.Request, code int, msg string) {
@@ -545,7 +582,7 @@ func (s *server) triagePage(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		names[row.Session] = row.Name
 	}
-	s.render(w, r, "triage", map[string]any{"Rows": rows, "Prompts": s.promptViews("", names)})
+	s.render(w, r, "triage", map[string]any{"Rows": rows, "Buckets": buckets(rows), "Prompts": s.promptViews("", names)})
 }
 
 func (s *server) triageJSON(w http.ResponseWriter, r *http.Request) {
@@ -568,8 +605,11 @@ type sessionView struct {
 	ID, Name, Text, Status string
 	Offset, Prev, Next     int
 	HasNext, Live, Codex   bool
+	HasPrev                bool
 	Ask                    *askView
 	Prompts                []promptView // held for the page by `ccs hook permission`
+	Messages               []msgView    `json:"-"` // the page's bubbles; the API keeps read_session's Text
+	Total                  int          // messages in the conversation
 }
 
 // askView is a waiting session's pending question, shown but never answered
@@ -612,11 +652,13 @@ func (s *server) session(r *http.Request) (sessionView, int, error) {
 			}
 		}
 	}
-	if v.Live {
-		if conv, ok := s.conv(r.Context(), id); ok {
-			if len(conv.Questions()) > 0 && conv.Pending != nil {
-				v.Ask = &askView{ID: conv.Pending.ID, Question: conv.PendingAsk()}
-			}
+	if conv, ok := s.conv(r.Context(), id); ok {
+		start, end := pageOf(len(conv.Messages), offset)
+		v.Messages, v.Total = messageViews(conv, start, end), len(conv.Messages)
+		v.Prev, v.HasPrev = max(0, start-msgPage), start > 0
+		v.Next, v.HasNext = end, end < len(conv.Messages)
+		if v.Live && len(conv.Questions()) > 0 && conv.Pending != nil {
+			v.Ask = &askView{ID: conv.Pending.ID, Question: conv.PendingAsk()}
 		}
 	}
 	return v, http.StatusOK, nil
@@ -923,5 +965,10 @@ func ServeMain(args []string, load func() ([]transcript.Conversation, error)) {
 }
 
 var pages = template.Must(template.New("").Funcs(template.FuncMap{
-	"inc": func(i int) int { return i + 1 },
+	"inc":    func(i int) int { return i + 1 },
+	"prName": github.PRName,
+	// promptArgs is what the "prompt" template needs for one held prompt.
+	"promptArgs": func(p promptView, base, csrf, sid, sname string) map[string]any {
+		return map[string]any{"P": p, "Base": base, "CSRF": csrf, "SID": sid, "SName": sname}
+	},
 }).Parse(pageTemplates))

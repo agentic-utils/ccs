@@ -62,13 +62,32 @@ func ServePlistPath() string { return filepath.Join(LaunchAgentsDir(), ServeLabe
 // ServeLogPath is where the agent's output goes, beside the update log.
 func ServeLogPath() string { return filepath.Join(filepath.Dir(state.UpdateLogPath), "serve.log") }
 
-// privateServeLog makes the agent's log 0600 (its folder 0700 when ccs
-// creates it) before launchd writes to it, since launchd would create it
-// readable by everyone, and tightens one that's already there.
+// privateServeLog makes the agent's log 0600 in a 0700 folder before
+// launchd writes to it, since launchd would create it readable by everyone:
+// it creates them so, and tightens ones already there, but only when they
+// are this user's own real folder and file. A symlink or another owner's is
+// refused, never followed or changed.
 func privateServeLog() error {
 	path := ServeLogPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
+	}
+	uid := uint32(os.Getuid())
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 || ownerOf(fi) != uid {
+		return fmt.Errorf("%s isn't a folder of this user's own, so ccs serve's log isn't written there", dir)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	if fi, err := os.Lstat(path); err == nil && (!fi.Mode().IsRegular() || ownerOf(fi) != uid) {
+		return fmt.Errorf("%s isn't a file of this user's own, so it's left alone", path)
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {

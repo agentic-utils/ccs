@@ -455,6 +455,7 @@ func Main(v string) {
 		stop()
 	}
 	sessions.CloseInboxes()
+	releaseHold("ccs quit") // prompts it held go to their tabs
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

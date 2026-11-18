@@ -55,7 +55,7 @@ func TestHeldQuestionAnsweredByNumber(t *testing.T) {
 	m, calls := heldModel(t, mcp.HeldPrompt{ID: "p1", Session: "live", Tool: "AskUserQuestion",
 		Questions: []mcp.HeldQuestion{{Question: "Which colour?", Options: []string{"Red", "Blue"}}}})
 	pop := strip2(m.waitPopup())
-	for _, want := range []string{"held by ccs serve", "Which colour?", "1. Red", "2. Blue", "1-2 answer", "T back to its tab"} {
+	for _, want := range []string{"held by ccs", "Which colour?", "1. Red", "2. Blue", "1-2 answer", "T back to its tab"} {
 		if !strings.Contains(pop, want) {
 			t.Errorf("overlay lacks %q:\n%s", want, pop)
 		}
@@ -108,15 +108,53 @@ func TestHeldPermissionAsksYesNo(t *testing.T) {
 	}
 }
 
-func TestHeldMultiSelectOnlyGoesBack(t *testing.T) {
-	m, calls := heldModel(t, mcp.HeldPrompt{ID: "p3", Session: "live", Tool: "AskUserQuestion",
-		Questions: []mcp.HeldQuestion{{Question: "Which checks?", Multi: true, Options: []string{"lint", "tests"}}}})
-	if pop := strip2(m.waitPopup()); !strings.Contains(pop, "answer it on the ccs serve page") {
+// A menu with a pick-any question, or several questions, is answered by
+// typing one answer per question; Enter parses it and asks y/n.
+func TestHeldTypedAnswers(t *testing.T) {
+	h := mcp.HeldPrompt{ID: "p3", Session: "live", Tool: "AskUserQuestion", Questions: []mcp.HeldQuestion{
+		{Question: "Colour?", Options: []string{"Red", "Blue"}},
+		{Question: "Checks?", Multi: true, Options: []string{"lint", "tests", "vet"}},
+		{Question: "Ship?", Options: []string{"Yes", "No"}},
+	}}
+	m, calls := heldModel(t, h)
+	if pop := strip2(m.waitPopup()); !strings.Contains(pop, "one per question (1+3 for pick-any)") || strings.Contains(pop, "ccs serve page") {
 		t.Errorf("overlay:\n%s", pop)
 	}
-	m = press(m, "1")
-	if m = press(m, "A"); len(*calls) != 0 {
-		t.Errorf("a multi-select gets no digit or A: %+v", *calls)
+	// In ^X W the answers are the box's text; Enter parses, never sends.
+	for _, k := range []string{"2", ",", " ", "1", "+", "3", ",", "1"} {
+		m = press(m, k)
+	}
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = run(res.(model), cmd)
+	if m.heldConfirmed == nil || !strings.Contains(m.heldConfirmed.what, "Colour? → Blue · Checks? → lint, vet · Ship? → Yes") || len(*calls) != 0 {
+		t.Fatalf("summary %+v, calls %+v", m.heldConfirmed, *calls)
+	}
+	m = press(m, "y")
+	if len(*calls) != 1 || (*calls)[0].choice != "answer" || strings.Join((*calls)[0].labels[1], "|") != "lint|vet" || (*calls)[0].labels[0][0] != "Blue" || (*calls)[0].labels[2][0] != "Yes" {
+		t.Errorf("sent %+v", *calls)
+	}
+}
+
+func TestParseHeldAnswers(t *testing.T) {
+	h := mcp.HeldPrompt{Questions: []mcp.HeldQuestion{
+		{Question: "A?", Options: []string{"a1", "a2"}},
+		{Question: "B?", Multi: true, Options: []string{"b1", "b2", "b3"}},
+	}}
+	if labels, summary, err := parseHeldAnswers(h, " 2 , 1+3 "); err != nil || labels[0][0] != "a2" || strings.Join(labels[1], ",") != "b1,b3" || summary != "A? → a2 · B? → b1, b3" {
+		t.Errorf("good: %v %q %v", labels, summary, err)
+	}
+	for in, want := range map[string]string{
+		"1":     "1 answers for 2 questions",
+		"1,1,1": "3 answers for 2 questions",
+		"3,1":   "question 1 has options 1-2",
+		"1,4":   "question 2 has options 1-3",
+		"1+2,1": "question 1 takes one answer",
+		"1,x":   "question 2 has options",
+		"1,":    "question 2 has options",
+	} {
+		if _, _, err := parseHeldAnswers(h, in); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", in, err, want)
+		}
 	}
 }
 
@@ -127,7 +165,7 @@ func TestHeldShownInBottomPane(t *testing.T) {
 	m = run(m, m.heldCmd())
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
 	m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
-	if v := strip2(m.View()); !strings.Contains(v, "held by ccs serve") || !strings.Contains(v, "answer it here") {
+	if v := strip2(m.View()); !strings.Contains(v, "held by ccs") || !strings.Contains(v, "answer it here") {
 		t.Errorf("bottom pane:\n%s", v)
 	}
 }
@@ -318,5 +356,49 @@ func TestHeldAutoSelect(t *testing.T) {
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID != "live" })
 	if m.autoSelect(); selected(m) {
 		t.Error("a wait already dealt with isn't selected again")
+	}
+}
+
+// The bottom pane takes a held menu's typed answers too: one per question,
+// Enter parses (a wrong one says why and sends nothing), y sends.
+func TestHeldPaneTypedAnswers(t *testing.T) {
+	m, calls, typed := paneModel(t, mcp.HeldPrompt{ID: "p8", Session: "live", Tool: "AskUserQuestion", Questions: []mcp.HeldQuestion{
+		{Question: "Colour?", Options: []string{"Red", "Blue"}},
+		{Question: "Ship?", Options: []string{"Yes", "No"}},
+	}})
+	m = keyType(m, tea.KeyEnter)
+	for _, k := range []string{"3", ",", "1"} {
+		m = press(m, k)
+	}
+	m = keyType(m, tea.KeyEnter)
+	if m.heldConfirmed != nil || len(*calls) != 0 || !strings.Contains(strip2(m.View()), "question 1 has options 1-2") {
+		t.Fatalf("a wrong answer says why and sends nothing: %+v", *calls)
+	}
+	m = keyType(m, tea.KeyBackspace)
+	m = keyType(m, tea.KeyBackspace)
+	m = keyType(m, tea.KeyBackspace)
+	for _, k := range []string{"2", ",", "1"} {
+		m = press(m, k)
+	}
+	m = keyType(m, tea.KeyEnter)
+	if m.heldConfirmed == nil || !strings.Contains(m.heldConfirmed.what, "Colour? → Blue · Ship? → Yes") {
+		t.Fatalf("summary: %+v", m.heldConfirmed)
+	}
+	m = press(m, "y")
+	if len(*calls) != 1 || (*calls)[0].labels[0][0] != "Blue" || (*calls)[0].labels[1][0] != "Yes" || *typed {
+		t.Errorf("sent %+v typed %v", *calls, *typed)
+	}
+}
+
+// Losing the terminal's focus lets what this ccs holds go to the tabs.
+func TestHoldFocusReleases(t *testing.T) {
+	t.Cleanup(func() { tuiFocused.Store(true) })
+	holdFocus(false)
+	if tuiFocused.Load() {
+		t.Error("unfocused, this ccs holds nothing new")
+	}
+	holdFocus(true)
+	if !tuiFocused.Load() {
+		t.Error("focused again")
 	}
 }

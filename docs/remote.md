@@ -66,7 +66,17 @@ What happens to each prompt:
 - **The TUI talks to ccs serve the same way.** Its control socket (`serve-control.sock`) gets the same checks on both ends, and it carries only a choice and labels. A digit in ^X W asks y/n first, as A and D do. A sent answer whose reply never comes back is reported as "outcome unknown", never as failed, because ccs serve may already have settled it.
 - **Programs running as you are out of scope.** Such a program could edit `~/.claude/settings.json`, remove the hook, or run claude itself, so a shared key file or any other check here would not stop it. That's why there's no signing key.
 
-**Answering from the ccs TUI.** A held prompt can also be answered in ccs on this Mac. Its session is marked "held by ccs serve" in the bottom pane of the main view and in ^X W. Enter or a click on the selected session focuses the bottom pane; with ^X A on, ccs selects a session that starts waiting once you've stopped typing in ccs for 2 seconds and focuses its held prompt, dropping keys for its first second or while keys still come under 600ms apart, so typing meant for the search can't answer it. There, and in ^X W:
+**Who holds a prompt.** Whoever owns the hold socket, as an flock on `serve-hook.lock` beside it:
+- **`ccs serve --allow-write`, whenever it runs.** It takes the hold over from a ccs TUI that has it (the TUI's held prompts go to their tabs, undecided), and a second ccs serve is refused.
+- **Otherwise, the first open ccs TUI.** Other TUIs answer through it.
+  - It holds a prompt only while ccs has the terminal's focus, because then you're looking at it. Unfocused, a new prompt goes straight to its tab.
+  - A held prompt goes to its tab when ccs loses focus, after 2 minutes, or when ccs quits. A key press doesn't release it, because you type in ccs to answer.
+  - When ccs serve stops, a TUI takes the hold within a couple of seconds.
+- **Nothing running:** with no ccs serve and no ccs TUI, the hook prints nothing and the prompt shows in its tab at once.
+
+Sessions started before `ccs hook install` don't run the hook: restart them (^X R) to pick it up.
+
+**Answering from the ccs TUI.** A held prompt can be answered in ccs on this Mac. Its session is marked "held by ccs" in the bottom pane of the main view and in ^X W. Enter or a click on the selected session focuses the bottom pane; with ^X A on, ccs selects a session that starts waiting once you've stopped typing in ccs for 2 seconds and focuses its held prompt, dropping keys for its first second or while keys still come under 600ms apart, so typing meant for the search can't answer it. There, and in ^X W:
 
 - a digit picks a single question's option;
 - A allows and D denies a permission prompt, each asking y/n first;

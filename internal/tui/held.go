@@ -1,9 +1,11 @@
 package tui
 
-// Prompts ccs serve holds for its page (`ccs hook permission`, docs/remote.md),
-// answered from here by their id over ccs serve's control socket
-// (mcp.HeldPrompts, mcp.AnswerHeld), never by typing into a terminal: the
-// prompt isn't on screen in its tab while it's held. The selected session's
+// Prompts held by `ccs hook permission` (docs/remote.md): by ccs serve for
+// its page, or, when no ccs serve --allow-write runs, by this ccs itself
+// (tuiHold) for this list. Answered from here by their id (the owner's
+// holder directly, or the control socket: mcp.HeldPrompts, mcp.AnswerHeld),
+// never by typing into a terminal: the prompt isn't on screen in its tab
+// while it's held. The selected session's
 // held prompt is answered in the bottom pane (Enter or a click focuses it;
 // with ^X A on, ccs selects a session that starts waiting once you've
 // stopped typing, and focuses it there), and in the ^X W overlay: a digit
@@ -19,7 +21,10 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,12 +49,106 @@ const (
 // heldNow is the clock the pane's guard and auto-select read; stubbed in tests.
 var heldNow = time.Now
 
-// The control socket's client and whether it exists; stubbed in tests.
+// The held prompts and their answers: this ccs's own holder when it owns
+// the hold, else the owner's control socket; stubbed in tests.
 var (
-	heldPrompts = mcp.HeldPrompts
-	answerHeld  = mcp.AnswerHeld
-	controlSock = func() bool { _, err := os.Lstat(mcp.ControlSockPath()); return err == nil }
+	heldPrompts = func() ([]mcp.HeldPrompt, error) {
+		if h := ownHold(); h != nil {
+			return h.List(), nil
+		}
+		return mcp.HeldPrompts()
+	}
+	answerHeld = func(id, choice string, labels map[int][]string) (string, error) {
+		if h := ownHold(); h != nil {
+			return h.Answer(id, choice, labels)
+		}
+		return mcp.AnswerHeld(id, choice, labels)
+	}
+	controlSock = func() bool {
+		if ownHold() != nil {
+			return true
+		}
+		_, err := os.Lstat(mcp.ControlSockPath())
+		return err == nil
+	}
 )
+
+// tuiHold is this ccs's holder while it owns the hold: when no ccs serve
+// --allow-write (or another ccs) does, prompts from the hook are held for
+// this list, but only while ccs has the terminal's focus (you're looking at
+// it): unfocused, a new prompt goes straight to its tab, and losing focus,
+// tuiHoldWait or quitting lets held ones go there, with no decision. ccs
+// serve takes the hold over (yield) whenever it starts with --allow-write.
+var tuiHold struct {
+	sync.Mutex
+	h *mcp.Holder
+}
+
+// tuiFocused mirrors !m.blurred for the holder, which asks off the UI goroutine.
+var tuiFocused atomic.Bool
+
+func init() { tuiFocused.Store(true) }
+
+// tuiHoldWait is how long this ccs holds a prompt: you're at the Mac, so short.
+const tuiHoldWait = 120 * time.Second
+
+// newTUIHolder makes this ccs's holder; stubbed in tests.
+var newTUIHolder = func() *mcp.Holder {
+	return mcp.NewHolder(mcp.HoldConfig{
+		Who:     "tui",
+		Wait:    func() time.Duration { return tuiHoldWait },
+		MayHold: tuiFocused.Load,
+		Yields:  true,
+	})
+}
+
+// ownHold is this ccs's holder while it owns the hold, else nil (never
+// owned, or yielded to ccs serve).
+func ownHold() *mcp.Holder {
+	tuiHold.Lock()
+	defer tuiHold.Unlock()
+	if tuiHold.h != nil && !tuiHold.h.Owns() {
+		tuiHold.h = nil
+	}
+	return tuiHold.h
+}
+
+// claimHold makes this ccs the owner when nothing else holds (the lock is
+// free): at startup and from the live tick, at heldCmd's pace. A var:
+// tests must never take the real lock.
+var claimHold = func() {
+	tuiHold.Lock()
+	defer tuiHold.Unlock()
+	if tuiHold.h != nil && tuiHold.h.Owns() {
+		return
+	}
+	tuiHold.h = nil
+	if h := newTUIHolder(); h.Listen(false) == nil {
+		tuiHold.h = h
+	}
+}
+
+// releaseHold lets every held prompt go to its tab and gives the hold up.
+func releaseHold(why string) {
+	tuiHold.Lock()
+	h := tuiHold.h
+	tuiHold.h = nil
+	tuiHold.Unlock()
+	if h != nil {
+		h.Close(why)
+	}
+}
+
+// holdFocus is the terminal's focus as the holder sees it; losing it lets
+// held prompts go to their tabs.
+func holdFocus(focused bool) {
+	tuiFocused.Store(focused)
+	if !focused {
+		if h := ownHold(); h != nil {
+			h.ReleaseAll("ccs lost focus")
+		}
+	}
+}
 
 type heldMsg struct {
 	prompts []mcp.HeldPrompt
@@ -74,6 +173,7 @@ func (m *model) heldCmd() tea.Cmd {
 		return nil
 	}
 	m.heldAt = time.Now()
+	claimHold()
 	if !controlSock() {
 		m.heldPrompt = nil
 		return nil
@@ -114,6 +214,44 @@ func (m model) heldByID(id string) (mcp.HeldPrompt, bool) {
 	return mcp.HeldPrompt{}, false
 }
 
+// heldTyped: a held question menu with several questions or a pick-any one,
+// answered by typing one answer per question.
+func heldTyped(h mcp.HeldPrompt) bool { return len(h.Questions) > 0 && heldPick(h) == 0 }
+
+// heldTypeHint says how to type a menu's answers.
+const heldTypeHint = "type 1,2,… one per question (1+3 for pick-any), enter"
+
+// parseHeldAnswers reads typed answers: one per question, in order,
+// comma-separated; a pick-any question takes several numbers joined by
+// "+"; spaces are ignored. It returns the chosen labels by question and a
+// summary, or what's wrong.
+func parseHeldAnswers(h mcp.HeldPrompt, typed string) (map[int][]string, string, error) {
+	parts := strings.Split(strings.ReplaceAll(typed, " ", ""), ",")
+	if len(parts) != len(h.Questions) {
+		return nil, "", fmt.Errorf("%d answers for %d questions: one per question, comma-separated", len(parts), len(h.Questions))
+	}
+	labels := map[int][]string{}
+	var said []string
+	for i, part := range parts {
+		q := h.Questions[i]
+		nums := strings.Split(part, "+")
+		if len(nums) > 1 && !q.Multi {
+			return nil, "", fmt.Errorf("question %d takes one answer, not %s", i+1, part)
+		}
+		for _, n := range nums {
+			k, err := strconv.Atoi(n)
+			if err != nil || k < 1 || k > len(q.Options) {
+				return nil, "", fmt.Errorf("question %d has options 1-%d, not %q", i+1, len(q.Options), n)
+			}
+			if !slices.Contains(labels[i], q.Options[k-1]) {
+				labels[i] = append(labels[i], q.Options[k-1])
+			}
+		}
+		said = append(said, q.Question+" → "+strings.Join(labels[i], ", "))
+	}
+	return labels, strings.Join(said, " · "), nil
+}
+
 // heldPick: the single single-choice question a digit can answer, its option count.
 func heldPick(h mcp.HeldPrompt) int {
 	if len(h.Questions) != 1 || h.Questions[0].Multi {
@@ -125,7 +263,7 @@ func heldPick(h mcp.HeldPrompt) int {
 // heldLines shows a held prompt, marked as ccs serve's, with its keys.
 func heldLines(h mcp.HeldPrompt, width int) []string {
 	cut := func(s string) string { return transcript.Truncate(s, max(width, 10)) }
-	lines := []string{"", "\033[1;" + amber + "m⏸ held by ccs serve\033[0m \033[90m(not on screen in its tab)\033[0m"}
+	lines := []string{"", "\033[1;" + amber + "m⏸ held by ccs\033[0m \033[90m(not on screen in its tab)\033[0m"}
 	switch {
 	case len(h.Questions) > 0:
 		for _, q := range h.Questions {
@@ -141,7 +279,7 @@ func heldLines(h mcp.HeldPrompt, width int) []string {
 		if n := heldPick(h); n > 0 {
 			lines = append(lines, "\033[90m"+hints(fmt.Sprintf("1-%d", n), "answer", "T", "back to its tab")+"\033[0m")
 		} else {
-			lines = append(lines, "\033[90manswer it on the ccs serve page, or "+hints("T", "send it back to its tab")+"\033[0m")
+			lines = append(lines, "\033[90m"+heldTypeHint+", or "+hints("T", "back to its tab")+"\033[0m")
 		}
 	default:
 		lines = append(lines, cut("\033[1;"+amber+"m? wants to use "+h.Tool+"\033[0m "+h.Summary))
@@ -159,6 +297,8 @@ func (m *model) heldKey(k string, conv transcript.Conversation) (cmd tea.Cmd, do
 	}
 	name := m.sessionName(conv)
 	switch {
+	case heldTyped(h) && len(k) == 1 && strings.ContainsAny(k, "0123456789,+ "):
+		return nil, false // typed into the answer: the pane's buffer, or ^X W's box
 	case len(k) == 1 && k >= "1" && k <= "9":
 		// While a prompt is held every digit is the held prompt's: none may
 		// reach the terminal-typing answer below it, whatever the transcript
@@ -183,6 +323,17 @@ func (m *model) heldKey(k string, conv transcript.Conversation) (cmd tea.Cmd, do
 		return m.answerHeldCmd(h, name, "mac", nil), true
 	}
 	return nil, false
+}
+
+// heldTypedEnter parses typed answers for a held menu and, when they're
+// right, asks y/n with a summary of each question's answer.
+func (m *model) heldTypedEnter(h mcp.HeldPrompt, name, typed string) {
+	labels, summary, err := parseHeldAnswers(h, typed)
+	if err != nil {
+		m.heldErr, m.waitErr, m.heldNote, m.waitNote = err.Error()+": nothing sent", err.Error()+": nothing sent", "", ""
+		return
+	}
+	m.heldConfirmed = &heldConfirm{id: h.ID, choice: "answer", labels: labels, what: fmt.Sprintf("Answer %s: %s? y/n", name, summary)}
 }
 
 // heldConfirmKey: y sends the confirmed digit, A or D; anything else drops it.
@@ -218,9 +369,9 @@ func (m *model) applyHeldDone(msg heldDoneMsg) {
 	m.heldErr = ""
 	switch {
 	case errors.Is(msg.err, mcp.ErrNoServe):
-		m.waitErr = "ccs serve stopped: the prompt is in " + msg.name + "'s tab"
+		m.waitErr = "Nothing holds prompts now: the prompt is in " + msg.name + "'s tab"
 	case errors.Is(msg.err, mcp.ErrOutcomeUnknown):
-		m.waitErr = "Sent to " + msg.name + ", but ccs serve's reply never came: check its tab or the page"
+		m.waitErr = "Sent to " + msg.name + ", but the reply never came: check its tab"
 	case msg.err != nil:
 		m.waitErr = "Couldn't answer " + msg.name + ": " + msg.err.Error()
 	default:
@@ -254,6 +405,9 @@ func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 		lines = append(lines, "\033[31m"+m.heldErr+"\033[0m")
 	case m.heldNote != "":
 		lines = append(lines, "\033[90m"+m.heldNote+"\033[0m")
+	}
+	if m.heldFocus && heldTyped(h) {
+		lines = append(lines, "answer: "+m.heldInput+"█")
 	}
 	if m.heldFocus {
 		lines = append(lines, "\033[90m"+hints(keyEnter, "back to its tab and open it", keyEsc, "search")+"\033[0m")
@@ -294,6 +448,24 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 	if m.heldConfirmed != nil {
 		return m.heldConfirmKey(k), true
 	}
+	if heldTyped(h) {
+		switch {
+		case k == "enter" && strings.TrimSpace(m.heldInput) != "":
+			m.heldTypedEnter(h, m.sessionName(conv), m.heldInput)
+			if m.heldConfirmed != nil {
+				m.heldInput = ""
+			}
+			return nil, true
+		case k == "backspace":
+			if m.heldInput != "" {
+				m.heldInput = m.heldInput[:len(m.heldInput)-1]
+			}
+			return nil, true
+		case len(k) == 1 && strings.ContainsAny(k, "0123456789,+ "):
+			m.heldInput += k
+			return nil, true
+		}
+	}
 	if k == "enter" {
 		m.heldFocus = false
 		return tea.Sequence(m.answerHeldCmd(h, m.sessionName(conv), "mac", nil), m.focusCmd(conv)), true
@@ -315,7 +487,7 @@ func heldKeysFor(h mcp.HeldPrompt) string {
 	case heldPick(h) > 0:
 		return fmt.Sprintf("1-%d answer, T back to its tab", heldPick(h))
 	}
-	return "T back to its tab (answer this one on the ccs serve page)"
+	return heldTypeHint + ", T back to its tab"
 }
 
 // autoSelect (part of ^X A): once you've stopped typing in ccs for
@@ -375,5 +547,5 @@ func (m *model) autoSelect() {
 	if held {
 		m.heldFocus, m.heldAutoAt = true, heldNow()
 	}
-	state.LogActivity("auto-select: selected %s in ccs (%s)", m.focusName(pick), map[bool]string{true: "held by ccs serve", false: "waiting in its tab"}[held])
+	state.LogActivity("auto-select: selected %s in ccs (%s)", m.focusName(pick), map[bool]string{true: "held by ccs", false: "waiting in its tab"}[held])
 }

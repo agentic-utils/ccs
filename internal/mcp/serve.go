@@ -68,7 +68,8 @@ type server struct {
 	cfg     serveConfig
 	csrfKey []byte
 	limits  *rateLimits
-	prompts promptBook // prompts `ccs hook permission` hands over, held for the page
+	prompts *promptBook // the holder's: prompts `ccs hook permission` hands over, held for the page
+	hold    *Holder
 	now     func() time.Time
 
 	loadMu   sync.Mutex
@@ -128,7 +129,15 @@ func (s *server) loader(ctx context.Context) mcpSource {
 func newServer(cfg serveConfig) *server {
 	key := make([]byte, 32)
 	rand.Read(key)
-	return &server{cfg: cfg, csrfKey: key, limits: newRateLimits(), now: time.Now, slots: make(chan struct{}, serveSlots)}
+	s := &server{cfg: cfg, csrfKey: key, limits: newRateLimits(), now: time.Now, slots: make(chan struct{}, serveSlots)}
+	s.hold = NewHolder(HoldConfig{
+		Who:        "serve",
+		Wait:       func() time.Duration { return s.cfg.hookWait },
+		KeyRelease: func() bool { return !s.cfg.preview }, // in a preview the user is at the Mac by design
+		Now:        func() time.Time { return s.now() },
+	})
+	s.prompts = s.hold.book
+	return s
 }
 
 // serveFlags are `ccs serve`'s flags, checked: what RunServe runs with and

@@ -124,6 +124,8 @@ type model struct {
 	agentsAt        time.Time                     // when claude agents was last asked
 	confirmStop     string                        // ^X K asked whether to stop this session: y stops it
 	confirmRestart  string                        // ^X R asked whether to restart this session: y restarts it
+	reorgPlan       *reorgProposal                // ^X M's plan, shown in its popup until enter applies it or esc drops it
+	reorgBusy       string                        // what ^X M is doing: "planning", "reorganising", or ""
 	restartForce    bool                          // with confirmRestart: it was mid-turn when asked, so y forces it
 
 	// transcript.Message box for the selected live session (see chat*).
@@ -310,7 +312,7 @@ func (m model) paneWidth() int {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 || m.offerShown() {
+	if m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 || m.reorgPlan != nil || m.offerShown() {
 		return m // keyboard only while it's open
 	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
@@ -1146,6 +1148,28 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case reorgPlannedMsg:
+		m.reorgBusy = ""
+		if msg.err != nil {
+			m.errorMsg = "reorg: " + msg.err.Error()
+		} else if len(msg.p.plan.Topics) == 0 {
+			m.note("reorg: nothing to regroup")
+		} else {
+			m.reorgPlan = &msg.p
+		}
+		return m, nil
+
+	case reorgDoneMsg:
+		m.reorgBusy = ""
+		m.launchLoaded = false // the new parents
+		m.sortList()
+		if msg.err != nil {
+			m.errorMsg = "reorg: " + msg.err.Error()
+		} else {
+			m.note("reorg: " + msg.res.String())
+		}
+		return m, nil
+
 	case orchestratorOfferMsg:
 		if !msg.opened && (m.orchBusy || m.orchOffer != nil || loadOrchestrator().Offered) {
 			return m, nil // answered, or ^X O got there, while the check ran
@@ -1593,6 +1617,21 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.reorgPlan != nil { // owns the keyboard until answered
+			switch msg.String() {
+			case "enter":
+				p := *m.reorgPlan
+				m.reorgPlan, m.reorgBusy = nil, "reorganising"
+				return m, reorgApplyCmd(p)
+			case "esc":
+				m.reorgPlan = nil
+				m.note("reorg cancelled: nothing moved")
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if len(m.reopen) > 0 { // owns the keyboard until answered
 			switch msg.String() {
 			case "enter":
@@ -1812,6 +1851,16 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpOpen = false
 			m.togglePin()
 			return m, nil
+		}
+		if k == "^x m" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+			m.helpOpen = false
+			if m.reorgBusy != "" {
+				m.note("a reorg is already " + m.reorgBusy)
+				return m, nil
+			}
+			m.reorgBusy = "planning"
+			m.note("Asking Sonnet to group every session by topic; the plan shows before anything moves")
+			return m, m.reorgPlanCmd()
 		}
 		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
 			m.helpOpen = false
@@ -2284,6 +2333,7 @@ func (m model) overPopups() []popup {
 		{m.linksOpen, model.linksPopup},
 		{m.snoozeOpen, model.snoozePopup},
 		{len(m.reopen) > 0, model.reopenPopup},
+		{m.reorgPlan != nil, model.reorgPopup},
 		{m.offerShown(), model.orchestratorPopup},
 	}
 }
@@ -2382,6 +2432,7 @@ func (m model) shortcuts() [][2]string {
 	add(sessions.CanOpenTabs(), "^X O", "open the orchestrator, setting one up if there is none")
 	add(!m.grouped, "^X G", "group the list by folder")
 	add(m.grouped, "^X G", "stop grouping by folder")
+	add(m.reorgBusy == "", "^X M", "move sessions into topics: Sonnet plans, you accept or drop it")
 	add(m.treeView == treeLive, "^X C", "show closed sessions in every tree")
 	add(m.treeView == treeClosed, "^X C", "fold every tree to its top row (its counts stay)")
 	add(m.treeView == treeFolded, "^X C", "unfold every tree, closed sessions hidden again")
@@ -2449,7 +2500,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // and what it does, never a mode's on/off (that shows when no chord is
 // pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
 // which is left unadvertised (headless runs stay out of the header).
-var chordPairs = []string{"A", "auto-focus", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}
+var chordPairs = []string{"A", "auto-focus", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}
 
 func toggleHint(key, label string, on bool) string {
 	state := "off"
@@ -2595,6 +2646,9 @@ func (m model) viewScreen() string {
 			status += key("^X W")
 		}
 		status += fmt.Sprintf("%d waiting", n)
+	}
+	if m.reorgBusy != "" {
+		status += " · reorg " + m.reorgBusy + "…"
 	}
 	if m.profileStop != nil { // a reminder: it records until stopped
 		status += " · " + key("^X Q") + "\033[31mrecording profile\033[33m"

@@ -28,7 +28,7 @@ button.quiet{background:transparent;color:var(--accent)}
 button.danger{border-color:var(--bad);background:var(--bad)}
 .ask{border-left:4px solid var(--warn)}
 </style></head><body>
-<nav><a href="/">Sessions</a><a href="/prs">PRs</a>{{if .Write}}<a href="/launch">Launch</a>{{end}}<span class="dim">{{if .Preview}}local preview, {{if .Write}}read and write{{else}}read-only{{end}}{{else if .Write}}read and write{{else}}read-only{{end}}</span></nav>
+<nav><a href="{{$.Base}}/">Sessions</a><a href="{{$.Base}}/prs">PRs</a>{{if .Write}}<a href="{{$.Base}}/launch">Launch</a>{{end}}<span class="dim">{{if .Preview}}local preview, {{if .Write}}read and write{{else}}read-only{{end}}{{else if .Write}}read and write{{else}}read-only{{end}}</span></nav>
 {{end}}
 
 {{define "foot"}}</body></html>{{end}}
@@ -39,7 +39,7 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 <h2>Sessions</h2>
 {{range .Body}}<div class="row">
 <div class="bucket">{{.Bucket}}</div>
-<h3><a href="/session?id={{.Session}}">{{.Name}}</a></h3>
+<h3><a href="{{$.Base}}/session?id={{.Session}}">{{.Name}}</a></h3>
 <div class="dim">{{if .Status}}{{.Status}} {{end}}{{if .Idle}}for {{.Idle}} · {{end}}{{.Reason}}</div>
 {{if .LastSaid}}<div>{{.LastSaid}}</div>{{end}}
 {{range .OpenPRs}}<div class="dim">{{.Group}} · {{.PR}} · {{.Status}}</div>{{end}}
@@ -52,17 +52,17 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 {{if .Ask}}<div class="row ask"><strong>Asking:</strong><pre>{{.Ask.Question}}</pre>
 <div class="dim">Answer it in its tab, at the Mac: ccs serve shows questions but doesn't answer them.</div>
 </div>{{end}}
-<p><a href="/session?id={{.ID}}&offset={{.Prev}}">older</a> · <a href="/session?id={{.ID}}">latest</a> · {{if .HasNext}}<a href="/session?id={{.ID}}&offset={{.Next}}">newer</a>{{else}}<span class="dim">newest</span>{{end}}</p>
+<p><a href="{{$.Base}}/session?id={{.ID}}&offset={{.Prev}}">older</a> · <a href="{{$.Base}}/session?id={{.ID}}">latest</a> · {{if .HasNext}}<a href="{{$.Base}}/session?id={{.ID}}&offset={{.Next}}">newer</a>{{else}}<span class="dim">newest</span>{{end}}</p>
 <pre>{{.Text}}</pre>
 {{if and $write .Live .Name}}
-<form method="post" action="/act">{{template "csrf" $csrf}}
+<form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}
 <input type="hidden" name="action" value="send"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="name" value="{{.Name}}">
 <textarea name="text" placeholder="Message {{.Name}}" maxlength="8000"></textarea>
 <button>Send</button></form>
-<form method="post" action="/act">{{template "csrf" $csrf}}
+<form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}
 <input type="hidden" name="action" value="restart"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="name" value="{{.Name}}">
 <button class="quiet">Restart</button></form>
-<form method="post" action="/act">{{template "csrf" $csrf}}
+<form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}
 <input type="hidden" name="action" value="close"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="name" value="{{.Name}}">
 {{if not .Codex}}<label><input type="checkbox" name="graceful" checked> let it wrap up first</label><br>{{end}}
 <button class="danger">Close</button></form>
@@ -73,7 +73,7 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 
 {{define "launch"}}{{template "head" .}}
 <h2>Launch a session</h2>
-<form method="post" action="/act">{{template "csrf" .CSRF}}
+<form method="post" action="{{$.Base}}/act">{{template "csrf" .CSRF}}
 <input type="hidden" name="action" value="launch">
 <p><label>Name<br><input type="text" name="name" required></label></p>
 <p><label>Folder (absolute path)<br><input type="text" name="cwd" required></label></p>
@@ -84,15 +84,15 @@ button.danger{border-color:var(--bad);background:var(--bad)}
 
 {{define "confirm"}}{{template "head" .}}{{$csrf := .CSRF}}{{with .Body}}
 <h2>Confirm</h2><pre>{{.What}}</pre>
-<form method="post" action="/act">{{template "csrf" $csrf}}<input type="hidden" name="confirm" value="yes">
+<form method="post" action="{{$.Base}}/act">{{template "csrf" $csrf}}<input type="hidden" name="confirm" value="yes">
 <input type="hidden" name="action" value="{{.A.Kind}}"><input type="hidden" name="id" value="{{.A.ID}}"><input type="hidden" name="name" value="{{.A.Name}}">
 <input type="hidden" name="text" value="{{.A.Text}}">
 <input type="hidden" name="cwd" value="{{.A.Cwd}}"><input type="hidden" name="brief" value="{{.A.Brief}}">
 {{if .A.Codex}}<input type="hidden" name="codex" value="on">{{end}}{{if .A.Graceful}}<input type="hidden" name="graceful" value="on">{{end}}
 <button>Yes, do it</button></form>
-<p>{{if .A.ID}}<a href="/session?id={{.A.ID}}">Cancel</a>{{else}}<a href="/">Cancel</a>{{end}}</p>
+<p>{{if .A.ID}}<a href="{{$.Base}}/session?id={{.A.ID}}">Cancel</a>{{else}}<a href="{{$.Base}}/">Cancel</a>{{end}}</p>
 {{end}}{{template "foot"}}{{end}}
 
 {{define "message"}}{{template "head" .}}{{with .Body}}<h2>{{.Heading}}</h2><pre>{{.Text}}</pre>
-<p>{{if .Back}}<a href="/session?id={{.Back}}">Back to the session</a>{{else}}<a href="/">Back to sessions</a>{{end}}</p>{{end}}{{template "foot"}}{{end}}
+<p>{{if .Back}}<a href="{{$.Base}}/session?id={{.Back}}">Back to the session</a>{{else}}<a href="{{$.Base}}/">Back to sessions</a>{{end}}</p>{{end}}{{template "foot"}}{{end}}
 `

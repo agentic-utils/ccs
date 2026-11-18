@@ -62,6 +62,22 @@ func ServePlistPath() string { return filepath.Join(LaunchAgentsDir(), ServeLabe
 // ServeLogPath is where the agent's output goes, beside the update log.
 func ServeLogPath() string { return filepath.Join(filepath.Dir(state.UpdateLogPath), "serve.log") }
 
+// privateServeLog makes the agent's log 0600 (its folder 0700 when ccs
+// creates it) before launchd writes to it, since launchd would create it
+// readable by everyone, and tightens one that's already there.
+func privateServeLog() error {
+	path := ServeLogPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return os.Chmod(path, 0o600)
+}
+
 func serviceDomain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
 func serviceTarget() string { return serviceDomain() + "/" + ServeLabel }
 
@@ -163,11 +179,18 @@ func servePlist(bin string, flags []string) []byte {
 // InstallServeService writes the agent's plist (0600: it holds the Access
 // application's values). A running agent keeps its old flags until it's
 // stopped and started again.
-func InstallServeService(_ serveFlags, flags []string) (string, error) {
+func InstallServeService(f serveFlags, flags []string) (string, error) {
+	if f.preview {
+		// The preview is for a terminal on this Mac: its secret link would
+		// only reach launchd's log, and no one would open it.
+		return "", errors.New("--preview isn't for the background agent: run ccs serve --preview in a terminal on this Mac, where its link is printed for you")
+	}
 	if err := os.MkdirAll(LaunchAgentsDir(), 0o755); err != nil {
 		return "", err
 	}
-	os.MkdirAll(filepath.Dir(ServeLogPath()), 0o755)
+	if err := privateServeLog(); err != nil {
+		return "", err
+	}
 	path := ServePlistPath()
 	tmp := fmt.Sprintf("%s.tmp-%d-%d", path, os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, servePlist(serveBinary(), flags), 0o600); err != nil {
@@ -214,6 +237,9 @@ func StartServeService() (string, error) {
 	}
 	if st.Loaded { // loaded but not running (crashed out of throttling): start it afresh
 		Launchctl("bootout", serviceTarget())
+	}
+	if err := privateServeLog(); err != nil {
+		return "", err
 	}
 	if out, err := Launchctl("bootstrap", serviceDomain(), ServePlistPath()); err != nil {
 		return "", fmt.Errorf("launchctl bootstrap: %v %s", err, strings.TrimSpace(out))

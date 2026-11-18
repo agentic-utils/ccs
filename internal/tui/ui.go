@@ -512,6 +512,7 @@ func (m *model) updateFilter() {
 		m.filtered = next
 	}
 	m.hideHeadless()
+	m.hideReorgRuns()
 	m.sortList()
 	m.lastFilterQuery = queryLower
 	// Keep cursor in bounds
@@ -543,6 +544,19 @@ func (m *model) hideHeadless() {
 		}
 	}
 	m.filtered = kept
+}
+
+// hideReorgRuns keeps reorg planning runs out of a search
+// (transcript.HideFromSearch) unless the search names one or it was selected
+// by name. A run stays listed with no search.
+func (m *model) hideReorgRuns() {
+	if !m.searching() {
+		return
+	}
+	q := m.textInput.Value()
+	m.filtered = slices.DeleteFunc(m.filtered, func(it listItem) bool {
+		return transcript.HideFromSearch(it.conv, q) && !m.revealed[it.conv.SessionID]
+	})
 }
 
 // liveGroup is where a session sits in the list: waiting on a menu or

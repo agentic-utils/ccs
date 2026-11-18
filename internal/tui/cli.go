@@ -62,7 +62,7 @@ Usage: ccs [filter] [-- claude-flags...]
                             Move sessions into topics so no orchestrator looks after more than 3:
                             one Sonnet call plans it, you see the plan and answer y/N (--yes for scripts);
                             then it launches the orchestrators it needs and tells live sessions;
-                            --undo puts back the parents from before the last one
+                            --undo puts back the records the last one wrote, after asking
        ccs close <name>     Stop the named session and close its tab (--graceful asks it to
                             finish and say what's left first)
        ccs restart [--force] <name>

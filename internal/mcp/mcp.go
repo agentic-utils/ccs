@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -543,6 +544,7 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	}
 	switch name {
 	case "search_sessions":
+		convs = slices.DeleteFunc(slices.Clone(convs), func(c transcript.Conversation) bool { return transcript.HideFromSearch(c, a.Query) })
 		return mcpSearch(convs, a.Query, clampInt(a.MaxResults, 10, 50))
 	case "list_sessions":
 		live := liveSessions()

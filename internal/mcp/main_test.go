@@ -41,7 +41,11 @@ func TestMain(m *testing.M) {
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil }
 	liveSessions = func() map[string]sessions.LiveSession { return nil }
-	openPreview = func(string) {} // never a real browser
+	openPreview = func(string) {}           // never a real browser
+	sock, _ := os.MkdirTemp("/tmp", "ccsh") // a socket path must be short
+	hookSockPath = func() string { return filepath.Join(sock, "h.sock") }
+	claudeSettingsPath = func() string { return filepath.Join(dir, "claude-settings.json") }
+	keyIdle = func() (time.Duration, bool) { return 0, false } // never the Mac's keyboard
 	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil }
@@ -50,5 +54,6 @@ func TestMain(m *testing.M) {
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	code := m.Run()
 	os.RemoveAll(dir)
+	os.RemoveAll(sock)
 	os.Exit(code)
 }

@@ -32,7 +32,31 @@ Every launch path (`ccs serve`, the `launch_session` tool, `ccs launch`) passes 
 
 ## Answering from afar
 
-ccs serve doesn't answer questions or permission prompts. The only way it could today is by typing the option's digit into the session's terminal, and whatever is on screen by the time the key lands (a permission prompt, say) would get it; no check can close that gap. Claude Code 2.1.327 has no way to answer a prompt by its id over the session socket (it takes only messages and renames), `--permission-prompt-tool` works only with `claude -p`, and `claude attach` has no answer command. The planned route is a PermissionRequest hook, which Claude Code itself names for answering prompts from a script: it would hand each prompt to ccs serve and answer it by its request id.
+`ccs serve` never types into a terminal to answer anything: whatever is on screen by the time the key lands (a permission prompt, say) would get it. It answers through Claude Code's own PermissionRequest hook instead, which Claude Code runs for each permission prompt and AskUserQuestion menu before showing it, and which can settle it with a decision.
+
+Turn it on once with `ccs hook install`. It adds `ccs hook permission` under `hooks.PermissionRequest` in `~/.claude/settings.json`, keeping the old file beside it as `settings.json.before-ccs-hook`. `ccs hook install --print` shows the entry without writing it, and `ccs hook uninstall` takes it out. Sessions started from then on use it; restart running ones to pick it up.
+
+What happens to each prompt:
+
+- **No `ccs serve --allow-write` running:** the hook finds nobody listening on ccs's socket (`serve-hook.sock` beside the settings, mode 0600) and prints nothing, so Claude Code shows the prompt in its tab as usual, at once.
+- **`ccs serve --allow-write` running:** the prompt is held for the page instead of showing in its tab. The page lists it under "Waiting for you here", on the sessions page and the session's own page. A question offers its options (checkboxes for "pick any"). A permission prompt shows the command and its full input, with Allow and Deny. Each choice shows a confirm page first. "Show it in its tab instead" lets it go to the Mac.
+- **The answer goes back on that prompt's own hook connection,** so it settles that prompt and no other. A prompt answered, let go or ended meanwhile is gone, and a late answer sends nothing. Allow (with a question's answers in `updatedInput`) or Deny is only ever sent when you choose it on the page.
+- **A held prompt goes back to its tab, with no decision, when:**
+  - a key is pressed on the Mac after it arrived, which means you're back there (checked every 3 seconds; not in `--preview`, where you're at the Mac by design);
+  - `--hook-wait` passes (30 minutes by default, and at most that);
+  - ccs serve stops or crashes, because the hook's connection closes and it prints nothing.
+
+  Nothing ever denies a prompt on its own.
+
+**Who the hook trusts.**
+- **Other macOS users are kept out.** The hook only talks to a socket that is a real socket (not a symlink), owned by you, usable by you alone (0600), in a folder that is yours and that no one else can write.
+- **The kernel vouches for both ends.** After connecting, the hook asks the kernel which user is listening (`LOCAL_PEERCRED` on macOS, `SO_PEERCRED` on Linux) and refuses anyone but you, so a socket swapped between the check and the connect gets nothing. ccs serve checks the hook's user the same way.
+- **The answer is tied to that prompt.** ccs serve must acknowledge the prompt within 2 seconds, echoing a random nonce the hook sent. Its answer must carry the same nonce, so a reply meant for another prompt, or replayed, settles nothing.
+- **ccs serve can't change what runs.** It can say allow or deny, and nothing else. For a question it can also send the chosen labels, which the hook checks against the question's own options. The hook then builds what it gives Claude Code from its own copy of the tool input, so neither ccs serve nor anything posing as it can change a command. Any failed check lets the prompt show in its tab.
+- **A stalled listener only delays the prompt.** One that acknowledges and then goes quiet holds it until `--hook-wait` passes (at most 30 minutes, then it shows in its tab). For the real ccs serve, a key press on the Mac hands it back sooner.
+- **Programs running as you are out of scope.** Such a program could edit `~/.claude/settings.json`, remove the hook, or run claude itself, so a shared key file or any other check here would not stop it. That's why there's no signing key.
+
+Checked on Claude Code 2.1.327 in a throwaway session: an allow approved a Bash prompt, and an allow with `updatedInput.answers` answered an AskUserQuestion menu without it being shown. The session got the chosen answer. Answers to a multi-select are the chosen labels joined with ", ".
 
 ## Running it in the background
 

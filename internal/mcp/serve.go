@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,8 +56,9 @@ type serveConfig struct {
 	addr       string // loopback only
 	host       string // the public hostname the tunnel serves
 	allowWrite bool
-	preview    bool   // --preview: this Mac's browser only, no Access; writes only with --allow-write, same-origin
-	token      string // --preview: the secret in its link's path, /p/<token>/, on every page and form
+	hookWait   time.Duration // how long a prompt from `ccs hook permission` is held for the page
+	preview    bool          // --preview: this Mac's browser only, no Access; writes only with --allow-write, same-origin
+	token      string        // --preview: the secret in its link's path, /p/<token>/, on every page and form
 	access     *accessVerifier
 	load       mcpSource
 }
@@ -65,6 +67,7 @@ type server struct {
 	cfg     serveConfig
 	csrfKey []byte
 	limits  *rateLimits
+	prompts promptBook // prompts `ccs hook permission` hands over, held for the page
 	now     func() time.Time
 
 	loadMu   sync.Mutex
@@ -132,6 +135,7 @@ func newServer(cfg serveConfig) *server {
 type serveFlags struct {
 	addr, host, team, aud, emails string
 	write, preview                bool
+	hookWait                      time.Duration
 }
 
 // parseServeFlags parses and checks `ccs serve`'s flags, refusing what
@@ -146,6 +150,7 @@ func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 	fs.StringVar(&f.aud, "aud", "", "the Access application's AUD tag (required)")
 	fs.StringVar(&f.emails, "email", "", "comma-separated emails allowed in (required)")
 	fs.BoolVar(&f.write, "allow-write", false, "allow sending, launching, closing and restarting (read-only without it)")
+	fs.DurationVar(&f.hookWait, "hook-wait", maxHookWait, "with --allow-write: how long a prompt from `ccs hook permission` waits for the page before it shows in its tab (at most 30m)")
 	fs.BoolVar(&f.preview, "preview", false, "a preview for this Mac's browser at http://127.0.0.1:<port>, with no Cloudflare Access (read-only unless --allow-write)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: ccs serve --host <hostname> --team <team> --aud <tag> --email <you@example.com> [--addr 127.0.0.1:7467] [--allow-write]")
@@ -177,6 +182,10 @@ func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 		fmt.Fprintln(stderr, "ccs serve:", err)
 		return f, 2
 	}
+	if f.hookWait <= 0 || f.hookWait > maxHookWait {
+		fmt.Fprintln(stderr, "ccs serve: --hook-wait must be more than 0 and at most", maxHookWait)
+		return f, 2
+	}
 	return f, 0
 }
 
@@ -191,7 +200,7 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 		return code
 	}
 	addr, host, team, aud, emails, write, preview := &f.addr, &f.host, &f.team, &f.aud, &f.emails, &f.write, &f.preview
-	cfg := serveConfig{addr: *addr, host: strings.ToLower(*host), allowWrite: *write, load: load}
+	cfg := serveConfig{addr: *addr, host: strings.ToLower(*host), allowWrite: *write, hookWait: f.hookWait, load: load}
 	if *preview {
 		cfg.preview = true
 		cfg.token = newToken()
@@ -206,6 +215,17 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 	}
 	if link := s.announce(stdout, ln.Addr().String()); link != "" {
 		go openPreview(link)
+	}
+	// Prompts are only held for a page that can answer them.
+	if *write {
+		stop, err := s.listenHooks()
+		if err != nil {
+			ln.Close()
+			fmt.Fprintln(stderr, "ccs serve:", err)
+			return 1
+		}
+		defer stop()
+		fmt.Fprintf(stdout, "ccs serve: holding prompts from `ccs hook permission` for up to %s each\n", f.hookWait)
 	}
 	srv := &http.Server{
 		Handler:           s.handler(),
@@ -521,7 +541,11 @@ func (s *server) triagePage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, "couldn't read sessions: "+err.Error())
 		return
 	}
-	s.render(w, r, "triage", rows)
+	names := map[string]string{}
+	for _, row := range rows {
+		names[row.Session] = row.Name
+	}
+	s.render(w, r, "triage", map[string]any{"Rows": rows, "Prompts": s.promptViews("", names)})
 }
 
 func (s *server) triageJSON(w http.ResponseWriter, r *http.Request) {
@@ -545,6 +569,7 @@ type sessionView struct {
 	Offset, Prev, Next     int
 	HasNext, Live, Codex   bool
 	Ask                    *askView
+	Prompts                []promptView // held for the page by `ccs hook permission`
 }
 
 // askView is a waiting session's pending question, shown but never answered
@@ -583,6 +608,7 @@ func (s *server) session(r *http.Request) (sessionView, int, error) {
 		for _, row := range rows {
 			if row.Session == id {
 				v.Name, v.Status, v.Live, v.Codex = row.Name, row.Status, row.PID > 0, row.Kind == transcript.KindCodex
+				v.Prompts = s.promptViews(id, map[string]string{id: row.Name})
 			}
 		}
 	}
@@ -665,6 +691,24 @@ func (s *server) launchPage(w http.ResponseWriter, r *http.Request) {
 type action struct {
 	Kind, ID, Name, Text, Cwd, Brief string
 	Codex, Graceful                  bool
+	Prompt, Choice                   string              // a held prompt and what to do with it
+	Answers                          map[string][]string // its questions' chosen labels, by q<i>
+}
+
+// AnswerFields are the answers as hidden form fields, for the confirm page.
+func (a action) AnswerFields() [][2]string {
+	var out [][2]string
+	keys := make([]string, 0, len(a.Answers))
+	for k := range a.Answers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range a.Answers[k] {
+			out = append(out, [2]string{k, v})
+		}
+	}
+	return out
 }
 
 func formAction(r *http.Request) action {
@@ -673,7 +717,19 @@ func formAction(r *http.Request) action {
 		Kind: f("action"), ID: f("id"), Name: f("name"), Text: f("text"),
 		Cwd: f("cwd"), Brief: f("brief"),
 		Codex: f("codex") == "on", Graceful: f("graceful") == "on",
+		Prompt: f("prompt"), Choice: f("choice"), Answers: answerFields(r),
 	}
+}
+
+// answerFields are the form's q<i> fields (several for a multi-select).
+func answerFields(r *http.Request) map[string][]string {
+	out := map[string][]string{}
+	for k, vs := range r.PostForm {
+		if len(k) > 1 && k[0] == 'q' && strings.Trim(k[1:], "0123456789") == "" {
+			out[k] = vs
+		}
+	}
+	return out
 }
 
 // describe says in plain words what the action will do.
@@ -711,6 +767,10 @@ func (s *server) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a := formAction(r)
+	if a.Kind == "prompt" {
+		s.actPrompt(w, r, a, email)
+		return
+	}
 	what, err := a.describe()
 	if err != nil {
 		s.fail(w, r, http.StatusBadRequest, err.Error())
@@ -727,6 +787,35 @@ func (s *server) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "message", map[string]string{"Heading": "Done", "Text": text, "Back": a.ID})
+}
+
+// actPrompt answers a held prompt: shown first, then, confirmed, sent back
+// on that prompt's own hook connection. A prompt answered, let go or ended
+// meanwhile is gone, so nothing is sent.
+func (s *server) actPrompt(w http.ResponseWriter, r *http.Request, a action, email string) {
+	gone := "that prompt isn't waiting here any more (answered, shown in its tab, or ended): nothing was sent"
+	p := s.prompts.get(a.Prompt)
+	if p == nil {
+		s.fail(w, r, http.StatusConflict, gone)
+		return
+	}
+	reply, what, err := promptDecision(p, a.Choice, a.Answers, email)
+	if err != nil {
+		s.fail(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	what = "In " + orDash(a.Name) + ":\n" + what
+	if r.PostFormValue("confirm") != "yes" {
+		s.render(w, r, "confirm", map[string]any{"What": what, "A": a})
+		return
+	}
+	if p = s.prompts.take(a.Prompt); p == nil {
+		s.fail(w, r, http.StatusConflict, gone)
+		return
+	}
+	p.reply <- reply
+	state.LogActivity("serve: %s settled %s's %s prompt %s: %s", email, orDash(a.Name), p.req.ToolName, p.id, a.Choice)
+	s.render(w, r, "message", map[string]string{"Heading": "Done", "Text": what, "Back": p.req.SessionID})
 }
 
 func logResult(text string, err error) string {

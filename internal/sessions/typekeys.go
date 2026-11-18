@@ -100,3 +100,16 @@ func TypeKeys(pid int, text string, enter bool) (where string, err error) {
 	}
 	return t.Kind, nil
 }
+
+// KeyIdle is how long since the last key press on this Mac (CoreGraphics:
+// kCGEventSourceStateHIDSystemState, kCGEventKeyDown); not ok when it can't
+// be read. ^X A auto-focus and ccs serve's held prompts both go by it.
+func KeyIdle() (time.Duration, bool) {
+	out, err := proc.RunBounded(2*time.Second, nil, "osascript", "-l", "JavaScript", "-e",
+		"ObjC.import('CoreGraphics'); $.CGEventSourceSecondsSinceLastEventType(1, 10)")
+	secs, perr := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil || perr != nil {
+		return 0, false
+	}
+	return time.Duration(secs * float64(time.Second)), true
+}

@@ -13,7 +13,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -280,9 +283,7 @@ func TestServeSendNeverTypes(t *testing.T) {
 	stubSend(t, "idle")
 	readSessionFile = func(int) (sessions.SessionFile, error) { return sessions.SessionFile{SessionID: "s-1"}, nil } // no socket
 	typed := false
-	old := sessions.TypeKeys
-	sessions.TypeKeys = func(int, string, bool) (string, error) { typed = true; return "tmux pane", nil }
-	defer func() { sessions.TypeKeys = old }()
+	stubTerminal(t, func(sessions.Terminal, string, bool) error { typed = true; return nil })
 	w := postAct(t, s, url.Values{"action": {"send"}, "id": {"s-1"}, "name": {"w"}, "text": {"hi"}, "confirm": {"yes"}})
 	if w.Code != http.StatusConflict || typed || !strings.Contains(w.Body.String(), "never types") {
 		t.Errorf("no socket must refuse, never type: %d typed=%v %s", w.Code, typed, w.Body)
@@ -311,15 +312,13 @@ func TestServeAnswer(t *testing.T) {
 	s, _ := testServer(t, true, []transcript.Conversation{waitingConv(t, false)})
 	stubSend(t, "waiting")
 	var pressed []string
-	old := sessions.TypeKeys
-	sessions.TypeKeys = func(pid int, text string, enter bool) (string, error) {
-		if enter || pid != 42 {
-			t.Errorf("pid %d enter %v", pid, enter)
+	stubTerminal(t, func(term sessions.Terminal, text string, enter bool) error {
+		if enter || term.Target != "%42" {
+			t.Errorf("terminal %v enter %v", term, enter)
 		}
 		pressed = append(pressed, text)
-		return "iTerm tab", nil
-	}
-	defer func() { sessions.TypeKeys = old }()
+		return nil
+	})
 
 	page := request(s, "GET", "/session?id=s-1", signJWT(t, testKey, "RS256", goodClaims()), nil, nil).Body.String()
 	if !strings.Contains(page, "Merge now?") || !strings.Contains(page, `name="ask" value="q1"`) || !strings.Contains(page, "1. Merge") {
@@ -353,12 +352,82 @@ func TestServeAnswer(t *testing.T) {
 	}
 }
 
+// stubTerminal makes every session's terminal tmux pane %<pid> and sends its
+// keys to send.
+func stubTerminal(t *testing.T, send func(sessions.Terminal, string, bool) error) {
+	t.Helper()
+	oldFind, oldSend := sessions.FindTerminal, sessions.SendKeys
+	sessions.FindTerminal = func(pid int) sessions.Terminal {
+		return sessions.Terminal{Kind: "tmux pane", Target: "%" + strconv.Itoa(pid)}
+	}
+	sessions.SendKeys = send
+	t.Cleanup(func() { sessions.FindTerminal, sessions.SendKeys = oldFind, oldSend })
+}
+
+// The checks are made again after the terminal lookup, which can take a
+// while: a menu answered meanwhile, or a permission prompt up instead, gets
+// no keys.
+func TestServeAnswerChecksAgainAfterTheLookup(t *testing.T) {
+	s, _ := testServer(t, true, []transcript.Conversation{waitingConv(t, false)})
+	stubSend(t, "waiting")
+	stubTerminal(t, func(sessions.Terminal, string, bool) error { t.Error("pressed keys"); return nil })
+	ans := func() *httptest.ResponseRecorder {
+		return postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "option": {"1"}, "confirm": {"yes"}})
+	}
+	find := sessions.FindTerminal
+	sessions.FindTerminal = func(pid int) sessions.Terminal {
+		readSessionFile = func(int) (sessions.SessionFile, error) {
+			return sessions.SessionFile{SessionID: "s-1", Status: "waiting", WaitingFor: "permission prompt"}, nil
+		}
+		return find(pid)
+	}
+	if w := ans(); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "permission prompt") {
+		t.Errorf("a permission prompt up by the time of the keys: %d %s", w.Code, w.Body)
+	}
+	// The question answered in its tab during the lookup: the transcript,
+	// read again, no longer has it pending.
+	stubSend(t, "waiting")
+	answered := waitingConv(t, false)
+	transcript.ParseLine(&answered, []byte(`{"type":"user","timestamp":"2026-11-01T10:02:00Z","message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"answered"}]}}`))
+	sessions.FindTerminal = func(pid int) sessions.Terminal {
+		s.cfg.load = func() ([]transcript.Conversation, error) { return []transcript.Conversation{answered}, nil }
+		return find(pid)
+	}
+	if w := ans(); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "asking that question any more") {
+		t.Errorf("answered during the lookup: %d %s", w.Code, w.Body)
+	}
+}
+
+// Requests at once share one scan of the transcripts.
+func TestServeSharesOneLoad(t *testing.T) {
+	s, _ := testServer(t, false, nil)
+	release := make(chan struct{})
+	var loads atomic.Int32
+	s.cfg.load = func() ([]transcript.Conversation, error) {
+		loads.Add(1)
+		<-release
+		return nil, nil
+	}
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() { defer wg.Done(); s.load() }()
+	}
+	for loads.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond) // the others join the scan in flight
+	close(release)
+	wg.Wait()
+	if n := loads.Load(); n != 1 {
+		t.Errorf("%d scans for 3 requests at once, want 1", n)
+	}
+}
+
 func TestServeAnswerRefusesMultiSelect(t *testing.T) {
 	s, _ := testServer(t, true, []transcript.Conversation{waitingConv(t, true)})
 	stubSend(t, "waiting")
-	old := sessions.TypeKeys
-	sessions.TypeKeys = func(int, string, bool) (string, error) { t.Error("pressed keys"); return "", nil }
-	defer func() { sessions.TypeKeys = old }()
+	stubTerminal(t, func(sessions.Terminal, string, bool) error { t.Error("pressed keys"); return nil })
 	w := postAct(t, s, url.Values{"action": {"answer"}, "id": {"s-1"}, "name": {"worker"}, "ask": {"q1"}, "option": {"1"}, "confirm": {"yes"}})
 	if w.Code != http.StatusConflict {
 		t.Errorf("multi-select: %d", w.Code)
@@ -395,8 +464,8 @@ func TestServeSessionActionsGoThroughTheTools(t *testing.T) {
 	}
 	want := []string{
 		`launch_session {"brief":"do it","codex":true,"cwd":"/r","name":"new"}`,
-		`close_session {"graceful":true,"name":"worker"}`,
-		`restart_session {"name":"worker"}`,
+		`close_session {"graceful":true,"name":"worker","session_id":"s-1"}`,
+		`restart_session {"name":"worker","session_id":"s-1"}`,
 	}
 	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
 		t.Errorf("calls:\n%s", strings.Join(calls, "\n"))

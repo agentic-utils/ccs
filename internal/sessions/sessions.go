@@ -951,6 +951,19 @@ func PreamblePath() string {
 
 // withPreamble is a new session's brief after PreamblePath's text. A resumed
 // session's prompt, an empty brief and NoPreamble are left as they are.
+// briefText is the brief file's text: withPreamble, with a newline first
+// when it starts with '-'. The brief is a positional argument after
+// claude's (or codex's) options, so text starting with a dash would be read
+// as an option (a brief of --dangerously-skip-permissions turning that on);
+// a newline first keeps it a prompt, whoever sent it.
+func briefText(o LaunchOpts) string {
+	b := withPreamble(o)
+	if strings.HasPrefix(b, "-") {
+		return "\n" + b
+	}
+	return b
+}
+
 func withPreamble(o LaunchOpts) string {
 	if o.NoPreamble || o.Resume != "" || o.Brief == "" {
 		return o.Brief
@@ -1148,7 +1161,7 @@ func launchSession(o LaunchOpts) (Launched, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Launched{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "brief.md"), []byte(withPreamble(o)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "brief.md"), []byte(briefText(o)), 0o600); err != nil {
 		return Launched{}, err
 	}
 	script := filepath.Join(dir, "launch.sh")
@@ -1377,7 +1390,24 @@ func containsInt(s []int, v int) bool {
 }
 
 // CloseByName closes the one running session called name.
-func CloseByName(name string) (string, error) {
+func CloseByName(name string) (string, error) { return CloseByNameID(name, "") }
+
+// SameSession refuses unless pid's session file names session id (when id
+// is set): a caller that chose a session by id, such as ccs serve's page,
+// must never stop another that has taken its name since.
+func SameSession(name string, pid int, id string) error {
+	if id == "" {
+		return nil
+	}
+	if f, err := ReadSessionFile(pid); err != nil || f.SessionID != id {
+		return fmt.Errorf("%s (pid %d) isn't session %s any more: nothing was stopped", name, pid, id)
+	}
+	return nil
+}
+
+// CloseByNameID is CloseByName, refused unless the session is still id
+// (SameSession).
+func CloseByNameID(name, id string) (string, error) {
 	pids, err := Named(name)
 	if err != nil {
 		return "", err
@@ -1388,6 +1418,9 @@ func CloseByName(name string) (string, error) {
 	case 1:
 	default:
 		return "", fmt.Errorf("%d running sessions are named %s (pids %v): close one by hand", len(pids), name, pids)
+	}
+	if err := SameSession(name, pids[0], id); err != nil {
+		return "", err
 	}
 	return CloseSession(name, pids[0])
 }

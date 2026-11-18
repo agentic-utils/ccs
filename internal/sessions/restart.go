@@ -44,6 +44,7 @@ var RestartRetry = 3 * time.Second
 // RestartOpts says what to restart and how.
 type RestartOpts struct {
 	Name    string
+	ID      string           // refuse unless the session called Name is still this one (ccs serve's page chose it by id)
 	Force   bool             // restart it mid-turn, stopping it where it is
 	Timeout time.Duration    // restarting itself: how long to wait for its turn to end; GracefulTimeout if zero
 	OnTab   func(tty string) // called once the new tab is open
@@ -60,7 +61,7 @@ type restartTarget struct {
 
 // findRestartTarget is the one running Claude Code session called name, with
 // what resuming it needs.
-func findRestartTarget(name string) (restartTarget, error) {
+func findRestartTarget(name, id string) (restartTarget, error) {
 	if !state.SessionName.MatchString(name) {
 		return restartTarget{}, fmt.Errorf("name %q: use letters, digits, '.', '_' and '-' (at most 64)", name)
 	}
@@ -82,6 +83,9 @@ func findRestartTarget(name string) (restartTarget, error) {
 	}
 	if f.Name != name {
 		return restartTarget{}, fmt.Errorf("pid %d is now another session (%s)", pid, f.Name)
+	}
+	if id != "" && f.SessionID != id {
+		return restartTarget{}, fmt.Errorf("%s (pid %d) isn't session %s any more: nothing was stopped", name, pid, id)
 	}
 	tty := proc.TTYOf(pid)
 	if tty == "" {
@@ -172,7 +176,7 @@ func RestartSession(o RestartOpts) (string, error) {
 	if o.Timeout <= 0 {
 		o.Timeout = GracefulTimeout
 	}
-	t, err := findRestartTarget(o.Name)
+	t, err := findRestartTarget(o.Name, o.ID)
 	if err != nil {
 		return "", err
 	}
@@ -244,7 +248,7 @@ func RestartAfterTurn(name string, pid int, id string, timeout time.Duration) (s
 		return "", fmt.Errorf("%s: %v", name, err)
 	}
 	defer unlock()
-	t, err := findRestartTarget(name)
+	t, err := findRestartTarget(name, "")
 	if err != nil {
 		return "", err
 	}

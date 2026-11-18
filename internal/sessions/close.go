@@ -110,6 +110,12 @@ func CloseGracefully(name string, timeout time.Duration) (string, error) {
 // caller with a deadline of its own (an MCP tool call) can answer then and
 // leave the wait to run on.
 func CloseGracefullyNotify(name string, timeout time.Duration, onSent func(pid int)) (string, error) {
+	return CloseGracefullyNotifyID(name, "", timeout, onSent)
+}
+
+// CloseGracefullyNotifyID is CloseGracefullyNotify, refused unless the
+// session is still id (SameSession).
+func CloseGracefullyNotifyID(name, id string, timeout time.Duration, onSent func(pid int)) (string, error) {
 	if timeout <= 0 {
 		timeout = GracefulTimeout
 	}
@@ -133,6 +139,9 @@ func CloseGracefullyNotify(name string, timeout time.Duration, onSent func(pid i
 	}
 	if f.Name != name {
 		return "", fmt.Errorf("pid %d is now another session (%s): %s", pid, f.Name, plain)
+	}
+	if id != "" && f.SessionID != id {
+		return "", fmt.Errorf("%s (pid %d) isn't session %s any more: %s", name, pid, id, plain)
 	}
 	tty := proc.TTYOf(pid)
 	if tty == "" {

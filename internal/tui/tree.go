@@ -84,14 +84,20 @@ func (m *model) cycleTrees() {
 	}[m.treeView])
 }
 
-// closedLineText draws a closed line: the tree's guides, then └ ▸ N closed,
-// all dim, lined up with the rows' connectors.
+// closedLineText draws a closed line, all dim and lined up with the rows'
+// connectors: the tree's guides, then └ ▸ N closed (hidden behind it) or
+// ├ ▾ N closed (shown below it), and the key that changes that, so it can
+// be found where the closed sessions are.
 func (m model) closedLineText(l closedLine) string {
 	lead := " "
 	if m.grouped {
 		lead = "   "
 	}
-	return fmt.Sprintf("%s%s\033[90m%s└ ▸ %d closed\033[0m", lead, strings.Repeat(" ", colMarks-2), l.guides, l.n)
+	conn, mark := "└", "▸"
+	if l.open {
+		conn, mark = "├", "▾"
+	}
+	return fmt.Sprintf("%s%s\033[90m%s%s %s %d closed · ^X C\033[0m", lead, strings.Repeat(" ", colMarks-2), l.guides, conn, mark, l.n)
 }
 
 // rollup counts an orchestrator's tree below it: waiting on you (a menu,

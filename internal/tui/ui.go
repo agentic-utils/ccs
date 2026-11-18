@@ -56,6 +56,7 @@ type closedLine struct {
 	guides string
 	n      int
 	owner  int
+	open   bool // the closed sessions are shown, below the line
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -767,23 +768,26 @@ func (m *model) nestFamilies() {
 		// Shown, closed sessions follow the live ones at the same level.
 		// Hidden, a "N closed" line ends the branch after the last row so
 		// far, and they wait behind it until ^X C shows them.
+		// A "N closed" line names the parent's closed sessions and the key
+		// that shows or hides them (^X C). Hidden, it ends the branch and they
+		// wait behind it. Shown, it heads them at their live siblings' level,
+		// so they read as siblings, not as children of the line.
 		showing := m.showingClosed()
-		walkKids := open
-		if showing {
-			walkKids = append(slices.Clone(open), shut...)
-		}
-		for j, k := range walkKids {
-			walk(k, depth+1, cwd, below, j == len(walkKids)-1 && (showing || len(shut) == 0))
+		for j, k := range open {
+			walk(k, depth+1, cwd, below, j == len(open)-1 && len(shut) == 0)
 		}
 		it.closedKids = len(shut)
-		if showing || len(shut) == 0 {
+		if len(shut) == 0 {
 			return
 		}
 		at := order[len(order)-1]
-		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth})
+		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, showing})
 		from := len(order)
 		for j, k := range shut {
 			walk(k, depth+1, cwd, below, j == len(shut)-1)
+		}
+		if showing {
+			return
 		}
 		for _, k := range order[from:] {
 			m.filtered[k].hideClosed = true

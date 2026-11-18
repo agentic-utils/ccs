@@ -244,8 +244,8 @@ func TestTreeFollowsAdoption(t *testing.T) {
 // A launched session whose tree has nothing running waits behind its
 // parent's "▸ N closed" line, at the end of the parent's branch, so it isn't
 // one click from being resumed. ^X C shows every tree's closed sessions at
-// once, beside their live siblings, then folds every tree, then hides them
-// again. A search shows everything.
+// once, beside their live siblings under a ▾ line, then folds every tree,
+// then hides them again. Both lines name ^X C. A search shows everything.
 func TestClosedSessionsBehindALine(t *testing.T) {
 	m := treeModel(t)
 	m.width, m.height = 110, 40
@@ -257,8 +257,8 @@ func TestClosedSessionsBehindALine(t *testing.T) {
 	if got := titles(); strings.Contains(got, "leaf") || strings.Contains(got, "fresh") {
 		t.Fatalf("closed sessions are hidden: %s", got)
 	}
-	if v := view(); !strings.Contains(v, "│   └ ▸ 1 closed") || !strings.Contains(v, " └ ▸ 1 closed") || !strings.Contains(v, "├ ✻ worker") {
-		t.Errorf("each parent's closed line ends its branch, its last live child a ├:\n%s", v)
+	if v := view(); !strings.Contains(v, "│   └ ▸ 1 closed · ^X C") || !strings.Contains(v, " └ ▸ 1 closed · ^X C") || !strings.Contains(v, "├ ✻ worker") {
+		t.Errorf("each parent's closed line ends its branch, names ^X C, its last live child a ├:\n%s", v)
 	}
 	m, _ = chord(m, "c")
 	if got := titles(); !strings.Contains(got, "fresh") || !strings.Contains(got, "leaf") {
@@ -271,8 +271,8 @@ func TestClosedSessionsBehindALine(t *testing.T) {
 	if depth["fresh"] != depth["worker"] || depth["leaf"] != depth["sub"]+1 {
 		t.Errorf("closed sessions sit at their live siblings' level: %v", depth)
 	}
-	if v := view(); strings.Contains(v, "1 closed") || !strings.Contains(v, " └ ✻ fresh") {
-		t.Errorf("shown, with no closed line, the last one a └:\n%s", v)
+	if v := view(); !strings.Contains(v, " ├ ▾ 1 closed · ^X C") || !strings.Contains(v, " └ ✻ fresh") || strings.Contains(v, "▸ 1 closed") {
+		t.Errorf("shown, a ▾ line still names ^X C, above them at their level, the last one a └:\n%s", v)
 	}
 	if loadSettings().TreeView != treeClosed {
 		t.Error("showing them is saved")

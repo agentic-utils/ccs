@@ -42,6 +42,7 @@ type listItem struct {
 	kids        int    // sessions launched under it (an orchestrator's tree), any depth
 	guides      string // in an orchestrator's tree: the │ and spaces its ancestors draw before its own connector
 	lastKid     bool   // the last of its parent's children: └, not ├
+	cooling     bool   // nested, not running, but active within closedCooldown: still shown, its grey line says "closed"
 	closedKids  int    // its launched sessions that have closed (none of their tree running), behind a "N closed" line
 	hideClosed  bool   // closed, behind its parent's "▸ N closed" line until ^X C shows them
 	linesAfter  []closedLine
@@ -724,7 +725,7 @@ func (m *model) nestFamilies() {
 		isAlive = func(i, d int) bool {
 			if alive[i] == 0 {
 				alive[i] = 2
-				if c := m.filtered[i].conv; m.live[c.SessionID] || codexSubagentBusy(c) {
+				if c := m.filtered[i].conv; m.live[c.SessionID] || codexSubagentBusy(c) || justClosed(c) {
 					alive[i] = 1
 				}
 				for _, k := range kids[i] {
@@ -742,6 +743,10 @@ func (m *model) nestFamilies() {
 				closed[i] = !isAlive(i, 0)
 			}
 		}
+	}
+	for i := range m.filtered { // a nested session that just closed: shown a while, marked
+		c := m.filtered[i].conv
+		m.filtered[i].cooling = parent[i] >= 0 && !m.live[c.SessionID] && !codexSubagentBusy(c) && justClosed(c)
 	}
 	order := make([]int, 0, n) // the new list, as indexes into m.filtered
 	seen := make([]bool, n)
@@ -966,6 +971,19 @@ func (m *model) spawnParent(c transcript.Conversation) string {
 		m.parents[c.SessionID] = p
 	}
 	return p
+}
+
+// closedCooldown is how long a nested session stays in view after its last
+// message once it isn't running, before it goes behind its parent's
+// "▸ N closed" line: time to look back at what just finished.
+const closedCooldown = 30 * time.Minute
+
+// justClosed: c's last message is within closedCooldown. Counted from the
+// last message, which every transcript has, so it holds across a restart
+// and for sessions that closed while ccs wasn't running.
+func justClosed(c transcript.Conversation) bool {
+	t, err := time.Parse(time.RFC3339, c.LastTimestamp)
+	return err == nil && time.Since(t) < closedCooldown
 }
 
 // codexSubagentBusy: c is a Codex subagent written to within
@@ -3324,6 +3342,9 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 	colouredTopic := padRight(nest+paintTitle(title, m.titleColour(item)), tw)
 	prs := strings.TrimLeft(m.prCell(conv, !selected), " ")
 	stats := strings.TrimSuffix(transcript.FormatAgo(conv.LastTimestamp, time.Now()), " ago")
+	if item.cooling { // it goes behind the closed line once closedCooldown has passed
+		stats = "closed " + stats
+	}
 	if conv.Kind != "" {
 		stats = conv.Kind + " · " + stats
 	}

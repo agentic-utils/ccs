@@ -219,6 +219,7 @@ func TestClosedSessionsBehindALine(t *testing.T) {
 	m.width, m.height = 110, 40
 	delete(m.live, "leaf-id")
 	delete(m.live, "fresh-id")
+	ageItem(&m, "fresh-id", time.Hour) // past the cooldown
 	m.refilter()
 	titles := func() string { return strings.Join(order(m), ",") }
 	view := func() string { return strip2(m.View()) }
@@ -315,5 +316,45 @@ func TestClosedSpawnedChildIsHidden(t *testing.T) {
 	m, _ = chord(m, "c")
 	if got := strings.Join(order(m), ","); !strings.Contains(got, "review done") {
 		t.Errorf("^X C shows it: %s", got)
+	}
+}
+
+// ageItem makes a listed session's last message ago old.
+func ageItem(m *model, id string, ago time.Duration) {
+	for i := range m.items {
+		if m.items[i].conv.SessionID == id {
+			m.items[i].conv.LastTimestamp = time.Now().Add(-ago).UTC().Format(time.RFC3339)
+		}
+	}
+}
+
+// A nested session that just closed stays in view, dimmed and marked
+// "closed", for closedCooldown after its last message, and isn't counted in
+// the closed line until then.
+func TestJustClosedSessionCoolsDown(t *testing.T) {
+	m := treeModel(t)
+	m.width, m.height = 110, 40
+	delete(m.live, "fresh-id")
+	ageItem(&m, "fresh-id", 12*time.Minute)
+	m.refilter()
+	v := strip2(m.View())
+	if got := strings.Join(order(m), ","); !strings.Contains(got, "fresh") {
+		t.Fatalf("closed 12 minutes ago: still shown: %s", got)
+	}
+	if !strings.Contains(v, "closed 12m") || strings.Contains(v, " └ ▸ 1 closed") {
+		t.Errorf("marked closed, not yet behind hub's line:\n%s", v)
+	}
+	for _, it := range m.filtered {
+		if it.conv.Title == "fresh" && (!it.cooling || m.titleColour(it) != "90") {
+			t.Errorf("cooling, its title dim: %v %q", it.cooling, m.titleColour(it))
+		}
+		if it.conv.Title == "worker" && it.cooling {
+			t.Error("a running session isn't cooling")
+		}
+	}
+	ageItem(&m, "fresh-id", closedCooldown+time.Minute)
+	m.refilter()
+	if got := strings.Join(order(m), ","); strings.Contains(got, "fresh") || !strings.Contains(strip2(m.View()), " └ ▸ 1 closed") {
+		t.Errorf("past the cooldown it goes behind the line: %s", got)
 	}
 }

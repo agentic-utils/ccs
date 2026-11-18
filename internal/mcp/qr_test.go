@@ -63,7 +63,7 @@ func TestServeQRFromThePlist(t *testing.T) {
 func TestServeStartPrintsQROnlyForTheTunnel(t *testing.T) {
 	var out strings.Builder
 	pv := newServer(serveConfig{preview: true, token: "tok"})
-	if link := pv.announce(&out, "127.0.0.1:7467"); link != "http://127.0.0.1:7467/?token=tok" || strings.ContainsAny(out.String(), "▀▄█") {
+	if link := pv.announce(&out, "127.0.0.1:7467"); link != "http://127.0.0.1:7467/p/tok/" || strings.ContainsAny(out.String(), "▀▄█") {
 		t.Errorf("the preview prints its link and no QR code: %q\n%s", link, out.String())
 	}
 	out.Reset()

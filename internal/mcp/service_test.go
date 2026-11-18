@@ -165,3 +165,28 @@ func TestServeStopUnloadsTheJob(t *testing.T) {
 		t.Errorf("nothing runs after a stop: %+v", st)
 	}
 }
+
+// The preview never runs as the agent (its link would only reach launchd's
+// log), and the agent's log is private before launchd first writes it.
+func TestServeAgentLogIsPrivate(t *testing.T) {
+	var out, errb strings.Builder
+	if code := RunServe([]string{"install", "--preview"}, &out, &errb, nil); code == 0 || !strings.Contains(errb.String(), "terminal") {
+		t.Errorf("install --preview: %d %q", code, errb.String())
+	}
+	if _, err := os.Stat(ServePlistPath()); err == nil {
+		os.Remove(ServePlistPath())
+	}
+	log := ServeLogPath()
+	os.Remove(log)
+	if err := privateServeLog(); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(log); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("a new log: %v %v", fi, err)
+	}
+	os.Chmod(log, 0o644)
+	privateServeLog()
+	if fi, _ := os.Stat(log); fi.Mode().Perm() != 0o600 {
+		t.Errorf("an existing log is tightened: %v", fi.Mode())
+	}
+}

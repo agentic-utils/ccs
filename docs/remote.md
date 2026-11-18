@@ -36,7 +36,7 @@ ccs serve doesn't answer questions or permission prompts. The only way it could 
 
 ## Running it in the background
 
-`ccs serve install <the same flags as ccs serve>` writes a per-user launchd agent (`~/Library/LaunchAgents/io.github.agentic-utils.ccs-serve.plist`, 0600 since it holds the Access values), checking the flags as `ccs serve` does. Its output goes to `serve.log` beside the update log. Then:
+`ccs serve install <the same flags as ccs serve>` writes a per-user launchd agent (`~/Library/LaunchAgents/io.github.agentic-utils.ccs-serve.plist`, 0600 since it holds the Access values), checking the flags as `ccs serve` does. Its output goes to `serve.log` beside the update log, which ccs creates 0600 (and its folder 0700 if ccs makes it) at install and at start, before launchd first writes it, tightening an existing one. `install` refuses `--preview`: the preview is for a terminal on this Mac, and its secret link would only reach that log. Then:
 
 - `ccs serve start` runs it and `ccs serve stop` stops it; `ccs serve status` says whether it runs, from `launchctl print`; `ccs serve uninstall` stops it and removes the plist.
 - In the TUI, ^X B starts it; while it runs, ^X B shows its address and a QR code (S there asks y/n and stops it). Once installed, the header shows `^X B browser on` or `off`, read from launchd's state at most every 10 seconds, not just whether the plist exists.
@@ -52,7 +52,11 @@ The tunnel is its own service: `brew services start cloudflared`.
 
 ## Previewing it on this Mac
 
-`ccs serve --preview` serves the same pages at `http://127.0.0.1:7467` with no Cloudflare Access, to try them before setting the tunnel up. It refuses the Access flags, answers only requests whose Host is `127.0.0.1`, `localhost` or `::1` (which stops DNS rebinding), and is read-only unless you add `--allow-write`. With it, writes work as they do remotely: same-origin only (`Origin` and `Sec-Fetch-Site`), with the form token, the confirm page, the limits and the activity log, so another website can't post to it. Anything on this Mac can use it while it runs, as it can already run ccs itself, so stop it with ^C when you're done.
+`ccs serve --preview` serves the same pages on this Mac with no Cloudflare Access, to try them before setting the tunnel up.
+
+Loopback is shared by every user on a Mac, so the preview has a login of its own. Each start makes a random secret, and every page and form lives under `http://127.0.0.1:7467/p/<secret>/`. ccs prints that link and opens it in your browser. A request without the secret, or with a wrong one, gets a 404 and nothing else, and the secret is never written to the activity log. The secret is kept in the path, not a cookie, because a browser sends a 127.0.0.1 cookie to every port, so another user's service on another port would receive it. The pages' `Referrer-Policy: same-origin` keeps the path from being sent to other origins too.
+
+The preview refuses the Access flags, answers only requests whose Host is `127.0.0.1`, `localhost` or `::1` (which stops DNS rebinding), and is read-only unless you add `--allow-write`. With it, writes work as they do remotely: same-origin only (`Origin` and `Sec-Fetch-Site`), with the form token, the confirm page, the limits and the activity log, so another website can't post to it. Programs running as you can read the printed link, as they can already run ccs, so stop the preview with ^C when you're done.
 
 ## Setting it up
 

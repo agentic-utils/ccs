@@ -56,7 +56,7 @@ type serveConfig struct {
 	host       string // the public hostname the tunnel serves
 	allowWrite bool
 	preview    bool   // --preview: this Mac's browser only, no Access; writes only with --allow-write, same-origin
-	token      string // --preview: the secret in the link it prints, kept as a cookie once opened
+	token      string // --preview: the secret in its link's path, /p/<token>/, on every page and form
 	access     *accessVerifier
 	load       mcpSource
 }
@@ -231,7 +231,7 @@ func (s *server) announce(w io.Writer, addr string) (link string) {
 		mode = "read and write"
 	}
 	if s.cfg.preview {
-		link = fmt.Sprintf("http://%s/?token=%s", addr, s.cfg.token)
+		link = fmt.Sprintf("http://%s%s/", addr, s.base())
 		fmt.Fprintf(w, "ccs serve: %s preview, this Mac only (^C stops it). Open it with this link, which only you have:\n  %s\n", mode, link)
 		state.LogActivity("serve: started, %s preview, on %s", mode, addr)
 		return link
@@ -270,9 +270,6 @@ func newToken() string {
 // openPreview opens the preview's link in the browser; stubbed in tests.
 var openPreview = func(link string) { proc.RunBounded(10*time.Second, nil, "open", link) }
 
-// previewCookie holds the preview's token once its link was opened.
-const previewCookie = "ccs_preview"
-
 // previewUser is who the activity log names for a --preview request.
 const previewUser = "preview (this Mac)"
 
@@ -300,7 +297,10 @@ func (s *server) handler() http.Handler {
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cache-Control", "no-store")
 		r.Body = http.MaxBytesReader(rec, r.Body, 64<<10)
-		if s.previewLogin(rec, r) {
+		if s.cfg.preview && !s.previewPath(r) {
+			// Never the path itself: it may hold a mistyped token.
+			http.NotFound(rec, r)
+			state.LogActivity("serve: refused a preview request without its link's token (%s)", r.Method)
 			return
 		}
 		email, err := s.check(r)
@@ -325,26 +325,32 @@ func (s *server) handler() http.Handler {
 	})
 }
 
-// previewLogin: a GET carrying the preview's token (its printed link)
-// stores it as a cookie (HttpOnly, SameSite Strict, so another site's
-// request never carries it) and redirects to the same page without it.
-func (s *server) previewLogin(w http.ResponseWriter, r *http.Request) bool {
-	tok := r.URL.Query().Get("token")
-	if !s.cfg.preview || r.Method != http.MethodGet || tok == "" {
+// base is the path every page and form lives under: "" in the remote
+// mode, /p/<token> in a preview.
+func (s *server) base() string {
+	if s.cfg.preview {
+		return "/p/" + s.cfg.token
+	}
+	return ""
+}
+
+// previewPath strips a preview's /p/<token> from the path, compared in
+// constant time, and says whether it was there. Loopback is shared by every
+// user on this Mac, so this is the preview's login. It lives in the path,
+// not a cookie: browsers send a 127.0.0.1 cookie to every port, so another
+// user's service on another port would get it, while the path stays with
+// this port (the pages' Referrer-Policy is same-origin).
+func (s *server) previewPath(r *http.Request) bool {
+	rest, ok := strings.CutPrefix(r.URL.Path, "/p/")
+	if !ok {
 		return false
 	}
+	tok, after, _ := strings.Cut(rest, "/")
 	if !hmac.Equal([]byte(tok), []byte(s.cfg.token)) {
-		http.Error(w, "forbidden: that isn't this preview's link", http.StatusForbidden)
-		state.LogActivity("serve: refused a preview link with the wrong token")
-		return true
+		return false
 	}
-	http.SetCookie(w, &http.Cookie{Name: previewCookie, Value: s.cfg.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	u := *r.URL
-	q := u.Query()
-	q.Del("token")
-	u.RawQuery = q.Encode()
-	state.LogActivity("serve: preview opened with its link")
-	http.Redirect(w, r, u.RequestURI(), http.StatusSeeOther)
+	r.URL.Path = "/" + after
+	r.URL.RawPath = ""
 	return true
 }
 
@@ -363,13 +369,6 @@ func (s *server) check(r *http.Request) (string, *checkErr) {
 		// with no writes nothing here acts on a session.
 		if host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "[::1]" {
 			return "", &checkErr{http.StatusMisdirectedRequest, "wrong host", "host " + r.Host}
-		}
-		// Loopback is shared by every user on this Mac, so the preview has a
-		// login of its own: the token in the link it printed, kept as a
-		// cookie (previewLogin sets it).
-		c, err := r.Cookie(previewCookie)
-		if err != nil || !hmac.Equal([]byte(c.Value), []byte(s.cfg.token)) {
-			return "", &checkErr{http.StatusForbidden, "forbidden: open the preview with the link ccs serve printed", "no preview cookie"}
 		}
 		if r.Method == http.MethodPost {
 			// The same as the remote mode's: only this page's own forms,
@@ -488,6 +487,7 @@ type pageData struct {
 	Title, CSRF string
 	Write       bool
 	Preview     bool
+	Base        string // what every link and form starts with (base)
 	Body        any
 }
 
@@ -498,7 +498,7 @@ func (s *server) render(w http.ResponseWriter, r *http.Request, name string, bod
 func (s *server) renderCode(w http.ResponseWriter, r *http.Request, code int, name string, body any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(code)
-	if err := pages.ExecuteTemplate(w, name, pageData{Title: name, CSRF: s.csrf(emailOf(r)), Write: s.cfg.allowWrite, Preview: s.cfg.preview, Body: body}); err != nil {
+	if err := pages.ExecuteTemplate(w, name, pageData{Title: name, CSRF: s.csrf(emailOf(r)), Write: s.cfg.allowWrite, Preview: s.cfg.preview, Base: s.base(), Body: body}); err != nil {
 		state.LogActivity("serve: rendering %s: %v", name, err)
 	}
 }

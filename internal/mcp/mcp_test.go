@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -119,5 +120,28 @@ func TestMCPNameMatchIgnoresDashes(t *testing.T) {
 	got, _ := mcpSearch(convs, "checkout pdf gate", 5)
 	if !strings.Contains(got, "1. checkout-pdf-gate") {
 		t.Errorf("the session named after the words should come first, even with dashes:\n%s", got)
+	}
+}
+
+// search_sessions leaves reorg planning runs out (their prompt holds every
+// session's first message) unless the search names one.
+func TestMCPSearchSkipsReorgRuns(t *testing.T) {
+	convs := []transcript.Conversation{
+		{SessionID: "run-1", Title: "reorg-1118-061234", LastTimestamp: "2026-11-18T06:12:34Z", Messages: []transcript.Message{{Role: "user", Text: "flaky checkout test, staging deploy"}}},
+		{SessionID: "aaaa-1111", Title: "Fix flaky checkout test", LastTimestamp: "2026-10-01T10:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "flaky checkout test"}}},
+	}
+	search := func(q string) string {
+		var out bytes.Buffer
+		req := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_sessions","arguments":{"query":"` + q + `"}}}`
+		if err := RunMCP(strings.NewReader(req+"\n"), &out, func() ([]transcript.Conversation, error) { return slices.Clone(convs), nil }); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if s := search("flaky checkout"); strings.Contains(s, "reorg-1118") || !strings.Contains(s, "Fix flaky checkout test") {
+		t.Errorf("the run is left out:\n%s", s)
+	}
+	if s := search("reorg-1118"); !strings.Contains(s, "reorg-1118-061234") {
+		t.Errorf("searched for by name, it shows:\n%s", s)
 	}
 }

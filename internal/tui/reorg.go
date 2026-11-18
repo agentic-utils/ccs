@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -164,7 +163,7 @@ var reorgModel = func(ctx context.Context, name, prompt string) ([]byte, error) 
 		"--setting-sources", "", "--settings", `{"disableAllHooks":true}`, "--disable-slash-commands",
 		"--system-prompt", reorgSystem, "--output-format", "json", "--json-schema", reorgSchema)
 	cmd.Stdin = strings.NewReader(prompt)
-	cmd.Dir = orchestratorDir()
+	cmd.Dir = reorgRunDir()
 	os.MkdirAll(cmd.Dir, 0o700)
 	cmd.WaitDelay = 5 * time.Second
 	return cmd.Output()
@@ -533,13 +532,14 @@ func applyReorg(p reorgProposal) reorgResult {
 			recs = append(recs, sessions.ParentRec{Child: m.Conv.Title, ChildID: m.Conv.SessionID, Parent: o.Name, ParentID: me.Conv.SessionID, ParentKind: me.Conv.Kind, Source: "reorg"})
 		}
 	}
-	backup, err := sessions.BackupParents(time.Now())
+	at := time.Now()
+	backup, saved, err := sessions.BackupParents(at)
 	if err != nil {
 		res.Errs = append(res.Errs, "couldn't back up the parents first, so nothing changed: "+err.Error())
 		return res
 	}
 	res.Backup = backup
-	if err := sessions.SetParents(recs); err != nil {
+	if err := sessions.SetParentsAt(recs, at); err != nil {
 		res.Errs = append(res.Errs, "couldn't save the new parents, so nothing was launched or told: "+err.Error())
 		return res
 	}
@@ -561,19 +561,13 @@ func applyReorg(p reorgProposal) reorgResult {
 		if err != nil && l.PID == 0 {
 			failed[o.Name] = true
 			res.Errs = append(res.Errs, fmt.Sprintf("couldn't launch %s, so its sessions stay where they were: %v", o.Name, err))
-			sessions.WithParents(func(f *sessions.ParentsFile) bool {
-				delete(f.Parents, o.Name)
-				for _, m := range o.Moving {
-					key := cmp.Or(m.Conv.Title, m.Conv.SessionID)
-					if m.Parent == "" {
-						delete(f.Parents, key)
-						continue
-					}
-					old := byName[m.Parent]
-					f.Parents[key] = sessions.ParentRec{Child: m.Conv.Title, ChildID: m.Conv.SessionID, Parent: m.Parent, ParentID: old.Conv.SessionID, ParentKind: old.Conv.Kind, At: time.Now().UTC()}
-				}
-				return true
-			})
+			keys := []string{o.Name}
+			for _, m := range o.Moving {
+				keys = append(keys, cmp.Or(m.Conv.Title, m.Conv.SessionID))
+			}
+			if err := sessions.RestoreParentRecs(saved, keys); err != nil {
+				res.Errs = append(res.Errs, fmt.Sprintf("and couldn't put their old parents back: %v", err))
+			}
 			continue
 		}
 		res.Launched = append(res.Launched, o.Name)
@@ -640,10 +634,14 @@ func applyReorg(p reorgProposal) reorgResult {
 }
 
 // reorgRunName names one reorg's planning session, so it shows in the list.
-func reorgRunName(now time.Time) string { return "reorg-" + now.Format("0102-1504") }
+func reorgRunName(now time.Time) string { return "reorg-" + now.Format("0102-150405") }
 
 // isReorgRun: a reorg's own planning session, which a later reorg leaves out.
-var isReorgRun = regexp.MustCompile(`^reorg-\d{4}-\d{4}$`).MatchString
+var isReorgRun = transcript.IsReorgRun
+
+// reorgRunDir is where the planning call runs: a folder of ccs's own with
+// nothing in it, so no project's CLAUDE.md or settings can be near it.
+func reorgRunDir() string { return filepath.Join(filepath.Dir(state.MarksPath), "reorg-runs") }
 
 // topOrchestrator is the session the planning run goes under: the one
 // ccs orchestrator set up, else none.
@@ -664,10 +662,18 @@ func planReorg(convs []transcript.Conversation) (reorgProposal, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), reorgTimeout)
 	defer cancel()
 	name := reorgRunName(time.Now())
+	var runRec sessions.ParentRec
 	if top := topOrchestrator(convs); top.SessionID != "" {
-		sessions.SetParents([]sessions.ParentRec{{Child: name, Parent: cmp.Or(top.Title, top.SessionID), ParentID: top.SessionID, Source: "reorg"}})
+		runRec = sessions.ParentRec{Child: name, Parent: cmp.Or(top.Title, top.SessionID), ParentID: top.SessionID, Source: "reorg-run"}
+		sessions.SetParents([]sessions.ParentRec{runRec})
 	}
 	out, err := reorgModel(ctx, name, reorgPrompt(rows))
+	if err == nil {
+		_, err = parseReorg(out)
+	}
+	if err != nil && runRec.Child != "" {
+		sessions.DropParent(name, runRec) // a failed plan leaves nothing behind
+	}
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
@@ -835,12 +841,12 @@ func runReorgCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, inter
 		case "--yes", "-y":
 			yes = true
 		default:
-			fmt.Fprintf(stderr, "usage: ccs reorg [--dry-run] [--yes] | --undo\n  regroups every session by topic with one Sonnet call, so no orchestrator looks after more than %d topics.\n  Shows the plan and asks before it launches orchestrators and tells live sessions who they report to.\n  --dry-run shows the plan only; --yes applies it without asking.\n  --undo puts back the parents as they were before the last reorg (sessions it launched keep running)\n", reorgMaxTopics)
+			fmt.Fprintf(stderr, "usage: ccs reorg [--dry-run] [--yes] | --undo\n  regroups every session by topic with one Sonnet call, so no orchestrator looks after more than %d topics.\n  Shows the plan and asks before it launches orchestrators and tells live sessions who they report to.\n  --dry-run shows the plan only; --yes applies it without asking.\n  --undo puts back the parent records the last reorg wrote, after showing when it ran and asking (--yes skips);\n  launches and adopts since stay, and sessions it launched keep running\n", reorgMaxTopics)
 			return 2
 		}
 	}
 	if undo {
-		return reorgUndo(stdout, stderr)
+		return reorgUndo(stdin, stdout, stderr, yes, interactive)
 	}
 	convs, err := transcript.GetConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, []string{"observer-sessions"})
 	if err != nil {
@@ -879,21 +885,44 @@ func runReorgCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, inter
 	return 0
 }
 
-// reorgUndo is `ccs reorg --undo`: the newest backup of the parents put
-// back (the current ones backed up first, so this can be undone too). It
-// changes only the records: nothing is closed or told.
-func reorgUndo(stdout, stderr io.Writer) int {
+// reorgUndo is `ccs reorg --undo`: the newest reorg not yet undone, shown
+// with its time and how many records it would put back, then y/N (or
+// --yes). Only the records that reorg wrote and nothing has changed since go
+// back; launches and adopts since stay. Nothing is closed or told.
+func reorgUndo(stdin io.Reader, stdout, stderr io.Writer, yes, interactive bool) int {
 	backups := sessions.ParentBackups()
 	if len(backups) == 0 {
-		fmt.Fprintln(stderr, "ccs reorg --undo: no backup of the parents to put back")
+		fmt.Fprintln(stderr, "ccs reorg --undo: no reorg left to undo")
 		return 1
 	}
-	if err := sessions.RestoreParents(backups[0]); err != nil {
+	b, err := sessions.ReadReorgBackup(backups[0])
+	if err != nil {
 		fmt.Fprintln(stderr, "ccs reorg --undo:", err)
 		return 1
 	}
-	state.LogActivity("reorg undo: parents put back from %s", backups[0])
-	fmt.Fprintf(stdout, "Put back the parents from %s.\nOrchestrators a reorg launched are still running, and nobody was told: close or message them yourself.\n", sessions.TildePath(backups[0]))
+	n := sessions.UndoCount(b)
+	fmt.Fprintf(stdout, "The last reorg not yet undone ran at %s (%s ago). Undoing it puts back %d parent records it wrote; anything changed since stays.\n",
+		b.At.Local().Format("2006-01-02 15:04:05"), time.Since(b.At).Round(time.Minute), n)
+	if !yes {
+		if !interactive {
+			fmt.Fprintln(stderr, "ccs reorg --undo: not undone; run it in a terminal to answer, or with --yes")
+			return 1
+		}
+		fmt.Fprint(stdout, "Undo it? [y/N] ")
+		var answer string
+		fmt.Fscanln(stdin, &answer)
+		if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+			fmt.Fprintln(stdout, "Not undone.")
+			return 0
+		}
+	}
+	put, err := sessions.UndoReorg(backups[0])
+	if err != nil {
+		fmt.Fprintln(stderr, "ccs reorg --undo:", err)
+		return 1
+	}
+	state.LogActivity("reorg undo: %d records put back from %s", put, backups[0])
+	fmt.Fprintf(stdout, "Put back %d parent records. Orchestrators that reorg launched are still running, and nobody was told: close or message them yourself.\n", put)
 	return 0
 }
 
@@ -934,14 +963,35 @@ func reorgApplyCmd(p reorgProposal) tea.Cmd {
 const reorgTypingPause = 2 * time.Second
 
 // openReadyReorg opens a ready plan's popup once the user has stopped
-// typing and nothing else is being asked; called after every message, and
-// the live tick comes every 2s.
+// typing, no text box is focused or holds text (the search, the message
+// box, the overlay, any draft) and nothing else is being asked; called after
+// every message, and the live tick comes every 2s.
 func (m *model) openReadyReorg() {
 	if m.reorgReady == nil || m.reorgPlan != nil || time.Since(m.lastKeyAt) < reorgTypingPause || m.prompting() ||
+		m.chatFocus || m.waitOpen || m.textInput.Value() != "" || m.hasDraft() ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return
 	}
 	m.reorgPlan, m.reorgReady, m.reorgShownAt, m.reorgScroll = m.reorgReady, nil, time.Now(), 0
+}
+
+// hasDraft: some text box holds unsent text, the message box's or the
+// overlay's, for this session or another.
+func (m model) hasDraft() bool {
+	if strings.TrimSpace(m.chatInput.Value()) != "" || strings.TrimSpace(m.waitInput.Value()) != "" {
+		return true
+	}
+	for _, d := range m.chatDrafts {
+		if strings.TrimSpace(d) != "" {
+			return true
+		}
+	}
+	for _, d := range m.waitDrafts {
+		if strings.TrimSpace(d) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // reorgPopupLines is the popup's text wrapped to its width, every line of

@@ -3,6 +3,7 @@ package sessions
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -121,33 +122,42 @@ func TestResolveParents(t *testing.T) {
 	}
 }
 
-// A backup keeps the records as they were; restoring one puts them back and
-// backs up what it replaced, so a restore can be undone too.
-func TestBackupAndRestoreParents(t *testing.T) {
+// Undoing a reorg puts back only the records it wrote that nothing changed
+// since, marks its backup undone so the next undo reaches the one before,
+// and backs nothing up itself.
+func TestUndoReorg(t *testing.T) {
 	os.Remove(ParentsPath())
 	t.Cleanup(func() {
 		os.Remove(ParentsPath())
 		for _, b := range ParentBackups() {
 			os.Remove(b)
 		}
+		undone, _ := filepath.Glob(filepath.Join(filepath.Dir(ParentsPath()), "launch-parents-reorg-*.undone"))
+		for _, u := range undone {
+			os.Remove(u)
+		}
 	})
-	SetParents([]ParentRec{{Child: "w", Parent: "hub"}})
-	backup, err := BackupParents(time.Now())
-	if err != nil {
-		t.Fatal(err)
+	SetParents([]ParentRec{{Child: "w", Parent: "hub", ParentID: "hub-id"}, {Child: "v", Parent: "hub"}})
+	at := time.Now()
+	backup, saved, err := BackupParents(at)
+	if err != nil || saved["w"].ParentID != "hub-id" {
+		t.Fatal(err, saved)
 	}
-	SetParents([]ParentRec{{Child: "w", Parent: "other"}, {Child: "x", Parent: "other"}})
-	if err := RestoreParents(backup); err != nil {
-		t.Fatal(err)
+	SetParentsAt([]ParentRec{{Child: "w", Parent: "orch", Source: "reorg"}, {Child: "v", Parent: "orch", Source: "reorg"}, {Child: "x", Parent: "orch", Source: "reorg"}}, at)
+	SetParents([]ParentRec{{Child: "v", Parent: "elsewhere"}, {Child: "y", Parent: "hub"}}) // an adopt and a launch since
+	b, _ := ReadReorgBackup(backup)
+	if n := UndoCount(b); n != 2 {
+		t.Errorf("w and x are still the reorg's: %d", n)
 	}
-	if f := LoadParents(); f.Parents["w"].Parent != "hub" || len(f.Parents) != 1 {
-		t.Errorf("put back: %+v", f.Parents)
+	if n, err := UndoReorg(backup); n != 2 || err != nil {
+		t.Fatal(n, err)
 	}
-	if b := ParentBackups(); len(b) != 2 || b[1] != backup {
-		t.Fatalf("the restore backed up what it replaced, newest first: %v", b)
+	f := LoadParents().Parents
+	if f["w"].Parent != "hub" || f["w"].ParentID != "hub-id" || f["x"].Parent != "" || f["v"].Parent != "elsewhere" || f["y"].Parent != "hub" {
+		t.Errorf("w put back whole, x dropped, v and y kept: %+v", f)
 	}
-	if err := RestoreParents(ParentBackups()[0]); err != nil || LoadParents().Parents["x"].Parent != "other" {
-		t.Errorf("and that can be put back too: %v %+v", err, LoadParents().Parents)
+	if len(ParentBackups()) != 0 {
+		t.Errorf("the backup is marked undone and nothing new was backed up: %v", ParentBackups())
 	}
 	for range parentBackupKeep + 5 {
 		BackupParents(time.Now())

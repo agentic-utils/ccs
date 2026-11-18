@@ -178,8 +178,16 @@ func TestApplyReorg(t *testing.T) {
 		t.Errorf("the parents were backed up first: %+v", res)
 	}
 	var out, errb strings.Builder
-	if code := runReorgCLI([]string{"--undo"}, nil, &out, &errb, false); code != 0 || len(sessions.LoadParents().Parents) != 0 || !strings.Contains(out.String(), "still running") {
-		t.Errorf("--undo puts back the empty records it replaced: %d %q %q %+v", code, out.String(), errb.String(), sessions.LoadParents().Parents)
+	if code := runReorgCLI([]string{"--undo"}, nil, &out, &errb, false); code != 1 || len(sessions.LoadParents().Parents) == 0 || !strings.Contains(out.String(), "puts back 4 parent records") {
+		t.Errorf("--undo shows what it would do and asks first: %d %q %q", code, out.String(), errb.String())
+	}
+	out.Reset()
+	if code := runReorgCLI([]string{"--undo"}, strings.NewReader("n\n"), &out, &errb, true); code != 0 || len(sessions.LoadParents().Parents) == 0 {
+		t.Errorf("n leaves it: %d %q", code, out.String())
+	}
+	out.Reset()
+	if code := runReorgCLI([]string{"--undo", "--yes"}, nil, &out, &errb, false); code != 0 || len(sessions.LoadParents().Parents) != 0 || !strings.Contains(out.String(), "still running") {
+		t.Errorf("--undo --yes puts back the empty records it replaced: %d %q %q %+v", code, out.String(), errb.String(), sessions.LoadParents().Parents)
 	}
 	t.Cleanup(func() {
 		for _, b := range sessions.ParentBackups() {
@@ -206,7 +214,7 @@ func TestApplyReorg(t *testing.T) {
 func TestReorgFailedLaunchPutsSessionsBack(t *testing.T) {
 	os.Remove(sessions.ParentsPath())
 	t.Cleanup(func() { os.Remove(sessions.ParentsPath()) })
-	sessions.SetParents([]sessions.ParentRec{{Child: "api-fix", Parent: "hub"}})
+	sessions.SetParents([]sessions.ParentRec{{Child: "api-fix", Parent: "hub", ParentID: "h-id", Source: "launch-test"}})
 	told := 0
 	oldLaunch, oldNotify := reorgLaunch, reorgNotify
 	t.Cleanup(func() { reorgLaunch, reorgNotify = oldLaunch, oldNotify })
@@ -221,7 +229,7 @@ func TestReorgFailedLaunchPutsSessionsBack(t *testing.T) {
 	}
 	res := applyReorg(checkPlan(reorgPlan{Topics: []reorgTopic{{Topic: "x", Orchestrator: "x-orchestrator", Parent: "hub", Members: []string{"a", "c"}}}}, rows))
 	f := sessions.LoadParents()
-	if f.Parents["api-fix"].Parent != "hub" || f.Parents["loose"].Parent != "" || f.Parents["x-orchestrator"].Parent != "" {
+	if r := f.Parents["api-fix"]; r.Parent != "hub" || r.ParentID != "h-id" || r.Source != "launch-test" || f.Parents["loose"].Parent != "" || f.Parents["x-orchestrator"].Parent != "" {
 		t.Errorf("records put back: %+v", f.Parents)
 	}
 	if told != 0 || res.Moved != 0 || !strings.Contains(res.String(), "couldn't launch x-orchestrator") {
@@ -294,6 +302,13 @@ func TestReorgKey(t *testing.T) {
 			t.Fatal("a plan that lands just after a key press waits")
 		}
 		m.lastKeyAt = time.Now().Add(-time.Minute)
+		m.chatDrafts = map[string]string{"other-id": "half a message"}
+		next, _ = m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m = next.(model)
+		if m.reorgPlan != nil {
+			t.Fatal("not while a draft waits to be sent")
+		}
+		m.chatDrafts = nil
 		next, _ = m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		m = next.(model)
 		if v := strip2(m.View()); m.reorgPlan == nil || !strings.Contains(v, "lonely work → loner-orchestrator (new, in") || !strings.Contains(v, "moving in: loner (closed), leaf (from sub) (closed)") {
@@ -339,5 +354,52 @@ func TestReorgKey(t *testing.T) {
 	}
 	if r := sessions.LoadParents().Parents["loner"]; r.Parent != "loner-orchestrator" || r.Source != "reorg" {
 		t.Errorf("loner moved: %+v", r)
+	}
+}
+
+// A planning run is named to the second, sits under the top orchestrator
+// while it plans, leaves no record if its plan fails, and stays out of a
+// search.
+func TestReorgRun(t *testing.T) {
+	m := treeModel(t)
+	orchestratorFixture(t)
+	orchestratorRecord{SessionID: "hub-id"}.save()
+	at := time.Date(2026, 11, 18, 6, 12, 34, 0, time.Local)
+	if n := reorgRunName(at); n != "reorg-1118-061234" || !isReorgRun(n) || !isReorgRun("reorg-1118-0612") || isReorgRun("reorg-notes") {
+		t.Errorf("named to the second: %s", n)
+	}
+	old := reorgModel
+	t.Cleanup(func() { reorgModel = old })
+	var during sessions.ParentRec
+	reorgModel = func(ctx context.Context, name, prompt string) ([]byte, error) {
+		during = sessions.LoadParents().Parents[name]
+		return nil, errors.New("overloaded")
+	}
+	convs := []transcript.Conversation{{SessionID: "hub-id", Title: "hub"}}
+	if _, err := planReorg(convs); err == nil {
+		t.Fatal("the failure comes back")
+	}
+	if during.Parent != "hub" {
+		t.Errorf("under the top orchestrator while it plans: %+v", during)
+	}
+	for k, r := range sessions.LoadParents().Parents {
+		if isReorgRun(k) {
+			t.Errorf("a failed plan leaves no record: %+v", r)
+		}
+	}
+
+	m.items = append(m.items, buildItems([]transcript.Conversation{{SessionID: "run-id", Title: "reorg-1118-061234", LastTimestamp: time.Now().UTC().Format(time.RFC3339),
+		Messages: []transcript.Message{{Role: "user", Text: "hub worker loner"}}}})...)
+	m.textInput.SetValue("loner")
+	m.updateFilter()
+	for _, it := range m.filtered {
+		if it.conv.SessionID == "run-id" {
+			t.Error("a planning run stays out of a search")
+		}
+	}
+	m.textInput.SetValue("reorg-1118")
+	m.updateFilter()
+	if !slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "run-id" }) {
+		t.Error("unless the search names it")
 	}
 }

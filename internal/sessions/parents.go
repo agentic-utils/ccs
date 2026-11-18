@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -96,25 +97,34 @@ func WithParents(f func(p *ParentsFile) bool) error {
 	return nil
 }
 
-// parentBackupKeep is how many backups of launch-parents.json are kept.
+// parentBackupKeep is how many reorg backups of launch-parents.json are kept.
 const parentBackupKeep = 20
 
-// ParentBackups is the backups of launch-parents.json beside it, newest first.
+// ReorgBackup is launch-parents.json as it was just before one ccs reorg
+// wrote its records, all stamped At: what --undo puts back.
+type ReorgBackup struct {
+	At      time.Time            `json:"at"`
+	Parents map[string]ParentRec `json:"parents"`
+}
+
+// ParentBackups is the reorg backups not yet undone, newest first.
 func ParentBackups() []string {
-	found, _ := filepath.Glob(filepath.Join(filepath.Dir(ParentsPath()), "launch-parents-*.json.bak"))
+	found, _ := filepath.Glob(filepath.Join(filepath.Dir(ParentsPath()), "launch-parents-reorg-*.json.bak"))
 	slices.Sort(found) // timestamped names sort by time
 	slices.Reverse(found)
 	return found
 }
 
-// BackupParents saves the records as they are now to a timestamped file
-// beside them, before a change to many at once (ccs reorg), keeping the
-// newest parentBackupKeep. It returns the backup's path.
-func BackupParents(now time.Time) (string, error) {
-	path := filepath.Join(filepath.Dir(ParentsPath()), "launch-parents-"+now.UTC().Format("20060102T150405.000Z")+".json.bak")
+// BackupParents saves the records as they are now, before a reorg writes
+// its own stamped at, keeping the newest parentBackupKeep. It returns the
+// backup's path and the records it saved.
+func BackupParents(at time.Time) (string, map[string]ParentRec, error) {
+	path := filepath.Join(filepath.Dir(ParentsPath()), "launch-parents-reorg-"+at.UTC().Format("20060102T150405.000000000Z")+".json.bak")
+	var saved map[string]ParentRec
 	var werr error
 	err := WithParents(func(f *ParentsFile) bool {
-		data, err := json.MarshalIndent(f, "", " ")
+		saved = maps.Clone(f.Parents)
+		data, err := json.MarshalIndent(ReorgBackup{At: at.UTC(), Parents: f.Parents}, "", " ")
 		if err == nil {
 			err = os.WriteFile(path, data, 0o600)
 		}
@@ -122,34 +132,88 @@ func BackupParents(now time.Time) (string, error) {
 		return false
 	})
 	if err = cmp.Or(err, werr); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	for _, old := range ParentBackups()[min(parentBackupKeep, len(ParentBackups())):] {
-		os.Remove(old)
+	if all := ParentBackups(); len(all) > parentBackupKeep {
+		for _, old := range all[parentBackupKeep:] {
+			os.Remove(old)
+		}
 	}
-	return path, nil
+	return path, saved, nil
 }
 
-// RestoreParents puts a backup's records back in place of the current ones,
-// first backing those up too, so a restore can itself be undone.
-func RestoreParents(backup string) error {
-	data, err := os.ReadFile(backup)
+// ReadReorgBackup reads one backup.
+func ReadReorgBackup(path string) (ReorgBackup, error) {
+	var b ReorgBackup
+	data, err := os.ReadFile(path)
+	if err == nil {
+		err = json.Unmarshal(data, &b)
+	}
 	if err != nil {
-		return err
+		return b, fmt.Errorf("%s: %w", path, err)
 	}
-	var b ParentsFile
-	if err := json.Unmarshal(data, &b); err != nil {
-		return fmt.Errorf("%s: %w", backup, err)
-	}
-	if _, err := BackupParents(time.Now()); err != nil {
-		return err
-	}
-	return WithParents(func(f *ParentsFile) bool {
-		f.Parents = b.Parents
-		if f.Parents == nil {
-			f.Parents = map[string]ParentRec{}
+	return b, nil
+}
+
+// reorgWrote: r is a record the reorg of backup b wrote, still unchanged.
+func reorgWrote(r ParentRec, b ReorgBackup) bool { return r.Source == "reorg" && r.At.Equal(b.At) }
+
+// UndoCount is how many records undoing backup b would put back: those its
+// reorg wrote that nothing has changed since.
+func UndoCount(b ReorgBackup) int {
+	n := 0
+	for _, r := range LoadParents().Parents {
+		if reorgWrote(r, b) {
+			n++
 		}
-		return true
+	}
+	return n
+}
+
+// UndoReorg puts back what the reorg of the backup at path changed: each
+// record it wrote that nothing has changed since goes back to its value in
+// the backup, or is dropped if it had none. Anything written since (a
+// launch, an adopt, another reorg) stays. The backup is then marked undone,
+// so the next undo reaches the reorg before it. Nothing is backed up.
+func UndoReorg(path string) (int, error) {
+	b, err := ReadReorgBackup(path)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	err = WithParents(func(f *ParentsFile) bool {
+		for key, r := range f.Parents {
+			if !reorgWrote(r, b) {
+				continue
+			}
+			if old, ok := b.Parents[key]; ok {
+				f.Parents[key] = old
+			} else {
+				delete(f.Parents, key)
+			}
+			n++
+		}
+		return n > 0
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, os.Rename(path, strings.TrimSuffix(path, ".bak")+".undone")
+}
+
+// RestoreParentRecs puts keys back as they were in saved (dropping those it
+// didn't have): how a reorg takes back the records of an orchestrator whose
+// launch failed.
+func RestoreParentRecs(saved map[string]ParentRec, keys []string) error {
+	return WithParents(func(f *ParentsFile) bool {
+		for _, k := range keys {
+			if old, ok := saved[k]; ok {
+				f.Parents[k] = old
+			} else {
+				delete(f.Parents, k)
+			}
+		}
+		return len(keys) > 0
 	})
 }
 
@@ -235,14 +299,30 @@ func setParent(name, childID string, p Caller) error {
 
 // SetParents writes recs under one lock, each keyed by its child's name, or
 // its id when it has no name, stamped now.
-func SetParents(recs []ParentRec) error {
-	now := time.Now().UTC()
+func SetParents(recs []ParentRec) error { return SetParentsAt(recs, time.Now()) }
+
+// SetParentsAt is SetParents stamped at: a reorg stamps its records with its
+// backup's time, so --undo finds exactly them.
+func SetParentsAt(recs []ParentRec, at time.Time) error {
+	at = at.UTC()
 	return WithParents(func(f *ParentsFile) bool {
 		for _, r := range recs {
-			r.At = now
+			r.At = at
 			f.Parents[cmp.Or(r.Child, r.ChildID)] = r
 		}
 		return len(recs) > 0
+	})
+}
+
+// DropParent removes key's record if it is still rec (a reorg's planning
+// run whose plan failed).
+func DropParent(key string, rec ParentRec) {
+	WithParents(func(f *ParentsFile) bool {
+		if r, ok := f.Parents[key]; ok && r.Source == rec.Source && r.Parent == rec.Parent {
+			delete(f.Parents, key)
+			return true
+		}
+		return false
 	})
 }
 

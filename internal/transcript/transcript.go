@@ -849,6 +849,25 @@ func IsSpawn(cmd string) bool {
 // launchName finds each `ccs launch … --name X` (or --name=X) in a command.
 var launchName = regexp.MustCompile(`\bccs\s+launch\b[^;&|\n]*?--name[= ]['"]?([A-Za-z0-9._-]{1,64})`)
 
+// IsReorgRun: a ccs reorg planning session, by its name (reorg-MMDD-HHMM,
+// or to the second).
+var IsReorgRun = regexp.MustCompile(`^reorg-\d{4}-\d{4}(\d{2})?$`).MatchString
+
+// HideFromSearch: c is a reorg planning run that query doesn't name. Its
+// transcript holds every session's first prompt, so it would match almost
+// any search; one searched for by its own name still shows.
+func HideFromSearch(c Conversation, query string) bool {
+	if !IsReorgRun(c.Title) {
+		return false
+	}
+	for _, w := range strings.Fields(strings.ToLower(query)) {
+		if !strings.Contains(c.Title, w) {
+			return true
+		}
+	}
+	return strings.TrimSpace(query) == ""
+}
+
 // LaunchNames is every session name a shell command starts with ccs launch.
 func LaunchNames(cmd string) []string {
 	var out []string

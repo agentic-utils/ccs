@@ -101,7 +101,7 @@ func (m model) chatRows() int {
 	if m.boxHidden() {
 		return 1 + len(m.chatAsk())
 	}
-	return 4
+	return 4 + len(m.runLines())
 }
 
 // boxHidden: the selected session waits on a menu or prompt, which holds any
@@ -375,6 +375,9 @@ func (m model) chatView() string {
 		}
 		return strings.Join(append(m.chatAsk(), status), "\n")
 	}
+	if run := m.runLines(); len(run) > 0 { // a ! command's output, above the box
+		return strings.Join(run, "\n") + "\n" + box
+	}
 	return box
 }
 
@@ -440,7 +443,7 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 	left = ansi.Truncate(working+left, max(width, 1), "…") + "\033[0m"
 	status := left + strings.Repeat(" ", max(width-lipgloss.Width(left), 0))
 
-	in.Placeholder = "message " + name + "…"
+	in.Placeholder = "message " + name + "…  · !cmd runs here · /cmd in it"
 	in.Width = chatInputWidth(width)
 	if !focus {
 		in.Blur() // no cursor while typing goes to the search
@@ -473,8 +476,15 @@ func (m *model) sendCmd() tea.Cmd {
 // sendTo sends the text in the message box to conv, a live session, and
 // empties the box.
 func (m *model) sendTo(conv transcript.Conversation) tea.Cmd {
+	text := strings.TrimSpace(m.chatInput.Value())
+	return m.sendLine(conv, text, text)
+}
+
+// sendLine sends payload to conv and empties the box; draft is the box's
+// text as typed, which a failure puts back (an escaped "!!x" stays "!!x").
+func (m *model) sendLine(conv transcript.Conversation, draft, payload string) tea.Cmd {
 	in := &m.chatInput
-	text := strings.TrimSpace(in.Value())
+	text := payload
 	if text == "" {
 		return nil
 	}
@@ -498,7 +508,7 @@ func (m *model) sendTo(conv transcript.Conversation) tea.Cmd {
 		defer func() {
 			if r := recover(); r != nil {
 				transcript.RecoverWorkerValue(r)
-				msg = sendDoneMsg{id: id, note: "✗ Internal error, logged to " + transcript.WorkerPanicLog, err: errors.New("panic")}
+				msg = sendDoneMsg{id: id, note: "✗ Internal error, logged to " + transcript.WorkerPanicLog, err: errors.New("panic"), text: draft}
 			}
 		}()
 		deliver := deliverMessage
@@ -508,7 +518,7 @@ func (m *model) sendTo(conv transcript.Conversation) tea.Cmd {
 			}
 		}
 		note, err := deliver(pid, id, name, wire, verified)
-		return sendDoneMsg{id: id, note: note, err: err, text: text}
+		return sendDoneMsg{id: id, note: note, err: err, text: draft}
 	}
 }
 
@@ -545,6 +555,11 @@ func deliverMessage(pid int, id, name, text string, verified bool) (string, erro
 	}
 	if !verified {
 		return "✗ Not typed into " + name + ": its process couldn't be checked against its session file", fmt.Errorf("%w: unverified pid", sessions.ErrUnsent)
+	}
+	if t := strings.TrimSpace(text); strings.HasPrefix(t, "/") || strings.HasPrefix(t, "!") {
+		// Typed, Claude Code would run it as a slash or shell command:
+		// a message that starts so goes only through the socket.
+		return "✗ Not typed into " + name + ": its message socket isn't reachable, and typed, a line starting " + t[:1] + " would run as a command", fmt.Errorf("%w: a command if typed", sessions.ErrUnsent)
 	}
 	where, err := typeIntoSession(pid, text)
 	switch {

@@ -286,7 +286,7 @@ const updatedEnv = "CCS_UPDATED_FROM"
 // The restart keeps the screen,
 // search and selection.
 func (m model) awayForUpdate() bool {
-	if heldCount() > 0 {
+	if heldCount() > 0 || runActive() {
 		return false
 	}
 	if !m.blurred && time.Since(m.lastKeyAt) < autoUpdateIdle {

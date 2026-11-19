@@ -176,6 +176,8 @@ type model struct {
 	sentAt     map[string]time.Time            // when a socket send finished, by SessionID, until the session queues it
 	held       map[string]bool                 // a receipt said the session is holding the message for approval
 	sending    bool
+	run        *shellRun // the last ! command run from the message box (run.go)
+	runGen     int       // bumped per run, so a stale result or tick is dropped
 
 	unverified     map[string]bool                 // live sessions whose pid couldn't be checked against their file
 	lastScan       map[string]sessions.LiveSession // the last live tick's sessions, so the next can keep one whose file is briefly unreadable
@@ -1695,7 +1697,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case autoUpdateTickMsg:
 		if m.restartReady != "" {
-			if heldCount() > 0 {
+			if heldCount() > 0 || runActive() {
 				return m, autoUpdateTick()
 			}
 			m.restart, m.quitting = m.restartReady, true
@@ -1705,9 +1707,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.updating || m.updateTo == "" || !m.autoUpdate || m.upgrade == nil || m.updateTo == m.autoFailed:
 			return m, nil // nothing to install on its own now
-		case heldCount() > 0:
+		case heldCount() > 0 || runActive():
 			if !m.updateWaitLogged {
-				state.LogActivity("update waits: holding %d prompt(s)", heldCount())
+				state.LogActivity("update waits: holding %d prompt(s), a command running: %v", heldCount(), runActive())
 				m.updateWaitLogged = true
 			}
 			return m, autoUpdateTick()
@@ -1801,6 +1803,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, textinput.Paste // no image there: the usual text paste
 		}
 		return m, nil
+
+	case runDoneMsg, runTickMsg:
+		return m, m.applyRun(msg)
 
 	case sendDoneMsg:
 		m.sending = false
@@ -2431,8 +2436,20 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.chatFocus && !chord {
 			switch msg.String() {
 			case "esc":
+				if m.stopRun() { // a ! command's box: stop it, or close it
+					return m, nil
+				}
 				m.chatFocus = false // back to the search
 				return m, nil
+			case "ctrl+c":
+				if m.run != nil && m.run.running && m.stopRun() {
+					return m, nil // stops the command, not ccs
+				}
+			case "pgup", "pgdown":
+				if m.runShown() {
+					m.scrollRun(map[string]int{"pgup": -10, "pgdown": 10}[msg.String()])
+					return m, nil
+				}
 			case "enter":
 				if strings.TrimSpace(m.chatInput.Value()) == "" && len(m.filtered) > 0 {
 					// Enter on an empty box opens the session itself.
@@ -2440,9 +2457,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chatFocus = false
 					return m, m.focusCmd(m.filtered[m.cursor].conv)
 				}
+				if m.selectedLive() {
+					if cmd, done := m.commandLine(); done { // ! and / lines: only ever from a key pressed here
+						return m, cmd
+					}
+				}
 				stats.Record("tui.send", stats.Key)
 				return m, m.sendCmd()
-			case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+c", "ctrl+f", "ctrl+r", "ctrl+]", "ctrl+\\":
+			case "up", "ctrl+p", "down", "ctrl+n", "ctrl+f", "ctrl+r", "ctrl+]", "ctrl+\\":
 				// fall through to the list's handling below
 			default:
 				var cmd tea.Cmd
@@ -2773,8 +2795,11 @@ func (m model) shortcuts() [][2]string {
 	switch {
 	case m.chatFocus:
 		add(true, keyEnter, "send the message; on an empty box, go to its tab")
-		add(true, keyEsc, "leave the message box for the search")
+		add(true, keyEsc, "leave the message box for the search (a command's output: stop it, or close it)")
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
+		add(true, "!cmd", "run cmd here, in ccs, in the session's folder; its output shows above the box (PgUp/PgDn scroll)")
+		add(true, "/cmd", "type a slash command into the session's tab, so Claude Code runs it (only while it's idle)")
+		add(true, "!! //", "send a line starting ! or / as an ordinary message")
 	case m.heldKeysActive():
 		add(true, "↑↓ j k", "a question: move over its options and Other… (no Enter first: the menu has the keys while the search is empty)")
 		add(true, "1-9", "a question: highlight that option (a pick-any one: tick it)")
@@ -3053,8 +3078,11 @@ func (m model) viewScreen() string {
 	}
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
-	} else if n := heldCount(); n > 0 && m.updateTo != "" && (m.restartReady != "" || (m.autoUpdate && m.upgrade != nil && m.updateTo != m.autoFailed)) {
+	} else if n, run := heldCount(), runActive(); (n > 0 || run) && m.updateTo != "" && (m.restartReady != "" || (m.autoUpdate && m.upgrade != nil && m.updateTo != m.autoFailed)) {
 		status = fmt.Sprintf(" · update waiting: %d held", n)
+		if run {
+			status = " · update waiting: a ! command running"
+		}
 	}
 	// Each state with its key in front, in bold, as the hints read.
 	key := func(k string) string { return "\033[1m" + k + "\033[22m " }

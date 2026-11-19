@@ -295,6 +295,28 @@ func TestServeSendNeverTypes(t *testing.T) {
 	}
 }
 
+// ! and / lines are the TUI's alone: from the web page they're messages,
+// sent as text over the socket, never run or typed.
+func TestServeSendsCommandLinesAsText(t *testing.T) {
+	s, _ := testServer(t, true, nil)
+	got := stubSend(t, "idle")
+	typed := false
+	stubTerminal(t, func(sessions.Terminal, string, bool) error { typed = true; return nil })
+	for _, text := range []string{"!touch ccs-remote-ran", "/compact"} {
+		w := postAct(t, s, url.Values{"action": {"send"}, "id": {"s-1"}, "name": {"w"}, "text": {text}, "confirm": {"yes"}})
+		if w.Code != http.StatusOK && w.Code != http.StatusSeeOther {
+			t.Fatalf("%s: %d %s", text, w.Code, w.Body)
+		}
+	}
+	if typed || len(*got) != 2 || (*got)[0].text != "!touch ccs-remote-ran" || (*got)[1].text != "/compact" {
+		t.Errorf("typed=%v sent %+v", typed, *got)
+	}
+	if _, err := os.Stat("ccs-remote-ran"); err == nil {
+		os.Remove("ccs-remote-ran")
+		t.Error("a remote ! line ran")
+	}
+}
+
 func waitingConv(t *testing.T, multi bool) transcript.Conversation {
 	t.Helper()
 	conv := transcript.Conversation{SessionID: "s-1", Title: "worker", Cwd: "/r", LastTimestamp: "2026-11-01T10:01:00Z"}

@@ -64,6 +64,8 @@ var Registry = []Info{
 	{"tui.send", "send a message from the message box"},
 	{"tui.run_command", "run a ! command from the message box, in ccs, in the session's folder"},
 	{"tui.slash_command", "type a / slash command from the message box into the session's terminal"},
+	{"tui.run_send_ask", "^S on a finished ! command's box: offer to send its result to the session"},
+	{"tui.run_send", "send a ! command's result (with its output, or the exit code only) to the session it ran for"},
 	{"tui.paste_image", "^V paste a screenshot into a message"},
 	{"tui.fork", "^F fork a session"},
 	{"tui.search", "type a search"},

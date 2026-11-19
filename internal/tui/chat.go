@@ -43,6 +43,9 @@ type sendDoneMsg struct {
 	note string
 	err  error
 	text string // what was sent, given back to its box when nothing was (errUnsent)
+	// keepDraft: the text wasn't typed in the box (a command's result, ^S), so
+	// a failure puts nothing back there.
+	keepDraft bool
 }
 
 func (m model) selectedLive() bool {

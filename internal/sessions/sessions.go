@@ -174,6 +174,29 @@ func StillTheSession(pid int, id string) (f SessionFile, same, checked bool) {
 	return s.SessionFile, match, checked
 }
 
+// LiveStart is session id's process start time as its session file records
+// it (procStart), when pid is still that session's live process and the
+// start time checks out against the process's own; ok is false otherwise.
+// Two calls agreeing on pid and start mean the same process, not a restart.
+func LiveStart(pid int, id string) (start string, ok bool) {
+	if pid <= 0 {
+		return "", false
+	}
+	data, err := os.ReadFile(filepath.Join(GetSessionsDir(), strconv.Itoa(pid)+".json"))
+	var s struct {
+		SessionID string `json:"sessionId"`
+		ProcStart string `json:"procStart"`
+	}
+	if err != nil || json.Unmarshal(data, &s) != nil || s.SessionID != id || s.ProcStart == "" || !proc.PIDAlive(pid) {
+		return "", false
+	}
+	match, checked := sameStart(s.ProcStart, proc.ProcessStartTimes(map[string]int{strconv.Itoa(pid): pid})[pid])
+	if !match || !checked {
+		return "", false
+	}
+	return s.ProcStart, true
+}
+
 func sameStart(recorded string, actual time.Time) (match, checked bool) {
 	want, err := time.Parse(time.ANSIC, strings.Join(strings.Fields(recorded), " "))
 	if err != nil || actual.IsZero() {

@@ -1369,8 +1369,14 @@ func Truncate(s string, maxLen int) string {
 	return ansi.Truncate(s, maxLen, "...")
 }
 
-// GetTopic returns the session name (custom/ai title), else first user message, else session ID
+// GetTopic returns the session name (custom/ai title), else first user
+// message, else session ID, through CleanText: it's drawn in the list, the
+// preview header and prompts, and a transcript's text can carry escapes.
 func GetTopic(conv Conversation) string {
+	return CleanText(rawTopic(conv))
+}
+
+func rawTopic(conv Conversation) string {
 	if conv.Title != "" {
 		return conv.Title
 	}
@@ -2564,20 +2570,81 @@ Examples:
 `)
 }
 
-// CleanText drops terminal control codes that transcripts can carry (coloured
-// command output, carriage returns): printed raw they'd move the cursor or
-// leave stray "[" on screen.
+// CleanText makes text from a transcript (or a command's output) safe to
+// draw: printed raw, terminal control codes would move the cursor, retitle
+// the window or leave stray "[" on screen. Escape sequences go whole, both
+// the 7-bit ESC kind and the 8-bit C1 kind (CSI U+009B, OSC U+009D…, as
+// UTF-8 or as raw bytes); invalid UTF-8 becomes U+FFFD; then every C0
+// control but newline and tab, DEL and every C1 control is dropped.
+// Carriage returns go too, so a progress bar can't redraw over the screen.
+// Clean text comes back as it was, without a copy.
 func CleanText(s string) string {
-	if !strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 && r != '\n' && r != '\t' || r == 0x7f }) {
+	if !needsCleaning(s) {
 		return s
 	}
-	s = ansi.Strip(s)
+	s = ansi.Strip(sevenBitC1(s))
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
+		if (r < 0x20 && r != '\n' && r != '\t') || (r >= 0x7f && r < 0xa0) {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+// needsCleaning is CleanText's fast path, one pass over the bytes: a C0
+// control other than newline and tab, DEL, a C1 control encoded as UTF-8
+// (0xC2 then 0x80-0x9F), or invalid UTF-8 (which covers a raw C1 byte).
+func needsCleaning(s string) bool {
+	for i := 0; i < len(s); {
+		b := s[i]
+		if b < 0x80 { // ASCII, the common case: one byte, no decoding
+			if (b < 0x20 && b != '\n' && b != '\t') || b == 0x7f {
+				return true
+			}
+			i++
+			continue
+		}
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && n == 1) || (r >= 0x80 && r < 0xa0) {
+			return true
+		}
+		i += n
+	}
+	return false
+}
+
+// sevenBitC1 leaves ansi.Strip only valid UTF-8 and 7-bit escapes: each C1
+// control, whether encoded as UTF-8 (U+009B) or a raw byte (0x9b), becomes
+// its 7-bit form (CSI is ESC [, OSC ESC ], ST ESC \), so Strip removes the
+// whole sequence rather than leaving its parameters on screen (it reads a
+// UTF-8 C1 as printable), and every other invalid byte becomes U+FFFD
+// (Strip would drop some and keep others).
+func sevenBitC1(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	bad := false // in a run of invalid bytes: one U+FFFD each, as strings.ToValidUTF8
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		invalid := r == utf8.RuneError && n == 1
+		switch {
+		case r >= 0x80 && r < 0xa0: // a UTF-8 C1 (n is 2)
+			b.WriteByte(0x1b)
+			b.WriteByte(byte(r - 0x40))
+		case invalid && s[i] >= 0x80 && s[i] < 0xa0: // a raw C1 byte
+			b.WriteByte(0x1b)
+			b.WriteByte(s[i] - 0x40)
+			invalid = false
+		case invalid:
+			if !bad {
+				b.WriteString("�")
+			}
+		default:
+			b.WriteString(s[i : i+n])
+		}
+		bad = invalid
+		i += n
+	}
+	return b.String()
 }
 
 var (

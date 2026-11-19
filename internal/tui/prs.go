@@ -170,7 +170,7 @@ func (m model) prLine(u string) string {
 		colour = "90"
 	}
 	name := github.PRName(u)
-	title := p.Title
+	title := transcript.CleanText(p.Title) // from GitHub, drawn as is
 	return "\033[" + colour + "m" + glyph + "\033[0m " + hyperlink(u, name) + " " + title + " \033[" + colour + "m· " + why + "\033[0m"
 }
 
@@ -194,7 +194,7 @@ func (m model) prLinkText(u string) string {
 	if p.State == "" {
 		colour = "90"
 	}
-	return "\033[" + colour + "m" + glyph + "\033[39m " + github.PRName(u) + " \033[" + colour + "m" + why + "\033[39m · " + p.Title
+	return "\033[" + colour + "m" + glyph + "\033[39m " + github.PRName(u) + " \033[" + colour + "m" + why + "\033[39m · " + transcript.CleanText(p.Title)
 }
 
 // prScope is how far back a session's open PRs are kept up to date; older

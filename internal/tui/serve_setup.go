@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -355,11 +356,17 @@ type previewState struct {
 	starting  bool
 }
 
-// previewArgs are the preview child's flags: read-only, never --allow-write.
-var previewArgs = []string{"serve", "--preview"}
+// previewArgs are the preview child's flags: read-only, never --allow-write,
+// and tied to this ccs (--parent-pid), so it exits even if ccs is killed
+// outright.
+func previewArgs() []string {
+	return []string{"serve", "--preview", "--parent-pid", strconv.Itoa(os.Getpid())}
+}
 
 // runPreview starts `ccs <args>` as a child of this ccs and waits for its
-// secret link; stop kills it, done closes when it exits. Stubbed in tests.
+// secret link. started is called as soon as the child runs, before the wait,
+// with how to stop it and a channel closed when it exits, so a quit during
+// startup still stops it. Stubbed in tests.
 var runPreview = startPreviewChild
 
 // The preview child, for as long as this ccs runs: stopPreview (at quit)
@@ -369,7 +376,22 @@ var (
 	previewStop func()
 	previewDone <-chan struct{}
 	previewLink string
+	previewQuit bool // stopPreview ran: a child that starts after must stop at once
 )
+
+// previewStarted records a child the moment it starts; if this ccs is
+// already quitting, it stops the child instead.
+func previewStarted(stop func(), done <-chan struct{}) {
+	previewMu.Lock()
+	quit := previewQuit
+	if !quit {
+		previewStop, previewDone = stop, done
+	}
+	previewMu.Unlock()
+	if quit {
+		stop()
+	}
+}
 
 type previewMsg struct {
 	link string
@@ -391,12 +413,12 @@ func (m *model) previewCmd() tea.Cmd {
 	}
 	m.servePreview = previewState{starting: true}
 	return func() tea.Msg {
-		link, stop, done, err := runPreview(previewArgs)
+		link, err := runPreview(previewArgs(), previewStarted)
 		if err != nil {
 			return previewMsg{err: err}
 		}
 		previewMu.Lock()
-		previewStop, previewDone, previewLink = stop, done, link
+		previewLink = link
 		previewMu.Unlock()
 		return previewMsg{link: link}
 	}
@@ -425,7 +447,7 @@ func closed(ch <-chan struct{}) bool {
 func stopPreview() {
 	previewMu.Lock()
 	stop := previewStop
-	previewStop, previewDone, previewLink = nil, nil, ""
+	previewStop, previewDone, previewLink, previewQuit = nil, nil, "", true
 	previewMu.Unlock()
 	if stop != nil {
 		stop()
@@ -435,20 +457,20 @@ func stopPreview() {
 // startPreviewChild runs this ccs binary with args, reads its output for
 // the preview's link (ccs serve opens it in the browser itself), and keeps
 // draining it. It gives up after 20 seconds.
-func startPreviewChild(args []string) (string, func(), <-chan struct{}, error) {
+func startPreviewChild(args []string, started func(stop func(), done <-chan struct{})) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return "", nil, nil, err
+		return "", err
 	}
 	cmd := exec.Command(self, args...)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", nil, nil, err
+		return "", err
 	}
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Start(); err != nil {
-		return "", nil, nil, err
+		return "", err
 	}
 	links := make(chan string, 1)
 	go func() {
@@ -471,17 +493,18 @@ func startPreviewChild(args []string) (string, func(), <-chan struct{}, error) {
 		case <-time.After(5 * time.Second):
 		}
 	}
+	started(stop, done) // before the wait: a quit meanwhile must stop it
 	select {
 	case link := <-links:
-		return link, stop, done, nil
+		return link, nil
 	case <-done:
 		msg := strings.TrimSpace(errb.String())
 		if msg == "" {
 			msg = "it exited"
 		}
-		return "", nil, nil, errors.New(msg)
+		return "", errors.New(msg)
 	case <-time.After(20 * time.Second):
 		stop()
-		return "", nil, nil, errors.New("no link after 20 seconds")
+		return "", errors.New("no link after 20 seconds")
 	}
 }

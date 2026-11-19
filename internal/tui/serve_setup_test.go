@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -123,14 +125,16 @@ func TestSetupPreviewChild(t *testing.T) {
 	stops := 0
 	done := make(chan struct{})
 	old := runPreview
-	runPreview = func(args []string) (string, func(), <-chan struct{}, error) {
+	runPreview = func(args []string, started func(func(), <-chan struct{})) (string, error) {
 		runs = append(runs, args)
-		return "http://127.0.0.1:7467/p/secret/", func() { stops++ }, done, nil
+		started(func() { stops++ }, done)
+		return "http://127.0.0.1:7467/p/secret/", nil
 	}
-	t.Cleanup(func() { runPreview = old; stopPreview() })
+	resetPreview(t)
+	t.Cleanup(func() { runPreview = old })
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
 	m = run(m, cmd)
-	if len(runs) != 1 || !slices.Equal(runs[0], []string{"serve", "--preview"}) || slices.Contains(runs[0], "--allow-write") {
+	if len(runs) != 1 || !slices.Equal(runs[0], []string{"serve", "--preview", "--parent-pid", strconv.Itoa(os.Getpid())}) || slices.Contains(runs[0], "--allow-write") {
 		t.Fatalf("one read-only preview child: %q", runs)
 	}
 	if v := strip2(m.View()); !strings.Contains(v, "http://127.0.0.1:7467/p/secret/") || !strings.Contains(v, "this Mac only") {
@@ -153,9 +157,10 @@ func TestSetupPreviewChild(t *testing.T) {
 func TestSetupPreviewFails(t *testing.T) {
 	m, _ := setupModel(t)
 	old := runPreview
-	runPreview = func([]string) (string, func(), <-chan struct{}, error) {
-		return "", nil, nil, errors.New("listen tcp 127.0.0.1:7467: address already in use")
+	runPreview = func([]string, func(func(), <-chan struct{})) (string, error) {
+		return "", errors.New("listen tcp 127.0.0.1:7467: address already in use")
 	}
+	resetPreview(t)
 	t.Cleanup(func() { runPreview = old })
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
 	if m = run(m, cmd); !strings.Contains(strip2(m.View()), "address already in use") {
@@ -281,5 +286,85 @@ func TestSetupEditFromThePlist(t *testing.T) {
 	}
 	if !slices.Equal(s.calls, []string{"stop", "start"}) {
 		t.Errorf("the running agent restarted: %v", s.calls)
+	}
+}
+
+// resetPreview starts a test with no preview child and ccs not quitting.
+func resetPreview(t *testing.T) {
+	t.Helper()
+	previewMu.Lock()
+	previewStop, previewDone, previewLink, previewQuit = nil, nil, "", false
+	previewMu.Unlock()
+	t.Cleanup(func() {
+		stopPreview()
+		previewMu.Lock()
+		previewQuit = false
+		previewMu.Unlock()
+	})
+}
+
+// Quitting while the preview child is still starting stops it: it's
+// recorded before the wait for its link.
+func TestSetupPreviewQuitDuringStartup(t *testing.T) {
+	m, _ := setupModel(t)
+	stopped := make(chan struct{})
+	release := make(chan struct{})
+	old := runPreview
+	runPreview = func(args []string, started func(func(), <-chan struct{})) (string, error) {
+		started(func() { close(stopped) }, make(chan struct{}))
+		<-release // still waiting for its link
+		return "", errors.New("stopped")
+	}
+	resetPreview(t)
+	t.Cleanup(func() { runPreview = old })
+	_, cmd := key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	go cmd()
+	time.Sleep(20 * time.Millisecond)
+	stopPreview() // ccs quits
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("a quit during startup left the child running")
+	}
+	close(release)
+
+	// A child that only starts after the quit is stopped at once.
+	late := false
+	previewStarted(func() { late = true }, nil)
+	if !late {
+		t.Error("a child starting after the quit must be stopped")
+	}
+}
+
+// What isn't a key (a Ctrl+V paste's result) goes to the box that has the
+// keyboard, never one hidden under a popup or form.
+func TestPasteGoesToTheBoxWithTheKeyboard(t *testing.T) {
+	m, _ := setupModel(t)
+	m = pressKey(m, tea.KeyDown)
+	m = pressKey(m, tea.KeyEnter) // the phone's form
+	if m.setup == nil || m.setup.step != setupForm {
+		t.Fatalf("the form: %+v", m.setup)
+	}
+	m.setup.focus = fieldAUD
+	if in := m.keyboardBox(); in != &m.setup.fields[fieldAUD] {
+		t.Error("the setup form's focused field has the paste")
+	}
+	m.setup.focus = fieldWrite
+	if in := m.keyboardBox(); in != nil || !m.keyboardOwned() {
+		t.Error("on the tick box nothing takes a paste, and nothing beneath does either")
+	}
+	before := m.textInput.Value()
+	res, _ := m.Update(struct{ fake string }{"pasted"}) // a message that isn't a key
+	if res.(model).textInput.Value() != before {
+		t.Error("the search box under the form changed")
+	}
+	m.setup = nil
+	m.linksOpen = true
+	if in := m.keyboardBox(); in != &m.linksInput {
+		t.Error("the links filter has the paste while its popup is open")
+	}
+	m.linksOpen, m.serveQROpen = false, true
+	if in := m.keyboardBox(); in != nil || !m.keyboardOwned() {
+		t.Error("the QR popup has no box, but owns the keyboard")
 	}
 }

@@ -251,7 +251,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "depends",
-		"description": "The recorded merge order (as ccs depends): with pr and after, record that pr must not merge before each PR in after has (added to what it already waits for; a PR waiting for itself or a circle is refused); with pr and drop, forget what pr waits for; with neither, list every record as JSON (pr, after, waiting: those of after not known to have merged, by: the session that recorded it). ccs watch holds a waiting PR's ready event, list_prs shows it in blocked_by, and blocked_automerge and merged_early events say when auto-merge is on for it or it merged first. ccs refuses no merge itself. A PR is its address, owner/repo#N, or repo#N when ccs knows one repo of that name.",
+		"description": "The recorded merge order (as ccs depends): with pr and after, record that pr must not merge before each PR in after has (added to what it already waits for; a PR waiting for itself or a circle is refused); with pr and drop, forget what pr waits for; with neither, list every record as JSON (pr, after, waiting: those of after not known to have merged, by: the session that recorded it). ccs watch holds a waiting PR's ready event, list_prs shows it in blocked_by, and blocked_automerge and merged_early events say when auto-merge is on for it or it merged first. A wait on a PR closed without merging is dropped by ccs watch (a dependency_dropped event); until then the list's closed field and list_prs' waits_on_closed name it. ccs refuses no merge itself. A PR is its address, owner/repo#N, or repo#N when ccs knows one repo of that name.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -28,9 +28,12 @@ import (
 
 // PRDepend is one PR's prerequisites.
 type PRDepend struct {
-	After []string  `json:"after"`        // the PRs that must merge first
-	By    string    `json:"by,omitempty"` // the session that last declared it, when one did
-	At    time.Time `json:"at"`
+	After []string `json:"after"` // the PRs that must merge first
+	// Dropped is the waits ccs watch forgot because their PR closed without
+	// merging, kept only until its dependency_dropped event is written.
+	Dropped []string  `json:"dropped,omitempty"`
+	By      string    `json:"by,omitempty"` // the session that last declared it, when one did
+	At      time.Time `json:"at"`
 }
 
 // DependsFile is dependsPath: each dependent PR's prerequisites.
@@ -269,11 +272,13 @@ type mergeOrder struct {
 	known  map[string]*WatchedPR
 	open   map[string]bool
 	merged map[string]time.Time // each PR known to have merged, and when (zero: time unknown)
+	closed map[string]bool      // each PR known to have closed without merging
+	fresh  map[string]bool      // of those, the ones GitHub said so of this pass
 	asked  map[string]bool
 }
 
 func newMergeOrder(deps DependsFile, known map[string]*WatchedPR, open, merged []WatchedPR) *mergeOrder {
-	q := &mergeOrder{deps: deps, known: known, open: map[string]bool{}, merged: map[string]time.Time{}, asked: map[string]bool{}}
+	q := &mergeOrder{deps: deps, known: known, open: map[string]bool{}, merged: map[string]time.Time{}, closed: map[string]bool{}, fresh: map[string]bool{}, asked: map[string]bool{}}
 	for _, p := range open {
 		q.open[p.URL] = true
 	}
@@ -293,7 +298,11 @@ func (q *mergeOrder) mergedAt(u string) (bool, time.Time) {
 	if at, ok := q.merged[u]; ok {
 		return true, at
 	}
-	if p := q.known[u]; q.open[u] || q.asked[u] || p != nil && p.State == "closed" {
+	if q.open[u] || q.asked[u] {
+		return false, time.Time{}
+	}
+	if p := q.known[u]; p != nil && p.State == "closed" {
+		q.closed[u] = true
 		return false, time.Time{}
 	}
 	q.asked[u] = true
@@ -303,6 +312,7 @@ func (q *mergeOrder) mergedAt(u string) (bool, time.Time) {
 		return false, time.Time{}
 	}
 	if ended != "merged" {
+		q.closed[u], q.fresh[u] = ended == "closed", ended == "closed"
 		return false, time.Time{}
 	}
 	q.merged[u] = parseTime(at)
@@ -317,6 +327,137 @@ func (q *mergeOrder) unmet(pr string) []string {
 	})
 }
 
+// closedAfter is the prerequisites of pr that closed without merging: a
+// wait that can never end as declared.
+func (q *mergeOrder) closedAfter(pr string) []string {
+	var closed []string
+	for _, a := range q.unmet(pr) {
+		if q.closed[a] {
+			closed = append(closed, a)
+		}
+	}
+	return closed
+}
+
+// ClosedReason is why a dependency was dropped, on dependency_dropped.
+const ClosedReason = "closed without merging"
+
+// dropClosed forgets, for each open PR, the prerequisites that closed
+// without merging (they never will, so the PR would wait for ever), and
+// says what each open PR has had forgotten and not yet been told of. A wait
+// is forgotten only when GitHub says now that its PR is closed (the saved
+// state may be stale: a PR reopened since). It moves from After to Dropped
+// in the file as it is under the lock, and this pass judges by that file,
+// so a declaration made meanwhile holds. Dropped is cleared by
+// clearDropped once the events are written, so a pass that dies between
+// says it again rather than never. On an error nothing is forgotten, and
+// the PRs show "waits on a closed PR" until a later pass manages it.
+func (q *mergeOrder) dropClosed() (map[string][]string, error) {
+	want := map[string][]string{}
+	told := false
+	for u, dep := range q.deps.Depends {
+		if !q.open[u] {
+			continue
+		}
+		told = told || len(dep.Dropped) > 0
+		for _, a := range q.closedAfter(u) {
+			if q.closedNow(a) {
+				want[u] = append(want[u], a)
+			}
+		}
+	}
+	if len(want) == 0 && !told {
+		return nil, nil
+	}
+	var saved DependsFile
+	err := WithDepends(func(d *DependsFile) bool {
+		changed := false
+		for u, closed := range want {
+			dep := d.Depends[u]
+			if dep == nil {
+				continue
+			}
+			for _, a := range closed {
+				if i := slices.Index(dep.After, a); i >= 0 {
+					dep.After = slices.Delete(dep.After, i, i+1)
+					if !slices.Contains(dep.Dropped, a) {
+						dep.Dropped = append(dep.Dropped, a)
+					}
+					changed = true
+				}
+			}
+		}
+		saved = *d
+		return changed
+	})
+	if err != nil {
+		return nil, err
+	}
+	q.deps = saved
+	dropped := map[string][]string{}
+	for u, dep := range saved.Depends {
+		if q.open[u] && len(dep.Dropped) > 0 {
+			dropped[u] = slices.Clone(dep.Dropped)
+		}
+	}
+	return dropped, nil
+}
+
+// closedNow: GitHub says now that u closed without merging. Asked at most
+// once a pass; an answer of open or merged corrects what the pass knew.
+func (q *mergeOrder) closedNow(u string) bool {
+	if q.fresh[u] {
+		return true
+	}
+	if q.asked[u] {
+		return false
+	}
+	q.asked[u] = true
+	ended, at, err := PREnd(u)
+	if err != nil {
+		state.LogActivity("pr watch: couldn't tell whether %s, which another PR waits for, is still closed: %v", u, err)
+		return false
+	}
+	switch ended {
+	case "closed":
+		q.fresh[u] = true
+		return true
+	case "merged":
+		q.merged[u] = parseTime(at)
+	}
+	q.closed[u] = false
+	return false
+}
+
+// clearDropped forgets the dropped waits the events have now told of
+// (dependent to dropped PRs), and the records left with nothing to wait for.
+func clearDropped(told map[string][]string) {
+	if len(told) == 0 {
+		return
+	}
+	err := WithDepends(func(d *DependsFile) bool {
+		changed := false
+		for u, gone := range told {
+			dep := d.Depends[u]
+			if dep == nil {
+				continue
+			}
+			kept := slices.DeleteFunc(slices.Clone(dep.Dropped), func(a string) bool { return slices.Contains(gone, a) })
+			if len(kept) != len(dep.Dropped) {
+				dep.Dropped, changed = kept, true
+			}
+			if len(dep.After) == 0 && len(dep.Dropped) == 0 {
+				delete(d.Depends, u)
+				changed = true
+			}
+		}
+		return changed
+	})
+	if err != nil {
+		state.LogActivity("pr watch: couldn't clear the dropped waits already told of: %v", err)
+	}
+}
+
 // early is what pr, merged at t, was to merge after that hadn't merged by
 // then: not merged at all, or merged later.
 func (q *mergeOrder) early(pr string, t time.Time) []string {
@@ -327,40 +468,86 @@ func (q *mergeOrder) early(pr string, t time.Time) []string {
 }
 
 // listBlocked is what an open PR still waits for, for ccs prs and the list,
-// which have no pass of their own: what the watcher's state st knows has
-// merged; for a prerequisite it doesn't list, the watcher's own answer when
-// it has judged this declaration (made before its last pass), else GitHub
-// when online, else not merged.
-func listBlocked(u string, deps DependsFile, st PRWatchState, online bool) []string {
+// which have no pass of their own, and which of those closed without
+// merging: what the watcher's state st knows has merged or closed; for a
+// prerequisite it doesn't list, the watcher's own answer when it has judged
+// this declaration (made before its last pass), else GitHub when online,
+// else not merged (and not known closed).
+func listBlocked(u string, deps DependsFile, st PRWatchState, online bool) (blocked, closed []string) {
 	dep := deps.Depends[u]
 	if dep == nil {
-		return nil
+		return nil, nil
 	}
 	judged := st.PRs[u] != nil && st.PRs[u].State == "open" && !dep.At.After(st.Updated)
-	return deps.unmetAfter(u, func(a string) bool {
+	blocked = deps.unmetAfter(u, func(a string) bool {
 		if p := st.PRs[a]; p != nil {
+			if p.State == "closed" {
+				closed = append(closed, a)
+			}
 			return p.State == "merged"
 		}
 		if judged {
+			if slices.Contains(st.PRs[u].ClosedAfter, a) {
+				closed = append(closed, a)
+			}
 			return !slices.Contains(st.PRs[u].BlockedBy, a)
 		}
 		if online {
 			ended, _, err := PREnd(a)
+			if err == nil && ended == "closed" {
+				closed = append(closed, a)
+			}
 			return err == nil && ended == "merged"
 		}
 		return false
 	})
+	return blocked, closed
 }
 
-// BlockedNow is what pr still waits for, from saved state only (no network):
-// for the list, which draws each PR's status from GitHub's own answer.
-func BlockedNow(pr string) []string {
+// BlockedNow is what pr still waits for, and which of those closed without
+// merging, from saved state only (no network): for the list, which draws
+// each PR's status from GitHub's own answer.
+func BlockedNow(pr string) (blocked, closed []string) {
 	deps := LoadDepends()
 	if deps.Depends[pr] == nil {
-		return nil
+		return nil, nil
 	}
 	st, _ := LoadPRWatchState()
 	return listBlocked(pr, deps, st, false)
+}
+
+// blockedText is a waiting PR's status: "blocked: after" the prerequisites
+// still open (or not known), and "waits on a closed PR" for those that
+// closed without merging, never called plain blocked.
+func blockedText(blocked, closed []string) string {
+	var parts []string
+	if open := openBlockers(blocked, closed); len(open) > 0 {
+		parts = append(parts, "blocked: after "+prNames(open))
+	}
+	if len(closed) > 0 {
+		parts = append(parts, closedText(closed))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// closedText says a PR waits on closed (non-empty) PRs.
+func closedText(closed []string) string {
+	what := "waits on a closed PR: "
+	if len(closed) > 1 {
+		what = "waits on closed PRs: "
+	}
+	return what + prNames(closed) + " (closed without merging; ccs depends --drop to free it)"
+}
+
+// openBlockers is blocked without the closed ones.
+func openBlockers(blocked, closed []string) []string {
+	var open []string
+	for _, a := range blocked {
+		if !slices.Contains(closed, a) {
+			open = append(open, a)
+		}
+	}
+	return open
 }
 
 // pruneDepends forgets the dependencies of PRs the state says have ended.
@@ -387,7 +574,8 @@ func pruneDepends(st *PRWatchState) {
 type DependRow struct {
 	PR      string   `json:"pr"`
 	After   []string `json:"after"`
-	Waiting []string `json:"waiting"` // those of After not known to have merged
+	Waiting []string `json:"waiting"`          // those of After not known to have merged
+	Closed  []string `json:"closed,omitempty"` // those of Waiting closed without merging (ccs watch drops them)
 	By      string   `json:"by,omitempty"`
 }
 
@@ -399,11 +587,20 @@ func DependsList() []DependRow {
 	merged := func(u string) bool { return st.PRs[u] != nil && st.PRs[u].State == "merged" }
 	rows := []DependRow{}
 	for u, dep := range d.Depends {
+		if len(dep.After) == 0 {
+			continue // only dropped waits, about to be cleared
+		}
 		w := d.unmetAfter(u, merged)
 		if w == nil {
 			w = []string{}
 		}
-		rows = append(rows, DependRow{PR: u, After: dep.After, Waiting: w, By: dep.By})
+		var closed []string
+		for _, a := range w {
+			if st.PRs[a] != nil && st.PRs[a].State == "closed" {
+				closed = append(closed, a)
+			}
+		}
+		rows = append(rows, DependRow{PR: u, After: dep.After, Waiting: w, Closed: closed, By: dep.By})
 	}
 	slices.SortFunc(rows, func(a, b DependRow) int { return strings.Compare(a.PR, b.PR) })
 	return rows
@@ -424,7 +621,7 @@ func RunDepends(args []string, stdout, stderr io.Writer) int {
 	drop := fs.Bool("drop", false, "forget what the PR waits for")
 	asJSON := fs.Bool("json", false, "print the list as JSON")
 	fs.Usage = func() {
-		fmt.Fprint(stderr, "Usage: ccs depends                          list the recorded merge order\n       ccs depends <PR> --after <PR>...     <PR> must not merge before the others have\n       ccs depends <PR> --drop              forget what <PR> waits for\n\nA PR is its address, owner/repo#N, or repo#N. ccs watch holds a waiting PR's ready\nevent, ccs prs shows it blocked, and blocked_automerge and merged_early say when\nauto-merge is on for it or it merged first. ccs refuses no merge itself.\n\n")
+		fmt.Fprint(stderr, "Usage: ccs depends                          list the recorded merge order\n       ccs depends <PR> --after <PR>...     <PR> must not merge before the others have\n       ccs depends <PR> --drop              forget what <PR> waits for\n\nA PR is its address, owner/repo#N, or repo#N. ccs watch holds a waiting PR's ready\nevent, ccs prs shows it blocked, and blocked_automerge and merged_early say when\nauto-merge is on for it or it merged first. A wait on a PR closed without merging\nis dropped by ccs watch (dependency_dropped). ccs refuses no merge itself.\n\n")
 		fs.PrintDefaults()
 	}
 	var refs []string
@@ -460,6 +657,9 @@ func RunDepends(args []string, stdout, stderr io.Writer) int {
 				line += "  (all merged: free to merge)"
 			} else if len(r.Waiting) < len(r.After) {
 				line += "  (still waiting for " + prNames(r.Waiting) + ")"
+			}
+			if len(r.Closed) > 0 {
+				line += "  (" + prNames(r.Closed) + " closed without merging: ccs watch drops it)"
 			}
 			fmt.Fprintf(stdout, "%s\n   %s\n", line, r.PR)
 		}

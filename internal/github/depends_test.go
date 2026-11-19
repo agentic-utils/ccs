@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -127,7 +128,8 @@ func TestWatchHoldsAPRThatMustMergeAfterAnother(t *testing.T) {
 		t.Errorf("ccs prs shows it blocked, not ready: %+v", r)
 	}
 	// The list, which asks GitHub itself, never calls it ready either.
-	if g, why := (PRInfo{State: "OPEN", MergeState: "CLEAN", BlockedBy: BlockedNow(second.url())}).Status(); g != PRWaiting || why != "blocked: after infra#1" {
+	blockedBy, closed := BlockedNow(second.url())
+	if g, why := (PRInfo{State: "OPEN", MergeState: "CLEAN", BlockedBy: blockedBy, ClosedAfter: closed}).Status(); g != PRWaiting || why != "blocked: after infra#1" {
 		t.Errorf("the list shows it blocked: %d %q", g, why)
 	}
 	// Auto-merge turned on for it: said at once, and its owner is told.
@@ -297,5 +299,135 @@ func TestWatchMergeOrderHoldsThroughTheQuietPaths(t *testing.T) {
 	got := names(eventsSince(t, now.Add(18*time.Minute)))
 	if slices.Contains(got, "merged_early infra#2") || !slices.Contains(got, "merged infra#2") || !slices.Contains(got, "merged infra#1") {
 		t.Errorf("merged in order, whatever the search shows: %v", got)
+	}
+}
+
+func TestWatchDropsAWaitOnAPRClosedWithoutMerging(t *testing.T) {
+	g := watchWorld(t)
+	claimEnv(t)
+	localWorld(t)
+	now := time.Now().Truncate(time.Second)
+	first := &fakePR{repo: "o/risk", number: 1, state: "open", head: "h1", mergeable: "clean"}
+	second := &fakePR{repo: "o/risk", number: 2, state: "open", head: "h2", mergeable: "clean"}
+	third := &fakePR{repo: "o/risk", number: 3, state: "open", head: "h3", mergeable: "clean"}
+	green(second)
+	second.reviews = [][2]string{{"rev", "APPROVED"}}
+	g.prs = []*fakePR{first, second, third}
+	passEvents(t, now)
+	// second waits for first alone; third for first and second.
+	Depend(second.url(), []string{first.url()}, now)
+	Depend(third.url(), []string{first.url(), second.url()}, now)
+	eventsSince(t, now.Add(3*time.Minute)) // both blocked
+
+	// first closes unmerged: its waits are dropped and said so, second is
+	// free at once, and third still waits for second.
+	first.state = "closed"
+	got := eventsSince(t, now.Add(6*time.Minute))
+	want := []string{"dependency_dropped risk#2", "dependency_dropped risk#3", "unblocked risk#2", "ready risk#2", "closed risk#1"}
+	if !slices.Equal(names(got), want) {
+		t.Errorf("got %v, want %v", names(got), want)
+	}
+	for _, e := range got {
+		if e.Event == "dependency_dropped" && (!slices.Equal(e.After, []string{first.url()}) || e.Reason != "closed without merging") {
+			t.Errorf("dependency_dropped names the closed PR and why: %+v", e)
+		}
+	}
+	d := LoadDepends().Depends
+	if d[second.url()] != nil || d[third.url()] == nil || !slices.Equal(d[third.url()].After, []string{second.url()}) {
+		t.Errorf("only the waits on the closed PR are forgotten: %+v", d)
+	}
+	if got := names(eventsSince(t, now.Add(9*time.Minute))); len(got) != 0 {
+		t.Errorf("said once: %v", got)
+	}
+}
+
+func TestAWaitOnAClosedPRThatCantBeDroppedIsSaidSo(t *testing.T) {
+	g := watchWorld(t)
+	claimEnv(t)
+	localWorld(t)
+	now := time.Now().Truncate(time.Second)
+	first := &fakePR{repo: "o/risk", number: 1, state: "open", head: "h1", mergeable: "clean"}
+	second := &fakePR{repo: "o/risk", number: 2, state: "open", head: "h2", mergeable: "clean", autoMerge: true}
+	g.prs = []*fakePR{first, second}
+	passEvents(t, now)
+	Depend(second.url(), []string{first.url()}, now)
+	eventsSince(t, now.Add(3*time.Minute)) // blocked, blocked_automerge
+
+	// The dependency file can't be locked (its lock is a folder): the wait
+	// stays, called what it is.
+	os.Remove(dependsLockPath())
+	if err := os.Mkdir(dependsLockPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first.state = "closed"
+	got := eventsSince(t, now.Add(6*time.Minute))
+	if !slices.Equal(names(got), []string{"waits_on_closed risk#2", "closed risk#1"}) {
+		t.Fatalf("got %v", names(got))
+	}
+	if e := got[0]; !slices.Equal(e.After, []string{first.url()}) || e.Reason != "closed without merging" {
+		t.Errorf("waits_on_closed names the closed PR: %+v", e)
+	}
+	wantStatus := "waits on a closed PR: risk#1 (closed without merging; ccs depends --drop to free it)"
+	rep, err := PRsList("me", "o", true, now.Add(7*time.Minute))
+	if err != nil || len(rep.PRs) != 1 || rep.PRs[0].Status != wantStatus || !slices.Equal(rep.PRs[0].WaitsOnClosed, []string{first.url()}) {
+		t.Errorf("ccs prs says it waits on a closed PR, not blocked, and auto-merge doesn't need you: %v %+v", err, rep.PRs)
+	}
+	blockedBy, closed := BlockedNow(second.url())
+	if g, why := (PRInfo{State: "OPEN", MergeState: "CLEAN", BlockedBy: blockedBy, ClosedAfter: closed}).Status(); g != PRWaiting || why != wantStatus {
+		t.Errorf("the list says it too: %d %q", g, why)
+	}
+	if rows := DependsList(); len(rows) != 1 || !slices.Equal(rows[0].Closed, []string{first.url()}) {
+		t.Errorf("ccs depends lists it closed: %+v", rows)
+	}
+	if got := names(eventsSince(t, now.Add(9*time.Minute))); len(got) != 0 {
+		t.Errorf("said once: %v", got)
+	}
+	// Once the file can be written again, the next pass drops it.
+	os.Remove(dependsLockPath())
+	if got := names(eventsSince(t, now.Add(12*time.Minute))); !slices.Equal(got, []string{"dependency_dropped risk#2", "unblocked risk#2"}) {
+		t.Errorf("dropped once it can be: %v", got)
+	}
+}
+
+func TestAWaitIsDroppedOnlyWhenGitHubSaysItsPRIsClosedNow(t *testing.T) {
+	watchWorld(t)
+	claimEnv(t)
+	a, b, c := "https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2", "https://github.com/o/r/pull/3"
+	now := time.Now()
+	Depend(b, []string{a}, now)
+	ends := map[string]string{a: "open"} // the state says closed, but it has been reopened
+	oldEnd := PREnd
+	t.Cleanup(func() { PREnd = oldEnd })
+	PREnd = func(u string) (string, string, error) {
+		if e, ok := ends[u]; ok {
+			return e, "", nil
+		}
+		return "", "", errors.New("unknown")
+	}
+	known := map[string]*WatchedPR{a: {URL: a, State: "closed"}, b: {URL: b, State: "open"}}
+	open := []WatchedPR{{URL: b}}
+	q := newMergeOrder(LoadDepends(), known, open, nil)
+	if dropped, err := q.dropClosed(); err != nil || len(dropped) != 0 || LoadDepends().Depends[b] == nil {
+		t.Errorf("a reopened PR's wait is kept: %v %v %+v", dropped, err, LoadDepends().Depends)
+	}
+	// Closed now: dropped, and a wait declared meanwhile by someone else
+	// holds this pass, since it judges by the file as saved.
+	ends[a] = "closed"
+	q = newMergeOrder(LoadDepends(), known, open, nil)
+	q.closedAfter(b) // judged from the snapshot before the declaration
+	Depend(b, []string{c}, now)
+	dropped, err := q.dropClosed()
+	if err != nil || !slices.Equal(dropped[b], []string{a}) {
+		t.Fatalf("dropped: %v %v", dropped, err)
+	}
+	if got := q.unmet(b); !slices.Equal(got, []string{c}) {
+		t.Errorf("the new declaration holds it: %v", got)
+	}
+	if d := LoadDepends().Depends[b]; d == nil || !slices.Equal(d.After, []string{c}) || !slices.Equal(d.Dropped, []string{a}) {
+		t.Errorf("kept as dropped until told: %+v", d)
+	}
+	clearDropped(dropped)
+	if d := LoadDepends().Depends[b]; d == nil || !slices.Equal(d.After, []string{c}) || len(d.Dropped) != 0 {
+		t.Errorf("cleared once told: %+v", d)
 	}
 }

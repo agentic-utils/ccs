@@ -473,7 +473,7 @@ func eventKeys(e reportEvent) []string {
 // nobody owns counts.
 func needsResponse(e reportEvent, owned bool) bool {
 	switch e.Event {
-	case "session_stalled", "session_done", "ready", "merged_early", "blocked_automerge":
+	case "session_stalled", "session_done", "ready", "merged_early", "blocked_automerge", "waits_on_closed":
 		return true
 	case "checks_failing", "conflicts":
 		return !owned

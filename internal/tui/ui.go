@@ -2939,7 +2939,7 @@ func (m model) shortcuts() [][2]string {
 
 	group("ccs")
 	add(true, "^R", "refresh sessions, PRs and allowance now; check for an update")
-	add(true, keyTab, "the next session waiting on you (a question or prompt), wrapping")
+	add(true, keyTab, "next session that needs you: questions, then asked, then unread")
 	add(true, "^L", "what changed in each ccs release")
 	add(true, "?", "this help, from an empty search or message box (after text it's a ?)")
 	add(true, "^C", "quit")
@@ -2947,7 +2947,7 @@ func (m model) shortcuts() [][2]string {
 }
 
 // toggleUsage opens the usage screen (^X Y), or goes back from it (^X Y or
-// Esc; Tab goes back too, to the next waiting session).
+// Esc; Tab goes back too, to the next session that needs you).
 func (m *model) toggleUsage() tea.Cmd {
 	m.showUsage = !m.showUsage
 	if m.showUsage {
@@ -3176,7 +3176,7 @@ func (m model) viewScreen() string {
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", state.Version, note, status)
 	pairs, keep := []string{"^X Y", "usage", "?", "help", "^C", "quit"}, 2 // the rest are in ? help
 	if m.anyWaiting() {                                                    // Tab is only for the sessions that need you
-		pairs = append([]string{keyTab, "next waiting"}, pairs...)
+		pairs = append([]string{keyTab, "needs you"}, pairs...)
 	}
 	if m.showUsage { // only these keys do anything there
 		pairs, keep = []string{keyEsc, "back", "^X U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help

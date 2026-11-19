@@ -408,7 +408,7 @@ func (m model) heldDrawn() (mcp.HeldPrompt, transcript.Conversation, bool) {
 // (heldKeysActive): a question's menu (menu.go), or a permission prompt's A
 // or D (each with y/n), T, and Enter (sends it back and opens its tab).
 // Esc leaves it for the list (menuLeft): then ↑/↓ move the list, and →
-// or Enter give it the keys again (Tab is never the menu's: it goes to the next waiting session, else the usage screen). ^P/^N, PgUp/PgDn and ^X chords
+// or Enter give it the keys again (Tab is never the menu's: it goes to the next session that needs you). ^P/^N, PgUp/PgDn and ^X chords
 // always fall through; so does any key the prompt doesn't use, which goes
 // to the search. Right after an auto-select the guard drops keys still
 // being typed.

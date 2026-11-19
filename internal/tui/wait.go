@@ -95,28 +95,60 @@ func (m model) needsYou(c transcript.Conversation) bool {
 	return held || m.waitSignal(c) == waitPrompt
 }
 
-// nextWaiting is the session Tab selects: the first after the selection,
-// in list order and wrapping round (so the selection itself last), that
-// needs the user; failing that, one the search hides (selectSession clears
-// the search for it). ok is false when nothing needs the user.
+// Tab's tiers, most urgent first. attentionNone is not a stop.
+const (
+	attentionNone   = iota
+	attentionWaits  // a question ccs holds, or a menu or prompt in its tab (needsYou)
+	attentionAsked  // idle, its last message asks something (the light magenta ●)
+	attentionUnread // done since you last looked (the cyan ●)
+	attentionTiers  = attentionUnread
+)
+
+// attention is c's tier for Tab. Done-unread is the cyan ● exactly: a live,
+// idle session (liveGroup 2) whose last message you haven't looked at, and
+// not the one being read now; an exited session shows no circle, so it
+// isn't a stop. A settled or snoozed session is never one.
+func (m model) attention(c transcript.Conversation) int {
+	switch {
+	case m.needsYou(c):
+		return attentionWaits
+	case !m.live[c.SessionID] || m.putAway(c) != awake:
+		return attentionNone
+	case m.waitSignal(c) == waitAsked:
+		return attentionAsked
+	case m.liveGroup(c) == 2 && m.unseen(c) && c.SessionID != m.viewing:
+		return attentionUnread
+	}
+	return attentionNone
+}
+
+// nextWaiting is the session Tab selects, by strict priority: the highest
+// tier that has any session, re-checked on every press, so a new held
+// question is always the very next stop and a lower tier is reached only
+// once every higher one is empty. Within the tier, the first after the
+// selection in list order, wrapping round (so the selection itself last);
+// failing that, one the search hides (selectSession clears the search for
+// it). ok is false when nothing needs the user.
 func (m model) nextWaiting() (id string, ok bool) {
-	if n := len(m.filtered); n > 0 {
-		cur := min(m.cursor, n-1)
-		for k := 1; k <= n; k++ {
-			if c := m.filtered[(cur+k)%n].conv; m.needsYou(c) {
-				return c.SessionID, true
+	for tier := attentionWaits; tier <= attentionTiers; tier++ {
+		if n := len(m.filtered); n > 0 {
+			cur := min(m.cursor, n-1)
+			for k := 1; k <= n; k++ {
+				if c := m.filtered[(cur+k)%n].conv; m.attention(c) == tier {
+					return c.SessionID, true
+				}
 			}
 		}
-	}
-	for _, it := range m.items {
-		if m.needsYou(it.conv) {
-			return it.conv.SessionID, true
+		for _, it := range m.items {
+			if m.attention(it.conv) == tier {
+				return it.conv.SessionID, true
+			}
 		}
 	}
 	return "", false
 }
 
-// anyWaiting: something needs the user, so Tab goes to it.
+// anyWaiting: something needs the user (any of attention's tiers), so Tab goes to it.
 func (m model) anyWaiting() bool {
 	_, ok := m.nextWaiting()
 	return ok

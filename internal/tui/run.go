@@ -252,21 +252,13 @@ func (r *shellRun) runOutput(width int) []string {
 	return strings.Split(ansi.Wrap(text, max(width, 10), ""), "\n")
 }
 
-// cleanOutput makes a command's output safe to draw: invalid UTF-8 becomes
-// U+FFFD, escape sequences go whatever else is there (CleanText skips that
-// unless it sees a C0 control), and then every C0 control but newline and
-// tab, DEL and every C1 control (U+0080-U+009F: a lone CSI or OSC some
-// terminals act on) are dropped. Carriage returns go too, so progress bars
-// don't redraw over the box.
-func cleanOutput(b []byte) string {
-	s := ansi.Strip(strings.ToValidUTF8(string(b), "\uFFFD"))
-	return strings.Map(func(r rune) rune {
-		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r < 0xa0) {
-			return -1
-		}
-		return r
-	}, s)
-}
+// cleanOutput makes a command's output safe to draw, by the same rules as
+// transcript text (transcript.CleanText): escape sequences go whole, 7-bit
+// or C1, invalid UTF-8 becomes U+FFFD, and every C0 control but newline and
+// tab, DEL and every C1 control are dropped. Carriage returns go too, so
+// progress bars don't redraw over the box. (The output's size cap is
+// RunShell's, before this.)
+func cleanOutput(b []byte) string { return transcript.CleanText(string(b)) }
 
 // runLines is the command box for the selected session: the command, the
 // output in view and how it ended.

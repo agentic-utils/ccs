@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -12,6 +14,15 @@ import (
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
+)
+
+// Hook test state, read by the stubs TestMain installs: otherPeer makes the
+// hook see another user listening; testClock, non-zero, is the hook's clock
+// (unix ns), moved on by its sleeps; testOwnFile is its own session file.
+var (
+	otherPeer   atomic.Bool
+	testClock   atomic.Int64
+	testOwnFile atomic.Pointer[ownFile]
 )
 
 // TestMain keeps tests off the machine, as in tui's TestMain: launch_session
@@ -41,6 +52,38 @@ func TestMain(m *testing.M) {
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil }
 	liveSessions = func() map[string]sessions.LiveSession { return nil }
+	procStart = func(int) (time.Time, bool) { return time.Time{}, false } // never a real ps
+	// A hook's own wait reads as over (another session), so a hook its test
+	// left behind stops at its first redial; tests of redialling set
+	// testOwnFile. The hook's stubs are set once here and read test state
+	// through atomics, so a hook still running from a test never races the
+	// next one's set-up.
+	hookSessionFile = func() (sessions.SessionFile, error) {
+		if f := testOwnFile.Load(); f != nil {
+			return f.file(), nil
+		}
+		return sessions.SessionFile{}, nil
+	}
+	hookNow = func() time.Time {
+		if v := testClock.Load(); v != 0 {
+			return time.Unix(0, v)
+		}
+		return time.Now()
+	}
+	hookSleep = func(d time.Duration) {
+		if testClock.Load() != 0 {
+			testClock.Add(int64(d))
+			d = time.Millisecond
+		}
+		time.Sleep(d)
+	}
+	hookRedial = 20 * time.Millisecond
+	hookPeerUID = func(c net.Conn) (uint32, error) { // otherPeer makes the listener another user
+		if otherPeer.Load() {
+			return uint32(os.Getuid()) + 1, nil
+		}
+		return peerUID(c)
+	}
 	openPreview = func(string) {}           // never a real browser
 	sock, _ := os.MkdirTemp("/tmp", "ccsh") // a socket path must be short
 	hookSockPath = func() string { return filepath.Join(sock, "h.sock") }

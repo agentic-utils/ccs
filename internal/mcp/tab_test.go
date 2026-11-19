@@ -289,3 +289,96 @@ func TestTabAnswerAtTheSameMoment(t *testing.T) {
 		t.Errorf("the hook prints nothing: %q", got)
 	}
 }
+
+// A session missing from a scan keeps its copy while its claude process
+// runs, but a pid now running another process (a different start time:
+// recycled) counts as the session having ended.
+func TestARecycledPIDEndsTheCopy(t *testing.T) {
+	stubPID(t, true)
+	old := procStart
+	start := time.Unix(1000, 0)
+	procStart = func(int) (time.Time, bool) { return start, true }
+	t.Cleanup(func() { procStart = old })
+	h := tuiHolder(t, focusedNow(), time.Minute)
+	out := runHook(t, askHook)
+	waitList(t, h)
+	h.Reconcile(waitingAt("waiting", time.Now()))  // records pid 42 started at 1000
+	h.Reconcile(map[string]sessions.LiveSession{}) // the file unreadable: unknown, kept
+	if len(h.book.list("")) != 1 {
+		t.Fatal("an unknown session with its process still running keeps the copy")
+	}
+	start = time.Unix(2000, 0) // pid 42 is now some other process
+	h.Reconcile(map[string]sessions.LiveSession{})
+	if len(h.book.list("")) != 0 {
+		t.Fatal("a recycled pid ends the session")
+	}
+	select {
+	case got := <-out:
+		if got != "" {
+			t.Fatalf("no decision: %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hook was never let go")
+	}
+	h.Close("done")
+}
+
+// The waitSlack edges: a new copy arriving within 2s after its
+// predecessor's wait was stamped mustn't bind to that wait (it would then
+// be "answered" by its own wait and dropped); it binds to its own newer one.
+func TestASecondCopyNeverBindsToItsPredecessorsWait(t *testing.T) {
+	stubPID(t, true)
+	for _, gap := range []time.Duration{0, time.Second, 2 * time.Second} {
+		h := tuiHolder(t, focusedNow(), time.Minute)
+		first := runHook(t, askHook)
+		waitList(t, h)
+		w1 := time.Now()
+		h.Reconcile(waitingAt("waiting", w1)) // the first copy binds to w1
+		// The first is answered in its tab; the second arrives gap after w1
+		// while the file still shows w1.
+		h.Reconcile(waitingAt("busy", w1.Add(gap/2)))
+		<-first
+		time.Sleep(gap)
+		second := runHook(t, askHook)
+		for len(h.book.list("")) == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		h.Reconcile(waitingAt("waiting", w1)) // the stale wait
+		if len(h.book.list("")) != 1 {
+			t.Fatalf("gap %s: the second copy took its predecessor's wait", gap)
+		}
+		w2 := time.Now().Add(100 * time.Millisecond)
+		h.Reconcile(waitingAt("waiting", w2)) // its own wait: binds, kept
+		if len(h.book.list("")) != 1 {
+			t.Fatalf("gap %s: the second copy was dropped on its own wait", gap)
+		}
+		h.Reconcile(waitingAt("busy", w2.Add(time.Second))) // answered in its tab
+		if got := <-second; got != "" || len(h.book.list("")) != 0 {
+			t.Fatalf("gap %s: %q", gap, got)
+		}
+		h.Close("done")
+	}
+}
+
+// A timeout and a drop at the same moment: whichever wins, the hook gets no
+// decision and nothing hangs (run with -race -count=3).
+func TestTimeoutRacesDrop(t *testing.T) {
+	stubPID(t, true)
+	for range 20 {
+		h := tuiHolder(t, focusedNow(), 30*time.Millisecond)
+		out := runHook(t, askHook)
+		waitList(t, h)
+		h.Reconcile(waitingAt("waiting", time.Now()))
+		time.Sleep(25 * time.Millisecond)
+		h.Reconcile(waitingAt("busy", time.Now()))
+		select {
+		case got := <-out:
+			if got != "" {
+				t.Fatalf("no decision: %q", got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the handler hung after a drop raced the timeout")
+		}
+		h.Close("done")
+	}
+}

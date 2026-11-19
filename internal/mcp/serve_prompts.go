@@ -46,6 +46,7 @@ type heldPrompt struct {
 	// then): a session missing from a scan (its file unreadable, or caught
 	// mid-rewrite) is unknown, and only this pid having exited ends it.
 	pid      atomic.Int64
+	start    atomic.Int64  // pid's start time (unix seconds) when read; 0 unknown
 	drop     chan struct{} // closed (once it's taken from the book) to let it go with no decision
 	dropOnce sync.Once
 	why      string // why it was dropped, set before drop is closed
@@ -125,7 +126,7 @@ func (s *server) ownHold() (func(), error) {
 	var once sync.Once
 	return func() {
 		once.Do(func() { close(stop) })
-		s.hold.Close("ccs serve stopped")
+		s.hold.Handoff("ccs serve stopped")
 	}, nil
 }
 

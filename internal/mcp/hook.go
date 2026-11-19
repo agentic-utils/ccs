@@ -7,8 +7,10 @@ package mcp
 // appearing. It hands the prompt to a running `ccs serve --allow-write` over
 // a local socket and prints whatever the page answers; with no ccs serve
 // listening, or when ccs serve lets it go, it prints nothing and Claude Code
-// shows the prompt in the terminal as usual. The answer goes back on the
-// hook's own connection, so it can only ever settle the prompt that asked.
+// shows the prompt in the terminal as usual. A holder that goes away (a
+// restart, a crash) hands it back, and the hook dials the next one. The
+// answer goes back on the hook's own connection, so it can only ever
+// settle the prompt that asked.
 
 import (
 	"bufio"
@@ -24,6 +26,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentic-utils/ccs/internal/sessions"
@@ -60,6 +63,9 @@ type hookRequest struct {
 type hookHello struct {
 	Nonce   string      `json:"nonce"`
 	Request hookRequest `json:"request"`
+	// WaitAt is the session's statusUpdatedAt for this prompt's own wait,
+	// as the hook read it from its session file (epoch ms); 0 unknown.
+	WaitAt int64 `json:"waitAt,omitempty"`
 }
 
 // hookReply is a line from ccs serve: first an acknowledgement (Held),
@@ -76,6 +82,9 @@ type hookReply struct {
 	Message  string            `json:"message,omitempty"`
 	Other    []string          `json:"other,omitempty"` // questions answered with free text ("Other…") instead of an option
 	Notes    map[string]string `json:"notes,omitempty"` // a note on a question's answer, by question text (Claude Code's annotations)
+	// Retry, with no decision: the holder is going away (a quit, a restart,
+	// a yield to ccs serve), not settling the prompt; the hook dials again.
+	Retry bool `json:"retry,omitempty"`
 }
 
 // maxOtherRunes caps a free-text ("Other…") answer.
@@ -177,7 +186,9 @@ func runChildNotices(args []string, stdout, stderr io.Writer) int {
 // decision it makes of the answer. Anything unexpected (no ccs serve, a
 // socket or folder that isn't this user's own, no acknowledgement in
 // hookAckWait, a reply for another prompt, an answer that doesn't fit the
-// question) prints nothing, so Claude Code asks in the tab as usual.
+// question) prints nothing, so Claude Code asks in the tab as usual. Once
+// held, a hand-back or a dropped connection makes it dial again until its
+// own wait is over or hookMaxWait has passed since it started.
 func permissionHook(stdin io.Reader, stdout io.Writer) {
 	raw, err := io.ReadAll(io.LimitReader(stdin, 4<<20))
 	if err != nil {
@@ -187,43 +198,165 @@ func permissionHook(stdin io.Reader, stdout io.Writer) {
 	if json.Unmarshal(raw, &req) != nil || req.Event != "PermissionRequest" || req.SessionID == "" || req.ToolName == "" {
 		return
 	}
-	path := hookSockPath()
-	if trustedSocket(path) != nil {
-		return
+	deadline := hookNow().Add(hookMaxWait)
+	own := &ownWait{session: req.SessionID, start: hookNow()}
+	own.observe()
+	stopWatch := own.watch()
+	defer stopWatch()
+	reply, held := hookOnce(req, own.at(), deadline)
+	if !held {
+		return // no holder: the terminal asks
 	}
-	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
-	if err != nil {
-		return // no ccs serve answering prompts: the terminal asks
+	// Held once: a holder going away (Retry, or the connection dropping
+	// with no reply, a crash) hands the prompt to the next one, so dial
+	// again until this prompt's own wait is over or the deadline passes.
+	for reply == nil {
+		if hookNow().After(deadline) {
+			return
+		}
+		hookSleep(hookRedial)
+		if own.over() {
+			return // answered in its tab, or the session went on
+		}
+		reply, _ = hookOnce(req, own.at(), deadline)
 	}
-	defer conn.Close()
-	// The kernel says who is listening, whatever the socket file looked
-	// like a moment ago: anything but this user isn't ccs serve.
-	if uid, err := peerUID(conn); err != nil || uid != uint32(os.Getuid()) {
-		return
-	}
-	nonce := newPromptID() + newPromptID()
-	line, _ := json.Marshal(hookHello{Nonce: nonce, Request: req})
-	conn.SetDeadline(time.Now().Add(hookAckWait))
-	if _, err := conn.Write(append(line, '\n')); err != nil {
-		return
-	}
-	sc := bufio.NewScanner(conn)
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	var ack hookReply
-	if !sc.Scan() || json.Unmarshal(sc.Bytes(), &ack) != nil || !ack.Held || ack.Nonce != nonce {
-		return
-	}
-	conn.SetDeadline(time.Now().Add(maxHookWait + time.Minute))
-	var reply hookReply
-	if !sc.Scan() || json.Unmarshal(sc.Bytes(), &reply) != nil || reply.Nonce != nonce {
-		return
-	}
-	decision := hookDecision(req, reply)
+	decision := hookDecision(req, *reply)
 	if decision == nil {
 		return
 	}
 	out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PermissionRequest", "decision": decision}})
 	fmt.Fprintln(stdout, string(out))
+}
+
+// hookMaxWait is how long a hook goes on, redials included: maxHookWait
+// from its start. hookNow and hookSleep are the clock; stubbed in tests.
+var (
+	hookMaxWait = maxHookWait
+	hookNow     = time.Now
+	hookSleep   = time.Sleep
+)
+
+// hookRedial is how long a hook waits between dials once its holder has gone.
+var hookRedial = time.Second
+
+// hookOnce hands req to the holder once, with every check made afresh: the
+// socket and its folder this user's own, the listener this user (peerUID),
+// a new nonce, and an acknowledgement. held is false when it never got as
+// far as the acknowledgement. The reply is nil when there is no final one:
+// not held, a Retry, or the connection closing before a reply.
+func hookOnce(req hookRequest, waitAt int64, deadline time.Time) (reply *hookReply, held bool) {
+	path := hookSockPath()
+	if trustedSocket(path) != nil {
+		return nil, false
+	}
+	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
+	if err != nil {
+		return nil, false // no ccs serve or TUI answering prompts
+	}
+	defer conn.Close()
+	// The kernel says who is listening, whatever the socket file looked
+	// like a moment ago: anything but this user isn't ccs.
+	if uid, err := hookPeerUID(conn); err != nil || uid != uint32(os.Getuid()) {
+		return nil, false
+	}
+	nonce := newPromptID() + newPromptID()
+	line, _ := json.Marshal(hookHello{Nonce: nonce, Request: req, WaitAt: waitAt})
+	conn.SetDeadline(time.Now().Add(hookAckWait))
+	if _, err := conn.Write(append(line, '\n')); err != nil {
+		return nil, false
+	}
+	sc := bufio.NewScanner(conn)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	var ack hookReply
+	if !sc.Scan() || json.Unmarshal(sc.Bytes(), &ack) != nil || !ack.Held || ack.Nonce != nonce {
+		return nil, false
+	}
+	conn.SetDeadline(deadline.Add(time.Minute))
+	if !sc.Scan() {
+		return nil, true // the holder went with no reply (a crash): dial again
+	}
+	var r hookReply
+	if json.Unmarshal(sc.Bytes(), &r) != nil || r.Nonce != nonce {
+		return &hookReply{}, true // not this prompt's: no decision, the tab asks
+	}
+	if r.Retry {
+		return nil, true
+	}
+	return &r, true
+}
+
+// hookPeerUID is peerUID; stubbed in tests.
+var hookPeerUID = peerUID
+
+// hookSessionFile is the hook's own session file: its parent is claude.
+// Stubbed in tests.
+var hookSessionFile = func() (sessions.SessionFile, error) { return sessions.ReadSessionFile(os.Getppid()) }
+
+// ownWaitWindow is how soon after the hook starts its session must show a
+// wait for that wait to count as the hook's own (the status is written
+// within about a second of the hook starting).
+const ownWaitWindow = 5 * time.Second
+
+// ownWait is the hook's own wait: the statusUpdatedAt its session shows
+// waiting on this prompt, read from the session file at the start and
+// once a second for ownWaitWindow after it.
+type ownWait struct {
+	session string
+	start   time.Time
+	mu      sync.Mutex
+	stamp   int64
+}
+
+func (w *ownWait) at() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.stamp
+}
+
+// observe adopts the session's wait as this prompt's, if it's shown in time.
+func (w *ownWait) observe() {
+	if w.at() != 0 || hookNow().Sub(w.start) > ownWaitWindow {
+		return
+	}
+	f, err := hookSessionFile()
+	if err != nil || f.SessionID != w.session || f.Status != "waiting" || f.StatusUpdatedAt < w.start.Add(-waitSlack).UnixMilli() {
+		return
+	}
+	w.mu.Lock()
+	if w.stamp == 0 {
+		w.stamp = f.StatusUpdatedAt
+	}
+	w.mu.Unlock()
+}
+
+// watch observes once a second until the wait is known or the window ends.
+func (w *ownWait) watch() func() {
+	stop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for w.at() == 0 && hookNow().Sub(w.start) <= ownWaitWindow {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				w.observe()
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
+// over says the session's no longer waiting on this prompt: another
+// session in the file, a status other than waiting, or a different wait.
+// An unreadable file says nothing, so the hook keeps trying.
+func (w *ownWait) over() bool {
+	f, err := hookSessionFile()
+	if err != nil {
+		return false
+	}
+	at := w.at()
+	return f.SessionID != w.session || f.Status != "waiting" || (at != 0 && f.StatusUpdatedAt != at)
 }
 
 // trustedSocket refuses a socket that isn't this user's own: its folder must

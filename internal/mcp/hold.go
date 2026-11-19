@@ -56,11 +56,21 @@ type Holder struct {
 	closing bool
 
 	active atomic.Int32 // prompts held now, an answer on its way included
+
+	// bound is, per session, the newest wait (statusUpdatedAt, epoch ms)
+	// already bound to one of its copies, held or dropped: a later copy
+	// binds only to a newer wait, never to its predecessor's.
+	boundMu sync.Mutex
+	bound   map[string]int64
+
+	// handingOff: Handoff closed it, so its prompts are handed back for
+	// the next holder (Retry), not let go to their tabs.
+	handingOff atomic.Bool
 }
 
 // Active is how many prompts this holder has right now, held or with an
-// answer still being delivered: a ccs restart would send them all back to
-// their tabs, so an automatic update waits for none.
+// answer still being delivered: an automatic update waits for none, so a
+// question being answered isn't cut off by the restart (held ones come back).
 func (h *Holder) Active() int { return int(h.active.Load()) }
 
 // NewHolder makes a holder; Listen makes it the owner.
@@ -206,10 +216,22 @@ func (h *Holder) ReleaseAll(why string) {
 // Close lets every held prompt go, closes both sockets and unlocks.
 // closing and the release happen together, so no prompt registers in
 // between and stays held.
-func (h *Holder) Close(why string) {
+func (h *Holder) Close(why string) { h.close(why, false) }
+
+// Handoff is Close for a holder going away while its prompts still want
+// answering (a quit, a restart, a yield to ccs serve): each hook is told
+// to retry, and dials the next holder, which holds it afresh.
+func (h *Holder) Handoff(why string) { h.close(why, true) }
+
+func (h *Holder) close(why string, retry bool) {
 	h.mu.Lock()
-	if len(h.book.list("")) > 0 {
+	if len(h.book.list("")) > 0 && retry {
+		state.LogActivity("%s: handing every held prompt back for a restart: %s", h.cfg.Who, why)
+	} else if len(h.book.list("")) > 0 {
 		state.LogActivity("%s: letting every held prompt go to its tab: %s", h.cfg.Who, why)
+	}
+	if !h.closing {
+		h.handingOff.Store(retry)
 	}
 	h.closing = true
 	close(h.rel)
@@ -259,10 +281,24 @@ func (h *Holder) holdPrompt(c net.Conn) {
 	if json.NewEncoder(c).Encode(hookReply{Nonce: hello.Nonce, Held: true}) != nil {
 		return
 	}
-	letGo := func(why string) {
-		state.LogActivity("%s: let %s's %s prompt go to its tab: %s", h.cfg.Who, shortID(req.SessionID), req.ToolName, why)
+	letGo := func(why string, retry bool) {
+		if retry {
+			state.LogActivity("%s: handed %s's %s prompt back for a restart: %s", h.cfg.Who, shortID(req.SessionID), req.ToolName, why)
+		} else {
+			state.LogActivity("%s: let %s's %s prompt go to its tab: %s", h.cfg.Who, shortID(req.SessionID), req.ToolName, why)
+		}
 		c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		json.NewEncoder(c).Encode(hookReply{Nonce: hello.Nonce})
+		json.NewEncoder(c).Encode(hookReply{Nonce: hello.Nonce, Retry: retry})
+	}
+	// A hook that knows its own wait (a re-registration after a restart, or
+	// one that read it at its start) is held on exactly that wait, and only
+	// while its session still shows it: a copy whose wait is over is never
+	// listed.
+	if hello.WaitAt > 0 {
+		if ls, ok := liveSessions()[req.SessionID]; ok && (ls.Stat.Status != "waiting" || ls.Stat.Since.UnixMilli() != hello.WaitAt) {
+			letGo("its wait was already over", false)
+			return
+		}
 	}
 	// The may-hold check and the registration happen under one lock, the
 	// one ReleaseAll and Close take, so a blur or a yield either comes
@@ -270,9 +306,14 @@ func (h *Holder) holdPrompt(c net.Conn) {
 	p := &heldPrompt{id: newPromptID(), nonce: hello.Nonce, req: req, at: h.cfg.Now(), reply: make(chan hookReply, 1), drop: make(chan struct{})}
 	h.mu.Lock()
 	if h.closing || (h.cfg.MayHold != nil && !h.cfg.MayHold()) {
+		retry := h.closing && h.handingOff.Load()
 		h.mu.Unlock()
-		letGo("not holding now")
+		letGo("not holding now", retry)
 		return
+	}
+	if hello.WaitAt > 0 {
+		p.waitAt.Store(hello.WaitAt)
+		h.noteBound(req.SessionID, hello.WaitAt)
 	}
 	if holdSeam != nil {
 		holdSeam(h)
@@ -304,9 +345,9 @@ func (h *Holder) holdPrompt(c net.Conn) {
 	// taken it from the book (confirmed with y, about to be delivered): an
 	// answer you've confirmed goes through even if ccs loses focus or the
 	// wait ends a moment later, never reported as sent but dropped.
-	letGoOrAnswer := func(why string) {
+	letGoOrAnswer := func(why string, retry bool) {
 		if h.book.take(p.id) != nil {
-			letGo(why)
+			letGo(why, retry)
 			return
 		}
 		// Taken by an answer (its reply comes) or by a drop (Reconcile, or
@@ -317,7 +358,7 @@ func (h *Holder) holdPrompt(c net.Conn) {
 			c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			json.NewEncoder(c).Encode(r)
 		case <-p.drop:
-			letGo(p.why)
+			letGo(p.why, false)
 		}
 	}
 	for {
@@ -333,17 +374,20 @@ func (h *Holder) holdPrompt(c net.Conn) {
 			state.LogActivity("%s: %s's prompt %s ended before an answer", h.cfg.Who, shortID(req.SessionID), p.id)
 			return
 		case <-p.drop: // already taken from the book: no answer can be on its way
-			letGo(p.why)
+			letGo(p.why, false)
 			return
 		case <-rel:
-			letGoOrAnswer("released")
+			h.mu.Lock()
+			retry := h.closing && h.handingOff.Load()
+			h.mu.Unlock()
+			letGoOrAnswer("released", retry)
 			return
 		case <-limit.C:
-			letGoOrAnswer(fmt.Sprintf("no answer within %s", wait))
+			letGoOrAnswer(fmt.Sprintf("no answer within %s", wait), false)
 			return
 		case <-back:
 			if idle, ok := keyIdle(); ok && idle < h.cfg.Now().Sub(p.at) {
-				letGoOrAnswer("a key was pressed on the Mac")
+				letGoOrAnswer("a key was pressed on the Mac", false)
 				return
 			}
 		}
@@ -363,6 +407,27 @@ const waitSlack = 2 * time.Second
 // pidAlive is proc.PIDAlive; stubbed in tests.
 var pidAlive = proc.PIDAlive
 
+// procStart is a process's start time (whole seconds, as ps gives it); not
+// ok when it can't be read. Stubbed in tests.
+var procStart = func(pid int) (time.Time, bool) {
+	t, ok := proc.ProcessStartTimes(map[string]int{strconv.Itoa(pid): pid})[pid]
+	return t, ok
+}
+
+// sameProcess says whether pid is still the claude process last seen for a
+// session: alive, and (when its start time was read) started at the same
+// time, so a recycled pid doesn't count.
+func sameProcess(pid int, start int64) bool {
+	if !pidAlive(pid) {
+		return false
+	}
+	if start == 0 {
+		return true
+	}
+	t, ok := procStart(pid)
+	return !ok || t.Unix() == start
+}
+
 // Reconcile drops the held prompts their session no longer waits on.
 // Claude Code shows the same menu in the session's tab while the hook
 // holds it, and doesn't stop the hook when it's answered there, so without
@@ -372,7 +437,7 @@ var pidAlive = proc.PIDAlive
 func (h *Holder) Reconcile(live map[string]sessions.LiveSession) {
 	now := h.cfg.Now()
 	for _, p := range h.book.list("") {
-		if why := settled(p, live, now); why != "" {
+		if why := h.settled(p, live, now); why != "" {
 			h.drop(p, why)
 		}
 	}
@@ -393,16 +458,25 @@ func (h *Holder) Reconcile(live map[string]sessions.LiveSession) {
 // answered in its tab. A session missing from a scan (file unreadable or
 // mid-rewrite) is unknown and keeps the copy; it ends only when its claude
 // process, as last seen, has exited.
-func settled(p *heldPrompt, live map[string]sessions.LiveSession, now time.Time) string {
+//
+// A copy binds only to a wait newer than any an earlier copy of the same
+// session bound to (Holder.bound): the slack can't make it take its
+// predecessor's wait, which would then be "answered" and drop it.
+func (h *Holder) settled(p *heldPrompt, live map[string]sessions.LiveSession, now time.Time) string {
 	ls, ok := live[p.req.SessionID]
 	if !ok {
-		if pid := int(p.pid.Load()); pid > 0 && !pidAlive(pid) {
+		if pid := int(p.pid.Load()); pid > 0 && !sameProcess(pid, p.start.Load()) {
 			return "its session ended"
 		}
 		return ""
 	}
-	if ls.PID > 0 {
+	if ls.PID > 0 && int64(ls.PID) != p.pid.Load() {
 		p.pid.Store(int64(ls.PID))
+		st := int64(0)
+		if t, ok := procStart(ls.PID); ok {
+			st = t.Unix()
+		}
+		p.start.Store(st)
 	}
 	at := int64(0)
 	if !ls.Stat.Since.IsZero() {
@@ -418,6 +492,8 @@ func settled(p *heldPrompt, live map[string]sessions.LiveSession, now time.Time)
 			p.waitAt.Store(-1) // its file has no time: bound, without one
 		case was == 0 && at < p.at.Add(-waitSlack).UnixMilli():
 			return "" // an older wait still on show: not this prompt's yet
+		case was == 0 && !h.bindWait(p.req.SessionID, at):
+			return "" // an earlier copy's wait: not this prompt's yet
 		case was == 0:
 			p.waitAt.Store(at)
 		case was > 0 && at > was:
@@ -431,6 +507,31 @@ func settled(p *heldPrompt, live map[string]sessions.LiveSession, now time.Time)
 	return "answered in its tab"
 }
 
+// bindWait records at as bound for session when it's newer than any wait an
+// earlier copy bound to; false (and nothing recorded) when it isn't.
+func (h *Holder) bindWait(session string, at int64) bool {
+	h.boundMu.Lock()
+	defer h.boundMu.Unlock()
+	if h.bound == nil {
+		h.bound = map[string]int64{}
+	}
+	if at <= h.bound[session] {
+		return false
+	}
+	h.bound[session] = at
+	return true
+}
+
+// noteBound records at as bound for session, keeping the newest.
+func (h *Holder) noteBound(session string, at int64) {
+	h.boundMu.Lock()
+	defer h.boundMu.Unlock()
+	if h.bound == nil {
+		h.bound = map[string]int64{}
+	}
+	h.bound[session] = max(h.bound[session], at)
+}
+
 // drop lets p go with no decision, unless an answer took it first.
 func (h *Holder) drop(p *heldPrompt, why string) {
 	if h.book.take(p.id) == nil || p.drop == nil {
@@ -442,7 +543,7 @@ func (h *Holder) drop(p *heldPrompt, why string) {
 // answeredInTab checks p's session just before an answer is sent: one its
 // tab has settled since is dropped, and the answer refused.
 func (h *Holder) answeredInTab(p *heldPrompt) bool {
-	if settled(p, liveSessions(), h.cfg.Now()) != "answered in its tab" {
+	if h.settled(p, liveSessions(), h.cfg.Now()) != "answered in its tab" {
 		return false
 	}
 	h.drop(p, "answered in its tab")
@@ -480,7 +581,7 @@ func (h *Holder) serveControl(c net.Conn) {
 	}
 	json.NewEncoder(c).Encode(reply)
 	if req.Op == "yield" && h.cfg.Yields {
-		h.Close("ccs serve took over holding prompts")
+		h.Handoff("ccs serve took over holding prompts")
 		if h.cfg.OnYield != nil {
 			h.cfg.OnYield()
 		}
@@ -511,7 +612,7 @@ func (h *Holder) control(req controlRequest, who string) controlReply {
 		}
 		// Once more, as late as it can be: the tab may have answered since
 		// the check above. Taken now, so letting it go is ours to do.
-		if settled(p, liveSessions(), h.cfg.Now()) == "answered in its tab" {
+		if h.settled(p, liveSessions(), h.cfg.Now()) == "answered in its tab" {
 			if p.drop != nil {
 				p.letGoNow("answered in its tab")
 			}

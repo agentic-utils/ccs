@@ -142,8 +142,8 @@ func TestMenuEscAndTheList(t *testing.T) {
 		t.Error("→ gives the menu the keys again")
 	}
 	m = keyType(m, tea.KeyEsc)
-	if m = keyType(m, tea.KeyTab); !m.heldKeysActive() || m.showUsage {
-		t.Errorf("Tab gives the menu the keys again, not the usage screen: active %v usage %v", m.heldKeysActive(), m.showUsage)
+	if m = keyType(m, tea.KeyTab); !m.showUsage {
+		t.Errorf("Tab always opens the usage screen, even after Esc: usage %v", m.showUsage)
 	}
 }
 

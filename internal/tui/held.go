@@ -335,26 +335,47 @@ func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 // was selected. heldFocus (Enter, a click, an auto-select) also gives it
 // the keys.
 func (m model) heldKeysActive() bool {
-	// Only while it's drawn: never behind the usage screen, help, a popup,
-	// a prompt or a pending chord, focused or not.
-	if m.showUsage || m.helpOpen || m.chordX || m.prompting() || m.popupOpen() {
+	// Only while it's drawn (heldDrawn: the same rule chatAsk draws by), and
+	// never with a pending chord or a prompt open, focused or not.
+	if m.chordX || m.prompting() {
 		return false
 	}
-	h, _, ok := m.selectedHeld()
+	h, _, ok := m.heldDrawn()
 	if !ok {
+		return false
+	}
+	// A search being typed has the keys, whatever focused the menu before:
+	// Enter or a digit there must never answer the prompt.
+	if m.textInput.Value() != "" {
 		return false
 	}
 	if m.heldFocus {
 		return true
 	}
-	return m.menuLeft != h.ID && m.textInput.Value() == "" && !m.chatFocus
+	return m.menuLeft != h.ID && !m.chatFocus
+}
+
+// heldDrawn is the held prompt the bottom pane draws right now: the
+// selected session's, held and live, while it waits on its menu or prompt
+// (waitSignal, chatAsk's own rule) and nothing covers the pane (the usage
+// screen, help, a popup). Drawing, key routing and the menu's appearance
+// clock all go by it, so the menu never takes a key it isn't showing.
+func (m model) heldDrawn() (mcp.HeldPrompt, transcript.Conversation, bool) {
+	if m.showUsage || m.helpOpen || m.popupOpen() {
+		return mcp.HeldPrompt{}, transcript.Conversation{}, false
+	}
+	h, conv, ok := m.selectedHeld()
+	if !ok || m.waitSignal(conv) != waitPrompt {
+		return mcp.HeldPrompt{}, transcript.Conversation{}, false
+	}
+	return h, conv, true
 }
 
 // heldPaneKey handles a key while the held prompt has the keys
 // (heldKeysActive): a question's menu (menu.go), or a permission prompt's A
 // or D (each with y/n), T, and Enter (sends it back and opens its tab).
-// Esc leaves it for the list (menuLeft): then ↑/↓ move the list, and →,
-// Tab or Enter give it the keys again. ^P/^N, PgUp/PgDn and ^X chords
+// Esc leaves it for the list (menuLeft): then ↑/↓ move the list, and →
+// or Enter give it the keys again (Tab always opens the usage screen). ^P/^N, PgUp/PgDn and ^X chords
 // always fall through; so does any key the prompt doesn't use, which goes
 // to the search. Right after an auto-select the guard drops keys still
 // being typed.
@@ -367,7 +388,10 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 	k := msg.String()
 	menu := len(h.Questions) > 0
 	boxOpen := menu && m.menus[h.ID] != nil && m.menus[h.ID].editing != boxNone
+	review := menu && m.menus[h.ID] != nil && m.menus[h.ID].step >= len(h.Questions)
 	switch {
+	case (k == "pgup" || k == "pgdown") && review && !boxOpen:
+		// the review scrolls with them (menuKey)
 	case k == "ctrl+p", k == "ctrl+n", k == "pgup", k == "pgdown", k == "ctrl+c", k == "tab", k == "ctrl+x":
 		return nil, false
 	case (strings.HasPrefix(k, "ctrl+") || strings.HasPrefix(k, "alt+")) && !boxOpen:

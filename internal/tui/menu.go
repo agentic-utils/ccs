@@ -52,6 +52,8 @@ type heldMenu struct {
 	editing int             // which box is open: boxNone, boxOther or boxNote
 	box     textinput.Model // the open box
 	shownAt time.Time       // when this step first showed: menuFresh from it
+	revTop  int             // the review's first line on screen, when it's taller than the pane
+	revSeen bool            // the review's last line has been on screen: only then does Enter send it
 }
 
 func newHeldMenu(id string) *heldMenu {
@@ -97,10 +99,7 @@ func (m *model) showMenu(h mcp.HeldPrompt, ok bool) {
 // covers it (the usage screen, help, a popup), so a menu hidden and shown
 // again re-arms menuFresh.
 func (m model) heldShown() (mcp.HeldPrompt, bool) {
-	if m.showUsage || m.helpOpen || m.popupOpen() {
-		return mcp.HeldPrompt{}, false
-	}
-	h, _, ok := m.selectedHeld()
+	h, _, ok := m.heldDrawn()
 	return h, ok
 }
 
@@ -126,7 +125,23 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 	if mn.step == len(qs) { // the review
 		switch k {
 		case "enter":
+			if !mn.revSeen { // never send answers and notes not yet seen
+				m.setHeldNote("scroll to the end first: ↓ shows the rest of your answers")
+				return nil, true
+			}
 			return m.menuSubmit(h, name, mn), true
+		case "up", "k":
+			mn.revTop = max(0, mn.revTop-1)
+			return nil, true
+		case "down", "j":
+			mn.revTop++ // clamped by noteReview
+			return nil, true
+		case "pgup":
+			mn.revTop = max(0, mn.revTop-max(m.askLimit()-2, 1))
+			return nil, true
+		case "pgdown":
+			mn.revTop += max(m.askLimit()-2, 1)
+			return nil, true
 		case "esc", "left":
 			mn.step, mn.shownAt = len(qs)-1, heldNow()
 			return nil, true
@@ -262,7 +277,7 @@ func (m *model) menuNext(h mcp.HeldPrompt, name string, mn *heldMenu) tea.Cmd {
 		return m.menuSubmit(h, name, mn)
 	}
 	mn.step, mn.shownAt = mn.step+1, heldNow()
-	mn.cursor = 0
+	mn.cursor, mn.revTop, mn.revSeen = 0, 0, false
 	if mn.step < len(h.Questions) {
 		if p := mn.picks[mn.step]; len(p) > 0 { // coming back: start on its answer
 			mn.cursor = p[0]

@@ -137,6 +137,8 @@ type model struct {
 	heldFocus        bool              // the bottom pane's held prompt has the keys
 	heldAutoAt       time.Time         // when an auto-select focused it (zero: by hand, or the guard has passed)
 	heldNote         string            // the pane's last held-prompt outcome
+	heldNoteFor      string            // the session heldNote is about: shown only while it's selected
+	heldNoteShown    bool              // heldNote is in the main view's note line too
 	heldErr          string            // the pane's last held-prompt error
 	selectHandled    map[string]string // SessionID -> the wait (or held prompt) auto-select has dealt with
 	serveQROpen      bool              // ^X B's popup while the agent runs: its address and QR code
@@ -1463,7 +1465,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case m.heldErr != "":
 			m.errorMsg = m.heldErr
 		case m.heldNote != "":
-			m.note(m.heldNote)
+			// Only where it belongs: the session the answer was for, while
+			// it's selected; moving the selection clears it (selectionMoved).
+			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.SessionID == msg.session {
+				m.note(m.heldNote)
+				m.heldNoteShown = true
+			}
 		}
 		return m, m.heldCmd()
 

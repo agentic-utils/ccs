@@ -57,6 +57,13 @@ func (m model) selectedLive() bool {
 func (m *model) selectionMoved() {
 	m.chatFocus = m.selectedLive() && !m.boxHidden() && !m.showUsage
 	m.heldFocus, m.heldAutoAt, m.heldConfirmed, m.menuLeft = false, time.Time{}, nil, ""
+	// A held prompt's outcome belongs to its session: it goes with the selection.
+	if m.heldNoteFor != "" && (len(m.filtered) == 0 || m.filtered[m.cursor].conv.SessionID != m.heldNoteFor) {
+		if m.heldNoteShown && m.errorMsg == m.heldNote {
+			m.errorMsg, m.noteMsg = "", ""
+		}
+		m.heldNote, m.heldErr, m.heldNoteFor, m.heldNoteShown = "", "", "", false
+	}
 }
 
 // syncChatDraft gives the message box the selected session's draft, keeping
@@ -116,11 +123,13 @@ func (m model) chatAsk() []string {
 		for i, l := range lines {
 			lines[i] = "  " + l
 		}
-		if body, tail, ok := m.reviewParts(h, lines); ok {
-			out, _ := reviewWindow(body, mn(m, h).revTop, m.askLimit()-len(tail))
+		body, tail, review := m.heldSplit(h, lines)
+		room := m.askLimit() - len(tail)
+		if review {
+			out, _ := reviewWindow(body, mn(m, h).revTop, room)
 			return append(out, tail...)
 		}
-		return cutAsk(lines, m.askLimit())
+		return append(cursorWindow(body, room), tail...)
 	}
 	for i, l := range lines {
 		lines[i] = "  " + l
@@ -167,7 +176,7 @@ func (m *model) noteReview() {
 	if mn == nil || mn.step < len(h.Questions) {
 		return
 	}
-	body, tail, _ := m.reviewParts(h, m.heldPaneLines(h))
+	body, tail, _ := m.heldSplit(h, m.heldPaneLines(h))
 	limit := m.askLimit() - len(tail)
 	if len(body) > limit {
 		mn.revTop = min(max(mn.revTop, 0), len(body)-(limit-1))
@@ -176,21 +185,63 @@ func (m *model) noteReview() {
 	}
 	if _, atEnd := reviewWindow(body, mn.revTop, limit); atEnd {
 		mn.revSeen = true
+		if strings.HasPrefix(m.heldNote, "scroll to the end first") {
+			m.heldNote = "" // seen now: the refusal no longer applies
+		}
 	}
 }
 
-// reviewParts splits a held menu's pane at its review into the review
-// itself, which scrolls, and what follows it (the refusal or outcome note,
-// the hint row), which stays below it on screen. ok is false unless the
-// menu is at its review.
-func (m model) reviewParts(h mcp.HeldPrompt, pane []string) (body, tail []string, ok bool) {
-	mnu := m.menus[h.ID]
-	if mnu == nil || len(h.Questions) == 0 || mnu.step < len(h.Questions) {
-		return nil, nil, false
+// heldSplit splits a held prompt's pane into its body (header, question,
+// options; or the review), which scrolls when the pane is short, and its
+// footer (what Enter sends, an open box, the hint row, the outcome note),
+// which always stays on screen. review says the menu is at its review.
+func (m model) heldSplit(h mcp.HeldPrompt, pane []string) (body, tail []string, review bool) {
+	if len(h.Questions) == 0 {
+		return pane, nil, false
 	}
-	n := len(m.heldLines(h, m.paneWidth()-4, m.heldKeysActive()))
-	n = min(n, len(pane))
-	return pane[:n], pane[n:], true
+	mnu := mn(m, h)
+	n := 1 + len(m.menuLines(h, m.paneWidth()-4, false)) // the leading blank line, then the menu without its footer
+	if mnu.editing != boxNone && mnu.step < len(h.Questions) {
+		n -= 3 // the open box (a blank, the box, its hints) belongs to the footer
+	}
+	n = min(max(n, 0), len(pane))
+	return pane[:n], pane[n:], mnu.step >= len(h.Questions)
+}
+
+// cursorWindow fits a question's body into room lines, keeping its first
+// two (a blank and the header line) and the highlighted "❯" row on screen,
+// with "↑ more" or "↓ more" where options are out of view.
+func cursorWindow(body []string, room int) []string {
+	if len(body) <= room || room < 5 {
+		if len(body) > room && room > 0 {
+			return body[:room]
+		}
+		return body
+	}
+	head, rest := body[:2], body[2:]
+	at := 0
+	for i, l := range rest {
+		if strings.Contains(l, "❯") {
+			at = i
+		}
+	}
+	space := room - len(head)
+	top := 0
+	if at >= space-1 {
+		top = at - (space - 2)
+	}
+	top = min(top, max(len(rest)-space, 0))
+	out := append([]string{}, head...)
+	view := rest[top:]
+	if top > 0 {
+		out = append(out, "  \033[90m↑ more\033[0m")
+		space--
+		view = view[1:]
+	}
+	if len(view) > space {
+		view = append(append([]string{}, view[:space-1]...), "  \033[90m↓ more\033[0m")
+	}
+	return append(out, view...)
 }
 
 // mn is a held prompt's menu, or a fresh one (for drawing).
@@ -340,7 +391,7 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.sendNote[id] != "":
 		left = "  " + m.sendNote[id]
-	case m.chatStatus[id].Status == "waiting": // menus and prompts never reach the transcript
+	case m.chatStatus[id].Status == "waiting" && m.heldPrompt[id].ID == "": // menus and prompts never reach the transcript; a held one is drawn above
 		left = "\033[1;" + amber + "m  ? " + waitingLine(conv) + "\033[0m"
 	}
 	width = full

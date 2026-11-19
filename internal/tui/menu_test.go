@@ -56,7 +56,7 @@ func ctrl(m model, k tea.KeyType) model { return keyType(m, k) }
 func TestMenuSingleQuestion(t *testing.T) {
 	m, calls, _ := menuPane(t, colour())
 	v := strip2(m.View())
-	for _, want := range []string{"keys: menu", "esc back to the list", "Question 1 of 1 · Colour", "Which colour?", "1. Red", "warm", "Other…", "enter sends: Red"} {
+	for _, want := range []string{"also in its tab", "esc list", "Colour · 1 of 1", "Which colour?", "1. Red", "warm", "Other…", "enter sends: Red"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the menu lacks %q:\n%s", want, v)
 		}
@@ -198,12 +198,12 @@ func TestMenuNotBehindTheUsageScreen(t *testing.T) {
 
 // Several questions: each answered in turn (a pick-any one with Space and
 // digits, Enter confirming, an empty set refused), ← goes back keeping the
-// answers, a review lists them, Esc goes back from it, Enter submits.
+// answers, a review lists them, ← goes back from it, Enter submits.
 func TestMenuSeveralQuestions(t *testing.T) {
 	m, calls, tick := menuPane(t, twoQuestions())
 	m = press(m, "1") // highlights Yes
 	m = keyType(m, tea.KeyEnter)
-	if len(*calls) != 0 || !strings.Contains(strip2(m.View()), "Question 2 of 2") {
+	if len(*calls) != 0 || !strings.Contains(strip2(m.View()), "2 of 2") {
 		t.Fatalf("on to question 2: %+v\n%s", *calls, strip2(m.View()))
 	}
 	if strings.Contains(strip2(m.View()), "enter sends:") {
@@ -219,13 +219,13 @@ func TestMenuSeveralQuestions(t *testing.T) {
 	m = press(m, "1") // untick lint
 	m = press(m, "1") // tick lint again
 	m = keyType(m, tea.KeyLeft)
-	if v := strip2(m.View()); !strings.Contains(v, "Question 1 of 2") || !strings.Contains(v, "✓ 1. Yes") {
+	if v := strip2(m.View()); !strings.Contains(v, "1 of 2") || !strings.Contains(v, "1. Yes ✓") {
 		t.Fatalf("← back, the answer kept:\n%s", v)
 	}
 	tick(time.Second)
 	m = keyType(m, tea.KeyEnter) // keeps Yes (cursor starts on it)
 	tick(time.Second)
-	if v := strip2(m.View()); !strings.Contains(v, "[x] 1. lint") || !strings.Contains(v, "[x] 3. vet") {
+	if v := strip2(m.View()); !strings.Contains(v, "1. [x] lint") || !strings.Contains(v, "3. [x] vet") {
 		t.Fatalf("question 2's ticks kept:\n%s", v)
 	}
 	m = keyType(m, tea.KeyEnter)
@@ -233,9 +233,9 @@ func TestMenuSeveralQuestions(t *testing.T) {
 	if !strings.Contains(v, "Review your answers") || !strings.Contains(v, "→ Yes") || !strings.Contains(v, "→ lint, vet") || len(*calls) != 0 {
 		t.Fatalf("the review:\n%s", v)
 	}
-	m = keyType(m, tea.KeyEsc)
-	if !strings.Contains(strip2(m.View()), "Question 2 of 2") {
-		t.Fatal("Esc goes back from the review")
+	m = keyType(m, tea.KeyLeft)
+	if !strings.Contains(strip2(m.View()), "2 of 2") {
+		t.Fatal("← goes back from the review")
 	}
 	tick(time.Second)
 	m = keyType(m, tea.KeyEnter)
@@ -381,7 +381,7 @@ func TestMenuPromptReplaced(t *testing.T) {
 	if m.menus["q2"] != nil || m.menus["q2-new"] == nil || m.menus["q2-new"].step != 0 {
 		t.Fatalf("the new prompt's menu starts afresh: %+v", m.menus)
 	}
-	if v := strip2(m.View()); !strings.Contains(v, "Question 1 of 2") {
+	if v := strip2(m.View()); !strings.Contains(v, "1 of 2") {
 		t.Errorf("the new prompt shows from its first question:\n%s", v)
 	}
 	m = keyType(m, tea.KeyEnter) // within its guard: nothing
@@ -402,7 +402,7 @@ func TestMenuTAndEsc(t *testing.T) {
 		t.Fatal("Esc at the first question leaves the menu")
 	}
 	m = keyType(m, tea.KeyRight)
-	if !m.heldKeysActive() || !strings.Contains(strip2(m.View()), "✓ 1. Yes") {
+	if !m.heldKeysActive() || !strings.Contains(strip2(m.View()), "1. Yes ✓") {
 		t.Fatalf("progress kept:\n%s", strip2(m.View()))
 	}
 	m = press(m, "t")

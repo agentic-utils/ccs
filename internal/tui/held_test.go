@@ -48,7 +48,7 @@ func TestHeldShownInBottomPane(t *testing.T) {
 	m = run(m, m.heldCmd())
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
 	m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
-	if v := strip2(m.View()); !strings.Contains(v, "held by ccs") || !strings.Contains(v, "keys: menu") || !strings.Contains(v, "esc back to the list") {
+	if v := strip2(m.View()); !strings.Contains(v, "also in its tab") || !strings.Contains(v, "Bash · permission") || !strings.Contains(v, "esc list") {
 		t.Errorf("bottom pane:\n%s", v)
 	}
 }

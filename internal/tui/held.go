@@ -18,6 +18,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"os"
 	"slices"
 	"sort"
@@ -143,6 +144,7 @@ type heldMsg struct {
 
 type heldDoneMsg struct {
 	name, text string
+	session    string // the session the answer was for: its outcome shows only there
 	err        error
 }
 
@@ -203,20 +205,54 @@ func (m model) heldByID(id string) (mcp.HeldPrompt, bool) {
 // heldLines shows a held prompt with its keys: a question's menu
 // (menu.go), or a permission prompt's tool with A, D and T.
 func (m model) heldLines(h mcp.HeldPrompt, width int, active bool) []string {
-	cut := func(s string) string { return transcript.Truncate(s, max(width, 10)) }
-	head := "\033[1;" + amber + "m⏸ held by ccs\033[0m \033[90m(not on screen in its tab)\033[0m"
-	if active { // its keys go to the menu: say so, and how to get back to the list
-		head = "\033[1;" + amber + "m⏸ held by ccs\033[0m \033[1;7;" + amber + "m keys: menu \033[0m \033[90m" + keyEsc + " back to the list\033[0m"
-	}
-	lines := []string{"", head}
 	if len(h.Questions) > 0 {
-		return append(lines, m.menuLines(h, width, active)...)
+		return append([]string{""}, m.menuLines(h, width, active)...)
 	}
-	lines = append(lines, cut("\033[1;"+amber+"m? wants to use "+h.Tool+"\033[0m "+h.Summary))
+	// A permission prompt, in the menu's style: one header line, what it
+	// wants to run wrapped, one hint row.
+	lines := []string{"", paneHeader("\033[1;"+amber+"m"+h.Tool+"\033[0m \033[90m· permission\033[0m", width)}
+	lines = append(lines, wrapIndent("", "\033[1m", h.Summary, width)...)
 	if !active {
 		return lines
 	}
-	return append(lines, "\033[90m"+hints("A", "allow", "D", "deny", "T", "back to its tab", keyEnter, "open its tab")+"\033[0m")
+	return append(lines, "", paneHintsFit(width, "a", "allow", "d", "deny", keyEnter, "open its tab", keyEsc, "list"))
+}
+
+// paneHeader is a held prompt's one header line: left on the left, a dim
+// "also in its tab" on the right, padded to width.
+func paneHeader(left string, width int) string {
+	right := "\033[90malso in its tab\033[0m" // Claude Code shows it there too
+	gap := width - ansi.StringWidth(left) - ansi.StringWidth(right)
+	if gap < 2 {
+		return ansi.Truncate(left, max(width, 10), "…")
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// paneHints is the pane's one dim hint row: keys bold, pairs joined by " · ".
+func paneHints(pairs ...string) string { return paneHintsFit(0, pairs...) }
+
+// paneHintsFit is paneHints within width (0: any). When the row is too
+// wide, the obvious ↑↓ pair goes first, then pairs from the end, so it's
+// never cut mid-word and Esc's way out stays as long as it can.
+func paneHintsFit(width int, pairs ...string) string {
+	row := func(ps []string) string {
+		parts := make([]string, 0, len(ps)/2)
+		for i := 0; i+1 < len(ps); i += 2 {
+			parts = append(parts, "\033[1m"+ps[i]+"\033[22m "+ps[i+1])
+		}
+		return "\033[90m" + strings.Join(parts, " · ") + "\033[0m"
+	}
+	if width <= 0 || ansi.StringWidth(row(pairs)) <= width {
+		return row(pairs)
+	}
+	if len(pairs) >= 4 && pairs[0] == "↑↓" {
+		pairs = pairs[2:]
+	}
+	for len(pairs) > 2 && ansi.StringWidth(row(pairs)) > width {
+		pairs = pairs[:len(pairs)-2]
+	}
+	return row(pairs)
 }
 
 // heldKey handles a key for its session's held prompt, in the bottom
@@ -275,12 +311,13 @@ func (m *model) answerHeldCmd(h mcp.HeldPrompt, name, choice string, labels map[
 	m.heldAt = time.Time{} // ask again straight after
 	return func() tea.Msg {
 		text, err := answerHeld(h.ID, choice, labels, other, notes)
-		return heldDoneMsg{name: name, text: text, err: err}
+		return heldDoneMsg{name: name, session: h.Session, text: text, err: err}
 	}
 }
 
 func (m *model) applyHeldDone(msg heldDoneMsg) {
 	m.heldErr = ""
+	m.heldNoteFor = msg.session
 	switch {
 	case errors.Is(msg.err, mcp.ErrNoServe):
 		m.heldErr = "Nothing holds prompts now: the prompt is in " + msg.name + "'s tab"
@@ -319,11 +356,11 @@ func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 		lines = append(lines, "\033[1;"+amber+"m"+m.heldConfirmed.what+"\033[0m")
 	case m.heldErr != "":
 		lines = append(lines, "\033[31m"+m.heldErr+"\033[0m")
-	case m.heldNote != "":
+	case m.heldNote != "" && (m.heldNoteFor == "" || m.heldNoteFor == h.Session):
 		lines = append(lines, "\033[90m"+m.heldNote+"\033[0m")
 	}
 	if !active {
-		lines = append(lines, "\033[90m"+hints("→", "answer it here", keyEnter, "the same")+"\033[0m")
+		lines = append(lines, paneHints("→", "answer it here", keyEnter, "the same"))
 	}
 	return lines
 }

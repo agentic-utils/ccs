@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/agentic-utils/ccs/internal/sessions"
+	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -174,18 +177,17 @@ func TestTreeAlignment(t *testing.T) {
 	}
 }
 
-// A setting saved by an older ccs on the folded view (2) reads as hidden.
-func TestOldFoldedViewReadsAsHidden(t *testing.T) {
+// The old global view (tree_view, one setting for every tree) isn't read:
+// every fold starts closed, and the next save drops the key.
+func TestOldGlobalViewIsDropped(t *testing.T) {
 	treeModel(t)
-	saveSettings(settings{TreeView: 2})
-	if v := loadSettings().TreeView; v != 2 {
-		t.Fatalf("setup: %d", v)
+	os.WriteFile(state.SettingsPath, []byte(`{"tree_view":1}`), 0o600)
+	if s := loadSettings(); len(s.OpenClosed) != 0 {
+		t.Errorf("no fold opened from the old view: %v", s.OpenClosed)
 	}
-	if v := loadSettings().treeView(); v != treeLive {
-		t.Errorf("the old folded view is hidden now: %d", v)
-	}
-	if v := (settings{TreeView: treeClosed}).treeView(); v != treeClosed {
-		t.Errorf("shown stays shown: %d", v)
+	saveSettings(loadSettings())
+	if b, _ := os.ReadFile(state.SettingsPath); strings.Contains(string(b), "tree_view") {
+		t.Errorf("the old key goes on the next save: %s", b)
 	}
 }
 
@@ -211,9 +213,9 @@ func TestTreeFollowsAdoption(t *testing.T) {
 
 // A launched session whose tree has nothing running waits behind its
 // parent's "▸ N closed" line, at the end of the parent's branch, so it isn't
-// one click from being resumed. ^X C shows every tree's closed sessions at
-// once, beside their live siblings under a ▾ line, and again hides them.
-// Both lines name ^X C. A search shows everything.
+// one click from being resumed. ^X C opens only the fold the selection sits
+// in, beside their live siblings under a ▾ line, and again hides them. Both
+// lines name ^X C. A search shows everything.
 func TestClosedSessionsBehindALine(t *testing.T) {
 	m := treeModel(t)
 	m.width, m.height = 110, 40
@@ -229,34 +231,177 @@ func TestClosedSessionsBehindALine(t *testing.T) {
 	if v := view(); !strings.Contains(v, "│   └ ▸ 1 closed · ^X C") || !strings.Contains(v, " └ ▸ 1 closed · ^X C") || !strings.Contains(v, "├ ✻ worker") {
 		t.Errorf("each parent's closed line ends its branch, names ^X C, its last live child a ├:\n%s", v)
 	}
+	selectTitle(&m, "hub")
 	m, _ = chord(m, "c")
-	if got := titles(); !strings.Contains(got, "fresh") || !strings.Contains(got, "leaf") {
-		t.Errorf("^X C shows every tree's closed sessions: %s", got)
+	if got := titles(); !strings.Contains(got, "fresh") || strings.Contains(got, "leaf") {
+		t.Errorf("^X C on hub shows hub's closed sessions only: %s", got)
 	}
 	depth := map[string]int{}
 	for _, it := range m.filtered {
 		depth[it.conv.Title] = it.depth
 	}
-	if depth["fresh"] != depth["worker"] || depth["leaf"] != depth["sub"]+1 {
+	if depth["fresh"] != depth["worker"] {
 		t.Errorf("closed sessions sit at their live siblings' level: %v", depth)
 	}
-	if v := view(); !strings.Contains(v, " ├ ▾ 1 closed · ^X C") || !strings.Contains(v, " └ ✻ fresh") || strings.Contains(v, "▸ 1 closed") {
-		t.Errorf("shown, a ▾ line still names ^X C, above them at their level, the last one a └:\n%s", v)
+	if v := view(); !strings.Contains(v, " ├ ▾ 1 closed · ^X C") || !strings.Contains(v, " └ ✻ fresh") || !strings.Contains(v, "│   └ ▸ 1 closed") {
+		t.Errorf("shown, a ▾ line still names ^X C, above them at their level; sub's fold stays closed:\n%s", v)
 	}
-	if loadSettings().TreeView != treeClosed {
-		t.Error("showing them is saved")
+	if !slices.Equal(loadSettings().OpenClosed, []string{"hub-id"}) {
+		t.Errorf("the open fold is saved: %v", loadSettings().OpenClosed)
+	}
+	if !strings.Contains(m.errorMsg, "under hub shown") {
+		t.Errorf("the note names the session: %q", m.errorMsg)
 	}
 	m, _ = chord(m, "c")
 	if got := titles(); !strings.Contains(got, "worker") || strings.Contains(got, "fresh") || !strings.Contains(view(), "▸ 1 closed · ^X C") {
 		t.Errorf("^X C again hides them: %s", got)
 	}
-	if loadSettings().TreeView != treeLive || !strings.Contains(m.errorMsg, "^X C shows them") {
+	if len(loadSettings().OpenClosed) != 0 || !strings.Contains(m.errorMsg, "under hub hidden; ^X C shows them") {
 		t.Errorf("hiding is saved and the note says how to show them: %q", m.errorMsg)
 	}
 	m.textInput.SetValue("fresh")
 	m.updateFilter()
 	if got := titles(); !strings.Contains(got, "fresh") || strings.Contains(view(), "1 closed") {
 		t.Errorf("a search shows a closed match where it is, no closed lines: %s", got)
+	}
+}
+
+// selectTitle puts the cursor on the listed session with that title.
+func selectTitle(m *model, title string) {
+	for i, it := range m.filtered {
+		if it.conv.Title == title {
+			m.cursor = i
+			return
+		}
+	}
+}
+
+// closedFixture is treeModel with closed sessions under two orchestrators
+// and two levels: fresh under hub, leaf under sub (under worker, under hub),
+// and a closed rollout under ops.
+func closedFixture(t *testing.T) model {
+	t.Helper()
+	m := treeModel(t)
+	sessions.WithParents(func(f *sessions.ParentsFile) bool {
+		f.Parents["rollout"] = sessions.ParentRec{Child: "rollout", Parent: "ops"}
+		return true
+	})
+	os.Chtimes(sessions.ParentsPath(), time.Now().Add(time.Second), time.Now().Add(time.Second))
+	m.items = append(m.items, buildItems([]transcript.Conversation{{SessionID: "rollout-id", Title: "rollout", LastTimestamp: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}}})...)
+	m.width, m.height = 110, 40
+	delete(m.live, "leaf-id")
+	delete(m.live, "fresh-id")
+	ageItem(&m, "fresh-id", time.Hour)
+	ageItem(&m, "leaf-id", time.Hour)
+	m.reloadParents()
+	m.refilter()
+	return m
+}
+
+func shownTitles(m model) map[string]bool {
+	out := map[string]bool{}
+	for _, it := range m.filtered {
+		out[it.conv.Title] = true
+	}
+	return out
+}
+
+// ^X C opens one fold only: another orchestrator's stays closed, and so does
+// a nested one; a child selected opens its parent's fold; the selection
+// stays where it was; the open folds come back after a reload.
+func TestClosedFoldsArePerSession(t *testing.T) {
+	m := closedFixture(t)
+	if got := shownTitles(m); got["fresh"] || got["leaf"] || got["rollout"] {
+		t.Fatalf("every fold starts closed: %v", order(m))
+	}
+	selectTitle(&m, "deploy") // a child: its parent ops's fold
+	m, _ = chord(m, "c")
+	got := shownTitles(m)
+	if !got["rollout"] || got["fresh"] || got["leaf"] {
+		t.Errorf("a child selected opens its parent's fold only: %v", order(m))
+	}
+	if m.filtered[m.cursor].conv.Title != "deploy" {
+		t.Errorf("the selection stays on deploy: %s", m.filtered[m.cursor].conv.Title)
+	}
+	selectTitle(&m, "worker") // no closed sessions of its own: hub's fold
+	m, _ = chord(m, "c")
+	if got := shownTitles(m); !got["fresh"] || got["leaf"] || !got["rollout"] {
+		t.Errorf("hub's fold opens, sub's nested one doesn't, ops's stays open: %v", order(m))
+	}
+	selectTitle(&m, "sub")
+	m, _ = chord(m, "c")
+	if got := shownTitles(m); !got["leaf"] || !got["fresh"] {
+		t.Errorf("sub's own fold opens: %v", order(m))
+	}
+	selectTitle(&m, "hub")
+	m, _ = chord(m, "c")
+	if got := shownTitles(m); got["fresh"] || !got["leaf"] || !got["rollout"] {
+		t.Errorf("closing hub's fold leaves sub's and ops's as they were: %v", order(m))
+	}
+
+	reloaded := closedFixture(t) // a new run reads the saved folds
+	for _, id := range loadSettings().OpenClosed {
+		if reloaded.openClosed == nil {
+			reloaded.openClosed = map[string]bool{}
+		}
+		reloaded.openClosed[id] = true
+	}
+	reloaded.refilter()
+	if !slices.Equal(loadSettings().OpenClosed, []string{"ops-id", "sub-id"}) {
+		t.Errorf("the open folds are saved: %v", loadSettings().OpenClosed)
+	}
+	if got := shownTitles(reloaded); !got["leaf"] || !got["rollout"] || got["fresh"] {
+		t.Errorf("they come back after a reload: %v", order(reloaded))
+	}
+}
+
+// Closing the fold the selected closed session sits in leaves the selection
+// on the fold's owner, not on whatever slid into its place.
+func TestClosingAFoldKeepsTheSelectionNear(t *testing.T) {
+	m := closedFixture(t)
+	selectTitle(&m, "ops")
+	m, _ = chord(m, "c")
+	selectTitle(&m, "rollout")
+	m, _ = chord(m, "c") // rollout has no fold of its own: ops's closes
+	if got := shownTitles(m); got["rollout"] {
+		t.Fatalf("ops's fold closed: %v", order(m))
+	}
+	if m.filtered[m.cursor].conv.Title != "ops" {
+		t.Errorf("the selection moves to the fold's owner: %s", m.filtered[m.cursor].conv.Title)
+	}
+	var help string
+	for _, sc := range m.shortcuts() {
+		if sc[0] == "^X C" {
+			help = sc[1]
+		}
+	}
+	if help != "show the closed sessions under ops" {
+		t.Errorf("? help names the fold the key would open: %q", help)
+	}
+	selectTitle(&m, "loner")
+	m, _ = chord(m, "c")
+	if !strings.Contains(m.errorMsg, "no closed sessions under this one") {
+		t.Errorf("a session with no fold above it says so: %q", m.errorMsg)
+	}
+}
+
+// A click on a "▸ N closed" line opens that fold, as ^X C does.
+func TestClickOnAClosedLineTogglesIt(t *testing.T) {
+	m := closedFixture(t)
+	selectTitle(&m, "loner")
+	rows := m.listRows()
+	listTop, listHeight, _ := m.listLayout()
+	start := m.listStart(rows, listHeight)
+	r := slices.IndexFunc(rows, func(row listRow) bool { return row.fold == "ops-id" })
+	if r < start {
+		t.Fatalf("ops's closed line is on screen: %d", r)
+	}
+	m = m.handleMouse(tea.MouseMsg{X: 4, Y: listTop + r - start, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if got := shownTitles(m); !got["rollout"] || got["fresh"] {
+		t.Errorf("the click opens ops's fold only: %v", order(m))
+	}
+	if m.filtered[m.cursor].conv.Title != "loner" {
+		t.Errorf("the click leaves the selection alone: %s", m.filtered[m.cursor].conv.Title)
 	}
 }
 
@@ -313,6 +458,7 @@ func TestClosedSpawnedChildIsHidden(t *testing.T) {
 	if v := strip2(m.View()); !strings.Contains(v, "└ ▸ 1 closed · ^X C") {
 		t.Errorf("behind review-keda's closed line:\n%s", v)
 	}
+	selectTitle(&m, "review-keda")
 	m, _ = chord(m, "c")
 	if got := strings.Join(order(m), ","); !strings.Contains(got, "review done") {
 		t.Errorf("^X C shows it: %s", got)

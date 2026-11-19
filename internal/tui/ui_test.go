@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -1530,7 +1531,7 @@ func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
 func TestViewIsRememberedAcrossRestarts(t *testing.T) {
 	defer func(p string) { state.SettingsPath = p }(state.SettingsPath)
 	state.SettingsPath = filepath.Join(t.TempDir(), "ccs", "settings.json")
-	if (loadSettings() != settings{}) {
+	if !reflect.DeepEqual(loadSettings(), settings{}) {
 		t.Fatal("no file: the defaults")
 	}
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)

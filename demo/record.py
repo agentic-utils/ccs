@@ -158,8 +158,8 @@ KEYS = [  # (delay before, keys)
     (1.8, ESC),           # clear the search
     (1.2, "?"),           # help
     (3.0, ESC),
-    (1.2, "\t"),          # usage screen
-    (3.0, "\t"),
+    (1.2, "\x18y"),       # ^X Y: usage screen
+    (3.0, ESC),           # back
     (1.5, "\x03"),        # quit
 ]
 

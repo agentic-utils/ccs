@@ -29,7 +29,7 @@ import (
 )
 
 // ============================================================================
-// Usage screen (Tab): 12h token charts, summary and allowance, ported from
+// Usage screen (^X Y): 12h token charts, summary and allowance, ported from
 // claude-dashboard (https://github.com/agentic-utils/claude-dashboard)
 // ============================================================================
 

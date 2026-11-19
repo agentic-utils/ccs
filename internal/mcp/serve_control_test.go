@@ -31,10 +31,10 @@ func TestControlListsAndAnswersHeldPrompts(t *testing.T) {
 		len(held[0].Questions) != 1 || strings.Join(held[0].Questions[0].Options, ",") != "Red,Blue" {
 		t.Fatalf("list: %+v %v", held, err)
 	}
-	if _, err := AnswerHeld(p.id, "answer", map[int][]string{0: {"Green"}}, nil); err == nil {
+	if _, err := AnswerHeld(p.id, "answer", map[int][]string{0: {"Green"}}, nil, nil); err == nil {
 		t.Error("a label that isn't an option")
 	}
-	text, err := AnswerHeld(p.id, "answer", map[int][]string{0: {"Blue"}}, nil)
+	text, err := AnswerHeld(p.id, "answer", map[int][]string{0: {"Blue"}}, nil, nil)
 	if err != nil || !strings.Contains(text, "Which colour? → Blue") {
 		t.Fatalf("answer: %q %v", text, err)
 	}
@@ -43,7 +43,7 @@ func TestControlListsAndAnswersHeldPrompts(t *testing.T) {
 		t.Errorf("decision %v", d)
 	}
 	// First answer wins: the page or a second TUI gets nothing to send.
-	if _, err := AnswerHeld(p.id, "answer", map[int][]string{0: {"Red"}}, nil); err == nil || !strings.Contains(err.Error(), "isn't waiting") {
+	if _, err := AnswerHeld(p.id, "answer", map[int][]string{0: {"Red"}}, nil, nil); err == nil || !strings.Contains(err.Error(), "isn't waiting") {
 		t.Errorf("a second answer: %v", err)
 	}
 	if log := activityLog(t); !strings.Contains(log, "tui (this Mac) settled") {

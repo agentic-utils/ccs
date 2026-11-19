@@ -176,7 +176,15 @@ func (s *server) promptViews(session string, names map[string]string) []promptVi
 // AskUserQuestion, with the chosen labels, each one of its options), deny,
 // or let it go to the Mac (no decision). The hook checks the answers again
 // against its own input and builds what it gives Claude Code itself.
-func promptDecision(p *heldPrompt, choice string, answers map[string][]string, other map[string]bool, who string) (hookReply, string, error) {
+// noteSaid is a note as the confirm and done pages show it.
+func noteSaid(note string) string {
+	if note == "" {
+		return ""
+	}
+	return " (note: " + note + ")"
+}
+
+func promptDecision(p *heldPrompt, choice string, answers map[string][]string, other map[string]bool, notes map[string]string, who string) (hookReply, string, error) {
 	switch choice {
 	case "mac":
 		return hookReply{}, "Let it go to its tab on the Mac, where it shows as usual.", nil
@@ -195,17 +203,21 @@ func promptDecision(p *heldPrompt, choice string, answers map[string][]string, o
 		if json.Unmarshal(p.req.ToolInput, &in) != nil || len(in.Questions) == 0 {
 			return hookReply{}, "", errors.New("couldn't read the question")
 		}
-		out := map[string]string{}
+		out, kept := map[string]string{}, map[string]string{}
 		var said, others []string
 		for i, q := range in.Questions {
 			got := answers["q"+strconv.Itoa(i)]
+			note := OtherText(notes["q"+strconv.Itoa(i)])
+			if note != "" {
+				kept[q.Question] = note
+			}
 			if other["q"+strconv.Itoa(i)] { // free text ("Other…") as its answer
 				if len(got) != 1 || OtherText(got[0]) == "" {
 					return hookReply{}, "", fmt.Errorf("type an answer for %q", q.Question)
 				}
 				text := OtherText(got[0])
 				out[q.Question], others = text, append(others, q.Question)
-				said = append(said, fmt.Sprintf("%s → %s", q.Question, text))
+				said = append(said, fmt.Sprintf("%s → %s%s", q.Question, text, noteSaid(note)))
 				continue
 			}
 			var labels []string
@@ -221,9 +233,12 @@ func promptDecision(p *heldPrompt, choice string, answers map[string][]string, o
 				}
 			}
 			out[q.Question] = strings.Join(got, ", ")
-			said = append(said, fmt.Sprintf("%s → %s", q.Question, strings.Join(got, ", ")))
+			said = append(said, fmt.Sprintf("%s → %s%s", q.Question, strings.Join(got, ", "), noteSaid(note)))
 		}
-		return hookReply{Behavior: "allow", Answers: out, Other: others}, "Answer:\n" + strings.Join(said, "\n"), nil
+		if len(kept) == 0 {
+			kept = nil
+		}
+		return hookReply{Behavior: "allow", Answers: out, Other: others, Notes: kept}, "Answer:\n" + strings.Join(said, "\n"), nil
 	}
 	return hookReply{}, "", fmt.Errorf("unknown choice %q", choice)
 }

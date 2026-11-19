@@ -753,6 +753,7 @@ type action struct {
 	Prompt, Choice                   string              // a held prompt and what to do with it
 	Answers                          map[string][]string // its questions' chosen labels, by q<i>, or one free-text answer
 	Other                            map[string]bool     // q<i> answered with free text (the page's "Other" choice)
+	Notes                            map[string]string   // q<i>'s note on its answer (the page's note field)
 }
 
 // otherChoice is the page's "Other" radio or checkbox value; the text is in
@@ -779,24 +780,38 @@ func (a action) AnswerFields() [][2]string {
 			out = append(out, [2]string{k, v})
 		}
 	}
+	nkeys := make([]string, 0, len(a.Notes))
+	for k := range a.Notes {
+		nkeys = append(nkeys, k)
+	}
+	sort.Strings(nkeys)
+	for _, k := range nkeys {
+		out = append(out, [2]string{k + "_note", a.Notes[k]})
+	}
 	return out
 }
 
 func formAction(r *http.Request) action {
 	f := r.PostFormValue
-	answers, other := answerFields(r)
+	answers, other, notes := answerFields(r)
 	return action{
 		Kind: f("action"), ID: f("id"), Name: f("name"), Text: f("text"),
 		Cwd: f("cwd"), Brief: f("brief"),
 		Codex: f("codex") == "on", Graceful: f("graceful") == "on",
-		Prompt: f("prompt"), Choice: f("choice"), Answers: answers, Other: other,
+		Prompt: f("prompt"), Choice: f("choice"), Answers: answers, Other: other, Notes: notes,
 	}
 }
 
 // answerFields are the form's q<i> fields (several for a multi-select).
-func answerFields(r *http.Request) (map[string][]string, map[string]bool) {
-	out, other := map[string][]string{}, map[string]bool{}
+func answerFields(r *http.Request) (map[string][]string, map[string]bool, map[string]string) {
+	out, other, notes := map[string][]string{}, map[string]bool{}, map[string]string{}
 	for k, vs := range r.PostForm {
+		if q, ok := strings.CutSuffix(k, "_note"); ok && len(q) > 1 && q[0] == 'q' && strings.Trim(q[1:], "0123456789") == "" {
+			if n := strings.TrimSpace(r.PostFormValue(k)); n != "" {
+				notes[q] = n
+			}
+			continue
+		}
 		if len(k) > 1 && k[0] == 'q' && strings.Trim(k[1:], "0123456789") == "" {
 			if slices.Contains(vs, otherChoice) { // "Other": its text is the answer
 				out[k], other[k] = []string{r.PostFormValue(k + "_other")}, true
@@ -805,7 +820,7 @@ func answerFields(r *http.Request) (map[string][]string, map[string]bool) {
 			out[k] = vs
 		}
 	}
-	return out, other
+	return out, other, notes
 }
 
 // describe says in plain words what the action will do.
@@ -875,7 +890,7 @@ func (s *server) actPrompt(w http.ResponseWriter, r *http.Request, a action, ema
 		s.fail(w, r, http.StatusConflict, gone)
 		return
 	}
-	reply, what, err := promptDecision(p, a.Choice, a.Answers, a.Other, email)
+	reply, what, err := promptDecision(p, a.Choice, a.Answers, a.Other, a.Notes, email)
 	if err != nil {
 		s.fail(w, r, http.StatusBadRequest, err.Error())
 		return

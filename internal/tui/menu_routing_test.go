@@ -156,14 +156,18 @@ func TestMenuReviewScrollsBeforeSending(t *testing.T) {
 	if len(*calls) != 0 || !strings.Contains(strip2(m.View()), "scroll to the end first") {
 		t.Fatalf("Enter before the end is refused: calls %+v\n%s", *calls, strip2(m.View()))
 	}
-	for i := 0; i < 40 && strings.Contains(strip2(m.View()), "↓ more"); i++ {
+	pane := func(m model) string { return strip2(strings.Join(m.chatAsk(), "\n")) }
+	for i := 0; i < 40 && strings.Contains(pane(m), "↓ more"); i++ {
 		m = keyType(m, tea.KeyDown)
 	}
-	v = strip2(m.View())
-	if strings.Contains(v, "↓ more") || !strings.Contains(v, "NOTE END") {
+	v = pane(m)
+	if strings.Contains(v, "↓ more") || !strings.Contains(strings.Join(strings.Fields(v), " "), "NOTE END") {
 		t.Fatalf("scrolled to the end, the last lines show:\n%s", v)
 	}
 	m = keyType(m, tea.KeyEnter)
+	if strings.Contains(v, "scroll to the end first") {
+		t.Errorf("once the end is seen, the refusal goes:\n%s", v)
+	}
 	if len(*calls) != 1 || (*calls)[0].labels[0][0] != answer || (*calls)[0].labels[1][0] != "Yes" {
 		t.Fatalf("seen to the end, Enter sends what it showed: %+v", *calls)
 	}

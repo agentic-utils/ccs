@@ -142,9 +142,11 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 		case "pgdown":
 			mn.revTop += max(m.askLimit()-2, 1)
 			return nil, true
-		case "esc", "left":
+		case "left":
 			mn.step, mn.shownAt = len(qs)-1, heldNow()
 			return nil, true
+		case "esc":
+			return nil, false // back to the list; the answers are kept
 		case "T", "t":
 			return m.answerHeldCmd(h, name, "mac", nil, nil, nil), true
 		}
@@ -162,10 +164,7 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 			mn.step, mn.cursor, mn.shownAt = mn.step-1, 0, heldNow()
 		}
 	case k == "esc":
-		if mn.step == 0 {
-			return nil, false // leave the menu; progress is kept
-		}
-		mn.step, mn.cursor, mn.shownAt = mn.step-1, 0, heldNow()
+		return nil, false // back to the list at any step; the answers are kept
 	case k == "T" || k == "t":
 		return m.answerHeldCmd(h, name, "mac", nil, nil, nil), true
 	case k == "n" || k == "N":
@@ -323,95 +322,143 @@ func (mn *heldMenu) menuAnswer(i int, q mcp.HeldQuestion) string {
 	return strings.Join(out, ", ")
 }
 
-// menuLines draws the menu: the question with its header and options (the
-// cursor, ticks for pick-any, each description dim below), "Other…", its
-// note, the box when open; or the review. active says the menu has the
-// keys, so its hints show.
+// menuLines draws the menu in Claude Code's style: one header line (the
+// question's header and "i of n", "also in its tab" on the right), the
+// question wrapped, a blank line, then the options, "❯" on the highlighted
+// one, each "n. label" with its description dim, wrapped and indented
+// under it (two lines at most), ticks for pick-any, "Other…" numbered
+// last, a note under the chosen option; or the review. One dim hint row
+// shows only the keys that work at that step, and only while the menu has
+// the keys (active).
 func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 	mn := m.menus[h.ID]
 	if mn == nil {
 		mn = newHeldMenu(h.ID)
 	}
-	cut := func(s string) string { return transcript.Truncate(s, max(width, 10)) }
-	dim := func(s string) string { return "\033[90m" + s + "\033[0m" }
+	width = max(width, 20)
 	qs := h.Questions
 	var lines []string
 	if mn.step >= len(qs) {
-		lines = append(lines, "\033[1mReview your answers\033[0m")
+		lines = append(lines, paneHeader("\033[1mReview your answers\033[0m", width), "")
 		for i, q := range qs {
-			lines = append(lines, cut("  "+q.Question)) // the question may be cut: what's sent is below, whole
-			lines = append(lines, wrapIndent("    → ", "\033[1m", mn.menuAnswer(i, q), width)...)
+			lines = append(lines, transcript.Truncate(q.Question, width)) // the question may be cut: what's sent is below, whole
+			lines = append(lines, wrapIndent("  → ", "\033[1m", mn.menuAnswer(i, q), width)...)
 			if n := mn.notes[i]; n != "" {
-				lines = append(lines, wrapIndent("    note: ", "\033[90m", n, width)...)
+				lines = append(lines, wrapIndent("  note: ", "\033[90m", n, width)...)
 			}
 		}
 		if active {
-			lines = append(lines, dim(hints(keyEnter, "submit", keyEsc, "back", "T", "back to its tab")))
+			lines = append(lines, "", paneHintsFit(width, "↑↓", "scroll", keyEnter, "send", "←", "back", keyEsc, "list"))
 		}
 		return lines
 	}
 	q := qs[mn.step]
-	head := fmt.Sprintf("Question %d of %d", mn.step+1, len(qs))
+	head := fmt.Sprintf("%d of %d", mn.step+1, len(qs))
 	if q.Header != "" {
-		head += " · " + q.Header
+		head = q.Header + " · " + head
 	}
-	lines = append(lines, dim(head), cut("\033[1m"+q.Question+"\033[0m"))
-	for i, o := range q.Options {
-		mark := "  "
+	lines = append(lines, paneHeader("\033[1;"+amber+"m"+head+"\033[0m", width))
+	lines = append(lines, wrapIndent("", "\033[1m", q.Question, width)...)
+	lines = append(lines, "")
+	cursor := func(i int) string {
 		if i == mn.cursor && mn.editing == boxNone {
-			mark = "\033[1;" + amber + "m❯\033[0m "
+			return "\033[1;" + amber + "m❯\033[0m "
 		}
-		box := ""
-		if q.Multi {
-			box = "[ ] "
-			if slices.Contains(mn.picks[mn.step], i) {
-				box = "[x] "
-			}
-		} else if slices.Contains(mn.picks[mn.step], i) {
-			box = "✓ "
-		}
-		lines = append(lines, cut(fmt.Sprintf("%s%s%d. %s", mark, box, i+1, o)))
-		if i < len(q.Descriptions) && q.Descriptions[i] != "" {
-			lines = append(lines, cut("      "+dim(q.Descriptions[i])))
+		return "  "
+	}
+	noteAt := -1 // the note shows under the chosen option, else under the highlighted one
+	if n := mn.notes[mn.step]; n != "" && mn.editing != boxNote {
+		noteAt = mn.cursor
+		if p := mn.picks[mn.step]; len(p) > 0 {
+			noteAt = p[0]
+		} else if mn.other[mn.step] != "" {
+			noteAt = len(q.Options)
 		}
 	}
-	mark := "  "
-	if mn.cursor == len(q.Options) && mn.editing == boxNone {
-		mark = "\033[1;" + amber + "m❯\033[0m "
+	number := func(i int) string { return fmt.Sprintf("%d. ", i+1) }
+	for i, o := range q.Options {
+		mark := ""
+		chosen := slices.Contains(mn.picks[mn.step], i)
+		if q.Multi {
+			mark = "[ ] "
+			if chosen {
+				mark = "[x] "
+			}
+		}
+		label := o
+		if chosen {
+			label = "\033[1m" + o + "\033[22m"
+			if !q.Multi {
+				label += " ✓"
+			}
+		}
+		lines = append(lines, ansi.Truncate(cursor(i)+number(i)+mark+label, width, "…"))
+		indent := strings.Repeat(" ", 2+len(number(i))+len(mark))
+		if i < len(q.Descriptions) && q.Descriptions[i] != "" {
+			lines = append(lines, descLines(q.Descriptions[i], indent, width, 2)...)
+		}
+		if noteAt == i {
+			lines = append(lines, wrapIndent(indent+"note: ", "\033[90m", mn.notes[mn.step], width)...)
+		}
 	}
 	other := "Other…"
 	if t := mn.other[mn.step]; t != "" {
-		other += " “" + t + "”"
+		other += " \033[1m“" + t + "”\033[22m"
 	}
-	lines = append(lines, cut(mark+other))
-	if n := mn.notes[mn.step]; n != "" && mn.editing != boxNote {
-		lines = append(lines, cut("  "+dim("note: "+n)))
+	n := len(q.Options)
+	lines = append(lines, ansi.Truncate(cursor(n)+number(n)+other, width, "…"))
+	if noteAt == n {
+		lines = append(lines, wrapIndent(strings.Repeat(" ", 2+len(number(n)))+"note: ", "\033[90m", mn.notes[mn.step], width)...)
 	}
 	switch mn.editing {
 	case boxOther:
-		return append(lines, "  "+mn.box.View(), dim(hints(keyEnter, "use it", keyEsc, "close")))
+		return append(lines, "", "  "+mn.box.View(), paneHintsFit(width, keyEnter, "save", keyEsc, "cancel"))
 	case boxNote:
-		return append(lines, "  note "+mn.box.View(), dim(hints(keyEnter, "save (empty removes it)", keyEsc, "cancel")))
+		return append(lines, "", "  note "+mn.box.View(), paneHintsFit(width, keyEnter, "save (empty removes it)", keyEsc, "cancel"))
 	}
 	if !active {
 		return lines
 	}
 	if len(qs) == 1 { // no review: say what Enter sends, with its note, before it's sent
 		sends := mn.pending(q)
-		if n := mn.notes[mn.step]; n != "" {
-			sends += " · note: " + n
+		if nt := mn.notes[mn.step]; nt != "" {
+			sends += " · note: " + nt
 		}
-		lines = append(lines, wrapIndent("  enter sends: ", "\033[90m", sends, width)...)
+		lines = append(lines, "")
+		lines = append(lines, wrapIndent("enter sends: ", "\033[90m", sends, width)...)
+	} else {
+		lines = append(lines, "")
 	}
-	keys := []string{"↑↓ 1-9", "move", keyEnter, "pick"}
+	keys := []string{"↑↓", "move", keyEnter, "pick"}
 	if q.Multi {
-		keys = []string{"↑↓", "move", "space 1-9", "tick", keyEnter, "confirm"}
+		keys = []string{"↑↓", "move", "space", "tick", keyEnter, "confirm"}
 	}
+	keys = append(keys, "n", "note")
 	if mn.step > 0 {
 		keys = append(keys, "←", "back")
 	}
-	keys = append(keys, "n", "note", "T", "back to its tab")
-	return append(lines, dim(hints(keys...)))
+	keys = append(keys, keyEsc, "list")
+	return append(lines, paneHintsFit(width, keys...))
+}
+
+// descLines is an option's description: dim, wrapped to width after
+// indent, at most max lines, the last cut with "…" if there was more.
+func descLines(text, indent string, width, most int) []string {
+	room := max(width-ansi.StringWidth(indent), 10)
+	wrapped := strings.Split(ansi.Wordwrap(text, room, " "), "\n")
+	cutMore := len(wrapped) > most
+	if cutMore {
+		wrapped = wrapped[:most]
+	}
+	out := make([]string, 0, len(wrapped))
+	for i, w := range wrapped {
+		w = strings.TrimRight(w, " ")
+		if i == len(wrapped)-1 && cutMore {
+			w = ansi.Truncate(w, room-1, "") + "…"
+		}
+		out = append(out, indent+"\033[90m"+ansi.Truncate(w, room, "…")+"\033[0m")
+	}
+	return out
 }
 
 // pending is what Enter would send for this question now: the highlighted

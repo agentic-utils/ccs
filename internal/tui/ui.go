@@ -1818,7 +1818,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sendNote[msg.id] = msg.note
 		if msg.err != nil {
 			delete(m.pending, msg.id)
-			if errors.Is(msg.err, sessions.ErrUnsent) {
+			if errors.Is(msg.err, sessions.ErrUnsent) && !msg.keepDraft {
 				m.sendNote[msg.id] += " · " + m.giveBack(msg.id, msg.text)
 			}
 		} else if strings.Contains(msg.note, "socket") {
@@ -2437,6 +2437,23 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // the usage screen has no other keys; typing mustn't edit a hidden search
 		}
 
+		// A finished ! command's box: ^S offers to send its result to the
+		// session it ran for, and the choice owns the keys until answered.
+		// Only with the message box empty, so a message being written is
+		// never touched.
+		if m.run != nil && m.run.asking {
+			if !m.runShown() || m.run.running {
+				m.run.asking = false
+			} else {
+				return m, m.runKey(k)
+			}
+		}
+		if k == "ctrl+s" && m.runSendable() {
+			stats.Record("tui.run_send_ask", stats.Key)
+			m.run.asking = true
+			return m, nil
+		}
+
 		if m.chatFocus && !chord {
 			switch msg.String() {
 			case "esc":
@@ -2802,6 +2819,7 @@ func (m model) shortcuts() [][2]string {
 		add(true, keyEsc, "leave the message box for the search (a command's output: stop it, or close it)")
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
 		add(true, "!cmd", "run cmd here, in ccs, in the session's folder; its output shows above the box (PgUp/PgDn scroll)")
+		add(m.runSendable(), "^S", "send the finished command's result to the session it ran for: o with its output, e the exit code only")
 		add(true, "/cmd", "type a slash command into the session's tab, so Claude Code runs it (only while it's idle)")
 		add(true, "!! //", "send a line starting ! or / as an ordinary message")
 	case m.heldKeysActive():

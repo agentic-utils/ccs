@@ -149,7 +149,9 @@ Key bindings:
   Ctrl+V          Paste a screenshot from the clipboard into a message to it
   !cmd            In its message box: run cmd here, in ccs, in its folder
                   (your shell, 2 minutes at most); the output shows above
-                  the box, Esc stops or closes it, PgUp/PgDn scroll it
+                  the box, Esc stops or closes it, PgUp/PgDn scroll it;
+                  once it ends, Ctrl+S sends the result to the session:
+                  o with the output, e the exit code only
   /cmd            In its message box: type the slash command into its tab
                   (tmux or iTerm) so Claude Code runs it; only while idle
   !!x //x         Send "!x" or "/x" as an ordinary message

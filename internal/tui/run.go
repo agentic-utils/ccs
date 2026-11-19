@@ -83,7 +83,20 @@ type shellRun struct {
 	res           proc.ShellResult
 	err           error
 	top           int // the first output line in view
+	// The session the command ran for, as it was then: its pid and process
+	// start time. Its result is only ever sent to that same process
+	// (sendRunResult), never to whatever is selected now.
+	pid      int
+	procFrom string
+	asking   bool // ^S's "send to …" choice is open: it owns the keys
 }
+
+// runSendCap is how much of a command's output ^S then o sends.
+const runSendCap = 16 << 10
+
+// liveStart says whether pid is still session id's process, and its start
+// time; stubbed in tests.
+var liveStart = sessions.LiveStart
 
 type runDoneMsg struct {
 	gen int
@@ -152,7 +165,9 @@ func (m *model) startRun(conv transcript.Conversation, line string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.runGen++
 	gen := m.runGen
-	m.run = &shellRun{id: id, dir: dir, line: line, gen: gen, start: time.Now(), running: true, cancel: cancel}
+	pid := m.livePIDs[id]
+	procFrom, _ := liveStart(pid, id)
+	m.run = &shellRun{id: id, dir: dir, line: line, gen: gen, start: time.Now(), running: true, cancel: cancel, pid: pid, procFrom: procFrom}
 	m.chatInput.SetValue("")
 	delete(m.sendNote, id)
 	timeout := runTimeout
@@ -282,6 +297,14 @@ func (m model) runLines() []string {
 		foot = fmt.Sprintf("\033[31mexit %d\033[0m", r.res.Code) + grey(" · "+runTook(r.res.Took)+" · "+keyEsc+" closes")
 	default:
 		foot = grey("exit 0 · " + runTook(r.res.Took) + " · " + keyEsc + " closes")
+	}
+	if !r.running {
+		name := m.runTargetName()
+		if r.asking {
+			foot = "\033[1msend to " + name + ":\033[0m  " + hints("o", "with output", "e", "exit code only", keyEsc, "cancel")
+		} else {
+			foot += grey(" · ^S send to " + name)
+		}
 	}
 	out := r.runOutput(inner)
 	if r.res.Cut {

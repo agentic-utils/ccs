@@ -84,6 +84,44 @@ func (m *model) applyStats(stats map[string]sessions.SessionStat) {
 	m.dropDrafts()
 }
 
+// needsYou: a live session waiting on the user now: a question ccs holds,
+// or a menu or prompt in its tab. A settled or snoozed session doesn't
+// count (one waiting on a menu is never put away anyway).
+func (m model) needsYou(c transcript.Conversation) bool {
+	if !m.live[c.SessionID] || m.putAway(c) != awake {
+		return false
+	}
+	_, held := m.heldPrompt[c.SessionID]
+	return held || m.waitSignal(c) == waitPrompt
+}
+
+// nextWaiting is the session Tab selects: the first after the selection,
+// in list order and wrapping round (so the selection itself last), that
+// needs the user; failing that, one the search hides (selectSession clears
+// the search for it). ok is false when nothing needs the user.
+func (m model) nextWaiting() (id string, ok bool) {
+	if n := len(m.filtered); n > 0 {
+		cur := min(m.cursor, n-1)
+		for k := 1; k <= n; k++ {
+			if c := m.filtered[(cur+k)%n].conv; m.needsYou(c) {
+				return c.SessionID, true
+			}
+		}
+	}
+	for _, it := range m.items {
+		if m.needsYou(it.conv) {
+			return it.conv.SessionID, true
+		}
+	}
+	return "", false
+}
+
+// anyWaiting: something needs the user, so Tab goes to it.
+func (m model) anyWaiting() bool {
+	_, ok := m.nextWaiting()
+	return ok
+}
+
 // waitingCount is how many live sessions wait on a menu or prompt, for the
 // header (a dim ? guess isn't counted).
 func (m model) waitingCount() int {

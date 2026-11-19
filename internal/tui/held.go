@@ -29,8 +29,113 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-// heldEvery is the least time between asks for the held prompts.
-const heldEvery = 2 * time.Second
+// heldEvery is the least time between asks for the held prompts;
+// heldQuick while a wait's held copy is due (heldPending).
+const (
+	heldEvery = 2 * time.Second
+	heldQuick = 250 * time.Millisecond
+)
+
+// heldGrace is how long the bottom pane holds back the transcript's view of
+// a question (askLines) while something holds prompts: after a wait begins,
+// since its held copy usually lands a moment after the status says waiting,
+// and after a held prompt leaves the list (answered, sent back), since the
+// status still says waiting until Claude Code moves on. Within it the pane
+// shows only a dim "waiting on you…" status line (heldPendingLine), so the
+// question only ever appears in the held menu; a question nothing holds
+// (no hook, an older one, sent back to its tab) shows its transcript view
+// once it has passed.
+const heldGrace = time.Second
+
+// answeredWait is the wait a held prompt ccs answered belonged to: its
+// statusUpdatedAt (since) and when the answer was sent (at). While the
+// session still reports that same wait, the answer just hasn't reached
+// its status yet, so the transcript's view stays hidden however long that
+// takes, up to heldAnsweredMax. setStat drops it when the wait ends or
+// changes.
+type answeredWait struct{ since, at time.Time }
+
+// heldAnsweredMax bounds that: a session still on the same wait this long
+// after its answer is waiting on something else, so its view shows.
+const heldAnsweredMax = 30 * time.Second
+
+// heldPendingLine is the status line while heldPending holds the
+// transcript's view back: neutral, never the question itself.
+const heldPendingLine = "\033[90m  waiting on you…\033[0m"
+
+// paneNow is the bottom pane's clock: the time Update last finished (paneAt),
+// so chatRows and chatView agree on heldPending within one frame; heldNow
+// when nothing has set it (a test drawing the model directly).
+func (m model) paneNow() time.Time {
+	if !m.paneAt.IsZero() {
+		return m.paneAt
+	}
+	return heldNow()
+}
+
+// heldPending: the selected pane should wait for session id's held copy
+// rather than draw its question from the transcript: within heldGrace of
+// its held prompt leaving the list (answered, sent back, or the holder
+// gone), or, while something holds prompts (the last ask answered, or one
+// is on its way), of its wait beginning. Without a holder only its tab can
+// answer a new question, so its view shows at once.
+func (m model) heldPending(id string) bool {
+	if _, held := m.heldPrompt[id]; held {
+		return false
+	}
+	now := m.paneNow()
+	if a, ok := m.heldAnswered[id]; ok && m.chatStatus[id].Status == "waiting" && m.chatStatus[id].Since.Equal(a.since) && now.Sub(a.at) < heldAnsweredMax {
+		return true // answered from ccs: its status and transcript lag behind, however long
+	}
+	if now.Sub(m.heldGone[id]) < heldGrace {
+		return true
+	}
+	if m.heldPrompt == nil && !m.heldBusy {
+		return false
+	}
+	return now.Sub(m.waitSeen[id]) < heldGrace
+}
+
+// heldDue: some wait began within heldGrace and its held copy hasn't come.
+func (m model) heldDue() bool {
+	for id, t := range m.waitSeen {
+		if _, held := m.heldPrompt[id]; !held && heldNow().Sub(t) < heldGrace && m.chatStatus[id].Status == "waiting" {
+			return true
+		}
+	}
+	return false
+}
+
+// heldRetryMsg asks for the held prompts again while one is due.
+type heldRetryMsg struct{}
+
+// heldRetry keeps asking every heldQuick while a wait's held copy is due,
+// whatever is selected (the chat tick runs only for a live selection).
+func (m model) heldRetry() tea.Cmd {
+	if !m.heldDue() {
+		return nil
+	}
+	return tea.Tick(heldQuick, func(time.Time) tea.Msg { return heldRetryMsg{} })
+}
+
+// dropHeld forgets every held prompt (an error, or nothing holds any more),
+// marking each gone so its question isn't drawn from the transcript at once.
+func (m *model) dropHeld() {
+	m.noteGone(nil)
+	m.heldPrompt = nil
+}
+
+// noteGone marks gone each held prompt that held no longer has.
+func (m *model) noteGone(held map[string]mcp.HeldPrompt) {
+	for id, p := range m.heldPrompt {
+		if q, ok := held[id]; !ok || q.ID != p.ID { // answered or sent back: its status may still say waiting
+			if m.heldGone == nil {
+				m.heldGone = make(map[string]time.Time)
+			}
+			m.heldGone[id] = heldNow()
+		}
+	}
+}
 
 // heldGuard and heldGuardGap pause the answer pane when ccs focused it by
 // itself (auto-select): keys in its first heldGuard, or while keys still
@@ -161,13 +266,17 @@ type heldConfirm struct {
 // heldCmd asks ccs serve for its held prompts off the UI goroutine, at most
 // every heldEvery and only while its control socket exists.
 func (m *model) heldCmd() tea.Cmd {
-	if m.heldBusy || time.Since(m.heldAt) < heldEvery {
+	every := heldEvery
+	if m.heldDue() {
+		every = heldQuick
+	}
+	if m.heldBusy || time.Since(m.heldAt) < every {
 		return nil
 	}
 	m.heldAt = time.Now()
 	claimHold()
 	if !controlSock() {
-		m.heldPrompt = nil
+		m.dropHeld()
 		return nil
 	}
 	m.heldBusy = true
@@ -180,7 +289,7 @@ func (m *model) heldCmd() tea.Cmd {
 func (m *model) applyHeld(msg heldMsg) {
 	m.heldBusy = false
 	if msg.err != nil {
-		m.heldPrompt = nil
+		m.dropHeld()
 		return
 	}
 	held := map[string]mcp.HeldPrompt{}
@@ -189,6 +298,7 @@ func (m *model) applyHeld(msg heldMsg) {
 			held[p.Session] = p
 		}
 	}
+	m.noteGone(held)
 	m.heldPrompt = held
 	if m.heldConfirmed != nil {
 		if _, ok := m.heldByID(m.heldConfirmed.id); !ok {
@@ -330,6 +440,10 @@ func (m *model) applyHeldDone(msg heldDoneMsg) {
 	default:
 		m.setHeldNote("✓ " + msg.name + ": " + strings.ReplaceAll(msg.text, "\n", " · "))
 		m.chatAfter, m.chatAfterID = msg.session, msg.prompt // keepChatAfterAnswer gives it the keys
+		if m.heldAnswered == nil {
+			m.heldAnswered = make(map[string]answeredWait)
+		}
+		m.heldAnswered[msg.session] = answeredWait{since: m.chatStatus[msg.session].Since, at: heldNow()}
 		return
 	}
 	m.heldNote = ""

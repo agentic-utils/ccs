@@ -132,6 +132,9 @@ func (m model) chatAsk() []string {
 		}
 		return heldBox(inner, m.paneWidth(), m.heldKeysActive())
 	}
+	if m.heldPending(conv.SessionID) { // its held copy is due, or was just answered: never the transcript's view meanwhile
+		return nil
+	}
 	lines := askLines(conv, m.paneWidth()-2)
 	for i, l := range lines {
 		lines[i] = "  " + l
@@ -440,6 +443,8 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 		left = "\033[90m  sent: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.sendNote[id] != "":
 		left = "  " + m.sendNote[id]
+	case m.chatStatus[id].Status == "waiting" && m.heldPrompt[id].ID == "" && m.heldPending(id): // its held copy is due, or was just answered (heldGrace)
+		left = heldPendingLine
 	case m.chatStatus[id].Status == "waiting" && m.heldPrompt[id].ID == "": // menus and prompts never reach the transcript; a held one is drawn above
 		left = "\033[1;" + amber + "m  ? " + waitingLine(conv) + "\033[0m"
 	}

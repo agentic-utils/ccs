@@ -136,25 +136,29 @@ type model struct {
 	heldPrompt       map[string]mcp.HeldPrompt     // prompts held by ccs serve or this ccs, by session (held.go)
 	heldAt           time.Time
 	heldBusy         bool
-	heldConfirmed    *heldConfirm      // a digit, A or D, waiting for y/n
-	heldFocus        bool              // the bottom pane's held prompt has the keys
-	heldAutoAt       time.Time         // when an auto-select focused it (zero: by hand, or the guard has passed)
-	heldNote         string            // the pane's last held-prompt outcome
-	heldNoteFor      string            // the session heldNote is about: shown only while it's selected
-	heldNoteShown    bool              // heldNote is in the main view's note line too
-	heldErr          string            // the pane's last held-prompt error
-	selectHandled    map[string]string // SessionID -> the wait (or held prompt) auto-select has dealt with
-	autoSelectAt     time.Time         // the last auto-select: the next waits autoFocusIdle after it, as after a key
-	chatAfter        string            // answered from ccs: this session's message box takes the keys once its menu has gone
-	chatAfterID      string            // the held prompt that answer was for
-	serveQROpen      bool              // ^X B's popup while the agent runs: its address and QR code
-	serveQR          string            // the QR code, drawn
-	serveQRWidth     int               // its width in cells
-	serveQRURL       string            // the address it encodes
-	serveQRErr       string            // why there's no address, if not
-	serve            mcp.ServiceStatus // ccs serve's launchd agent, as last read (serveCheckCmd)
-	setup            *serveSetup       // ^X B's setup popup (serve_setup.go), nil when closed
-	servePreview     previewState      // the preview child started from it, as shown
+	waitSeen         map[string]time.Time    // when ccs saw each session's current wait begin (setStat): its held copy may still be on its way (heldPending)
+	paneAt           time.Time               // when Update last finished: the bottom pane's clock (paneNow)
+	heldAnswered     map[string]answeredWait // the wait each held prompt ccs answered was part of: hidden while the status still reports it
+	heldGone         map[string]time.Time    // when each session's held prompt left the list (answered, sent back): its status may still say waiting
+	heldConfirmed    *heldConfirm            // a digit, A or D, waiting for y/n
+	heldFocus        bool                    // the bottom pane's held prompt has the keys
+	heldAutoAt       time.Time               // when an auto-select focused it (zero: by hand, or the guard has passed)
+	heldNote         string                  // the pane's last held-prompt outcome
+	heldNoteFor      string                  // the session heldNote is about: shown only while it's selected
+	heldNoteShown    bool                    // heldNote is in the main view's note line too
+	heldErr          string                  // the pane's last held-prompt error
+	selectHandled    map[string]string       // SessionID -> the wait (or held prompt) auto-select has dealt with
+	autoSelectAt     time.Time               // the last auto-select: the next waits autoFocusIdle after it, as after a key
+	chatAfter        string                  // answered from ccs: this session's message box takes the keys once its menu has gone
+	chatAfterID      string                  // the held prompt that answer was for
+	serveQROpen      bool                    // ^X B's popup while the agent runs: its address and QR code
+	serveQR          string                  // the QR code, drawn
+	serveQRWidth     int                     // its width in cells
+	serveQRURL       string                  // the address it encodes
+	serveQRErr       string                  // why there's no address, if not
+	serve            mcp.ServiceStatus       // ccs serve's launchd agent, as last read (serveCheckCmd)
+	setup            *serveSetup             // ^X B's setup popup (serve_setup.go), nil when closed
+	servePreview     previewState            // the preview child started from it, as shown
 	serveCheckedAt   time.Time
 	serveChecking    bool
 	confirmRestart   string         // ^X R asked whether to restart this session: y restarts it
@@ -1251,6 +1255,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	n.showMenu(n.heldShown())
 	n.noteReview()
+	n.paneAt = heldNow() // the pane's clock for this frame (paneNow)
 	if pr := n.prCmd(); pr != nil {
 		cmd = tea.Batch(cmd, pr)
 	}
@@ -1476,7 +1481,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case heldMsg:
 		m.applyHeld(msg)
-		return m, nil
+		return m, m.heldRetry()
+
+	case heldRetryMsg:
+		return m, m.heldCmd()
 
 	case heldDoneMsg:
 		m.applyHeldDone(msg)
@@ -1526,7 +1534,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyLive(msg.updated)
 		}
 		m.applyStats(msg.stats)
-		cmds := []tea.Cmd{liveTick(), m.autoFocusCmd()}
+		cmds := []tea.Cmd{liveTick(), m.autoFocusCmd(), m.heldCmd()}
 		// A session that went live but isn't listed (a brand-new conversation):
 		// scan now rather than at the next minute, at most every 15s.
 		if len(msg.unknown) > 0 && m.refreshStarted.IsZero() && time.Since(m.lastKick) > 15*time.Second {
@@ -1798,7 +1806,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyLive([]transcript.Conversation{*msg.conv})
 		}
 		m.checkDelivered(msg.id)
-		return m, nil
+		return m, m.heldCmd() // quickly while a wait's held copy is due (heldPending)
 
 	case sessions.ReceiptMsg:
 		m.applyReceipt(msg)

@@ -63,6 +63,17 @@ func (m *model) setStat(id string, st sessions.SessionStat) {
 	if m.chatStatus == nil {
 		m.chatStatus = make(map[string]sessions.SessionStat)
 	}
+	if prev := m.chatStatus[id]; st.Status == "waiting" && (prev.Status != "waiting" || !prev.Since.Equal(st.Since)) {
+		// A wait begins: its held copy is due, so ask for it now.
+		if m.waitSeen == nil {
+			m.waitSeen = make(map[string]time.Time)
+		}
+		m.waitSeen[id] = heldNow()
+		m.heldAt = time.Time{}
+	}
+	if a, ok := m.heldAnswered[id]; ok && (st.Status != "waiting" || !st.Since.Equal(a.since)) {
+		delete(m.heldAnswered, id) // the answered wait ended or changed
+	}
 	m.chatStatus[id] = st
 }
 
@@ -79,6 +90,21 @@ func (m *model) applyStats(stats map[string]sessions.SessionStat) {
 	for id := range m.chatStatus {
 		if !m.live[id] {
 			delete(m.chatStatus, id)
+		}
+	}
+	for id := range m.waitSeen {
+		if !m.live[id] {
+			delete(m.waitSeen, id)
+		}
+	}
+	for id := range m.heldGone {
+		if !m.live[id] {
+			delete(m.heldGone, id)
+		}
+	}
+	for id := range m.heldAnswered {
+		if !m.live[id] {
+			delete(m.heldAnswered, id)
 		}
 	}
 	m.dropDrafts()

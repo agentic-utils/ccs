@@ -45,7 +45,7 @@ type listItem struct {
 	lastKid     bool   // the last of its parent's children: └, not ├
 	cooling     bool   // nested, not running, but active within closedCooldown: still shown, its grey line says "closed"
 	closedKids  int    // its launched sessions that have closed (none of their tree running), behind a "N closed" line
-	hideClosed  bool   // closed, behind its parent's "▸ N closed" line until ^X C shows them
+	hideClosed  bool   // closed, behind its parent's "▸ N closed" line until ^X C opens that fold
 	linesAfter  []closedLine
 }
 
@@ -57,7 +57,9 @@ type closedLine struct {
 	guides string
 	n      int
 	owner  int
-	open   bool // the closed sessions are shown, below the line
+	open   bool   // the closed sessions are shown, below the line
+	id     string // the parent's session id: the fold ^X C or a click opens or closes
+	name   string // the parent, as foldName names it
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -81,7 +83,7 @@ type model struct {
 	grouped          bool                 // ^X X G: sessions grouped by folder
 	chordX           bool                 // ^X pressed: the next key picks a ccs action
 	byID             map[string]int       // m.items by session id, for shownAncestor; rebuilt when an entry is stale
-	treeView         int                  // ^X C: treeLive or treeClosed, for every tree (saved)
+	openClosed       map[string]bool      // ^X C: parents (by session id) whose closed sessions are shown (saved)
 	headerCollapsed  bool                 // ^X F or a click on the summary line: the details under it are hidden
 	selectedID       string               // the selected session, to see when it changes
 	selectedAt       time.Time            // when it was selected: its preview waits previewDebounce
@@ -420,6 +422,11 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		}
 		rows := m.listRows()
 		r := m.listStart(rows, listHeight) + msg.Y - listTop
+		if r < len(rows) && rows[r].item < 0 && rows[r].fold != "" { // a "N closed" line: the mouse's ^X C
+			stats.Record("tui.tree_view", stats.Mouse)
+			m.toggleFold(rows[r].fold, rows[r].foldName)
+			return m
+		}
 		if r >= len(rows) || rows[r].item < 0 { // a group's header
 			return m
 		}
@@ -804,7 +811,7 @@ func (m *model) nestFamilies() {
 		// that shows or hides them (^X C). Hidden, it ends the branch and they
 		// wait behind it. Shown, it heads them at their live siblings' level,
 		// so they read as siblings, not as children of the line.
-		showing := m.showingClosed()
+		showing := m.showingClosed(it.conv.SessionID)
 		for j, k := range open {
 			walk(k, depth+1, cwd, below, j == len(open)-1 && len(shut) == 0)
 		}
@@ -813,7 +820,7 @@ func (m *model) nestFamilies() {
 			return
 		}
 		at := order[len(order)-1]
-		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, showing})
+		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, showing, it.conv.SessionID, foldName(it.conv)})
 		from := len(order)
 		for j, k := range shut {
 			walk(k, depth+1, cwd, below, j == len(shut)-1)
@@ -2916,8 +2923,10 @@ func (m model) shortcuts() [][2]string {
 	add(!m.grouped, "^X G", "group the list by folder")
 	add(m.grouped, "^X G", "stop grouping by folder")
 	add(m.reorgBusy == "", "^X M", "move sessions into topics: Sonnet plans, you accept or drop it")
-	add(m.treeView == treeLive, "^X C", "show closed sessions in every tree")
-	add(m.treeView == treeClosed, "^X C", "hide closed sessions again")
+	if id, name, ok := m.foldOwner(m.cursor); sel && ok {
+		add(!m.showingClosed(id), "^X C", "show the closed sessions under "+name)
+		add(m.showingClosed(id), "^X C", "hide the closed sessions under "+name)
+	}
 	add(!m.table, "^X T", "the full table, every column")
 	add(m.table, "^X T", "back to the sidebar")
 	add(!m.table && !m.hideSidebar, "^X L", "hide the list, the preview taking the whole width (↑↓ still move)")
@@ -3558,6 +3567,8 @@ func (m model) rowsPerItem() int {
 type listRow struct {
 	item, part int
 	header     string
+	fold       string // a "N closed" line: its parent's session id, which a click opens or closes
+	foldName   string
 }
 
 // listRows lays the list out in screen rows: a header before each state
@@ -3601,7 +3612,7 @@ func (m model) listRows() []listRow {
 			rows = append(rows, listRow{item: i, part: p})
 		}
 		for _, l := range it.linesAfter {
-			rows = append(rows, listRow{item: -1, header: m.closedLineText(l)})
+			rows = append(rows, listRow{item: -1, header: m.closedLineText(l), fold: l.id, foldName: l.name})
 		}
 	}
 	return rows
@@ -3881,9 +3892,10 @@ type settings struct {
 	AutoFocus bool `json:"auto_focus,omitempty"`
 	// HideSidebar (^X L): the sidebar layout shows the preview alone.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
-	// TreeView (^X C): closed sessions hidden (0) or shown (1); 2, every tree
-	// folded, from an older ccs, reads as hidden.
-	TreeView int `json:"tree_view,omitempty"`
+	// OpenClosed (^X C): the parents, by session id, whose closed sessions
+	// are shown; every other fold is closed. An older ccs's tree_view, one
+	// view for every tree, isn't read.
+	OpenClosed []string `json:"open_closed,omitempty"`
 	// HeaderOpen (^X F): the preview's full details, one line unless chosen.
 	HeaderOpen bool `json:"header_open,omitempty"`
 	// AutoUpdate (^X I) installs new versions once you're away instead of
@@ -3906,7 +3918,7 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideSidebar: m.hideSidebar, TreeView: m.treeView, HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideSidebar: m.hideSidebar, OpenClosed: m.openFolds(), HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.

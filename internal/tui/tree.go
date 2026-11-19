@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,8 +15,9 @@ import (
 // or ccs launch (or adopted them, ccs adopt / adopt_session) is a
 // orchestrator. Its family sits in the orchestrator section as a tree, the
 // sessions it launched indented under it, sub-orchestrators' under theirs.
-// ^X C shows or hides closed sessions in every tree at once (saved in the
-// settings); a search shows every match, closed or not.
+// ^X C shows or hides the closed sessions behind one "N closed" line, the
+// one the selection sits under (foldOwner), each fold on its own and kept
+// in the settings; a search shows every match, closed or not.
 
 // reloadParents rereads launch-parents.json when it changed, from each
 // live tick, so a launch or adoption from any session shows up.
@@ -52,37 +54,93 @@ func (m *model) launchParents() map[string]string {
 	return m.launchRes
 }
 
-// The tree views, one for every tree at once: ^X C toggles them, saved in
-// the settings (TreeView). A view saved by an older ccs that folded every
-// tree (2) reads as treeLive.
-const (
-	treeLive   = iota // closed sessions wait behind each parent's "▸ N closed" line
-	treeClosed        // closed sessions shown where they belong, beside the live ones
-)
+// Each parent's closed sessions wait behind its own "▸ N closed" line until
+// ^X C opens that one fold (m.openClosed, by the parent's session id, saved
+// in the settings as OpenClosed). Every fold starts closed: the old global
+// view (tree_view) is no longer read, and the next save drops it.
 
-// treeView is the saved ^X C view: shown, or else hidden, the old folded
-// view (2) included.
-func (s settings) treeView() int {
-	if s.TreeView == treeClosed {
-		return treeClosed
+// showingClosed: the closed sessions under the parent with this session id
+// are listed in its tree.
+func (m model) showingClosed(id string) bool { return m.openClosed[id] }
+
+// foldOwner is the parent whose "N closed" line ^X C opens or closes from
+// the row at i: the session itself when it has closed sessions under it,
+// else the nearest ancestor that has, which is the fold the row sits in.
+// ok is false when no fold is above it.
+func (m model) foldOwner(i int) (id, name string, ok bool) {
+	for i >= 0 && i < len(m.filtered) {
+		it := m.filtered[i]
+		if it.closedKids > 0 {
+			return it.conv.SessionID, foldName(it.conv), true
+		}
+		if it.depth == 0 {
+			break
+		}
+		j := i - 1 // its parent: the nearest row above it, shallower
+		for j >= 0 && m.filtered[j].depth >= it.depth {
+			j--
+		}
+		i = j
 	}
-	return treeLive
+	return "", "", false
 }
 
-// showingClosed: closed sessions are listed in their trees.
-func (m model) showingClosed() bool { return m.treeView == treeClosed }
+// foldName is how a fold's owner is named in notes and help.
+func foldName(c transcript.Conversation) string {
+	return transcript.Truncate(transcript.GetTopic(c), 28)
+}
 
-// toggleClosed is ^X C: closed sessions shown in every tree, or hidden.
+// toggleClosed is ^X C: the fold the selection sits in, opened or closed.
 func (m *model) toggleClosed() {
-	if m.treeView == treeClosed {
-		m.treeView = treeLive
-		m.note("closed sessions hidden; ^X C shows them")
+	if len(m.filtered) == 0 {
+		return
+	}
+	id, name, ok := m.foldOwner(min(m.cursor, len(m.filtered)-1))
+	if !ok {
+		m.note("no closed sessions under this one")
+		return
+	}
+	m.toggleFold(id, name)
+}
+
+// toggleFold opens or closes the closed sessions under the session id,
+// keeping the selection: on the same session, or on the fold's owner when
+// closing it hid the one selected.
+func (m *model) toggleFold(id, name string) {
+	if m.openClosed == nil {
+		m.openClosed = map[string]bool{}
+	}
+	if m.openClosed[id] {
+		delete(m.openClosed, id)
+		m.note("closed sessions under " + name + " hidden; ^X C shows them")
 	} else {
-		m.treeView = treeClosed
-		m.note("closed sessions shown; ^X C hides them")
+		m.openClosed[id] = true
+		m.note("closed sessions under " + name + " shown; ^X C hides them")
 	}
 	saveSettings(m.settings())
+	sel := ""
+	if len(m.filtered) > 0 {
+		sel = m.filtered[min(m.cursor, len(m.filtered)-1)].conv.SessionID
+	}
 	m.sortList()
+	if sel == "" || slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == sel }) {
+		return
+	}
+	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
+		m.cursor = i
+		m.previewScroll = 0
+		m.selectionMoved()
+	}
+}
+
+// openFolds is m.openClosed as the settings keep it, sorted.
+func (m model) openFolds() []string {
+	ids := make([]string, 0, len(m.openClosed))
+	for id := range m.openClosed {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // closedLineText draws a closed line, all dim and lined up with the rows'

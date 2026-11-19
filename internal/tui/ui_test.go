@@ -1647,10 +1647,10 @@ func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
 	if got := m.textInput.Value(); got != "fix the login " {
 		t.Errorf("^Y puts back what ^K deleted: %q", got)
 	}
-	if m.waitOpen || m.autoFocus {
+	if m.autoFocus {
 		t.Error("^W and ^A only edit text now")
 	}
-	// ccs's own actions are ^X chords, ^X ^W as well as ^X W.
+	// ccs's own actions are ^X chords.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
 	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "A auto-focus") || !strings.Contains(head, "esc cancel") {
 		t.Errorf("after ^X the header lists what comes next: %q", head)

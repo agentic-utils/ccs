@@ -82,15 +82,8 @@ func (m *model) showMenu(h mcp.HeldPrompt, ok bool) {
 	}
 }
 
-// heldShown is the held prompt on screen: ^X W's, else the bottom pane's.
+// heldShown is the held prompt on screen: the bottom pane's.
 func (m model) heldShown() (mcp.HeldPrompt, bool) {
-	if m.waitOpen {
-		if conv, ok := m.waitConv(); ok {
-			h, held := m.heldPrompt[conv.SessionID]
-			return h, held
-		}
-		return mcp.HeldPrompt{}, false
-	}
 	h, _, ok := m.selectedHeld()
 	return h, ok
 }

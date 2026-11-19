@@ -91,15 +91,14 @@ const restoreEnv = "CCS_RESTORE_STATE"
 // Screen is a name, so a screen added later only needs a case in
 // screenName and restore.
 type uiState struct {
-	Screen        string               `json:"screen"`
-	Query         string               `json:"query"`
-	QueryCursor   int                  `json:"query_cursor"`
-	Selected      string               `json:"selected"` // SessionID, so it survives a reordered list
-	PreviewScroll int                  `json:"preview_scroll"`
-	Snoozes       map[string]snoozeRec `json:"snoozes,omitempty"`  // input-prompt overlay snoozes, by SessionID
-	Table         bool                 `json:"table,omitempty"`    // ^X T: the full table, not the sidebar
-	Grouped       bool                 `json:"grouped,omitempty"`  // ^X G: grouped by folder
-	Headless      *bool                `json:"headless,omitempty"` // ^X H: headless runs shown; nil (an older ccs) keeps --all's
+	Screen        string `json:"screen"`
+	Query         string `json:"query"`
+	QueryCursor   int    `json:"query_cursor"`
+	Selected      string `json:"selected"` // SessionID, so it survives a reordered list
+	PreviewScroll int    `json:"preview_scroll"`
+	Table         bool   `json:"table,omitempty"`    // ^X T: the full table, not the sidebar
+	Grouped       bool   `json:"grouped,omitempty"`  // ^X G: grouped by folder
+	Headless      *bool  `json:"headless,omitempty"` // ^X H: headless runs shown; nil (an older ccs) keeps --all's
 }
 
 func (m model) screenName() string {
@@ -115,7 +114,6 @@ func (m model) uiState() uiState {
 		Query:         m.textInput.Value(),
 		QueryCursor:   m.textInput.Position(),
 		PreviewScroll: m.previewScroll,
-		Snoozes:       m.snoozed,
 		Table:         m.table,
 		Grouped:       m.grouped,
 		Headless:      new(bool),
@@ -147,7 +145,6 @@ func (m *model) restore(s uiState) {
 	// preview clamps it when drawing.
 	m.previewScroll = max(0, s.PreviewScroll)
 	m.showUsage = s.Screen == "usage"
-	m.snoozed = s.Snoozes
 	m.table = s.Table
 }
 
@@ -278,19 +275,14 @@ func (m model) awayForUpdate() bool {
 	if !m.blurred && time.Since(m.lastKeyAt) < autoUpdateIdle {
 		return false
 	}
-	if m.prompting() || m.resuming || m.orchBusy || m.waitOpen || m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 ||
+	if m.prompting() || m.resuming || m.orchBusy || m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return false
 	}
-	if strings.TrimSpace(m.chatInput.Value()) != "" || strings.TrimSpace(m.waitInput.Value()) != "" {
+	if strings.TrimSpace(m.chatInput.Value()) != "" {
 		return false
 	}
 	for _, d := range m.chatDrafts {
-		if strings.TrimSpace(d) != "" {
-			return false
-		}
-	}
-	for _, d := range m.waitDrafts {
 		if strings.TrimSpace(d) != "" {
 			return false
 		}

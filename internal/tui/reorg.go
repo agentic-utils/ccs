@@ -1081,25 +1081,19 @@ const reorgTypingPause = 2 * time.Second
 // every message, and the live tick comes every 2s.
 func (m *model) openReadyReorg() {
 	if m.reorgReady == nil || m.reorgPlan != nil || time.Since(m.lastKeyAt) < reorgTypingPause || m.prompting() ||
-		m.chatFocus || m.waitOpen || m.textInput.Value() != "" || m.hasDraft() ||
+		m.chatFocus || m.textInput.Value() != "" || m.hasDraft() ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return
 	}
 	m.reorgPlan, m.reorgReady, m.reorgShownAt, m.reorgScroll = m.reorgReady, nil, time.Now(), 0
 }
 
-// hasDraft: some text box holds unsent text, the message box's or the
-// overlay's, for this session or another.
+// hasDraft: the message box holds unsent text, for this session or another.
 func (m model) hasDraft() bool {
-	if strings.TrimSpace(m.chatInput.Value()) != "" || strings.TrimSpace(m.waitInput.Value()) != "" {
+	if strings.TrimSpace(m.chatInput.Value()) != "" {
 		return true
 	}
 	for _, d := range m.chatDrafts {
-		if strings.TrimSpace(d) != "" {
-			return true
-		}
-	}
-	for _, d := range m.waitDrafts {
 		if strings.TrimSpace(d) != "" {
 			return true
 		}

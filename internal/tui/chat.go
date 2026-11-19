@@ -37,11 +37,10 @@ type chatTickResult struct {
 }
 
 type sendDoneMsg struct {
-	id      string
-	note    string
-	err     error
-	text    string // what was sent, given back to its box when nothing was (errUnsent)
-	overlay bool   // sent from the overlay's box, not the main one
+	id   string
+	note string
+	err  error
+	text string // what was sent, given back to its box when nothing was (errUnsent)
 }
 
 func (m model) selectedLive() bool {
@@ -117,19 +116,14 @@ func (m model) chatAsk() []string {
 	for i, l := range lines {
 		lines[i] = "  " + l
 	}
-	if limit := max(m.height/2, 3); len(lines) > limit { // the overlay shows the rest
-		lines = append(lines[:limit-1], "  \033[90m… ^X W shows the rest\033[0m")
+	if limit := max(m.height/2, 3); len(lines) > limit { // its tab shows the rest
+		lines = append(lines[:limit-1], "  \033[90m… its tab shows the rest\033[0m")
 	}
 	return lines
 }
 
-// chatTarget is the live session the fast refresh follows: the overlay's
-// while it's open, else the selected one.
+// chatTarget is the live session the fast refresh follows: the selected one.
 func (m model) chatTarget() (transcript.Conversation, bool) {
-	if m.waitOpen {
-		c, ok := m.waitConv()
-		return c, ok && m.live[c.SessionID]
-	}
 	if m.showUsage || !m.selectedLive() {
 		return transcript.Conversation{}, false
 	}
@@ -204,7 +198,7 @@ func waitingLine(conv transcript.Conversation) string {
 
 // chatView draws the status line and message box for the selected session.
 func (m model) chatView() string {
-	box := m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus && !m.waitOpen, m.paneWidth())
+	box := m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus, m.paneWidth())
 	if m.boxHidden() {
 		status, _, _ := strings.Cut(box, "\n")
 		return strings.Join(append(m.chatAsk(), status), "\n")
@@ -301,26 +295,19 @@ func (m *model) sendCmd() tea.Cmd {
 	if !m.selectedLive() {
 		return nil
 	}
-	return m.sendTo(m.filtered[m.cursor].conv, false)
+	return m.sendTo(m.filtered[m.cursor].conv)
 }
 
-// sendTo sends the text in the overlay's box (or the main one) to conv, a
-// live session, and empties the box.
-func (m *model) sendTo(conv transcript.Conversation, overlay bool) tea.Cmd {
+// sendTo sends the text in the message box to conv, a live session, and
+// empties the box.
+func (m *model) sendTo(conv transcript.Conversation) tea.Cmd {
 	in := &m.chatInput
-	if overlay {
-		in = &m.waitInput
-	}
 	text := strings.TrimSpace(in.Value())
 	if text == "" {
 		return nil
 	}
 	if m.sending {
-		if overlay {
-			m.waitErr = "Still sending the last message…"
-		} else {
-			m.errorMsg = "Still sending the last message…"
-		}
+		m.errorMsg = "Still sending the last message…"
 		return nil
 	}
 	id, name, pid, verified, kind := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID], !m.unverified[conv.SessionID], conv.Kind
@@ -349,7 +336,7 @@ func (m *model) sendTo(conv transcript.Conversation, overlay bool) tea.Cmd {
 			}
 		}
 		note, err := deliver(pid, id, name, wire, verified)
-		return sendDoneMsg{id: id, note: note, err: err, text: text, overlay: overlay}
+		return sendDoneMsg{id: id, note: note, err: err, text: text}
 	}
 }
 

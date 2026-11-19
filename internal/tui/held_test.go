@@ -33,52 +33,10 @@ func stubHeld(t *testing.T, prompts ...mcp.HeldPrompt) *[]heldCall {
 	return &calls
 }
 
-// heldModel is waitModel with live waiting, ccs serve holding p for it, and
-// the overlay open on it.
-func heldModel(t *testing.T, p mcp.HeldPrompt) (model, *[]heldCall) {
-	t.Helper()
-	calls := stubHeld(t, p)
-	m := waitModel(t)
-	m.width, m.height = 100, 40
-	m.filtered = m.items
-	m = run(m, m.heldCmd())
-	m = openByHand(m, map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
-	return m, calls
-}
-
 // press sends one key and runs whatever command comes back.
 func press(m model, k string) model {
 	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
 	return run(res.(model), cmd)
-}
-
-func TestHeldPermissionAsksYesNo(t *testing.T) {
-	m, calls := heldModel(t, mcp.HeldPrompt{ID: "p2", Session: "live", Tool: "Bash", Summary: "rm -rf build"})
-	if pop := strip2(m.waitPopup()); !strings.Contains(pop, "wants to use Bash rm -rf build") || !strings.Contains(pop, "A allow") || !strings.Contains(pop, "D deny") {
-		t.Errorf("overlay:\n%s", pop)
-	}
-	m = press(m, "A")
-	if len(*calls) != 0 || !strings.Contains(strip2(m.waitPopup()), "Allow Bash for") {
-		t.Fatalf("A must ask y/n first: %+v", *calls)
-	}
-	m = press(m, "n")
-	if len(*calls) != 0 || m.heldConfirmed != nil {
-		t.Errorf("n sends nothing: %+v", *calls)
-	}
-	m = press(m, "D")
-	m = press(m, "y")
-	if len(*calls) != 1 || (*calls)[0].choice != "deny" {
-		t.Errorf("D then y denies: %+v", *calls)
-	}
-	m = press(m, "A")
-	m = press(m, "y")
-	if len(*calls) != 2 || (*calls)[1].choice != "allow" {
-		t.Errorf("A then y allows: %+v", *calls)
-	}
-	m = press(m, "T")
-	if len(*calls) != 3 || (*calls)[2].choice != "mac" {
-		t.Errorf("T sends it back to its tab: %+v", *calls)
-	}
 }
 
 func TestHeldShownInBottomPane(t *testing.T) {
@@ -107,12 +65,8 @@ func TestHeldNeedsServe(t *testing.T) {
 // While a permission prompt is held, a digit is swallowed: it never reaches
 // the answer that types into the session's terminal.
 func TestHeldPermissionSwallowsDigits(t *testing.T) {
-	m, calls := heldModel(t, mcp.HeldPrompt{ID: "p3", Session: "live", Tool: "Bash", Summary: "ls"})
-	typed := false
-	oldFind, oldSend := sessions.FindTerminal, sessions.SendKeys
-	sessions.FindTerminal = func(int) sessions.Terminal { return sessions.Terminal{Kind: "tmux pane", Target: "%1"} }
-	sessions.SendKeys = func(sessions.Terminal, string, bool) error { typed = true; return nil }
-	t.Cleanup(func() { sessions.FindTerminal, sessions.SendKeys = oldFind, oldSend })
+	m, calls, typedp := paneModel(t, mcp.HeldPrompt{ID: "p3", Session: "live", Tool: "Bash", Summary: "ls"})
+	m = keyType(m, tea.KeyEnter)
 	conv := m.items[0].conv
 	for _, it := range m.items {
 		if it.conv.SessionID == "live" {
@@ -125,22 +79,22 @@ func TestHeldPermissionSwallowsDigits(t *testing.T) {
 		}
 	}
 	m = press(m, "1")
-	if typed || len(*calls) != 0 || m.waitInput.Value() != "" {
-		t.Errorf("a digit on a held permission prompt: typed %v, calls %v, box %q", typed, *calls, m.waitInput.Value())
+	if *typedp || len(*calls) != 0 || m.chatInput.Value() != "" {
+		t.Errorf("a digit on a held permission prompt: typed %v, calls %v, box %q", *typedp, *calls, m.chatInput.Value())
 	}
 }
 
 // An answer sent whose reply never came is reported as unknown, never failed.
 func TestHeldOutcomeUnknown(t *testing.T) {
-	m, _ := heldModel(t, mcp.HeldPrompt{ID: "p4", Session: "live", Tool: "Bash", Summary: "ls"})
+	m, _, _ := paneModel(t, mcp.HeldPrompt{ID: "p4", Session: "live", Tool: "Bash", Summary: "ls"})
 	m.applyHeldDone(heldDoneMsg{name: "worker", err: mcp.ErrOutcomeUnknown})
-	if !strings.Contains(m.waitErr, "reply never came") || strings.Contains(m.waitErr, "Couldn't") {
-		t.Errorf("waitErr %q", m.waitErr)
+	if !strings.Contains(m.heldErr, "reply never came") || strings.Contains(m.heldErr, "Couldn't") {
+		t.Errorf("heldErr %q", m.heldErr)
 	}
 }
 
 // paneModel is waitModel with "live" selected, waiting, its prompt p held by
-// ccs serve, the overlay closed, and no terminal typing possible.
+// ccs, and no terminal typing possible.
 func paneModel(t *testing.T, p mcp.HeldPrompt) (model, *[]heldCall, *bool) {
 	t.Helper()
 	calls := stubHeld(t, p)
@@ -237,7 +191,7 @@ func TestHeldAutoSelect(t *testing.T) {
 		t.Error("text in the search: the selection stays")
 	}
 	m = fresh()
-	m.waitOpen = true
+	m.helpOpen = true
 	if m.autoSelect(); selected(m) {
 		t.Error("a popup open: the selection stays")
 	}

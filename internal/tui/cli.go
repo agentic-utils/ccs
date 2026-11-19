@@ -110,7 +110,6 @@ Arguments:
 Environment:
   CCS_CLAUDE_ARGS  Flags passed to every claude ccs starts, before any -- claude-flags
                    (whitespace-separated, no quoting)
-  CCS_SNOOZE       How long Esc puts aside a session waiting on you (default: 15m)
 
 Flags:
   -h, --help       Show this help message
@@ -164,7 +163,6 @@ Key bindings:
   Ctrl+X D        Delete its transcript file; asks first, can't be undone
 
  Ctrl+X then a letter: view and tools
-  Ctrl+X W        Sessions waiting on you: answer, open or snooze them
   Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder
   Ctrl+X O        Open the orchestrator, setting one up if there is none
   Ctrl+X C        Every orchestrator tree: show closed sessions, or hide them again
@@ -192,7 +190,7 @@ Key bindings:
                   message box; after text it types a ?)
   Ctrl+C          Quit
 
-  ccs's own actions are Ctrl+X then a letter (Ctrl+X Ctrl+W works too), so
+  ccs's own actions are Ctrl+X then a letter (Ctrl+X Ctrl+A works too), so
   the search and message boxes edit like Claude Code's prompt: Ctrl+A/E start
   and end, Ctrl+K/U delete to the end or start, Ctrl+W the word before,
   Ctrl+Y puts back what they deleted, Alt+B/F move by word.

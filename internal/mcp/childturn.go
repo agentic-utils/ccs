@@ -331,35 +331,39 @@ var hookCallerName = func(id string) string {
 // stopHook reads the Stop hook's input and, when the session has a running
 // parent and the turn is worth telling, tells it. Every failure is logged
 // and swallowed: a Stop hook must never get in the turn's way.
-func stopHook(stdin io.Reader, now time.Time) {
+func stopHook(stdin io.Reader, now time.Time) { stopHookTurn(stdin, now) }
+
+// stopHookTurn is stopHook, returning a channel closed once the turn's
+// worker has ended. After the deadline the hook stops waiting for it, and the
+// process exits; tests wait on the channel so the worker never outlives them.
+func stopHookTurn(stdin io.Reader, now time.Time) <-chan struct{} {
+	finished := make(chan struct{})
 	raw, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if err != nil {
-		return
+		close(finished)
+		return finished
 	}
 	var req stopRequest
 	if json.Unmarshal(raw, &req) != nil || req.Event != "Stop" || req.SessionID == "" || req.StopHookActive {
-		return
+		close(finished)
+		return finished
 	}
-	type result struct {
-		e  ChildTurnEvent
-		ok bool
-	}
-	done := make(chan result, 1)
 	go func() {
+		defer close(finished)
 		e, ok := childTurn(req, now)
 		if ok {
 			if err := github.WriteEventLines([]any{e}); err != nil {
 				state.LogActivity("ccs hook stop: couldn't write child_turn for %s: %v", e.Session, err)
 			}
 		}
-		done <- result{e, ok}
 	}()
 	select {
-	case <-done:
+	case <-finished:
 	case <-time.After(stopHookDeadline):
 		// A slow disk or a stuck socket must not hold the turn's end: give up.
 		state.LogActivity("ccs hook stop: gave up on session %s after %s", req.SessionID, stopHookDeadline)
 	}
+	return finished
 }
 
 // stopHookDeadline is the most the Stop hook spends; Claude Code's own

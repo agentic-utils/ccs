@@ -288,6 +288,7 @@ func TestWatchSessionsWritesEvents(t *testing.T) {
 		return map[string]sessions.LiveSession{"s-x": {PID: 1, Stat: sessions.SessionStat{Status: "idle", Since: now.Add(-time.Hour), Name: "quiet"}}}
 	}
 	os.Remove(github.PREventsPath())
+	os.Remove(sessionEventsPath()) // what an earlier run of this test saw
 	for range 2 {
 		if err := WatchSessions(DefaultStallAfter, now); err != nil {
 			t.Fatal(err)

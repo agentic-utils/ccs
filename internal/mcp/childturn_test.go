@@ -318,11 +318,14 @@ func TestStopHookDeadline(t *testing.T) {
 	defer func() { stopHookDeadline = oldDeadline }()
 	stopHookDeadline = 50 * time.Millisecond
 	release := make(chan struct{})
-	defer close(release)
 	sendChildTurn = func(int, string, string) error { <-release; return nil } // a socket that never answers
 	start := time.Now()
-	stopHook(strings.NewReader(`{"session_id":"k1","transcript_path":"`+path+`","hook_event_name":"Stop"}`), now)
+	finished := stopHookTurn(strings.NewReader(`{"session_id":"k1","transcript_path":"`+path+`","hook_event_name":"Stop"}`), now)
 	if d := time.Since(start); d > time.Second {
 		t.Errorf("a stuck send holds the turn's end for %s", d)
 	}
+	// The abandoned worker still reads the stubs: let it end before the
+	// fixture's cleanups put them back.
+	close(release)
+	<-finished
 }

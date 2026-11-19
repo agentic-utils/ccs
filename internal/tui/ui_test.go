@@ -1672,8 +1672,8 @@ func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
 		t.Errorf("^X ^A toggles auto-focus, without editing: on=%v %q", m.autoFocus, m.textInput.Value())
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if got := m.textInput.Value(); got != "fix the login " || m.chordX {
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // ^X J is no chord (^X Q records a profile)
+	if got := m.textInput.Value(); got != "fix the login " || m.chordX || m.profileStop != nil {
 		t.Errorf("an unknown chord does nothing and types nothing: %q", got)
 	}
 }

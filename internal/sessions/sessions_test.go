@@ -478,8 +478,13 @@ func stubLaunch(t *testing.T) {
 	LookBin = func(name string) (string, error) { return "/bin/" + name, nil }
 	LaunchWait = 300 * time.Millisecond
 	oldTab, oldRetype, oldRetypeAt, oldRunning := OpenLaunchTab, RetypeLauncher, LaunchRetype, LauncherRunning
+	// Each test launches into its own folder: a launch's starting record
+	// would otherwise refuse the same name in a later test or run.
+	oldDir, dir := state.LaunchDir, t.TempDir()
+	state.LaunchDir = func() string { return dir }
 	t.Cleanup(func() {
 		LookBin, LaunchWait, OpenLaunchTab, RetypeLauncher, LaunchRetype, LauncherRunning = oldBin, oldWait, oldTab, oldRetype, oldRetypeAt, oldRunning
+		state.LaunchDir = oldDir
 	})
 }
 

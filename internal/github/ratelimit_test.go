@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -18,8 +19,11 @@ func limitEnv(t *testing.T, refused map[string]bool, rateLimit string) (calls *[
 	oldSettings, oldGH := state.SettingsPath, RunGH
 	state.SettingsPath = t.TempDir() + "/settings.json"
 	calls = &[]string{}
+	var mu sync.Mutex // prDetailsAll calls gh from parallel workers
 	RunGH = func(args ...string) ([]byte, error) {
+		mu.Lock()
 		*calls = append(*calls, fmt.Sprint(args))
+		mu.Unlock()
 		if len(args) == 2 && args[1] == "rate_limit" {
 			return []byte(rateLimit), nil
 		}

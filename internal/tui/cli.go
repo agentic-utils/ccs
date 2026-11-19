@@ -147,6 +147,12 @@ Key bindings:
                   open in claude, type in its message box, and Enter again on
                   the empty box goes to its tab
   Ctrl+V          Paste a screenshot from the clipboard into a message to it
+  !cmd            In its message box: run cmd here, in ccs, in its folder
+                  (your shell, 2 minutes at most); the output shows above
+                  the box, Esc stops or closes it, PgUp/PgDn scroll it
+  /cmd            In its message box: type the slash command into its tab
+                  (tmux or iTerm) so Claude Code runs it; only while idle
+  !!x //x         Send "!x" or "/x" as an ordinary message
   Ctrl+F          Fork it: a new session with the same history, in a new tab
   Ctrl+O          Open a link in view or one of its PRs
 
@@ -459,8 +465,9 @@ func Main(v string) {
 		stop()
 	}
 	sessions.CloseInboxes()
-	releaseHold("ccs quit") // prompts it held are handed back: their hooks dial the next ccs
-	stopPreview()           // a preview started from ^X B lives only as long as this ccs
+	releaseHold("ccs quit")        // prompts it held are handed back: their hooks dial the next ccs
+	stopActiveRun(3 * time.Second) // a ! command never outlives this ccs (quit, error or an update's restart)
+	stopPreview()                  // a preview started from ^X B lives only as long as this ccs
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

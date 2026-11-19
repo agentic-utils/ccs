@@ -22,7 +22,7 @@ What each write does:
 
 | Write | How | Never |
 | --- | --- | --- |
-| Send a message | the session's own message socket, as the TUI's message box does (`the user, via ccs`), or Codex's queue | types into a terminal: from afar you can't see what's on the screen it would land in |
+| Send a message | the session's own message socket, as the TUI's message box does (`the user, via ccs`), or Codex's queue | types into a terminal: from afar you can't see what's on the screen it would land in. Nor does it run commands: a line starting `!` or `/`, which the TUI's box runs here or types into the session, is sent from the web page as plain text |
 | Close, restart | with the session's id. Every stop (here, `ccs close`, `ccs restart`, ^X K and the tools) checks which session the pid runs immediately before the signal: its session file, or for Codex a fresh look at its live thread | stops a session that has taken the name since, a conversation that replaced it in the same process, or one whose session file can't be read at that moment |
 | Launch, close, restart | the `launch_session`, `close_session` and `restart_session` MCP tools; tabs open on the Mac | anything those tools refuse |
 

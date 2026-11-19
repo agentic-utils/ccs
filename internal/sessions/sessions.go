@@ -156,6 +156,24 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 // sameStart compares the session file's procStart (UTC) with the process's
 // actual start. Unknown on either side counts as a match, so a format change
 // or ps failure never hides a live session; checked says whether it was known.
+// StillTheSession reads pid's session file afresh and checks that it is
+// still session id, in the same process it started in (its procStart against
+// the pid's start time). same is false when the file is gone, names another
+// session or the pid was recycled; checked is false when the start time
+// couldn't be compared (no procStart, or ps couldn't say).
+func StillTheSession(pid int, id string) (f SessionFile, same, checked bool) {
+	data, err := os.ReadFile(filepath.Join(GetSessionsDir(), strconv.Itoa(pid)+".json"))
+	var s struct {
+		SessionFile
+		ProcStart string `json:"procStart"`
+	}
+	if err != nil || json.Unmarshal(data, &s) != nil || s.SessionID != id || !proc.PIDAlive(pid) {
+		return s.SessionFile, false, false
+	}
+	match, checked := sameStart(s.ProcStart, proc.ProcessStartTimes(map[string]int{strconv.Itoa(pid): pid})[pid])
+	return s.SessionFile, match, checked
+}
+
 func sameStart(recorded string, actual time.Time) (match, checked bool) {
 	want, err := time.Parse(time.ANSIC, strings.Join(strings.Fields(recorded), " "))
 	if err != nil || actual.IsZero() {

@@ -188,14 +188,15 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "close_session",
-		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab or tmux pane. That stops it mid-whatever-it-was-doing; with graceful, a Claude Code session is first asked to wrap up (stop at a safe point, remove its worktrees, say what's left) and is stopped once it has gone idle after that, or when the timeout passes. With graceful the call returns as soon as the notice is sent, with the pid; the close goes on in the background, and list_sessions shows the session gone once it's done (read_session on it gives what it said was left). If the notice can't be sent nothing is stopped and the call fails.",
+		"description": "Stop the running session with this name, confirm its process exited, and close its iTerm tab or tmux pane. That stops it mid-whatever-it-was-doing; with graceful, a Claude Code session is first asked to wrap up (stop at a safe point, remove its worktrees, say what's left) and is stopped once it has gone idle after that, or when the timeout passes. With graceful the call returns as soon as the notice is sent, with the pid; the close goes on in the background, and list_sessions shows the session gone once it's done (read_session on it gives what it said was left). If the notice can't be sent nothing is stopped and the call fails. With handover, the notice asks it to hand its leftovers to its parent first (see handover).",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"name":            map[string]any{"type": "string", "description": "the session's name"},
 				"session_id":      map[string]any{"type": "string", "description": "optional: refuse unless the session with this name is still this session id (nothing is stopped otherwise)"},
 				"graceful":        map[string]any{"type": "boolean", "description": "ask it to wrap up first and wait for it to go idle; default false. Not for Codex sessions"},
-				"timeout_seconds": map[string]any{"type": "integer", "description": "with graceful: how long to wait before stopping it anyway; default 120, at most 900"},
+				"handover":        map[string]any{"type": "boolean", "description": "implies graceful: ask it to hand its leftovers (what it finished, leftover work, what it created) to its parent with SendMessage before it's stopped; then its PR claims and child sessions move to the parent, and the parent gets an automatic notice saying whether the handover message was seen. Refused (nothing sent or stopped) when it has no running parent"},
+				"timeout_seconds": map[string]any{"type": "integer", "description": "with graceful or handover: how long to wait before stopping it anyway; default 120, at most 900"},
 			},
 			"required": []string{"name"},
 		},
@@ -470,6 +471,7 @@ func capped(tool, name, slow string, f func() (string, error)) (string, error) {
 func closeCall(name string, raw json.RawMessage) (string, error) {
 	var a struct {
 		Graceful bool   `json:"graceful"`
+		Handover bool   `json:"handover"`
 		Timeout  int    `json:"timeout_seconds"`
 		ID       string `json:"session_id"`
 	}
@@ -478,7 +480,7 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 			return "", fmt.Errorf("bad arguments: %v", err)
 		}
 	}
-	if !a.Graceful {
+	if !a.Graceful && !a.Handover {
 		return capped("close_session", name, name+" is still closing: check with list_sessions in a minute (the outcome goes to ccs's activity log)", func() (string, error) {
 			return closeFn(name, a.ID)
 		})
@@ -495,7 +497,11 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 	sent := make(chan int, 1)
 	done := make(chan result, 1)
 	go func() {
-		text, err := closeGracefully(name, a.ID, timeout, func(pid int) { sent <- pid })
+		fn := closeGracefully
+		if a.Handover {
+			fn = closeHandover
+		}
+		text, err := fn(name, a.ID, timeout, func(pid int) { sent <- pid })
 		done <- result{text, err}
 	}()
 	select {
@@ -510,12 +516,34 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 				state.LogActivity("close_session %s: %s", name, r.text)
 			}
 		}()
+		if a.Handover {
+			return fmt.Sprintf("asked %s (pid %d) to hand its leftovers to its parent: it will be stopped and its tab closed once it goes idle, or after %s; then its PR claims and child sessions move to the parent, which gets an automatic notice", name, pid, timeout), nil
+		}
 		return fmt.Sprintf("asked %s (pid %d) to wrap up: it will be stopped and its tab closed once it goes idle, or after %s. list_sessions shows it gone once it is, and read_session on it gives what it said was left", name, pid, timeout), nil
+	case <-time.After(sessionCallCap):
+		// Neither sent nor refused yet (finding the parent or the session
+		// took long): answer within the cap and let it run on.
+		go func() {
+			r := <-done
+			if r.err != nil {
+				state.LogActivity("close_session %s: %v", name, r.err)
+			} else {
+				state.LogActivity("close_session %s: %s", name, r.text)
+			}
+		}()
+		if a.Handover {
+			return name + " is still handing over: check with list_sessions in a minute (the outcome goes to ccs's activity log)", nil
+		}
+		return name + " is still being asked to wrap up: check with list_sessions in a minute (the outcome goes to ccs's activity log)", nil
 	}
 }
 
-// closeGracefully is sessions.CloseGracefullyNotifyID, stubbed in tests.
-var closeGracefully = sessions.CloseGracefullyNotifyID
+// closeGracefully and closeHandover are sessions.CloseGracefullyNotifyID
+// and sessions.CloseHandover, stubbed in tests.
+var (
+	closeGracefully = sessions.CloseGracefullyNotifyID
+	closeHandover   = sessions.CloseHandover
+)
 
 // restartSession is sessions.RestartSession, stubbed in tests.
 var restartSession = sessions.RestartSession

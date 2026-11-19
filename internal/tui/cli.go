@@ -169,6 +169,8 @@ Key bindings:
                   rewind history
   Ctrl+X K        Stop it and close its tab, or stop a background session;
                   asks first
+  Ctrl+X W        Hand it over: it sends its parent its leftovers, then it's
+                  closed and its PRs and child sessions move to the parent
   Ctrl+X D        Delete its transcript file; asks first, can't be undone
 
  Ctrl+X then a letter: view and tools

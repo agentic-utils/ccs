@@ -116,36 +116,55 @@ func CloseGracefullyNotify(name string, timeout time.Duration, onSent func(pid i
 // CloseGracefullyNotifyID is CloseGracefullyNotify, refused unless the
 // session is still id (SameSession).
 func CloseGracefullyNotifyID(name, id string, timeout time.Duration, onSent func(pid int)) (string, error) {
+	msg, _, err := closeGraceful(name, id, timeout, onSent, func(ref string) string { return closeNoticeText(timeout, ref) })
+	return msg, err
+}
+
+// graceful is what closeGraceful saw: the session it asked, where its
+// transcript stood when it was asked, and how the wait ended.
+type graceful struct {
+	pid       int
+	sessionID string
+	path      string // its transcript
+	offset    int64  // the transcript's size when the notice was sent
+	ref       string // the notice's mark
+	how       string
+}
+
+// closeGraceful is CloseGracefullyNotifyID with the notice's text from
+// notice, given the notice's mark.
+func closeGraceful(name, id string, timeout time.Duration, onSent func(pid int), notice func(ref string) string) (string, graceful, error) {
+	var g graceful
 	if timeout <= 0 {
 		timeout = GracefulTimeout
 	}
 	pids, err := Named(name)
 	if err != nil {
-		return "", err
+		return "", g, err
 	}
 	switch len(pids) {
 	case 0:
-		return "", fmt.Errorf("no running session named %s", name)
+		return "", g, fmt.Errorf("no running session named %s", name)
 	case 1:
 	default:
-		return "", fmt.Errorf("%d running sessions are named %s (pids %v): close one by hand", len(pids), name, pids)
+		return "", g, fmt.Errorf("%d running sessions are named %s (pids %v): close one by hand", len(pids), name, pids)
 	}
 	pid := pids[0]
 	plain := fmt.Sprintf("nothing was stopped; ccs close %s stops it at once", name)
 	f, err := ReadSessionFile(pid)
 	if err != nil || f.SessionID == "" {
 		// Codex has no session file and no socket: nothing can ask it to wrap up.
-		return "", fmt.Errorf("%s (pid %d) isn't a Claude Code session ccs can send a notice to (a Codex session, perhaps), so it can't be closed gracefully: %s", name, pid, plain)
+		return "", g, fmt.Errorf("%s (pid %d) isn't a Claude Code session ccs can send a notice to (a Codex session, perhaps), so it can't be closed gracefully: %s", name, pid, plain)
 	}
 	if f.Name != name {
-		return "", fmt.Errorf("pid %d is now another session (%s): %s", pid, f.Name, plain)
+		return "", g, fmt.Errorf("pid %d is now another session (%s): %s", pid, f.Name, plain)
 	}
 	if id != "" && f.SessionID != id {
-		return "", fmt.Errorf("%s (pid %d) isn't session %s any more: %s", name, pid, id, plain)
+		return "", g, fmt.Errorf("%s (pid %d) isn't session %s any more: %s", name, pid, id, plain)
 	}
 	tty := proc.TTYOf(pid)
 	if tty == "" {
-		return "", fmt.Errorf("%s (pid %d) has no terminal: an app or claude --bg started it, close it there", name, pid)
+		return "", g, fmt.Errorf("%s (pid %d) has no terminal: an app or claude --bg started it, close it there", name, pid)
 	}
 	path := transcriptOf(f.SessionID)
 	var offset int64
@@ -156,8 +175,8 @@ func CloseGracefullyNotifyID(name, id string, timeout time.Duration, onSent func
 	rand.Read(b[:])
 	ref := hex.EncodeToString(b[:])
 	sent := time.Now()
-	if err := SendCloseNotice(pid, f, closeNoticeText(timeout, ref)); err != nil {
-		return "", fmt.Errorf("couldn't ask %s (pid %d) to wrap up: %v: %s", name, pid, err, plain)
+	if err := SendCloseNotice(pid, f, notice(ref)); err != nil {
+		return "", g, fmt.Errorf("couldn't ask %s (pid %d) to wrap up: %v: %s", name, pid, err, plain)
 	}
 	state.LogActivity("close %s: asked it to wrap up (notice %s), waiting up to %s", name, ref, timeout)
 	if onSent != nil {
@@ -205,22 +224,23 @@ func CloseGracefullyNotifyID(name, id string, timeout time.Duration, onSent func
 		}
 	}
 	state.LogActivity("close %s: %s", name, how)
+	g = graceful{pid: pid, sessionID: f.SessionID, path: path, offset: offset, ref: ref, how: how}
 	// Its conversation ended while the process lives on (/clear, or a resume
 	// in place): whatever runs there now isn't what was asked to wrap up, so
 	// it's left running.
 	if replaced && proc.PIDAlive(pid) {
 		state.LogActivity("close %s: pid %d now runs another conversation, left running", name, pid)
-		return "", fmt.Errorf("%s (pid %d): %s, and the process now runs another conversation, so nothing was stopped", name, pid, how)
+		return "", g, fmt.Errorf("%s (pid %d): %s, and the process now runs another conversation, so nothing was stopped", name, pid, how)
 	}
 	if !proc.PIDAlive(pid) {
 		CloseTab(tty)
-		return fmt.Sprintf("%s (pid %d): %s%s", name, pid, how, said), nil
+		return fmt.Sprintf("%s (pid %d): %s%s", name, pid, how, said), g, nil
 	}
 	msg, err := CloseSession(name, pid, f.SessionID)
 	if err != nil {
-		return "", fmt.Errorf("%s: %s; then %v", name, how, err)
+		return "", g, fmt.Errorf("%s: %s; then %v", name, how, err)
 	}
-	return msg + ": " + how + said, nil
+	return msg + ": " + how + said, g, nil
 }
 
 // RunClose is `ccs close`.
@@ -228,9 +248,10 @@ func RunClose(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("close", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	graceful := fs.Bool("graceful", false, "ask the session to wrap up first (finish or stop safely, remove its worktrees, say what's left), and stop it once it goes idle")
-	timeout := fs.Duration("timeout", GracefulTimeout, "with --graceful: how long to wait before stopping it anyway")
+	handover := fs.Bool("handover", false, "ask the session to hand its leftovers to its parent (SendMessage), stop it once it goes idle, and move its PR claims and child sessions to the parent; implies --graceful")
+	timeout := fs.Duration("timeout", GracefulTimeout, "with --graceful or --handover: how long to wait before stopping it anyway")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: ccs close [--graceful [--timeout 2m]] <name>\n\nStop the named session and close its tab.")
+		fmt.Fprintln(stderr, "usage: ccs close [--graceful | --handover] [--timeout 2m] <name>\n\nStop the named session and close its tab.")
 		fs.PrintDefaults()
 	}
 	// The name may come first, as it always did.
@@ -252,9 +273,12 @@ func RunClose(args []string, stdout, stderr io.Writer) int {
 	}
 	var msg string
 	var err error
-	if *graceful {
+	switch {
+	case *handover:
+		msg, err = CloseHandover(name, "", *timeout, nil)
+	case *graceful:
 		msg, err = CloseGracefully(name, *timeout)
-	} else {
+	default:
 		msg, err = CloseByName(name)
 	}
 	if err != nil {

@@ -156,6 +156,8 @@ type model struct {
 	serveCheckedAt   time.Time
 	serveChecking    bool
 	confirmRestart   string         // ^X R asked whether to restart this session: y restarts it
+	confirmHandover  string         // ^X W asked whether to hand this session over to its parent and close it: y does
+	handoverTo       string         // with confirmHandover: the parent it goes to
 	reorgPlan        *reorgProposal // ^X M's plan, shown in its popup until enter applies it or esc drops it
 	reorgShownAt     time.Time      // when it came on screen: enter waits updateKeyGrace
 	reorgReady       *reorgProposal // a plan that came back while the user was typing: it opens once they pause
@@ -445,7 +447,7 @@ func (m model) stoppable(id string) bool {
 
 // prompting reports an open rename, delete, prune or stop prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.launchStep > 0
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmHandover != "" || m.launchStep > 0
 }
 
 // restartable reports whether ^X R can restart the session: a live Claude
@@ -2077,6 +2079,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if k == "^x w" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage {
+			stats.Record("tui.handover", stats.Key)
+			m.helpOpen = false
+			conv := m.filtered[m.cursor].conv
+			if !m.restartable(conv.SessionID) {
+				m.errorMsg = "^X W hands a live Claude Code session in a terminal tab over to its parent; this one isn't"
+				return m, nil
+			}
+			parent, err := handoverParent(m.sessionName(conv))
+			if err != nil {
+				m.errorMsg = err.Error()
+				return m, nil
+			}
+			m.confirmHandover, m.handoverTo = conv.SessionID, parent
+			return m, nil
+		}
 		if k == "^x r" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.restart", stats.Key)
 			m.helpOpen = false
@@ -2368,6 +2386,26 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, closeCmd(m.sessionName(conv), m.livePIDs[id], id)
 			case "n", "N", "esc":
 				m.confirmStop = ""
+				return m, nil
+			}
+			return m, nil // Ignore all other keys
+		}
+
+		// Handle hand-over confirmation mode
+		if id := m.confirmHandover; id != "" {
+			switch msg.String() {
+			case "y", "Y":
+				m.confirmHandover = ""
+				i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+				if i < 0 || !m.restartable(id) { // it ended, or went, while asking
+					m.errorMsg = "It isn't running any more"
+					return m, nil
+				}
+				name := m.sessionName(m.filtered[i].conv)
+				m.note(fmt.Sprintf("Asking %s to hand over to %s; it closes once it's done", name, m.handoverTo))
+				return m, handoverCmd(name, id)
+			case "n", "N", "esc":
+				m.confirmHandover = ""
 				return m, nil
 			}
 			return m, nil // Ignore all other keys
@@ -2868,6 +2906,7 @@ func (m model) shortcuts() [][2]string {
 			add(true, "^X K", "stop this session and close its tab; asks first")
 		}
 		add(m.restartable(id), "^X R", "restart it: stop, then resume this conversation in a new tab with the same flags; asks first")
+		add(m.restartable(id), "^X W", "hand its leftovers to its parent, then close it; its PRs and children move to the parent; asks first")
 	}
 	add(sel, "^X D", "delete its transcript file; asks first, can't be undone")
 
@@ -2959,7 +2998,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // and what it does, never a mode's on/off (that shows when no chord is
 // pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
 // which is left unadvertised (headless runs stay out of the header).
-var chordPairs = []string{"A", "auto-focus", "B", "browser (ccs serve)", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "X", "prune", "Y", "usage", keyEsc, "cancel"}
+var chordPairs = []string{"A", "auto-focus", "B", "browser (ccs serve)", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "hand over", "X", "prune", "Y", "usage", keyEsc, "cancel"}
 
 func toggleHint(key, label string, on bool) string {
 	state := "off"
@@ -3186,6 +3225,13 @@ func (m model) viewScreen() string {
 			Foreground(lipgloss.Color("196")). // Red
 			Render(fmt.Sprintf(what, transcript.Truncate(m.sessionName(conv), 50))) +
 			"  \033[90m" + hints("y", "stop", "n/"+keyEsc, "cancel") + "\033[0m"
+		sections = append(sections, "  "+inputSection)
+	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmHandover != "" && it.conv.SessionID == m.confirmHandover }); i >= 0 {
+		name := transcript.Truncate(m.sessionName(m.filtered[i].conv), 40)
+		inputSection = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")). // Amber
+			Render(fmt.Sprintf("Hand %q over to %s and close it? It sends %s its leftovers first.", name, transcript.Truncate(m.handoverTo, 40), transcript.Truncate(m.handoverTo, 40))) +
+			"  \033[90m" + hints("y", "hand over", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmRestart != "" && it.conv.SessionID == m.confirmRestart }); i >= 0 {
 		name := transcript.Truncate(m.sessionName(m.filtered[i].conv), 50)

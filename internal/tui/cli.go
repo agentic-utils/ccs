@@ -190,10 +190,10 @@ Key bindings:
 
  ccs
   Ctrl+R          Refresh sessions, PRs and allowance now; check for an update
-  Tab             While a session waits on you (a question or prompt): select
-                  the next one, wrapping round. Otherwise: token use of every
-                  session in the last 12h, and your allowance (Tab again to go back)
-  Ctrl+X Y        Your usage screen, even while sessions wait
+  Tab             Select the next session waiting on you (a question or prompt),
+                  wrapping round; with none, says "nothing needs you"
+  Ctrl+X Y        Your usage: token use of every session in the last 12h, and
+                  your allowance (Ctrl+X Y or Esc to go back)
   Ctrl+L          What changed in each ccs release
   ?               Show the shortcuts that apply right now (on an empty search or
                   message box; after text it types a ?)

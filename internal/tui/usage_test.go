@@ -174,15 +174,19 @@ func TestKeychainServiceName(t *testing.T) {
 func TestUsageScreenToggleAndPanels(t *testing.T) {
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "a", Messages: []transcript.Message{{Role: "user", Text: "x"}}}}), "", nil)
 	m.width, m.height = 170, 50
-	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if res, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab}); res.(model).showUsage {
+		t.Fatal("tab never opens the usage screen")
+	}
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, cmd := res.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = res.(model)
 	if !m.showUsage || cmd == nil || !m.usageLoading || !m.allowanceLoading {
-		t.Fatal("tab should open the usage screen and start loading")
+		t.Fatal("^X Y should open the usage screen and start loading")
 	}
 	// Typing on the usage screen mustn't edit the hidden search.
 	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if m = res.(model); m.textInput.Value() != "" {
-		t.Error("keys other than tab/ctrl+c are ignored on the usage screen")
+		t.Error("keys other than its own are ignored on the usage screen")
 	}
 	buckets := make([]usageBucketTotals, usageBuckets)
 	buckets[100] = usageBucketTotals{Uncached: 10, Read: 90, New: 10, Output: 5, Responses: 1}
@@ -200,9 +204,9 @@ func TestUsageScreenToggleAndPanels(t *testing.T) {
 	if m = res.(model); !strings.Contains(m.View(), "62%") || !strings.Contains(m.View(), "open claude") {
 		t.Error("a failed refresh keeps the last gauges and shows why")
 	}
-	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m = res.(model); m.showUsage {
-		t.Error("tab again returns to the session list")
+		t.Error("esc returns to the session list")
 	}
 }
 
@@ -222,12 +226,13 @@ func TestAllowanceInSearchRowAndUsageScreenHidesSearch(t *testing.T) {
 			t.Errorf("search row missing %q: %q", want, row)
 		}
 	}
-	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+	res, _ = res.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = res.(model)
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "tab back") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "type to search") || !strings.Contains(v, "esc back") {
 		t.Error("the usage screen should replace the search box with a back hint")
 	}
-	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "tab back  ^X U account  ^L changelog  ^C quit") {
+	if v := strip.ReplaceAllString(m.View(), ""); strings.Contains(v, "^S msg") || !strings.Contains(v, "esc back  ^X U account  ^L changelog  ^C quit") {
 		t.Error("the usage screen header should list only its own keys")
 	}
 }

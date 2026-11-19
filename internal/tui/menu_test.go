@@ -166,7 +166,7 @@ func TestMenuFirstAppearanceGuard(t *testing.T) {
 	}
 }
 
-// The usage screen (Tab) hides the menu: no key reaches it there, even
+// The usage screen (^X Y) hides the menu: no key reaches it there, even
 // when it had focus from an auto-select, and coming back re-arms the
 // first-appearance guard.
 func TestMenuNotBehindTheUsageScreen(t *testing.T) {

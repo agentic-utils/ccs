@@ -54,16 +54,15 @@ func TestTabCyclesThroughWaitingSessions(t *testing.T) {
 }
 
 // A question ccs holds counts, even before its status says waiting; a
-// snoozed one doesn't; with nothing waiting, Tab is the usage screen.
-func TestTabCountsHeldSkipsSnoozedElseUsage(t *testing.T) {
+// snoozed one doesn't; with nothing waiting, Tab only says so: it's never
+// the usage screen.
+func TestTabCountsHeldSkipsSnoozedElseNothing(t *testing.T) {
 	m := waitModel(t)
 	m.width, m.height = 140, 40
 	m.sortList()
-	if m = tab(m); !m.showUsage {
-		t.Fatal("nothing waits: Tab opens the usage screen")
-	}
-	if m = tab(m); m.showUsage {
-		t.Fatal("Tab again goes back")
+	before := selected(m)
+	if m = tab(m); m.showUsage || selected(m) != before || m.noteMsg != "nothing needs you" || m.errorMsg != m.noteMsg {
+		t.Fatalf("nothing waits: Tab stays on the list (%s, usage %v) with a grey note (%q)", selected(m), m.showUsage, m.errorMsg)
 	}
 	m.heldPrompt = map[string]mcp.HeldPrompt{"asks": {ID: "h1", Session: "asks", Tool: "Bash"}}
 	m.marks = &sessionMarks{Snoozed: map[string]time.Time{"asks": time.Now().Add(time.Hour)}}
@@ -98,8 +97,8 @@ func TestTabHintAndUsageChord(t *testing.T) {
 	m := waitModel(t)
 	m.width, m.height = 160, 40
 	m.sortList()
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "tab usage") || strings.Contains(head, "next waiting") {
-		t.Errorf("nothing waits: %q", head)
+	if head := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(head, "tab ") || !strings.Contains(head, "^X Y usage") {
+		t.Errorf("nothing waits: no Tab hint, ^X Y usage: %q", head)
 	}
 	m = tabModel(t)
 	m.width = 160
@@ -112,5 +111,35 @@ func TestTabHintAndUsageChord(t *testing.T) {
 	}
 	if m = usageChord(m); m.showUsage {
 		t.Fatal("^X Y again goes back")
+	}
+}
+
+// The usage screen is ^X Y's alone: Esc and ^X Y go back, and Tab there goes
+// back to the list and on to the next waiting session.
+func TestUsageScreenOnlyByChord(t *testing.T) {
+	m := tabModel(t)
+	m.width, m.height = 160, 40
+	if m = usageChord(m); !m.showUsage {
+		t.Fatal("^X Y opens the usage screen")
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "esc back") || strings.Contains(v, "tab back") {
+		t.Errorf("the usage screen's hints say esc goes back: %q", strings.Split(v, "\n")[0])
+	}
+	if m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc}); m.showUsage {
+		t.Fatal("Esc goes back from the usage screen")
+	}
+	if m = usageChord(usageChord(m)); m.showUsage {
+		t.Fatal("^X Y again goes back")
+	}
+	m = usageChord(m)
+	if m = tab(m); m.showUsage || !m.needsYou(m.filtered[m.cursor].conv) {
+		t.Fatalf("Tab on the usage screen goes back and to a waiting session (%s, usage %v)", selected(m), m.showUsage)
+	}
+	idle := waitModel(t)
+	idle.width, idle.height = 160, 40
+	idle.sortList()
+	idle = usageChord(idle)
+	if idle = tab(idle); idle.showUsage {
+		t.Fatal("Tab on the usage screen with nothing waiting just goes back")
 	}
 }

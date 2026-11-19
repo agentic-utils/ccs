@@ -1557,7 +1557,7 @@ func TestHeaderTogglesGreyWithOnGreen(t *testing.T) {
 	m.autoFocus, m.autoUpdate = true, false
 	head := strings.Split(m.View(), "\n")[0]
 	plain := strip2(head)
-	if !strings.HasSuffix(plain, "^X A auto-focus on  ^X I auto-update off   tab usage  ? help  ^C quit") {
+	if !strings.HasSuffix(plain, "^X A auto-focus on  ^X I auto-update off   ^X Y usage  ? help  ^C quit") {
 		t.Errorf("the toggles sit on the right, before the key hints: %q", plain)
 	}
 	if !strings.Contains(head, "auto-focus \033[32mon\033[90m") || !strings.Contains(head, "auto-update off") || strings.Contains(head, "\033[33m^") {
@@ -1595,7 +1595,7 @@ func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
 	if m, _ = key(m, q); m.helpOpen || m.textInput.Value() != "why?" {
 		t.Errorf("with a search typed, ? is text: help=%v search=%q", m.helpOpen, m.textInput.Value())
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.HasSuffix(head, "auto-focus off   tab usage  ? help  ^C quit") || strings.Contains(head, "^X G") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.HasSuffix(head, "auto-focus off   ^X Y usage  ? help  ^C quit") || strings.Contains(head, "^X G") {
 		t.Errorf("header keys: %q", head)
 	}
 }

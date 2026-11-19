@@ -72,7 +72,7 @@ var Registry = []Info{
 	{"tui.link_open", "open a link (from ^O or a click)"},
 	{"tui.details", "^X F or click the summary line: preview details"},
 	{"tui.refresh", "^R refresh now"},
-	{"tui.usage_screen", "Tab (nothing waiting) or ^X Y: token use and allowance"},
+	{"tui.usage_screen", "^X Y: token use and allowance"},
 	{"tui.next_waiting", "Tab while something waits: select the next session waiting on you"},
 	{"tui.changelog", "^L changelog"},
 	{"tui.help", "? help"},

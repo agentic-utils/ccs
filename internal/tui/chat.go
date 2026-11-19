@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -448,13 +449,61 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 	if !focus {
 		in.Blur() // no cursor while typing goes to the search
 	}
-	border := lipgloss.Color("240")
+	var border lipgloss.TerminalColor = lipgloss.Color("240")
 	if focus {
 		border = lipgloss.Color("62")
+	}
+	if bashMode(in.Value()) {
+		in = asBashMode(in)
+		border = bashColour
+		if strings.TrimSpace(ansi.Strip(left)) == "" { // a note, a warning or the working line keeps its place
+			hint := "  ! runs a command here · in " + tildePath(conv.Cwd)
+			status = lipgloss.NewStyle().Foreground(bashColour).Render(ansi.Truncate(hint, max(full, 1), "…"))
+			status += strings.Repeat(" ", max(full-lipgloss.Width(status), 0))
+		}
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
 		Width(max(width-2, 1)).Render(in.View())
 	return status + "\n" + box
+}
+
+// bashColour is Claude Code's bashBorder, the pink its prompt turns in bash
+// mode: rgb(255,0,135) in its light theme, rgb(253,93,177) in its dark one.
+var bashColour = lipgloss.AdaptiveColor{Light: "#ff0087", Dark: "#fd5db1"}
+
+// bashMode says whether the message box's text would run as a command in
+// ccs: a single leading "!" ("!!" sends a literal "!" message), with
+// commandLine's own trimming.
+func bashMode(text string) bool {
+	t := strings.TrimLeft(text, " \t")
+	return strings.HasPrefix(t, "!") && !strings.HasPrefix(t, "!!")
+}
+
+// asBashMode is the box drawn as Claude Code draws bash mode: its "›" becomes
+// a pink "!" and the text's own leading "!" is left out, so it shows once.
+// in is a copy, so the draft itself is untouched.
+func asBashMode(in textinput.Model) textinput.Model {
+	v := in.Value()
+	cut := strings.Index(v, "!") + 1
+	pos := in.Position()
+	in.Prompt = "! "
+	in.PromptStyle = lipgloss.NewStyle().Foreground(bashColour).Bold(true)
+	in.SetValue(v[cut:])
+	in.SetCursor(max(pos-cut, 0))
+	return in
+}
+
+// tildePath is path with the home folder shown as ~.
+func tildePath(path string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if path == home {
+			return "~"
+		}
+		if strings.HasPrefix(path, home+"/") {
+			return "~" + path[len(home):]
+		}
+	}
+	return path
 }
 
 // chatInputWidth is the text width of a message box width wide.

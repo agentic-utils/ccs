@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,16 +54,27 @@ func hookServer(t *testing.T, wait time.Duration) *server {
 	s, _ := testServer(t, true, []transcript.Conversation{conv})
 	s.cfg.hookWait = wait
 	old := liveSessions
+	hookLive.Store(liveFn(nil))
 	liveSessions = func() map[string]sessions.LiveSession {
+		if f := hookLive.Load().(liveFn); f != nil {
+			return f()
+		}
 		return map[string]sessions.LiveSession{"s-1": {PID: 42, Stat: sessions.SessionStat{Status: "waiting"}}}
 	}
 	stop, err := s.listenHooks()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { stop(); liveSessions = old })
+	t.Cleanup(func() { stop(); liveSessions = old; hookLive.Store(liveFn(nil)) })
 	return s
 }
+
+// hookLive overrides hookServer's scan while ccs serve's own loop reads it:
+// set through this, never by reassigning liveSessions, which that loop
+// reads concurrently.
+type liveFn func() map[string]sessions.LiveSession
+
+var hookLive atomic.Value
 
 func waitHeld(t *testing.T, s *server) *heldPrompt {
 	t.Helper()

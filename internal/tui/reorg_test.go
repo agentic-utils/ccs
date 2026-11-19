@@ -19,11 +19,15 @@ import (
 
 func TestLaunchNames(t *testing.T) {
 	for cmd, want := range map[string][]string{
-		`ccs launch --name fix-login --brief b.md --cwd ~/x`:               {"fix-login"},
-		`S=/tmp; ccs launch --codex --name="probe-1" --brief $S/b.md 2>&1`: {"probe-1"},
-		`ccs launch --name a --brief x && ccs launch --name b --brief y`:   {"a", "b"},
-		`echo ccs launch`:  nil,
-		`ccs adopt --to x`: nil,
+		`ccs launch --name fix-login --brief b.md --cwd ~/x`:                                                            {"fix-login"},
+		`S=/tmp; ccs launch --codex --name="probe-1" --brief $S/b.md 2>&1`:                                              {"probe-1"},
+		`ccs launch --name a --brief x && ccs launch --name b --brief y`:                                                {"a", "b"},
+		`${CLAUDE_SKILL_DIR}/open-tab.sh istiod-1-31-upgrade "$S/launch.sh" ~/Code/x istiod-1-31-upgrade "$S/brief.md"`: {"istiod-1-31-upgrade"},
+		`cd ~/x && claude --name review-plan "look at it"`:                                                              {"review-plan"},
+		`claude -n quick-look "hi"`:                                                                                     {"quick-look"},
+		`echo ccs launch`:                                                                                               nil,
+		`claude -p "no name here"`:                                                                                      nil,
+		`ccs adopt --to x`:                                                                                              nil,
 	} {
 		if got := transcript.LaunchNames(cmd); !slices.Equal(got, want) {
 			t.Errorf("%s: %v, want %v", cmd, got, want)

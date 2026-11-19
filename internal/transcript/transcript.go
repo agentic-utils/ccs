@@ -955,8 +955,12 @@ func (f *subSpawnFile) read(path string) {
 	}
 }
 
-// launchName finds each `ccs launch … --name X` (or --name=X) in a command.
-var launchName = regexp.MustCompile(`\bccs\s+launch\b[^;&|\n]*?--name[= ]['"]?([A-Za-z0-9._-]{1,64})`)
+// launchName finds the commands that start a named session: ccs launch
+// --name X, session-handoff's open-tab.sh X, and claude --name X (or -n X)
+// run straight from a shell.
+var launchName = regexp.MustCompile(`\bccs\s+launch\b[^;&|\n]*?--name[= ]['"]?([A-Za-z0-9._-]{1,64})` +
+	`|\bopen-tab\.sh['"]?\s+['"]?([A-Za-z0-9._-]{1,64})` +
+	`|\bclaude\b[^;&|\n]*?\s(?:--name|-n)[= ]['"]?([A-Za-z0-9._-]{1,64})`)
 
 // IsReorgRun: a ccs reorg planning session, by its name (reorg-MMDD-HHMM,
 // or to the second).
@@ -981,7 +985,12 @@ func HideFromSearch(c Conversation, query string) bool {
 func LaunchNames(cmd string) []string {
 	var out []string
 	for _, m := range launchName.FindAllStringSubmatch(cmd, -1) {
-		out = append(out, m[1])
+		for _, g := range m[1:] {
+			if g != "" {
+				out = append(out, g)
+				break
+			}
+		}
 	}
 	return out
 }

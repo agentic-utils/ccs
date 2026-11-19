@@ -93,6 +93,9 @@ func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "stop":
 		stopHook(stdin, time.Now())
 		return 0 // never fail the turn's end, and print nothing: output could keep it going
+	case "session-start":
+		sessionStartHook(stdin, time.Now())
+		return 0 // never fail a session's start, and print nothing: it would become its context
 	case "child-notices":
 		return runChildNotices(args[1:], stdout, stderr)
 	case "install", "uninstall":
@@ -116,7 +119,7 @@ func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 2
 }
 
-const hookUsage = "usage: ccs hook permission | ccs hook stop | ccs hook child-notices on|off [--orchestrator <name>] | ccs hook install [--print] | ccs hook uninstall"
+const hookUsage = "usage: ccs hook permission | ccs hook stop | ccs hook session-start | ccs hook child-notices on|off [--orchestrator <name>] | ccs hook install [--print] | ccs hook uninstall"
 
 // runChildNotices is `ccs hook child-notices on|off`: whether an
 // orchestrator (the calling session, unless --orchestrator names one) is
@@ -304,12 +307,18 @@ type ourHook struct {
 	Matcher    bool
 }
 
-// ourHooks: the permission prompt hand-off to ccs serve, and the child-turn
-// notice to a session's orchestrator.
+// ourHooks: the permission prompt hand-off to ccs serve, the child-turn
+// notice to a session's orchestrator, and recording a new session's parent
+// when it starts.
 var ourHooks = []ourHook{
 	{Event: "PermissionRequest", Sub: "permission", Timeout: hookTimeout, Matcher: true},
 	{Event: "Stop", Sub: "stop", Timeout: stopHookTimeout},
+	{Event: "SessionStart", Sub: "session-start", Timeout: sessionStartTimeout},
 }
+
+// sessionStartTimeout is the SessionStart hook's timeout in the settings, in
+// seconds: longer than sessionStartDeadline, so the hook ends first.
+const sessionStartTimeout = 10
 
 // hookCommand is the command the settings run for the permission hook.
 func hookCommand() string { return hookCommandFor("permission") }
@@ -473,9 +482,21 @@ func editHookSettings(path string, install bool) (string, error) {
 		return "", err
 	}
 	if install {
-		return "added ccs's " + strings.Join(changed, " and ") + " hook to " + path + " (the old file is beside it, .before-ccs-hook). Sessions started from now on use it; restart running ones to pick it up.", nil
+		return "added ccs's " + hookList(changed) + " to " + path + " (the old file is beside it, .before-ccs-hook). Sessions started from now on use it; restart running ones to pick it up.", nil
 	}
-	return "removed ccs's " + strings.Join(changed, " and ") + " hook from " + path, nil
+	return "removed ccs's " + hookList(changed) + " from " + path, nil
+}
+
+// hookList names hooks as a sentence does: "Stop hook", "PermissionRequest
+// and Stop hooks", "PermissionRequest, Stop and SessionStart hooks".
+func hookList(events []string) string {
+	switch len(events) {
+	case 0:
+		return "hooks"
+	case 1:
+		return events[0] + " hook"
+	}
+	return strings.Join(events[:len(events)-1], ", ") + " and " + events[len(events)-1] + " hooks"
 }
 
 func newPromptID() string {

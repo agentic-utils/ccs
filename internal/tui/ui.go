@@ -738,6 +738,12 @@ func (m *model) nestFamilies() {
 				parent[i] = p
 				kids[p] = append(kids[p], i)
 			}
+			continue
+		}
+		if p := codexLauncher(m.filtered, i); p >= 0 {
+			parent[i] = p
+			kids[p] = append(kids[p], i)
+			orch[p] = true
 		}
 	}
 	// A nested session, launched or spawned, is closed when nothing in its
@@ -1025,6 +1031,29 @@ func codexSubagentBusy(c transcript.Conversation) bool {
 	}
 	t, err := time.Parse(time.RFC3339, c.LastTimestamp)
 	return err == nil && time.Since(t) < transcript.SubagentIdle
+}
+
+// codexLauncher is, for a named Codex session with no recorded parent, the
+// listed session whose transcript started it (`Launches`: open-tab.sh,
+// ccs launch or claude --name naming it, or launch_session), the newest one
+// that began before it; -1 if none. Codex has no SessionStart hook to
+// record the parent when it starts, so this is how it gets one. Claude
+// sessions get theirs from that hook, so a `ccs adopt --to none` stays put.
+func codexLauncher(items []listItem, i int) int {
+	c := items[i].conv
+	if c.Kind != transcript.KindCodex || c.Title == "" {
+		return -1
+	}
+	best := -1
+	for j, it := range items {
+		if j == i || !slices.Contains(it.conv.Launches, c.Title) || it.conv.FirstTimestamp > c.FirstTimestamp {
+			continue
+		}
+		if best < 0 || it.conv.FirstTimestamp > items[best].conv.FirstTimestamp {
+			best = j
+		}
+	}
+	return best
 }
 
 // shownAncestor is id, or when id isn't shown (a headless codex exec whose

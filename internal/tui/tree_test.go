@@ -358,3 +358,28 @@ func TestJustClosedSessionCoolsDown(t *testing.T) {
 		t.Errorf("past the cooldown it goes behind the line: %s", got)
 	}
 }
+
+// A named Codex session (no SessionStart hook to record its parent) nests
+// under the session whose transcript started it.
+func TestCodexSessionNestsUnderItsLauncher(t *testing.T) {
+	os.Remove(sessions.ParentsPath())
+	now := time.Now().UTC()
+	at := func(ago time.Duration) string { return now.Add(-ago).Format(time.RFC3339) }
+	convs := []transcript.Conversation{
+		{SessionID: "lead-id", Title: "lead", FirstTimestamp: at(time.Hour), LastTimestamp: at(0), Launches: []string{"codex-fix"}, Messages: []transcript.Message{{Role: "user", Text: "a"}}},
+		{SessionID: "cx-id", Title: "codex-fix", Kind: transcript.KindCodex, FirstTimestamp: at(time.Minute), LastTimestamp: at(0), Messages: []transcript.Message{{Role: "user", Text: "b"}}},
+		{SessionID: "late-id", Title: "late", FirstTimestamp: at(0), LastTimestamp: at(0), Launches: []string{"codex-fix"}, Messages: []transcript.Message{{Role: "user", Text: "c"}}},
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.live = map[string]bool{"lead-id": true, "cx-id": true, "late-id": true}
+	m.refilter()
+	depth := map[string]int{}
+	var order []string
+	for _, it := range m.filtered {
+		depth[it.conv.SessionID] = it.depth
+		order = append(order, it.conv.SessionID)
+	}
+	if depth["cx-id"] != 1 || slices.Index(order, "cx-id") != slices.Index(order, "lead-id")+1 {
+		t.Errorf("under lead, which launched it before it began (late began after): %v %v", depth, order)
+	}
+}

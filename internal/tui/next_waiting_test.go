@@ -65,11 +65,12 @@ func TestTabCountsHeldSkipsSnoozedElseNothing(t *testing.T) {
 		t.Fatalf("nothing waits: Tab stays on the list (%s, usage %v) with a grey note (%q)", selected(m), m.showUsage, m.errorMsg)
 	}
 	m.heldPrompt = map[string]mcp.HeldPrompt{"asks": {ID: "h1", Session: "asks", Tool: "Bash"}}
-	m.marks = &sessionMarks{Snoozed: map[string]time.Time{"asks": time.Now().Add(time.Hour)}}
+	// Since now: nothing is done and unread, so only the held question could count.
+	m.marks = &sessionMarks{Since: time.Now(), Snoozed: map[string]time.Time{"asks": time.Now().Add(time.Hour)}}
 	if m.anyWaiting() {
 		t.Fatal("a snoozed session doesn't count")
 	}
-	m.marks = &sessionMarks{}
+	m.marks = &sessionMarks{Since: time.Now()}
 	m.cursor = len(m.filtered) - 1
 	if m = tab(m); m.showUsage || selected(m) != "asks" {
 		t.Fatalf("a held question counts: on %s usage %v", selected(m), m.showUsage)
@@ -103,7 +104,7 @@ func TestTabHintAndUsageChord(t *testing.T) {
 	m = tabModel(t)
 	m.width = 160
 	head := strip2(strings.Split(m.View(), "\n")[0])
-	if !strings.Contains(head, "tab next waiting") || !strings.Contains(head, "^X Y usage") {
+	if !strings.Contains(head, "tab needs you") || !strings.Contains(head, "^X Y usage") {
 		t.Errorf("something waits: %q", head)
 	}
 	if m = usageChord(m); !m.showUsage {

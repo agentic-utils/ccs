@@ -194,8 +194,10 @@ Key bindings:
 
  ccs
   Ctrl+R          Refresh sessions, PRs and allowance now; check for an update
-  Tab             Select the next session waiting on you (a question or prompt),
-                  wrapping round; with none, says "nothing needs you"
+  Tab             Select the next session that needs you, by priority: a held
+                  question, menu or prompt; then one that asked you something;
+                  then one done that you haven't read. Within each, the next
+                  after the selection, wrapping; with none, "nothing needs you"
   Ctrl+X Y        Your usage: token use of every session in the last 12h, and
                   your allowance (Ctrl+X Y or Esc to go back)
   Ctrl+L          What changed in each ccs release

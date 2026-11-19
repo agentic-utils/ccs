@@ -145,6 +145,8 @@ type model struct {
 	serveQRURL       string            // the address it encodes
 	serveQRErr       string            // why there's no address, if not
 	serve            mcp.ServiceStatus // ccs serve's launchd agent, as last read (serveCheckCmd)
+	setup            *serveSetup       // ^X B's setup popup (serve_setup.go), nil when closed
+	servePreview     previewState      // the preview child started from it, as shown
 	serveCheckedAt   time.Time
 	serveChecking    bool
 	confirmRestart   string         // ^X R asked whether to restart this session: y restarts it
@@ -1291,6 +1293,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case setupDoneMsg:
+		return m, m.applySetupDone(msg)
+	case previewMsg:
+		m.applyPreview(msg)
+		return m, nil
 	case serveStatusMsg, serveDoneMsg:
 		return m, m.applyServe(msg)
 
@@ -1800,6 +1807,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.snoozeOpen { // owns the keyboard until closed
 			return m.snoozeKey(k)
+		}
+		if m.setup != nil { // owns the keyboard until closed
+			return m.serveSetupKey(msg)
 		}
 		if m.serveQROpen { // owns the keyboard until closed
 			return m.serveQRKey(k)
@@ -2602,6 +2612,7 @@ func (m model) overPopups() []popup {
 		{m.linksOpen, model.linksPopup},
 		{m.snoozeOpen, model.snoozePopup},
 		{m.serveQROpen, model.serveQRPopup},
+		{m.setup != nil, model.serveSetupPopup},
 		{len(m.reopen) > 0, model.reopenPopup},
 		{m.reorgPlan != nil, model.reorgPopup},
 		{m.offerShown(), model.orchestratorPopup},
@@ -2725,8 +2736,9 @@ func (m model) shortcuts() [][2]string {
 	add(showHeadless, "^X H", "hide headless runs")
 	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
 	add(m.autoFocus, "^X A", "stop switching to sessions that wait on you")
-	add(!m.serve.Running, "^X B", "start ccs serve, the sessions in a browser (its launchd agent)")
-	add(m.serve.Running, "^X B", "ccs serve's address and QR code for your phone; s there stops it (asks first)")
+	add(!m.serve.Installed, "^X B", "set up ccs serve: try it on this Mac now, or set it up for your phone")
+	add(m.serve.Installed && !m.serve.Running, "^X B", "start ccs serve, the sessions in a browser (its launchd agent)")
+	add(m.serve.Running, "^X B", "ccs serve's address and QR code; s stops it (asks first), e edits its setup")
 	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
 	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
 	add(m.profileStop == nil, "^X Q", "record a CPU profile, for when ccs feels slow")

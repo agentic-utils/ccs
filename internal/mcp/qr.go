@@ -81,6 +81,23 @@ func ServeURL() (string, error) {
 
 // plistHost is the --host among a plist's ProgramArguments, "" if none.
 func plistHost(raw []byte) string {
+	args := plistArgs(raw)
+	for i, a := range args {
+		if (a == "--host" || a == "-host") && i+1 < len(args) {
+			return args[i+1]
+		}
+		if v, ok := strings.CutPrefix(a, "--host="); ok {
+			return v
+		}
+		if v, ok := strings.CutPrefix(a, "-host="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// plistArgs is a plist's ProgramArguments.
+func plistArgs(raw []byte) []string {
 	d := xml.NewDecoder(strings.NewReader(string(raw)))
 	var args []string
 	inArgs, key := false, ""
@@ -111,18 +128,7 @@ func plistHost(raw []byte) string {
 			}
 		}
 	}
-	for i, a := range args {
-		if (a == "--host" || a == "-host") && i+1 < len(args) {
-			return args[i+1]
-		}
-		if v, ok := strings.CutPrefix(a, "--host="); ok {
-			return v
-		}
-		if v, ok := strings.CutPrefix(a, "-host="); ok {
-			return v
-		}
-	}
-	return ""
+	return args
 }
 
 // printQR writes url's QR code and the address under it.

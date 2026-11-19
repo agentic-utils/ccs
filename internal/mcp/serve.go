@@ -141,6 +141,9 @@ func newServer(cfg serveConfig) *server {
 	return s
 }
 
+// defaultServeAddr is where ccs serve listens unless --addr says otherwise.
+const defaultServeAddr = "127.0.0.1:7467"
+
 // serveFlags are `ccs serve`'s flags, checked: what RunServe runs with and
 // what `ccs serve install` writes into its launchd agent.
 type serveFlags struct {
@@ -155,7 +158,7 @@ type serveFlags struct {
 func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&f.addr, "addr", "127.0.0.1:7467", "loopback address to listen on")
+	fs.StringVar(&f.addr, "addr", defaultServeAddr, "loopback address to listen on")
 	fs.StringVar(&f.host, "host", "", "the public hostname the tunnel serves, e.g. ccs.example.com (required)")
 	fs.StringVar(&f.team, "team", "", "Cloudflare Access team domain, e.g. me.cloudflareaccess.com (required)")
 	fs.StringVar(&f.aud, "aud", "", "the Access application's AUD tag (required)")
@@ -197,7 +200,34 @@ func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 		fmt.Fprintln(stderr, "ccs serve: --hook-wait must be more than 0 and at most", maxHookWait)
 		return f, 2
 	}
+	if !f.preview {
+		if err := accessFlagsOK(f); err != nil {
+			fmt.Fprintln(stderr, "ccs serve:", err)
+			return f, 2
+		}
+	}
 	return f, 0
+}
+
+// accessFlagsOK refuses Access values that can't be right: a hostname with
+// a scheme, path, port or space; a team or AUD tag with a space or slash;
+// an email list with an entry that isn't an address.
+func accessFlagsOK(f serveFlags) error {
+	if strings.ContainsAny(f.host, " /:\t") || strings.HasPrefix(f.host, ".") || strings.HasSuffix(f.host, ".") {
+		return fmt.Errorf("--host is the bare hostname the tunnel serves, such as ccs.example.com, not %q", f.host)
+	}
+	if strings.ContainsAny(f.team, " /:\t") {
+		return fmt.Errorf("--team is your Access team, such as me or me.cloudflareaccess.com, not %q", f.team)
+	}
+	if strings.ContainsAny(f.aud, " /\t") {
+		return fmt.Errorf("--aud is the Access application's AUD tag, a string of letters and digits, not %q", f.aud)
+	}
+	for _, e := range strings.Split(f.emails, ",") {
+		if e = strings.TrimSpace(e); e != "" && (!strings.Contains(e, "@") || strings.ContainsAny(e, " /")) {
+			return fmt.Errorf("--email takes email addresses, separated by commas: %q isn't one", e)
+		}
+	}
+	return nil
 }
 
 // RunServe is `ccs serve`, and `ccs serve install|uninstall|start|stop|status`

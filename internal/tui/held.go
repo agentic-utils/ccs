@@ -129,7 +129,7 @@ func releaseHold(why string) {
 	tuiHold.h = nil
 	tuiHold.Unlock()
 	if h != nil {
-		h.Close(why)
+		h.Handoff(why) // each hook dials the next holder: a restart keeps its questions
 	}
 }
 
@@ -541,7 +541,3 @@ var heldCount = func() int {
 	}
 	return 0
 }
-
-// heldRestartConfirm is how long a second Enter on the update offer has to
-// confirm a restart that would send held prompts back to their tabs.
-const heldRestartConfirm = 5 * time.Second

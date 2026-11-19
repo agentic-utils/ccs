@@ -456,7 +456,7 @@ func Main(v string) {
 		stop()
 	}
 	sessions.CloseInboxes()
-	releaseHold("ccs quit") // prompts it held go to their tabs
+	releaseHold("ccs quit") // prompts it held are handed back: their hooks dial the next ccs
 	stopPreview()           // a preview started from ^X B lives only as long as this ccs
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

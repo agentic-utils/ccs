@@ -215,11 +215,10 @@ func (m model) updatePopup() string {
 		body = fmt.Sprintf("Updating to %s failed:\n%s\nDetails: %s\n\n", m.updateTo, transcript.Truncate(m.updateErr, 60), state.UpdateLogPath)
 	}
 	if m.upgrade != nil && m.updateErr != "" {
+		body += m.heldUpdateNote()
 		body += hints(keyEnter, "retry", keyEsc, "later")
 	} else if m.upgrade != nil {
-		if m.updateWarn != "" {
-			body += m.updateWarn + "\n\n"
-		}
+		body += m.heldUpdateNote()
 		body += hints(keyEnter, "update and restart", keyEsc, "later", "^L", "changelog")
 	} else {
 		body += "Update with your package manager.    " + hints(keyEsc, "close")
@@ -230,6 +229,15 @@ func (m model) updatePopup() string {
 		Padding(1, 3).
 		Render(body)
 	return box
+}
+
+// heldUpdateNote tells the offer's reader that questions held now survive the
+// restart: each hook dials the new ccs, which holds it again.
+func (m model) heldUpdateNote() string {
+	if n := heldCount(); n > 0 {
+		return fmt.Sprintf("%d held question(s) come back once ccs restarts.\n\n", n)
+	}
+	return ""
 }
 
 // changelogBlock fits the changelog into the popup: lines cut to the popup's
@@ -273,8 +281,9 @@ const updatedEnv = "CCS_UPDATED_FROM"
 // awayForUpdate: an automatic update may restart ccs now. You're away (ccs
 // isn't focused, or no key for autoUpdateIdle) and nothing would be lost or
 // cut short: no prompt or popup open, no unsent text in any message box, no
-// session or orchestrator opening, and no prompt held for this list (a
-// restart would send it back to its tab). The restart keeps the screen,
+// session or orchestrator opening, and no prompt held for this list (it
+// comes back after the restart, but one being answered would be cut off).
+// The restart keeps the screen,
 // search and selection.
 func (m model) awayForUpdate() bool {
 	if heldCount() > 0 {

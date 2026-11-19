@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
@@ -110,16 +111,94 @@ func (m model) chatAsk() []string {
 		return nil
 	}
 	lines := askLines(conv, m.paneWidth()-2)
-	if h, held := m.heldPrompt[conv.SessionID]; held {
+	if h, _, held := m.heldDrawn(); held {
 		lines = m.heldPaneLines(h)
+		for i, l := range lines {
+			lines[i] = "  " + l
+		}
+		if body, tail, ok := m.reviewParts(h, lines); ok {
+			out, _ := reviewWindow(body, mn(m, h).revTop, m.askLimit()-len(tail))
+			return append(out, tail...)
+		}
+		return cutAsk(lines, m.askLimit())
 	}
 	for i, l := range lines {
 		lines[i] = "  " + l
 	}
-	if limit := max(m.height/2, 3); len(lines) > limit { // its tab shows the rest
-		lines = append(lines[:limit-1], "  \033[90m… its tab shows the rest\033[0m")
+	return cutAsk(lines, m.askLimit())
+}
+
+// askLimit is how many rows the bottom pane gives a question: half the screen.
+func (m model) askLimit() int { return max(m.height/2, 3) }
+
+// cutAsk cuts a question taller than the pane; its tab shows the rest.
+func cutAsk(lines []string, limit int) []string {
+	if len(lines) > limit {
+		return append(lines[:limit-1], "  \033[90m… its tab shows the rest\033[0m")
 	}
 	return lines
+}
+
+// reviewWindow is the part of a held menu's review on screen from line top:
+// all of it when it fits, else limit-1 lines and a "↓ more" while the end
+// isn't shown. atEnd says the last line is on screen, which is what lets
+// Enter send it (noteReview records it).
+func reviewWindow(lines []string, top, limit int) (out []string, atEnd bool) {
+	if len(lines) <= limit {
+		return lines, true
+	}
+	room := limit - 1
+	top = min(max(top, 0), len(lines)-room)
+	if top+room >= len(lines) {
+		return lines[top:], true
+	}
+	return append(append([]string{}, lines[top:top+room]...), "  \033[90m↓ more (↑↓ PgUp/PgDn scroll; enter sends once you've seen the end)\033[0m"), false
+}
+
+// noteReview clamps a held menu's review scroll to what the pane shows and
+// marks it seen once its last line has been drawn. From Update, after
+// every message, so it reflects what is on screen when the next key comes.
+func (m *model) noteReview() {
+	h, _, ok := m.heldDrawn()
+	if !ok || len(h.Questions) == 0 {
+		return
+	}
+	mn := m.menus[h.ID]
+	if mn == nil || mn.step < len(h.Questions) {
+		return
+	}
+	body, tail, _ := m.reviewParts(h, m.heldPaneLines(h))
+	limit := m.askLimit() - len(tail)
+	if len(body) > limit {
+		mn.revTop = min(max(mn.revTop, 0), len(body)-(limit-1))
+	} else {
+		mn.revTop = 0
+	}
+	if _, atEnd := reviewWindow(body, mn.revTop, limit); atEnd {
+		mn.revSeen = true
+	}
+}
+
+// reviewParts splits a held menu's pane at its review into the review
+// itself, which scrolls, and what follows it (the refusal or outcome note,
+// the hint row), which stays below it on screen. ok is false unless the
+// menu is at its review.
+func (m model) reviewParts(h mcp.HeldPrompt, pane []string) (body, tail []string, ok bool) {
+	mnu := m.menus[h.ID]
+	if mnu == nil || len(h.Questions) == 0 || mnu.step < len(h.Questions) {
+		return nil, nil, false
+	}
+	n := len(m.heldLines(h, m.paneWidth()-4, m.heldKeysActive()))
+	n = min(n, len(pane))
+	return pane[:n], pane[n:], true
+}
+
+// mn is a held prompt's menu, or a fresh one (for drawing).
+func mn(m model, h mcp.HeldPrompt) *heldMenu {
+	if x := m.menus[h.ID]; x != nil {
+		return x
+	}
+	return newHeldMenu(h.ID)
 }
 
 // chatTarget is the live session the fast refresh follows: the selected one.

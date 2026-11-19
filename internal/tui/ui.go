@@ -89,7 +89,7 @@ type model struct {
 	blurred          bool                 // the terminal says ccs isn't focused: nothing is being seen
 	menus            map[string]*heldMenu // each held question menu's progress, by prompt id (menu.go)
 	menuShown        string               // the held prompt whose menu is on screen: menuFresh starts when it changes
-	menuLeft         string               // the held prompt left with Esc: its keys go to the list until it's selected again (or →, Tab, Enter)
+	menuLeft         string               // the held prompt left with Esc: its keys go to the list until it's selected again (or →, Enter)
 	viewing          string               // the done session selected and seen: marked seen when the selection leaves it
 	snoozeOpen       bool                 // the ^X S picker
 	snoozeCursor     int
@@ -1222,7 +1222,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if n.showUsage || n.helpOpen || n.popupOpen() { // another screen took over: the pane loses the keys
 		n.heldFocus = false
 	}
+	// A search being typed takes the keys from a held menu for good: clearing
+	// it doesn't give them back; selecting the session again or → does.
+	if n.textInput.Value() != "" {
+		if h, _, ok := n.selectedHeld(); ok {
+			n.heldFocus, n.menuLeft = false, h.ID
+		}
+	}
 	n.showMenu(n.heldShown())
+	n.noteReview()
 	if pr := n.prCmd(); pr != nil {
 		cmd = tea.Batch(cmd, pr)
 	}
@@ -1772,7 +1780,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		prevKey := m.lastKeyAt
 		m.lastKeyAt = time.Now()
-		if h, _, ok := m.selectedHeld(); ok && m.menuLeft == h.ID && (msg.String() == "right" || msg.String() == "tab") && m.textInput.Value() == "" {
+		if h, _, ok := m.selectedHeld(); ok && m.menuLeft == h.ID && msg.String() == "right" && m.textInput.Value() == "" {
 			m.menuLeft = "" // give the held prompt the keys again
 			return m, nil
 		}

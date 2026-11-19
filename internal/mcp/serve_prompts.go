@@ -42,9 +42,22 @@ type heldPrompt struct {
 	// its tab too, and a later status (or another wait) means it was
 	// answered there (Holder.Reconcile).
 	waitAt atomic.Int64
-	misses atomic.Int32  // scans in a row its session was missing from (a file caught mid-rewrite drops out of one)
-	drop   chan struct{} // closed (once it's taken from the book) to let it go with no decision
-	why    string        // why it was dropped, set before drop is closed
+	// pid is the session's claude process as last seen in a scan (0 until
+	// then): a session missing from a scan (its file unreadable, or caught
+	// mid-rewrite) is unknown, and only this pid having exited ends it.
+	pid      atomic.Int64
+	drop     chan struct{} // closed (once it's taken from the book) to let it go with no decision
+	dropOnce sync.Once
+	why      string // why it was dropped, set before drop is closed
+}
+
+// letGoNow closes p.drop once, so every waiter on it wakes; the caller must
+// have taken p from the book (so no answer can be on its way).
+func (p *heldPrompt) letGoNow(why string) {
+	p.dropOnce.Do(func() {
+		p.why = why
+		close(p.drop)
+	})
 }
 
 type promptBook struct {

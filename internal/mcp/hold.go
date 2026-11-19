@@ -14,7 +14,6 @@ package mcp
 
 import (
 	"bufio"
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 )
@@ -299,10 +299,16 @@ func (h *Holder) holdPrompt(c net.Conn) {
 			letGo(why)
 			return
 		}
-		r := <-p.reply
-		r.Nonce = p.nonce
-		c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		json.NewEncoder(c).Encode(r)
+		// Taken by an answer (its reply comes) or by a drop (Reconcile, or
+		// an answer refused once its tab settled it): wake on either.
+		select {
+		case r := <-p.reply:
+			r.Nonce = p.nonce
+			c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			json.NewEncoder(c).Encode(r)
+		case <-p.drop:
+			letGo(p.why)
+		}
 	}
 	for {
 		select {
@@ -339,14 +345,20 @@ func (h *Holder) holdPrompt(c net.Conn) {
 // status is written a moment after the hook starts).
 var tabGrace = 10 * time.Second
 
+// waitSlack is how far before a prompt's arrival its own wait may be
+// stamped: the hook and the status write happen within a second of each
+// other, in either order.
+const waitSlack = 2 * time.Second
+
+// pidAlive is proc.PIDAlive; stubbed in tests.
+var pidAlive = proc.PIDAlive
+
 // Reconcile drops the held prompts their session no longer waits on.
 // Claude Code shows the same menu in the session's tab while the hook
 // holds it, and doesn't stop the hook when it's answered there, so without
-// this ccs would keep an answerable copy of a settled prompt. A prompt is
-// dropped (no decision: the hook prints nothing) when its session has
-// gone, isn't waiting any more, or waits on something newer (another
-// statusUpdatedAt). live is a sessions.ScanSessions result; the TUI calls
-// this from its live tick and ccs serve from its own loop, every 2s.
+// this ccs would keep an answerable copy of a settled prompt. live is a
+// sessions.ScanSessions result; the TUI calls this from its live tick and
+// ccs serve from its own loop, every 2s.
 func (h *Holder) Reconcile(live map[string]sessions.LiveSession) {
 	now := h.cfg.Now()
 	for _, p := range h.book.list("") {
@@ -357,34 +369,53 @@ func (h *Holder) Reconcile(live map[string]sessions.LiveSession) {
 }
 
 // settled says why p's prompt is no longer waiting in its session ("" if it
-// still is, or it can't be told yet), recording when it was first seen
-// waiting.
+// still is, or it can't be told).
+//
+// Measured on Claude Code 2.1.328: a session asks one permission or
+// question at a time, even for tool calls made together. Each prompt gets
+// its own hook run and its own wait, a `waiting` status with a newer
+// statusUpdatedAt, written within about a second of the hook starting.
+// Answering it in the tab sets `busy` (about a second), then the next
+// prompt's wait with a newer time, or `idle`. So each prompt is bound to the
+// first wait stamped no earlier than its arrival (less waitSlack); an older
+// wait still on show is the file not caught up yet, never this prompt's.
+// Once bound, the status leaving `waiting`, or a newer wait, means it was
+// answered in its tab. A session missing from a scan (file unreadable or
+// mid-rewrite) is unknown and keeps the copy; it ends only when its claude
+// process, as last seen, has exited.
 func settled(p *heldPrompt, live map[string]sessions.LiveSession, now time.Time) string {
 	ls, ok := live[p.req.SessionID]
 	if !ok {
-		if p.misses.Add(1) < 2 {
-			return ""
+		if pid := int(p.pid.Load()); pid > 0 && !pidAlive(pid) {
+			return "its session ended"
 		}
-		return "its session ended"
+		return ""
 	}
-	p.misses.Store(0)
+	if ls.PID > 0 {
+		p.pid.Store(int64(ls.PID))
+	}
 	at := int64(0)
 	if !ls.Stat.Since.IsZero() {
 		at = ls.Stat.Since.UnixMilli()
 	}
+	was := p.waitAt.Load()
 	switch ls.Stat.Status {
 	case "":
 		return "" // status not read this time
 	case "waiting":
-		switch was := p.waitAt.Load(); {
-		case was == 0: // first seen waiting: when, or -1 when its file has no time
-			p.waitAt.Store(cmp.Or(at, -1))
-		case at != 0 && was > 0 && at != was:
-			return "answered in its tab"
+		switch {
+		case was == 0 && at == 0:
+			p.waitAt.Store(-1) // its file has no time: bound, without one
+		case was == 0 && at < p.at.Add(-waitSlack).UnixMilli():
+			return "" // an older wait still on show: not this prompt's yet
+		case was == 0:
+			p.waitAt.Store(at)
+		case was > 0 && at > was:
+			return "answered in its tab" // the next prompt's wait
 		}
 		return ""
 	}
-	if p.waitAt.Load() == 0 && now.Sub(p.at) < tabGrace {
+	if was == 0 && now.Sub(p.at) < tabGrace {
 		return "" // not shown as waiting yet
 	}
 	return "answered in its tab"
@@ -395,8 +426,7 @@ func (h *Holder) drop(p *heldPrompt, why string) {
 	if h.book.take(p.id) == nil || p.drop == nil {
 		return
 	}
-	p.why = why
-	close(p.drop)
+	p.letGoNow(why)
 }
 
 // answeredInTab checks p's session just before an answer is sent: one its
@@ -468,6 +498,14 @@ func (h *Holder) control(req controlRequest, who string) controlReply {
 		}
 		if p = h.book.take(req.Prompt); p == nil { // another answer got there first
 			return controlReply{Error: gone}
+		}
+		// Once more, as late as it can be: the tab may have answered since
+		// the check above. Taken now, so letting it go is ours to do.
+		if settled(p, liveSessions(), h.cfg.Now()) == "answered in its tab" {
+			if p.drop != nil {
+				p.letGoNow("answered in its tab")
+			}
+			return controlReply{Error: errAnsweredInTab}
 		}
 		p.reply <- reply
 		state.LogActivity("%s: %s settled %s's %s prompt %s: %s", h.cfg.Who, who, shortID(p.req.SessionID), p.req.ToolName, p.id, req.Choice)

@@ -14,26 +14,10 @@ jobs:
         with:
           go-version: "1.24"
 
+      # The race detector over the whole suite: prompts are held and answered
+      # across goroutines and sockets, and it costs about 10% more time.
       - name: Run tests
-        run: go test -v -cover ./...
+        run: go test -race -v -cover ./...
 
       - name: Build
         run: go build -o ccs .
-
-  # The race detector over the code that holds and answers prompts across
-  # goroutines and sockets (the hold, hook, serve and control paths) and
-  # the TUI. Not the whole suite yet: internal/github and the Stop-hook
-  # tests in internal/mcp have known races of their own.
-  race:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-
-      - name: Race tests
-        run: |
-          go test -race -count=1 ./internal/tui
-          go test -race -count=1 -run 'Hold|Held|Hook|Tab|Serve|Control|Peer|Preview|Notes|Other|Reconcile|Drop|Timeout|Parallel|Missing|Recycled|Predecessor|Redial|ReRegistration|Crash|Prompt|Access|Loopback|Setup|QR|Tunnel' -skip 'StopHook|ChildTurn' ./internal/mcp

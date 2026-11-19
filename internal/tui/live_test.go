@@ -349,6 +349,8 @@ func TestMovedTranscript(t *testing.T) {
 	transcript.GetProjectsDir = func() string { return root }
 	t.Cleanup(func() { transcript.GetProjectsDir = old })
 	id := "moved-session"
+	movedChecks.Delete(id) // an earlier run's check would throttle this one
+	t.Cleanup(func() { movedChecks.Delete(id) })
 	oldPath, newPath := filepath.Join(root, "-old", id+".jsonl"), filepath.Join(root, "-new", id+".jsonl")
 	for i, p := range []string{oldPath, newPath} {
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {

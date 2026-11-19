@@ -10,8 +10,10 @@ CLI tool to launch, watch, search and resume coding CLI sessions (Claude Code an
 
 ```bash
 go build
-go test -v -cover ./...
+go test -race -v -cover ./...
 ```
+
+CI runs the whole suite with `-race`, so every test must be race-free and repeatable: a stub read by a goroutine the test started is put back only once that goroutine has ended, and package-level state (caches, throttles, state files) is reset or pointed at `t.TempDir()` per test. `go test -race -count=3 ./...` checks both.
 
 ### Test Coverage
 

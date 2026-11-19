@@ -17,12 +17,15 @@ func TeamLead(team string) string {
 	if team == "" || strings.ContainsAny(team, `/\`) || team == "." || team == ".." {
 		return ""
 	}
+	// Keyed by the config's path: a team is the same team only in the same
+	// teams folder.
+	path := filepath.Join(TeamsDir(), team, "config.json")
 	teamLeads.Lock()
 	defer teamLeads.Unlock()
-	if id, ok := teamLeads.m[team]; ok {
+	if id, ok := teamLeads.m[path]; ok {
 		return id
 	}
-	data, err := os.ReadFile(filepath.Join(TeamsDir(), team, "config.json"))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -32,7 +35,7 @@ func TeamLead(team string) string {
 	if json.Unmarshal(data, &cfg) != nil || cfg.LeadSessionID == "" {
 		return ""
 	}
-	teamLeads.m[team] = cfg.LeadSessionID
+	teamLeads.m[path] = cfg.LeadSessionID
 	return cfg.LeadSessionID
 }
 

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -629,16 +630,16 @@ func TestPRDetailsReadsEveryPage(t *testing.T) {
 }
 
 // countDetailReads counts the REST calls about PRs from here on.
-func countDetailReads(t *testing.T) *int {
+func countDetailReads(t *testing.T) *atomic.Int64 {
 	t.Helper()
-	n, run := 0, RunGH
+	n, run := new(atomic.Int64), RunGH
 	RunGH = func(a ...string) ([]byte, error) {
 		if a[0] == "api" && strings.HasPrefix(a[1], "repos/") {
-			n++
+			n.Add(1) // prDetailsAll reads PRs in parallel
 		}
 		return run(a...)
 	}
-	return &n
+	return n
 }
 
 func TestWatchSkipsAnUnchangedSettledPRUntilAFullRead(t *testing.T) {
@@ -651,11 +652,11 @@ func TestWatchSkipsAnUnchangedSettledPRUntilAFullRead(t *testing.T) {
 	reads := countDetailReads(t)
 	a.runs = [][3]string{{"test", "completed", "failure"}} // a re-run: updatedAt doesn't move
 
-	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || *reads != 0 {
-		t.Errorf("unchanged: events %v, %d reads", got, *reads)
+	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || reads.Load() != 0 {
+		t.Errorf("unchanged: events %v, %d reads", got, reads.Load())
 	}
-	if got := passEvents(t, now.Add(PRFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || *reads == 0 {
-		t.Errorf("after prFullEvery: events %v, %d reads", got, *reads)
+	if got := passEvents(t, now.Add(PRFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || reads.Load() == 0 {
+		t.Errorf("after prFullEvery: events %v, %d reads", got, reads.Load())
 	}
 }
 
@@ -689,8 +690,8 @@ func TestWatchKeepsReadingPRsNotSettled(t *testing.T) {
 	if got := passEvents(t, now.Add(3*time.Minute)); !strings.Contains(strings.Join(got, " "), "checks_passed") {
 		t.Errorf("pending checks are read every pass: %v", got)
 	}
-	if *reads < 3 { // each of the three PRs at least once
-		t.Errorf("%d reads, want every PR read", *reads)
+	if reads.Load() < 3 { // each of the three PRs at least once
+		t.Errorf("%d reads, want every PR read", reads.Load())
 	}
 }
 
@@ -722,11 +723,11 @@ func TestWatchSkipsAnUnchangedGreenDraft(t *testing.T) {
 	g.prs = []*fakePR{a}
 	passEvents(t, now)
 	reads := countDetailReads(t)
-	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || *reads != 0 {
-		t.Errorf("unchanged draft: events %v, %d reads", got, *reads)
+	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || reads.Load() != 0 {
+		t.Errorf("unchanged draft: events %v, %d reads", got, reads.Load())
 	}
 	a.draft, a.updatedAt = false, "2026-11-03T09:04:00Z" // marked ready: updatedAt moves
-	if passEvents(t, now.Add(6*time.Minute)); *reads == 0 {
+	if passEvents(t, now.Add(6*time.Minute)); reads.Load() == 0 {
 		t.Error("a draft marked ready must be read")
 	}
 	if p := func() *WatchedPR { st, _ := LoadPRWatchState(); return st.PRs[a.url()] }(); p.Draft || p.Threads == nil {

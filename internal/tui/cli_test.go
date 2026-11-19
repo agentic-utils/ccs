@@ -67,7 +67,7 @@ func TestProfileChord(t *testing.T) {
 	m.width, m.height = 200, 30
 	m, _ = chord(m, "q")
 	if m.profileStop == nil || !strings.Contains(m.View(), "recording profile") {
-		t.Fatal("^X Q starts recording and says so in the header")
+		t.Fatalf("^X Q starts recording and says so in the header: %q", m.errorMsg)
 	}
 	path := m.profilePath
 	if filepath.Dir(path) != filepath.Dir(state.UpdateLogPath) {

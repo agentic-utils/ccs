@@ -272,12 +272,10 @@ func clipImageCmd() tea.Msg {
 	return clipImageMsg{path: path, err: err}
 }
 
-// imageBox is the message box a pasted image goes to: the overlay's, or the
-// selected live session's whichever box has focus. why says why there's none.
+// imageBox is the message box a pasted image goes to: the selected live
+// session's. why says why there's none.
 func (m *model) imageBox() (in *textinput.Model, id, why string) {
 	switch {
-	case m.waitOpen:
-		return &m.waitInput, m.waitID, ""
 	case len(m.filtered) == 0 || !m.selectedLive():
 		return nil, "", "Only a session open in claude (●) can receive an image"
 	case m.boxHidden():
@@ -318,9 +316,7 @@ func (m *model) attachImage(path string) {
 	}
 	in.SetValue(string(v[:pos]) + text + string(v[pos:]))
 	in.SetCursor(pos + len([]rune(text)))
-	if !m.waitOpen {
-		m.chatFocus = true
-	}
+	m.chatFocus = true
 }
 
 // pasteImages handles text pasted as image paths; false leaves it to be text.

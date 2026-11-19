@@ -138,7 +138,6 @@ type model struct {
 	heldNote         string            // the pane's last held-prompt outcome
 	heldErr          string            // the pane's last held-prompt error
 	selectHandled    map[string]string // SessionID -> the wait (or held prompt) auto-select has dealt with
-	waitNote         string            // the overlay's last outcome, shown until the next key
 	serveQROpen      bool              // ^X B's popup while the agent runs: its address and QR code
 	serveQR          string            // the QR code, drawn
 	serveQRWidth     int               // its width in cells
@@ -169,17 +168,6 @@ type model struct {
 	held       map[string]bool                 // a receipt said the session is holding the message for approval
 	sending    bool
 
-	// Input-prompt overlay (see wait*): live sessions waiting on the user.
-	waitOpen       bool              // the overlay is open (Ctrl+X W); it owns the keyboard
-	waitID         string            // the session it shows
-	waitInput      textinput.Model   // the shown session's draft
-	waitDrafts     map[string]string // the other sessions' drafts, so a draft never follows you to another session
-	waitErr        string            // the overlay's own errors, kept apart from the main screen's
-	waitScroll     int               // like previewScroll, for the overlay's transcript
-	waitPreview    *previewCache     // the overlay's transcript, wrapped to its width
-	waitDue        map[string]bool   // sessions with a wait (or a snooze that ran out) not yet seen: the banner shows them
-	snoozed        map[string]snoozeRec
-	snooze         time.Duration                   // CCS_SNOOZE
 	unverified     map[string]bool                 // live sessions whose pid couldn't be checked against their file
 	lastScan       map[string]sessions.LiveSession // the last live tick's sessions, so the next can keep one whose file is briefly unreadable
 	reload         func() ([]listItem, error)      // re-scans conversations; nil disables auto-refresh
@@ -350,15 +338,7 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		}
 		return m
 	}
-	if m.waitOpen && !m.popupAboveWait() { // the wheel scrolls its transcript, nothing else reacts
-		if msg.Button == tea.MouseButtonWheelUp {
-			m.waitScroll = min(m.waitScroll+3, m.maxWaitScroll())
-		} else if msg.Button == tea.MouseButtonWheelDown {
-			m.waitScroll = max(0, m.waitScroll-3)
-		}
-		return m
-	}
-	if m.waitOpen || m.popupAboveWait() || m.showUsage || m.prompting() || msg.Action != tea.MouseActionPress {
+	if m.popupOpen() || m.showUsage || m.prompting() || msg.Action != tea.MouseActionPress {
 		return m
 	}
 	if msg.Button == tea.MouseButtonLeft && msg.Y == 1 && cswapPath() != "" {
@@ -489,19 +469,14 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 	chat.Cursor.SetMode(cursor.CursorStatic)
 	chat.Focus() // only fed keys while chatFocus; drawn without a cursor otherwise
 
-	wait := chat
 	links := textinput.New()
 	links.Prompt = "> "
 	links.Placeholder = "type to filter..."
 	links.Cursor.SetMode(cursor.CursorStatic)
 	links.Focus()
-	snooze, ok := snoozeLength(os.Getenv("CCS_SNOOZE"))
 	m := model{
 		chatInput:   chat,
-		waitInput:   wait,
 		linksInput:  links,
-		waitPreview: &previewCache{},
-		snooze:      snooze,
 		items:       items,
 		textInput:   ti,
 		claudeFlags: claudeFlags,
@@ -511,9 +486,6 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		hits:        &hitCounter{byID: make(map[string]int)},
 		prs:         make(map[string]github.PRInfo),
 		prSelAsked:  make(map[string]bool),
-	}
-	if !ok {
-		m.errorMsg = fmt.Sprintf("CCS_SNOOZE=%q isn't a duration like 15m; snoozing for %s", os.Getenv("CCS_SNOOZE"), shortDuration(snooze))
 	}
 	m.updateFilter()
 	return m
@@ -1285,12 +1257,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.listHeight = 3
 		}
 		// The inputs scroll their text during Update, so their width must be set here, not only on View's copy.
-		inner, _ := m.waitLayout()
-		m.chatInput.Width, m.waitInput.Width = chatInputWidth(m.paneWidth()), chatInputWidth(inner)
-		if m.waitOpen && m.height < waitMinHeight {
-			m.closeWait()
-			m.errorMsg = waitTooShort
-		}
+		m.chatInput.Width = chatInputWidth(m.paneWidth())
 		// Clear so a shrink doesn't leave wider stale rows behind.
 		return m, tea.ClearScreen
 
@@ -1473,8 +1440,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case heldDoneMsg:
 		m.applyHeldDone(msg)
-		if !m.waitOpen && m.waitNote != "" { // answered from the bottom pane's ^X W hint? show it there too
-			m.note(m.waitNote)
+		switch { // the pane goes once it's settled: say how it went where it stays
+		case m.heldErr != "":
+			m.errorMsg = m.heldErr
+		case m.heldNote != "":
+			m.note(m.heldNote)
 		}
 		return m, m.heldCmd()
 
@@ -1777,7 +1747,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			delete(m.pending, msg.id)
 			if errors.Is(msg.err, sessions.ErrUnsent) {
-				m.sendNote[msg.id] += " · " + m.giveBack(msg.id, msg.text, msg.overlay)
+				m.sendNote[msg.id] += " · " + m.giveBack(msg.id, msg.text)
 			}
 		} else if strings.Contains(msg.note, "socket") {
 			if m.sentAt == nil {
@@ -1791,7 +1761,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		prevKey := m.lastKeyAt
 		m.lastKeyAt = time.Now()
-		if m.heldFocus && !m.waitOpen && !m.helpOpen && !m.prompting() {
+		if m.heldFocus && !m.helpOpen && !m.prompting() {
 			if cmd, done := m.heldPaneKey(msg, prevKey); done {
 				return m, cmd
 			}
@@ -1808,7 +1778,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, clipImageCmd
 			}
 		}
-		// ccs's own actions are ^X then a letter (^X ^W works as ^X W), Claude
+		// ccs's own actions are ^X then a letter (^X ^A works as ^X A), Claude
 		// Code's pattern, so every other Ctrl letter edits text as in its
 		// prompt. k is the key, or "^x <letter>" for a chord.
 		k := msg.String()
@@ -1820,24 +1790,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chordX = true
 			return m, nil
 		}
-		// The overlay owns the keyboard until closed. (A pop-up is only the
-		// banner, which takes no keys.)
-		if m.waitOpen && !m.popupAboveWait() {
-			if chord {
-				if k == "^x w" {
-					m.closeWait()
-				}
-				return m, nil
-			}
-			return m.waitKey(msg)
-		}
 		if m.snoozeOpen { // owns the keyboard until closed
 			return m.snoozeKey(k)
 		}
 		if m.serveQROpen { // owns the keyboard until closed
 			return m.serveQRKey(k)
 		}
-		if k == "^x s" && len(m.filtered) > 0 && m.marks != nil && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x s" && len(m.filtered) > 0 && m.marks != nil && !m.prompting() && !m.acctOpen && !m.showUsage {
 			m.helpOpen = false
 			if c := m.filtered[m.cursor].conv; m.putAway(c) != awake {
 				stats.Record("tui.wake", stats.Key)
@@ -1980,39 +1939,39 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x t" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x t" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.table", stats.Key)
 			m.helpOpen, m.table = false, !m.table
 			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
-		if k == "^x l" && !m.table && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x l" && !m.table && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.hide_list", stats.Key)
 			m.helpOpen, m.hideSidebar = false, !m.hideSidebar
 			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
-		if k == "^x f" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x f" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.details", stats.Key)
 			m.helpOpen = false
 			m.toggleHeader()
 			return m, nil
 		}
-		if k == "^x b" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x b" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.serve", stats.Key)
 			m.helpOpen = false
 			return m, m.serveKey()
 		}
-		if k == "^x a" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x a" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.auto_focus", stats.Key)
 			m.helpOpen, m.autoFocus = false, !m.autoFocus
 			m.focusHeld = ""
 			saveSettings(m.settings())
 			return m, nil
 		}
-		if k == "^x h" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x h" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.headless", stats.Key)
 			m.helpOpen, showHeadless = false, !showHeadless
 			sel := ""
@@ -2026,7 +1985,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x k" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.kill", stats.Key)
 			m.helpOpen = false
 			if conv := m.filtered[m.cursor].conv; m.stoppable(conv.SessionID) {
@@ -2036,7 +1995,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x r" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x r" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.restart", stats.Key)
 			m.helpOpen = false
 			if id := m.filtered[m.cursor].conv.SessionID; m.restartable(id) {
@@ -2048,7 +2007,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x o" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.orchestrator", stats.Key)
 			m.helpOpen = false
 			switch {
@@ -2062,7 +2021,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x n" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x n" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.new_session", stats.Key)
 			m.helpOpen = false
 			if !sessions.CanOpenTabs() {
@@ -2079,7 +2038,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.launchInput = sessions.LaunchPrompt("New session name: ", "")
 			return m, nil
 		}
-		if k == "^x q" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+		if k == "^x q" && !m.prompting() && !m.acctOpen {
 			stats.Record("tui.profile", stats.Key)
 			m.helpOpen = false
 			if m.profileStop != nil {
@@ -2098,7 +2057,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.note("Recording a CPU profile: do what's slow, then ^X Q again")
 			return m, nil
 		}
-		if k == "^x i" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+		if k == "^x i" && !m.prompting() && !m.acctOpen {
 			stats.Record("tui.auto_update", stats.Key)
 			m.helpOpen, m.autoUpdate = false, !m.autoUpdate
 			saveSettings(m.settings())
@@ -2113,13 +2072,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.pin", stats.Key)
 			m.helpOpen = false
 			m.togglePin()
 			return m, nil
 		}
-		if k == "^x m" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x m" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.reorg", stats.Key)
 			m.helpOpen = false
 			if m.reorgBusy != "" {
@@ -2130,25 +2089,25 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.note("Asking Sonnet to group every session by topic; the plan shows before anything moves")
 			return m, m.reorgPlanCmd()
 		}
-		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x c" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.tree_view", stats.Key)
 			m.helpOpen = false
 			m.toggleClosed()
 			return m, nil
 		}
-		if (k == "alt+up" || k == "alt+down") && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen && !m.chatFocus {
+		if (k == "alt+up" || k == "alt+down") && !m.prompting() && !m.acctOpen && !m.showUsage && !m.chatFocus {
 			stats.Record("tui.pin_move", stats.Key)
 			m.movePin(map[string]int{"alt+up": -1, "alt+down": 1}[k])
 			return m, nil
 		}
-		if k == "^x g" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if k == "^x g" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.group", stats.Key)
 			m.helpOpen, m.grouped = false, !m.grouped
 			saveSettings(m.settings())
 			m.sortList()
 			return m, nil
 		}
-		if msg.String() == "ctrl+o" && !m.prompting() && !m.acctOpen && !m.showUsage && !m.waitOpen {
+		if msg.String() == "ctrl+o" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.links", stats.Key)
 			m.helpOpen = false
 			if m.links = m.linksWithPRs(); len(m.links) == 0 {
@@ -2159,7 +2118,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.linksInput.SetValue("")
 			return m, nil
 		}
-		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen && !m.waitOpen {
+		if msg.String() == "ctrl+l" && !m.prompting() && !m.acctOpen {
 			stats.Record("tui.changelog", stats.Key)
 			m.helpOpen, m.notesOpen, m.notesScroll = false, true, 0
 			if m.notes == nil && !m.notesFetching && m.fetchNotes != nil {
@@ -2188,12 +2147,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.chatFocus {
 			box = m.chatInput.Value()
 		}
-		if msg.String() == "?" && box == "" && !m.prompting() && !m.showUsage && !m.waitOpen {
+		if msg.String() == "?" && box == "" && !m.prompting() && !m.showUsage {
 			stats.Record("tui.help", stats.Key)
 			m.helpOpen = true
 			return m, nil
 		}
-		if k == "^x u" && !m.prompting() && !m.waitOpen {
+		if k == "^x u" && !m.prompting() {
 			stats.Record("tui.account", stats.Key)
 			return m.openAccounts()
 		}
@@ -2378,7 +2337,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.showUsage && k != "ctrl+c" && k != "^x w" {
+		if m.showUsage && k != "ctrl+c" {
 			return m, nil // the usage screen has no other keys; typing mustn't edit a hidden search
 		}
 
@@ -2552,10 +2511,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.previewScroll = max(0, m.previewScroll-10) // forward
 			return m, nil
 
-		case "^x w":
-			stats.Record("tui.waiting", stats.Key)
-			m.openWait()
-			return m, nil
 		}
 		if chord { // a ^X chord no action took never edits a text box
 			return m, nil
@@ -2566,9 +2521,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if _, isKey := msg.(tea.KeyMsg); !isKey {
 		switch {
-		case m.waitOpen:
-			m.waitInput, cmd = editKey(m.waitInput, msg)
-			return m, cmd
 		case m.renaming:
 			m.renameInput, cmd = editKey(m.renameInput, msg)
 			return m, cmd
@@ -2595,9 +2547,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // here, not by each screen, so every screen (and any added later) shows them.
 func (m model) View() string {
 	screen := m.viewScreen()
-	if m.waitOpen {
-		screen = overlayCentre(screen, m.waitPopup(), m.width, m.height)
-	}
 	for _, p := range m.overPopups() {
 		if p.open {
 			screen = overlayCentre(screen, p.draw(m), m.width, m.height)
@@ -2628,8 +2577,13 @@ type popup struct {
 	draw func(model) string // a method expression, so listing popups copies no model
 }
 
-// overPopups is every popup that can sit over the overlay, bottom first:
-// View draws them in this order, and popupAboveWait checks them.
+// overPopups is every popup, bottom first: View draws them in this order,
+// and popupOpen checks them.
+// popupOpen: a popup is open; it takes the keys and the wheel.
+func (m model) popupOpen() bool {
+	return slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open })
+}
+
 func (m model) overPopups() []popup {
 	return []popup{
 		{m.updateOpen && !m.prompting(), model.updatePopup},
@@ -2663,7 +2617,7 @@ const (
 )
 
 // shortcuts is the keys that do something right now on the list, for the
-// ? popup (the usage screen's header and the overlay's hint row list
+// ? popup (the usage screen's header lists
 // their own): whether a conversation is selected and live, and whether the
 // message box has focus. An entry with no key is a group's heading; a
 // heading with nothing under it is left out.
@@ -2745,7 +2699,6 @@ func (m model) shortcuts() [][2]string {
 	add(sel, "^X D", "delete its transcript file; asks first, can't be undone")
 
 	group("^X then a letter: view and tools")
-	add(len(m.waitQueue(true)) > 0, "^X W", "sessions waiting on you: answer, open or snooze them")
 	add(sessions.CanOpenTabs(), "^X N", "start a new session in an iTerm tab or tmux window, in this one's folder")
 	add(sessions.CanOpenTabs(), "^X O", "open the orchestrator, setting one up if there is none")
 	add(!m.grouped, "^X G", "group the list by folder")
@@ -2959,12 +2912,8 @@ func (m model) viewScreen() string {
 	}
 	// Each state with its key in front, in bold, as the hints read.
 	key := func(k string) string { return "\033[1m" + k + "\033[22m " }
-	if n := m.waitingCount(); n > 0 && !m.showUsage {
-		status += " · "
-		if !m.popupAboveWait() && !m.prompting() { // otherwise Ctrl+X W does nothing
-			status += key("^X W")
-		}
-		status += fmt.Sprintf("%d waiting", n)
+	if n := m.waitingCount(); n > 0 && !m.showUsage { // they sort first in the list, held ones selected for you
+		status += fmt.Sprintf(" · %d waiting", n)
 	}
 	if m.reorgBusy != "" {
 		status += " · reorg " + m.reorgBusy + "…"
@@ -2994,9 +2943,6 @@ func (m model) viewScreen() string {
 	pairs, keep := []string{"?", "help", "^C", "quit"}, 2 // the rest are in ? help
 	if m.showUsage {                                      // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^X U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
-		if len(m.waitQueue(true)) > 0 {
-			pairs = append(pairs, "^X W", "waiting")
-		}
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
 		pairs, keep = chordPairs, 1

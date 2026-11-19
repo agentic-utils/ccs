@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/sessions"
@@ -77,16 +76,9 @@ func TestOverlayFrameFitsTheTerminal(t *testing.T) {
 		now := time.Now()
 		stats := map[string]sessions.SessionStat{"live": waiting(now.Add(-55*time.Minute), "input needed"), "menu": waiting(now.Add(-5*time.Minute), "permission prompt")}
 		m.applyStats(stats)
-		checkFrame(t, fmt.Sprintf("banner %dx%d", w, h), m.View(), w, h)
+		checkFrame(t, fmt.Sprintf("waiting %dx%d", w, h), m.View(), w, h)
 		m = selectLive(m)
-		checkFrame(t, fmt.Sprintf("banner+preview %dx%d", w, h), m.View(), w, h)
-		m = openByHand(m, stats)
-		if !m.waitOpen {
-			t.Fatalf("%dx%d: overlay didn't open", w, h)
-		}
-		checkFrame(t, fmt.Sprintf("overlay %dx%d", w, h), m.View(), w, h)
-		m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlN})
-		checkFrame(t, fmt.Sprintf("overlay next %dx%d", w, h), m.View(), w, h)
+		checkFrame(t, fmt.Sprintf("waiting+preview %dx%d", w, h), m.View(), w, h)
 	}
 }
 
@@ -123,7 +115,6 @@ func TestScreenUsesOnlySymbolsEveryTerminalDrawsNarrow(t *testing.T) {
 	m.applyStats(stats)
 	m = selectLive(m)
 	views := []string{m.View()}
-	views = append(views, openByHand(m, stats).View())
 	for _, v := range views {
 		for _, r := range ansi.Strip(v) {
 			if (r >= 0x2600 && r <= 0x27BF || r >= 0x2B00 && r <= 0x2BFF) && !narrowSymbols[r] {

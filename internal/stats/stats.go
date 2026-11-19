@@ -86,8 +86,6 @@ var Registry = []Info{
 	{"tui.kill", "^X K stop a session and close its tab"},
 	{"tui.restart", "^X R restart a session"},
 	{"tui.delete", "^X D delete a transcript"},
-	{"tui.waiting", "^X W the waiting overlay"},
-	{"tui.answer", "a digit answers a waiting menu"},
 	{"tui.new_session", "^X N start a new session"},
 	{"tui.orchestrator", "^X O open the orchestrator"},
 	{"tui.orchestrator_setup", "accept the offer to set up an orchestrator"},

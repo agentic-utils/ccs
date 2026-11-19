@@ -8,7 +8,7 @@ package tui
 // while it's held. The selected session's
 // held prompt is answered in the bottom pane (Enter or a click focuses it;
 // with ^X A on, ccs selects a session that starts waiting once you've
-// stopped typing, and focuses it there), and in the ^X W overlay: a digit
+// stopped typing, and focuses it there): a digit
 // picks a single question's option, A allows and D denies a permission
 // prompt (each asks y/n), and T sends it back to its tab. Nothing is ever
 // typed into a terminal to answer. Outside --preview a key press on the Mac
@@ -74,7 +74,7 @@ var (
 // tuiHold is this ccs's holder while it owns the hold: when no ccs serve
 // --allow-write (or another ccs) does, every prompt from the hook is held
 // for this list, whatever the focus, since questions arrive while you're
-// in another window, until it's answered (here, ^X W or the page), sent
+// in another window, until it's answered (here or on the page), sent
 // back with T, or after tuiHoldWait, or ccs quits or yields to ccs serve;
 // none of those but an answer decides anything. ccs selects the session
 // holding it (autoSelect), so the question is in front of you when you
@@ -212,7 +212,7 @@ func (m model) heldLines(h mcp.HeldPrompt, width int) []string {
 	return append(lines, "\033[90m"+hints("A", "allow", "D", "deny", "T", "back to its tab")+"\033[0m")
 }
 
-// heldKey handles a key for its session's held prompt, in ^X W and the
+// heldKey handles a key for its session's held prompt, in the bottom
 // pane: a question's menu (menuKey) or a permission prompt's A and D (each
 // asking y/n) and T. done is false when the key isn't the prompt's.
 func (m *model) heldKey(k string, msg tea.KeyMsg, conv transcript.Conversation) (cmd tea.Cmd, done bool) {
@@ -276,20 +276,20 @@ func (m *model) applyHeldDone(msg heldDoneMsg) {
 	m.heldErr = ""
 	switch {
 	case errors.Is(msg.err, mcp.ErrNoServe):
-		m.waitErr = "Nothing holds prompts now: the prompt is in " + msg.name + "'s tab"
+		m.heldErr = "Nothing holds prompts now: the prompt is in " + msg.name + "'s tab"
 	case errors.Is(msg.err, mcp.ErrOutcomeUnknown):
-		m.waitErr = "Sent to " + msg.name + ", but the reply never came: check its tab"
+		m.heldErr = "Sent to " + msg.name + ", but the reply never came: check its tab"
 	case msg.err != nil:
-		m.waitErr = "Couldn't answer " + msg.name + ": " + msg.err.Error()
+		m.heldErr = "Couldn't answer " + msg.name + ": " + msg.err.Error()
 	default:
 		m.setHeldNote("✓ " + msg.name + ": " + strings.ReplaceAll(msg.text, "\n", " · "))
 		return
 	}
-	m.heldErr, m.heldNote = m.waitErr, ""
+	m.heldNote = ""
 }
 
-// setHeldNote says how a held-prompt key went, in the overlay and the pane.
-func (m *model) setHeldNote(s string) { m.waitNote, m.heldNote, m.heldErr = s, s, "" }
+// setHeldNote says how a held-prompt key went, in the pane.
+func (m *model) setHeldNote(s string) { m.heldNote, m.heldErr = s, "" }
 
 // selectedHeld is the selected session's held prompt, if ccs serve holds one.
 func (m model) selectedHeld() (mcp.HeldPrompt, transcript.Conversation, bool) {
@@ -325,7 +325,7 @@ func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 }
 
 // heldPaneKey handles a key while the bottom pane's held prompt has focus:
-// the same keys as the overlay (a digit, A or D, each with y/n; T), letters
+// a question's menu (menu.go), or a permission prompt's A or D (each with y/n) and T; letters
 // in either case, Enter sends it back to its tab and opens it, Esc returns
 // to the search. Keys for moving through the list fall through (done is
 // false); every other key is the pane's, so none reaches the search. Right
@@ -399,7 +399,7 @@ func heldKeysFor(h mcp.HeldPrompt) string {
 // any box holds unsent text. Once per wait. A deliberate exception to "the
 // selection never changes without the user".
 func (m *model) autoSelect() {
-	if m.showUsage || m.prompting() || m.waitOpen || m.heldFocus || m.textInput.Value() != "" || m.hasDraft() ||
+	if m.showUsage || m.prompting() || m.heldFocus || m.textInput.Value() != "" || m.hasDraft() ||
 		heldNow().Sub(m.lastKeyAt) < autoFocusIdle ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return

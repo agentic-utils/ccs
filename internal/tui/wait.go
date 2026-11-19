@@ -5,13 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"sort"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/sessions"
@@ -21,39 +18,12 @@ import (
 )
 
 // ============================================================================
-// Input-prompt overlay: live sessions waiting on the user
+// Live sessions waiting on the user: their statuses, the header's waiting
+// count, the question shown in the bottom pane, and ^X A auto-focus. All
+// answering happens in the main view (held prompts in its bottom pane,
+// held.go and menu.go; the rest in their own tab). The ^X W overlay that
+// used to list waits is gone: see docs/design/input-prompt-overlay.md.
 // ============================================================================
-
-// defaultSnooze is how long Esc puts a waiting session aside (CCS_SNOOZE).
-const defaultSnooze = 15 * time.Minute
-
-// snoozeLength reads CCS_SNOOZE; ok is false for a set value that isn't a
-// positive duration, which gets the default.
-func snoozeLength(s string) (d time.Duration, ok bool) {
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-		return d, true
-	}
-	return defaultSnooze, s == ""
-}
-
-// shortDuration drops zero tails: 15m0s reads 15m, 1h0m0s reads 1h.
-func shortDuration(d time.Duration) string {
-	s := d.String()
-	if strings.HasSuffix(s, "m0s") {
-		s = s[:len(s)-2]
-	}
-	if strings.HasSuffix(s, "h0m") {
-		s = s[:len(s)-2]
-	}
-	return s
-}
-
-// snoozeRec puts one wait aside. Since is the session's statusUpdatedAt when
-// it was snoozed, so after a restart the snooze is matched to the same wait.
-type snoozeRec struct {
-	Since time.Time `json:"since"`
-	Until time.Time `json:"until"`
-}
 
 // amber marks a live session that's busy, or (as a ?) waiting on you.
 const amber = "38;5;214"
@@ -62,7 +32,7 @@ const amber = "38;5;214"
 const (
 	waitNone   = iota
 	waitPrompt // its session file says "waiting": a permission prompt or a question menu
-	waitAsked  // idle, and its last message ends in "?": a guess, so it never gets the banner
+	waitAsked  // idle, and its last message ends in "?": a guess
 )
 
 func (m model) waitSignal(conv transcript.Conversation) int {
@@ -84,56 +54,8 @@ func (m model) waitSignal(conv transcript.Conversation) int {
 // still asks; a bare "?" doesn't.
 func asks(text string) bool { return transcript.Asks(text) }
 
-// snoozedNow reports whether id's wait is snoozed.
-func (m model) snoozedNow(id string) bool {
-	s, ok := m.snoozed[id]
-	return ok && time.Now().Before(s.Until)
-}
-
-// waitQueue is the waiting sessions, oldest wait first so a snoozed one
-// coming back can't be starved by newer ones (an unknown wait time goes
-// last). all (the overlay's list) adds the snoozed ones and, after the
-// prompts, the waitAsked ones.
-func (m model) waitQueue(all bool) []transcript.Conversation {
-	var prompts, asked []transcript.Conversation
-	for _, item := range m.items {
-		if !all && m.snoozedNow(item.conv.SessionID) {
-			continue
-		}
-		switch m.waitSignal(item.conv) {
-		case waitPrompt:
-			prompts = append(prompts, item.conv)
-		case waitAsked:
-			if all {
-				asked = append(asked, item.conv)
-			}
-		}
-	}
-	for _, q := range [][]transcript.Conversation{prompts, asked} {
-		sort.SliceStable(q, func(i, j int) bool {
-			a, b := m.chatStatus[q[i].SessionID].Since, m.chatStatus[q[j].SessionID].Since
-			if a.IsZero() != b.IsZero() {
-				return b.IsZero()
-			}
-			return a.Before(b)
-		})
-	}
-	return append(prompts, asked...)
-}
-
-// waitPos is where the overlay's session is in q, or -1.
-func (m model) waitPos(q []transcript.Conversation) int {
-	return slices.IndexFunc(q, func(c transcript.Conversation) bool { return c.SessionID == m.waitID })
-}
-
 // setStat records a live session's status; it's the only place statuses are
-// set. A read without a status says nothing and is skipped. A wait starts
-// when a session enters "waiting", or gets a new statusUpdatedAt while
-// waiting; it ends when the session leaves "waiting". A snooze (and whether
-// it was seen) belongs to one wait, so it ends with it. The first sight of a
-// session after ccs starts counts as a new wait, except that a restored
-// snooze for the same statusUpdatedAt still holds (without one, it can't be
-// matched, so it goes).
+// set. A read without a status says nothing and is skipped.
 func (m *model) setStat(id string, st sessions.SessionStat) {
 	if st.Status == "" {
 		return
@@ -141,27 +63,12 @@ func (m *model) setStat(id string, st sessions.SessionStat) {
 	if m.chatStatus == nil {
 		m.chatStatus = make(map[string]sessions.SessionStat)
 	}
-	old, had := m.chatStatus[id]
 	m.chatStatus[id] = st
-	switch {
-	case st.Status != "waiting":
-		delete(m.snoozed, id)
-		delete(m.waitDue, id)
-	case !had:
-		if s, ok := m.snoozed[id]; ok && (st.Since.IsZero() || !s.Since.Equal(st.Since)) {
-			delete(m.snoozed, id)
-		}
-		m.markDue(id)
-	case old.Status != "waiting" || !st.Since.IsZero() && !st.Since.Equal(old.Since):
-		delete(m.snoozed, id)
-		m.markDue(id)
-	}
 }
 
-// applyStats takes the live tick's statuses, forgets sessions that are gone
-// (the live tick keeps one whose file is briefly unreadable while its
-// process runs), and ends snoozes whose time is up, so their wait gets the
-// banner again.
+// applyStats takes the live tick's statuses and forgets sessions that are
+// gone (the live tick keeps one whose file is briefly unreadable while its
+// process runs).
 func (m *model) applyStats(stats map[string]sessions.SessionStat) {
 	if stats == nil {
 		return
@@ -175,49 +82,6 @@ func (m *model) applyStats(stats map[string]sessions.SessionStat) {
 		}
 	}
 	m.dropDrafts()
-	for id, s := range m.snoozed {
-		switch {
-		case !m.live[id]:
-			delete(m.snoozed, id)
-		case !time.Now().Before(s.Until):
-			delete(m.snoozed, id)
-			m.markDue(id)
-		}
-	}
-	for id := range m.waitDue {
-		if m.chatStatus[id].Status != "waiting" {
-			delete(m.waitDue, id)
-		}
-	}
-	if m.waitOpen {
-		m.checkDelivered(m.waitID)
-	}
-}
-
-func (m *model) markDue(id string) {
-	if m.waitDue == nil {
-		m.waitDue = make(map[string]bool)
-	}
-	m.waitDue[id] = true
-}
-
-// banner is the wait the one-row banner shows: the oldest not yet seen in the
-// overlay (or whose snooze ran out), and how many more there are. None while
-// the overlay is open: it lists them.
-func (m model) banner() (conv transcript.Conversation, more int, ok bool) {
-	if m.waitOpen {
-		return
-	}
-	for _, c := range m.waitQueue(false) {
-		switch {
-		case !m.waitDue[c.SessionID]:
-		case ok:
-			more++
-		default:
-			conv, ok = c, true
-		}
-	}
-	return
 }
 
 // waitingCount is how many live sessions wait on a menu or prompt, for the
@@ -232,105 +96,40 @@ func (m model) waitingCount() int {
 	return n
 }
 
-// popupAboveWait: a popup drawn over the overlay is open (see overPopups). It
-// takes the keys and the wheel first. Nothing opens over the overlay from the
-// keyboard, so in practice it's the update offer.
-func (m model) popupAboveWait() bool {
-	return slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open })
-}
-
-// waitMinHeight is the shortest terminal the overlay fits: its frame and a
-// transcript row. Shorter, there's only the banner.
-const waitMinHeight = waitChrome + 1
-
-const waitTooShort = "The window is too short for the waiting sessions: make it taller, or answer in the session's tab"
-
-// openWait opens the overlay, which owns the keyboard until closed. It shows
-// the banner's session first (else the oldest), and lists the snoozed
-// sessions too (keeping their snoozes) and the ones whose last message asks
-// something.
-func (m *model) openWait() {
-	if m.height < waitMinHeight {
-		m.errorMsg = waitTooShort
-		return
-	}
-	q := m.waitQueue(true)
-	if len(q) == 0 {
-		m.errorMsg = "No session is waiting on you"
-		return
-	}
-	first := q[0]
-	if c, _, ok := m.banner(); ok {
-		first = c
-	}
-	m.waitOpen, m.waitErr = true, ""
-	m.showWait(first.SessionID)
-	m.waitScroll = 0
-}
-
-func (m *model) closeWait() {
-	m.waitOpen = false
-}
-
-// showWait shows session id, which marks its wait seen, keeping each
-// session's draft with it.
-func (m *model) showWait(id string) {
-	delete(m.waitDue, id)
-	if id == m.waitID {
-		return
-	}
-	if v := m.waitInput.Value(); v != "" {
-		if m.waitDrafts == nil {
-			m.waitDrafts = make(map[string]string)
-		}
-		m.waitDrafts[m.waitID] = v
-	}
-	m.waitInput.SetValue(m.waitDrafts[id])
-	delete(m.waitDrafts, id)
-	m.waitID, m.waitScroll, m.waitErr = id, 0, ""
-}
-
-// giveBack puts text that never reached session id back in the box it came
-// from (the overlay's or the main one), as that session's draft: in the box
-// if it still shows the session, else kept until it does. A draft written
-// since keeps the text after it, so it's never dropped. It returns what the
-// send note should say.
-func (m *model) giveBack(id, text string, overlay bool) string {
+// giveBack puts text that wasn't sent back in the message box, if it still
+// shows the session, else kept as that session's draft until it does. A
+// draft written since keeps the text after it, so it's never dropped. It
+// returns what the send note should say.
+func (m *model) giveBack(id, text string) string {
 	m.syncChatDraft()
-	in, shown, drafts, where := &m.chatInput, m.chatFor == id, &m.chatDrafts, "its message box: select it to see it"
-	if overlay {
-		in, shown, drafts, where = &m.waitInput, m.waitID == id, &m.waitDrafts, "its draft in the waiting list (^X W)"
-	}
-	if shown {
-		in.SetValue(joinDraft(in.Value(), text))
-		in.CursorEnd()
+	if m.chatFor == id {
+		m.chatInput.SetValue(joinDraft(m.chatInput.Value(), text))
+		m.chatInput.CursorEnd()
 		return "unsent text put back in the box"
 	}
-	if *drafts == nil {
-		*drafts = make(map[string]string)
+	if m.chatDrafts == nil {
+		m.chatDrafts = make(map[string]string)
 	}
-	(*drafts)[id] = joinDraft((*drafts)[id], text)
-	return "unsent text kept in " + where
+	m.chatDrafts[id] = joinDraft(m.chatDrafts[id], text)
+	return "unsent text kept in its message box: select it to see it"
 }
 
 // dropDrafts throws away the kept drafts of sessions that have exited, and
 // says so: they can't be sent anywhere now.
 func (m *model) dropDrafts() {
-	for _, drafts := range []map[string]string{m.waitDrafts, m.chatDrafts} {
-		for id, d := range drafts {
-			if m.live[id] {
-				continue
-			}
-			delete(drafts, id)
-			if strings.TrimSpace(d) != "" {
-				name := id
-				for _, item := range m.items {
-					if item.conv.SessionID == id {
-						name = m.sessionName(item.conv)
-					}
+	for id, d := range m.chatDrafts {
+		if m.live[id] {
+			continue
+		}
+		delete(m.chatDrafts, id)
+		if strings.TrimSpace(d) != "" {
+			name := id
+			for _, item := range m.items {
+				if item.conv.SessionID == id {
+					name = m.sessionName(item.conv)
 				}
-				m.errorMsg = "Unsent text to " + name + " discarded: it has exited"
 			}
+			m.errorMsg = "Unsent text to " + name + " discarded: it has exited"
 		}
 	}
 }
@@ -340,134 +139,6 @@ func joinDraft(draft, text string) string {
 		return text
 	}
 	return draft + " " + text
-}
-
-// waitConv is the session the overlay shows, as last read.
-func (m model) waitConv() (transcript.Conversation, bool) {
-	for _, item := range m.items {
-		if item.conv.SessionID == m.waitID {
-			return item.conv, true
-		}
-	}
-	return transcript.Conversation{}, false
-}
-
-// waitStep shows the session by places away in the queue (clamped); a
-// session no longer in it starts from the top.
-func (m *model) waitStep(by int) {
-	q := m.waitQueue(true)
-	if len(q) == 0 {
-		return
-	}
-	i := m.waitPos(q)
-	if i < 0 {
-		i = 0
-	} else {
-		i = max(0, min(i+by, len(q)-1))
-	}
-	m.showWait(q[i].SessionID)
-}
-
-// waitKey handles a key while the overlay is open.
-func (m model) waitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	m.waitErr, m.waitNote = "", ""
-	conv, ok := m.waitConv()
-	if m.heldConfirmed != nil { // an A or D asked y/n: this key is the answer
-		return m, m.heldConfirmKey(msg.String())
-	}
-	if ok && m.waitInput.Value() == "" {
-		if cmd, done := m.heldKey(msg.String(), msg, conv); done {
-			return m, cmd
-		}
-	}
-	switch msg.String() {
-	case "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
-	case "esc": // defer: snooze this wait, show the oldest one not snoozed
-		if ok && m.waitSignal(conv) == waitPrompt {
-			if m.snoozed == nil {
-				m.snoozed = make(map[string]snoozeRec)
-			}
-			m.snoozed[m.waitID] = snoozeRec{Since: m.chatStatus[m.waitID].Since, Until: time.Now().Add(m.snooze)}
-		}
-		q := m.waitQueue(true)
-		if i := slices.IndexFunc(q, func(c transcript.Conversation) bool {
-			return c.SessionID != m.waitID && m.waitSignal(c) == waitPrompt && !m.snoozedNow(c.SessionID)
-		}); i >= 0 {
-			m.showWait(q[i].SessionID)
-		} else {
-			m.closeWait()
-		}
-	case "ctrl+n", "down":
-		m.waitStep(1)
-	case "ctrl+p", "up":
-		m.waitStep(-1)
-	case "pgup":
-		m.waitScroll = min(m.waitScroll+10, m.maxWaitScroll())
-	case "pgdown":
-		m.waitScroll = max(0, m.waitScroll-10)
-	case "enter":
-		switch {
-		case !ok:
-			m.waitErr = "That session is gone"
-		case !m.live[conv.SessionID]:
-			m.waitErr = m.sessionName(conv) + " has exited"
-		case strings.TrimSpace(m.waitInput.Value()) == "": // go to its tab, e.g. to answer a menu
-			stats.Record("tui.open", stats.Key)
-			m.closeWait()
-			return m, m.focusCmd(conv)
-		default:
-			stats.Record("tui.send", stats.Key)
-			return m, m.sendTo(conv, true)
-		}
-	default:
-		var cmd tea.Cmd
-		m.waitInput, cmd = editKey(m.waitInput, msg)
-		return m, cmd
-	}
-	return m, nil
-}
-
-// waitChrome is the overlay's rows besides the transcript: borders, title,
-// menu note, message box (status line and bordered input) and hints.
-const waitChrome = 2 + 1 + 1 + 4 + 1
-
-// waitLayout: the overlay's text width and how many transcript rows fit. A
-// short screen (down to waitMinHeight) gets all of it.
-func (m model) waitLayout() (inner, rows int) {
-	avail := m.height * 9 / 10
-	if avail < waitChrome+3 {
-		avail = m.height
-	}
-	return max(min(max(m.width*9/10, 30), m.width)-4, 1), max(avail-waitChrome, 0)
-}
-
-func (m model) waitLines() []string {
-	conv, ok := m.waitConv()
-	if !ok {
-		return nil
-	}
-	inner, _ := m.waitLayout()
-	return cachedPreview(m.waitPreview, conv, "", inner)
-}
-
-func (m model) maxWaitScroll() int {
-	_, rows := m.waitLayout()
-	return max(0, len(m.waitLines())-max(rows-len(m.waitAsk()), 0))
-}
-
-// waitAsk is what the overlay's session is asking, drawn under its transcript.
-func (m model) waitAsk() []string {
-	conv, ok := m.waitConv()
-	if !ok || m.waitSignal(conv) != waitPrompt {
-		return nil
-	}
-	inner, _ := m.waitLayout()
-	if h, held := m.heldPrompt[conv.SessionID]; held {
-		return m.heldLines(h, inner)
-	}
-	return askLines(conv, inner)
 }
 
 // askLines shows a waiting session's question menu, numbered as claude shows
@@ -514,91 +185,6 @@ func askLines(conv transcript.Conversation, width int) []string {
 
 // toolSummary is the part of a tool call's input a person would check first.
 func toolSummary(input json.RawMessage) string { return transcript.ToolSummary(input) }
-
-// waitPopup draws the overlay: which session and why, its transcript (newest
-// at the bottom), a message box and the keys.
-func (m model) waitPopup() string {
-	inner, rows := m.waitLayout()
-	conv, ok := m.waitConv()
-	q := m.waitQueue(true)
-	title := "\033[90mno longer waiting\033[0m"
-	if pos := m.waitPos(q); pos >= 0 {
-		title = fmt.Sprintf("\033[1;"+amber+"mwaiting %d of %d\033[0m", pos+1, len(q))
-	}
-	st := m.chatStatus[m.waitID]
-	note := ""
-	switch {
-	case !ok:
-		title += " · \033[90msession gone\033[0m"
-	case m.waitSignal(conv) == waitPrompt:
-		why := st.WaitingFor
-		if why == "" {
-			why = "waiting"
-		}
-		title += " · " + m.sessionName(conv) + " · " + why
-		if !st.Since.IsZero() {
-			title += fmt.Sprintf(" · %dm", int(time.Since(st.Since).Minutes()))
-		}
-	case m.waitSignal(conv) == waitAsked:
-		title += " · " + m.sessionName(conv) + " · \033[90mits last message asks you something\033[0m"
-	default:
-		title += " · " + m.sessionName(conv)
-	}
-	if ok && m.snoozedNow(m.waitID) {
-		title += " · \033[90msnoozed\033[0m"
-	}
-	if ok && m.unverified[m.waitID] {
-		title += " · \033[90munverified: its process start couldn't be checked\033[0m"
-	}
-	switch {
-	case m.heldConfirmed != nil:
-		note = "\033[1;" + amber + "m  " + m.heldConfirmed.what + "\033[0m"
-	case m.waitErr != "":
-		note = "\033[31m  " + m.waitErr + "\033[0m"
-	case m.waitNote != "":
-		note = "\033[32m  " + m.waitNote + "\033[0m"
-	}
-
-	ask := m.waitAsk()
-	if len(ask) > rows {
-		ask = ask[len(ask)-rows:]
-	}
-	lines := m.waitLines()
-	start, end := scrollWindow(len(lines), rows-len(ask), m.waitScroll)
-	visible := append([]string(nil), lines[start:end]...)
-	for len(visible) < rows-len(ask) {
-		visible = append(visible, "")
-	}
-	visible = append(visible, ask...)
-
-	var b strings.Builder
-	b.WriteString(ansi.Truncate(title, inner, "…") + "\033[0m\n")
-	if rows > 0 {
-		b.WriteString(strings.Join(visible, "\n") + "\n")
-	}
-	b.WriteString(ansi.Truncate(note, inner, "…") + "\033[0m\n")
-	if ok {
-		b.WriteString(m.chatBox(conv, m.waitInput, true, inner))
-	} else {
-		b.WriteString("\n\n\n")
-	}
-	enter := "send"
-	if strings.TrimSpace(m.waitInput.Value()) == "" {
-		enter = "open its tab"
-	}
-	var keys string
-	if _, held := m.heldPrompt[conv.SessionID]; ok && held {
-		// its keys are drawn with the prompt (heldLines)
-	}
-	keys += hints(keyEnter, enter, keyEsc, "snooze "+shortDuration(m.snooze), "↑↓ ^N/P", "next/prev", "pgup/dn", "scroll", "^X W", "close", "^C", "quit")
-	b.WriteString("\n\033[90m" + ansi.Truncate(keys, inner, "…") + "\033[0m")
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("214")).
-		Padding(0, 1).
-		Width(inner + 2).
-		Render(b.String())
-}
 
 // autoFocusIdle is how long since the last key press before auto-focus
 // switches tabs, so keystrokes meant for another window never land in a

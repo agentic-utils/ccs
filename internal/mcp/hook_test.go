@@ -128,10 +128,13 @@ func TestHookAnswersAQuestionFromThePage(t *testing.T) {
 
 	tok := signJWT(t, testKey, "RS256", goodClaims())
 	page := request(s, "GET", "/session?id=s-1", tok, nil, nil).Body.String()
-	for _, want := range []string{"Waiting for you here: AskUserQuestion", `name="q0" value="Red"`, "Which colour?", "Show it in its tab instead"} {
+	for _, want := range []string{"Waiting for you here: AskUserQuestion", `name="q0" value="Red"`, "Which colour?", "in its tab too"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the session page lacks %q", want)
 		}
+	}
+	if strings.Contains(page, "Show it in its tab instead") || strings.Contains(page, `value="mac"`) {
+		t.Error("the page has no send-back button: the menu is in its tab too")
 	}
 	if home := request(s, "GET", "/", tok, nil, nil).Body.String(); !strings.Contains(home, "Waiting for you here") || !strings.Contains(home, "worker") {
 		t.Error("the sessions page lists the held prompt")

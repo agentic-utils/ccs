@@ -179,7 +179,12 @@ func ingressFor(cfg, host string) (svc string, found bool) {
 		v = strings.Trim(strings.TrimSpace(v), `"'`)
 		switch strings.TrimSpace(k) {
 		case "hostname":
+			// The same form as the setup's host (normHost: punycode, no
+			// trailing dot), so a Unicode or dotted name in the config matches.
 			cur = strings.ToLower(v)
+			if n, err := normHost(v); err == nil && n != "" {
+				cur = n
+			}
 		case "service":
 			if cur == host {
 				return v, true

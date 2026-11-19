@@ -14,6 +14,7 @@ package mcp
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 )
 
@@ -257,7 +259,7 @@ func (h *Holder) holdPrompt(c net.Conn) {
 	// The may-hold check and the registration happen under one lock, the
 	// one ReleaseAll and Close take, so a blur or a yield either comes
 	// before (and it isn't held) or closes the very channel it captured.
-	p := &heldPrompt{id: newPromptID(), nonce: hello.Nonce, req: req, at: h.cfg.Now(), reply: make(chan hookReply, 1)}
+	p := &heldPrompt{id: newPromptID(), nonce: hello.Nonce, req: req, at: h.cfg.Now(), reply: make(chan hookReply, 1), drop: make(chan struct{})}
 	h.mu.Lock()
 	if h.closing || (h.cfg.MayHold != nil && !h.cfg.MayHold()) {
 		h.mu.Unlock()
@@ -314,6 +316,9 @@ func (h *Holder) holdPrompt(c net.Conn) {
 		case <-gone:
 			state.LogActivity("%s: %s's prompt %s ended before an answer", h.cfg.Who, shortID(req.SessionID), p.id)
 			return
+		case <-p.drop: // already taken from the book: no answer can be on its way
+			letGo(p.why)
+			return
 		case <-rel:
 			letGoOrAnswer("released")
 			return
@@ -328,6 +333,84 @@ func (h *Holder) holdPrompt(c net.Conn) {
 		}
 	}
 }
+
+// tabGrace is how long a held prompt's session may go without showing
+// `waiting` before the prompt counts as settled in its tab anyway (the
+// status is written a moment after the hook starts).
+var tabGrace = 10 * time.Second
+
+// Reconcile drops the held prompts their session no longer waits on.
+// Claude Code shows the same menu in the session's tab while the hook
+// holds it, and doesn't stop the hook when it's answered there, so without
+// this ccs would keep an answerable copy of a settled prompt. A prompt is
+// dropped (no decision: the hook prints nothing) when its session has
+// gone, isn't waiting any more, or waits on something newer (another
+// statusUpdatedAt). live is a sessions.ScanSessions result; the TUI calls
+// this from its live tick and ccs serve from its own loop, every 2s.
+func (h *Holder) Reconcile(live map[string]sessions.LiveSession) {
+	now := h.cfg.Now()
+	for _, p := range h.book.list("") {
+		if why := settled(p, live, now); why != "" {
+			h.drop(p, why)
+		}
+	}
+}
+
+// settled says why p's prompt is no longer waiting in its session ("" if it
+// still is, or it can't be told yet), recording when it was first seen
+// waiting.
+func settled(p *heldPrompt, live map[string]sessions.LiveSession, now time.Time) string {
+	ls, ok := live[p.req.SessionID]
+	if !ok {
+		if p.misses.Add(1) < 2 {
+			return ""
+		}
+		return "its session ended"
+	}
+	p.misses.Store(0)
+	at := int64(0)
+	if !ls.Stat.Since.IsZero() {
+		at = ls.Stat.Since.UnixMilli()
+	}
+	switch ls.Stat.Status {
+	case "":
+		return "" // status not read this time
+	case "waiting":
+		switch was := p.waitAt.Load(); {
+		case was == 0: // first seen waiting: when, or -1 when its file has no time
+			p.waitAt.Store(cmp.Or(at, -1))
+		case at != 0 && was > 0 && at != was:
+			return "answered in its tab"
+		}
+		return ""
+	}
+	if p.waitAt.Load() == 0 && now.Sub(p.at) < tabGrace {
+		return "" // not shown as waiting yet
+	}
+	return "answered in its tab"
+}
+
+// drop lets p go with no decision, unless an answer took it first.
+func (h *Holder) drop(p *heldPrompt, why string) {
+	if h.book.take(p.id) == nil || p.drop == nil {
+		return
+	}
+	p.why = why
+	close(p.drop)
+}
+
+// answeredInTab checks p's session just before an answer is sent: one its
+// tab has settled since is dropped, and the answer refused.
+func (h *Holder) answeredInTab(p *heldPrompt) bool {
+	if settled(p, liveSessions(), h.cfg.Now()) != "answered in its tab" {
+		return false
+	}
+	h.drop(p, "answered in its tab")
+	return true
+}
+
+// errAnsweredInTab: the prompt was settled in its own tab first.
+const errAnsweredInTab = "answered in its tab already: nothing was sent"
 
 // serveControl answers one control request: list, answer or yield.
 func (h *Holder) serveControl(c net.Conn) {
@@ -379,6 +462,9 @@ func (h *Holder) control(req controlRequest, who string) controlReply {
 		reply, what, err := promptDecision(p, req.Choice, req.Answers, req.Other, req.Notes, who)
 		if err != nil {
 			return controlReply{Error: err.Error()}
+		}
+		if h.answeredInTab(p) {
+			return controlReply{Error: errAnsweredInTab}
 		}
 		if p = h.book.take(req.Prompt); p == nil { // another answer got there first
 			return controlReply{Error: gone}

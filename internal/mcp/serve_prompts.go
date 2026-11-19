@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agentic-utils/ccs/internal/sessions"
@@ -36,6 +37,14 @@ type heldPrompt struct {
 	req   hookRequest
 	at    time.Time
 	reply chan hookReply // buffered: one answer
+	// The session's statusUpdatedAt (epoch ms) when it was first seen
+	// waiting on this prompt (-1 when its file had no time); 0 until then. Claude Code shows the menu in
+	// its tab too, and a later status (or another wait) means it was
+	// answered there (Holder.Reconcile).
+	waitAt atomic.Int64
+	misses atomic.Int32  // scans in a row its session was missing from (a file caught mid-rewrite drops out of one)
+	drop   chan struct{} // closed (once it's taken from the book) to let it go with no decision
+	why    string        // why it was dropped, set before drop is closed
 }
 
 type promptBook struct {
@@ -98,7 +107,33 @@ func (s *server) ownHold() (func(), error) {
 		}
 		return nil, err
 	}
-	return func() { s.hold.Close("ccs serve stopped") }, nil
+	stop := make(chan struct{})
+	go s.reconcileLoop(stop)
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(stop) })
+		s.hold.Close("ccs serve stopped")
+	}, nil
+}
+
+// reconcilePeriod is how often a holder checks its prompts' sessions.
+var reconcilePeriod = 2 * time.Second
+
+// reconcileLoop drops held prompts their session settled in its tab
+// (Holder.Reconcile), while ccs serve holds prompts.
+func (s *server) reconcileLoop(stop <-chan struct{}) {
+	t := time.NewTicker(reconcilePeriod)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			if s.hold.Owns() && len(s.hold.List()) > 0 {
+				s.hold.Reconcile(liveSessions())
+			}
+		}
+	}
 }
 
 func dirOf(path string) string {
@@ -186,8 +221,8 @@ func noteSaid(note string) string {
 
 func promptDecision(p *heldPrompt, choice string, answers map[string][]string, other map[string]bool, notes map[string]string, who string) (hookReply, string, error) {
 	switch choice {
-	case "mac":
-		return hookReply{}, "Let it go to its tab on the Mac, where it shows as usual.", nil
+	case "mac": // an older client's "back to its tab": the menu is there anyway, so only stop offering it here
+		return hookReply{}, "Stopped offering it here; it's in its tab.", nil
 	case "deny":
 		return hookReply{Behavior: "deny", Message: "Denied from ccs serve by " + who}, fmt.Sprintf("Deny %s.", p.req.ToolName), nil
 	case "allow":

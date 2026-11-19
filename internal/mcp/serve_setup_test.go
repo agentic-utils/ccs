@@ -150,3 +150,18 @@ func TestServeTunnelCheck(t *testing.T) {
 		t.Errorf("all set (config.yaml, localhost): %q", got)
 	}
 }
+
+// The config's hostname is compared in the setup host's form: a Unicode or
+// trailing-dot name matches its punycode, as does the punycode itself.
+func TestServeTunnelCheckIDNHost(t *testing.T) {
+	dir := stubTunnel(t, true)
+	cloudflaredDir = func() string { return dir }
+	setup := goodSetup()
+	setup.Host = "bücher.example.com"
+	for _, name := range []string{"bücher.example.com.", "xn--bcher-kva.example.com"} {
+		os.WriteFile(filepath.Join(dir, "config.yml"), []byte("ingress:\n  - hostname: "+name+"\n    service: http://127.0.0.1:7467\n  - service: http_status:404\n"), 0o600)
+		if got := ServeTunnelCheck(setup); len(got) != 0 {
+			t.Errorf("%s matches the setup host: %q", name, got)
+		}
+	}
+}

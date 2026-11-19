@@ -1021,6 +1021,10 @@ func (s *server) actPrompt(w http.ResponseWriter, r *http.Request, a action, ema
 		s.render(w, r, "confirm", map[string]any{"What": what, "A": a})
 		return
 	}
+	if s.hold.answeredInTab(p) {
+		s.fail(w, r, http.StatusConflict, errAnsweredInTab)
+		return
+	}
 	if p = s.prompts.take(a.Prompt); p == nil {
 		s.fail(w, r, http.StatusConflict, gone)
 		return

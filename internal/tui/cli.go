@@ -174,7 +174,7 @@ Key bindings:
                   starts shown
   Ctrl+X A        When a session starts waiting on you, select it in ccs (and focus a prompt ccs
                   serve holds, to answer it in the bottom pane) and switch to its tab
-  Ctrl+X B        Start ccs serve's launchd agent, or show its address and QR code (s stops it, asking y/n; ccs serve install sets it up)
+  Ctrl+X B        Set up ccs serve (try it on this Mac, or a form for your phone), start its launchd agent, or show its address and QR code (s stops it, asking y/n; e edits its setup)
   Ctrl+X I        Install ccs updates on their own once you're away (off by
                   default)
   Ctrl+X R        Record a CPU profile, for when ccs feels slow; again to stop
@@ -457,6 +457,7 @@ func Main(v string) {
 	}
 	sessions.CloseInboxes()
 	releaseHold("ccs quit") // prompts it held go to their tabs
+	stopPreview()           // a preview started from ^X B lives only as long as this ccs
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

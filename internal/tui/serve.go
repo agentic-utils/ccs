@@ -6,6 +6,7 @@ package tui
 // header shows `^X B browser on` while launchd says the agent runs.
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,12 +49,16 @@ func (m *model) serveCheckCmd() tea.Cmd {
 // serveURL is the agent's address (its --host); stubbed in tests.
 var serveURL = mcp.ServeURL
 
-// serveKey is ^X B: a note when there's no agent, the QR popup while it
-// runs (S there asks y/n and stops it), else it starts it.
+// serveKey is ^X B: the setup popup when there's no agent (serve_setup.go),
+// the QR popup while it runs (S there asks y/n and stops it, E edits its
+// setup), else it starts it.
 func (m *model) serveKey() tea.Cmd {
+	if !m.serve.Installed { // read it now: the last check may be old
+		m.serve, m.serveCheckedAt = serveStatus(), time.Now()
+	}
 	switch {
 	case !m.serve.Installed:
-		m.note("^X B runs ccs serve in the background: set it up first with ccs serve install <flags> (docs/remote.md)")
+		m.openServeSetup()
 		return nil
 	case m.serve.Running:
 		m.openServeQR()
@@ -109,6 +114,9 @@ func (m model) serveQRKey(k string) (tea.Model, tea.Cmd) {
 	switch k {
 	case "s", "S":
 		m.serveQROpen, m.confirmServeStop = false, true
+	case "e", "E":
+		m.serveQROpen = false
+		m.editServeSetup()
 	case "esc", "^x b", "q":
 		m.serveQROpen = false
 	case "ctrl+x": // a chord can't start while a popup is open, so this one starts its own: ^X B closes it
@@ -121,7 +129,14 @@ func (m model) serveQRKey(k string) (tea.Model, tea.Cmd) {
 // the window; otherwise the address alone, and a note saying so.
 func (m model) serveQRPopup() string {
 	var b strings.Builder
-	b.WriteString("\033[1mccs serve is running\033[0m\n\n")
+	status := "installed, not running"
+	if m.serve.Running {
+		status = "running"
+		if m.serve.PID > 0 {
+			status += " (pid " + strconv.Itoa(m.serve.PID) + ")"
+		}
+	}
+	b.WriteString("\033[1mccs serve\033[0m \033[90m· " + status + "\033[0m\n\n")
 	switch {
 	case m.serveQRErr != "":
 		b.WriteString(m.serveQRErr + "\n")
@@ -130,7 +145,7 @@ func (m model) serveQRPopup() string {
 	default:
 		b.WriteString("Open " + m.serveQRURL + "\n\n\033[90mthe window is too small for its QR code: make it bigger, or run ccs serve qr\033[0m\n")
 	}
-	b.WriteString("\n\033[90m" + hints("s", "stop it", "^X B/"+keyEsc, "close") + "\033[0m")
+	b.WriteString("\n\033[90m" + hints("s", "stop it", "e", "edit setup", "^X B/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).

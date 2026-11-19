@@ -93,7 +93,7 @@ Checked on Claude Code 2.1.327 in a throwaway session: an allow approved a Bash 
 `ccs serve install <the same flags as ccs serve>` writes a per-user launchd agent (`~/Library/LaunchAgents/io.github.agentic-utils.ccs-serve.plist`, 0600 since it holds the Access values), checking the flags as `ccs serve` does. Its output goes to `serve.log` beside the update log, which ccs creates 0600 (and its folder 0700 if ccs makes it) at install and at start, before launchd first writes it, tightening an existing one. `install` refuses `--preview`: the preview is for a terminal on this Mac, and its secret link would only reach that log. Then:
 
 - `ccs serve start` runs it and `ccs serve stop` stops it; `ccs serve status` says whether it runs, from `launchctl print`; `ccs serve uninstall` stops it and removes the plist.
-- In the TUI, ^X B starts it; while it runs, ^X B shows its address and a QR code (S there asks y/n and stops it). Once installed, the header shows `^X B browser on` or `off`, read from launchd's state at most every 10 seconds, not just whether the plist exists.
+- In the TUI, ^X B sets it up when there's no agent yet (below), starts it when it's installed, and while it runs shows its address and a QR code (S there asks y/n and stops it, E edits its setup and restarts it). Once installed, the header shows `^X B browser on` or `off`, read from launchd's state at most every 10 seconds, not just whether the plist exists.
 - It never starts at login (`RunAtLoad` false). launchd restarts it only after a crash (`KeepAlive` `{SuccessfulExit: false}`), and stop unloads it (`launchctl bootout`), so a stopped agent stays stopped.
 - It isn't hosted inside the TUI, which restarts on every auto-update and stops when it quits: remote access would drop with it.
 - Changing its flags: `ccs serve install <new flags>`, then stop and start it.
@@ -115,6 +115,13 @@ Loopback is shared by every user on a Mac, so the preview has a login of its own
 The preview refuses the Access flags, answers only requests whose Host is `127.0.0.1`, `localhost` or `::1` (which stops DNS rebinding), and is read-only unless you add `--allow-write`. With it, writes work as they do remotely: same-origin only (`Origin` and `Sec-Fetch-Site`), with the form token, the confirm page, the limits and the activity log, so another website can't post to it. Programs running as you can read the printed link, as they can already run ccs, so stop the preview with ^C when you're done.
 
 ## Setting it up
+
+The quickest way is ^X B in ccs. With no agent installed it opens a setup popup:
+
+- **Try it on this Mac now** runs a read-only `ccs serve --preview` as a child of ccs, for as long as ccs runs (it stops when ccs quits, and is never a launchd agent), and opens its secret link. It's for this Mac only: your phone can't reach 127.0.0.1. Pressing it again while it runs shows the link again.
+- **Set up for my phone** is a form: the hostname, the Access team, the Access AUD tag and the email (prefilled from your Claude account), each with a hint on where to find it, and "Allow answering and sending from the phone" (`--allow-write`), unticked unless you tick it. Tab or ↑/↓ move, Space ticks, Enter on the last field submits. It's checked exactly as `ccs serve install` checks its flags, with errors shown in the form. Before installing, it looks for `cloudflared` on PATH and an ingress rule for the hostname in `~/.cloudflared/config.yml` (or `config.yaml`) pointing at `http://127.0.0.1:7467`; if either is missing it shows the commands below, and Enter installs anyway or Esc goes back. Then it installs and starts the agent and shows its address, QR code and status.
+
+By hand, the steps are:
 
 1. Install cloudflared: `brew install cloudflared`, then `cloudflared tunnel login`.
 2. Create a tunnel and a hostname for it:

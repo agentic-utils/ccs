@@ -42,12 +42,16 @@ func TestServeChord(t *testing.T) {
 	m.width, m.height = 160, 30
 	m = run(m, m.serveCheckCmd())
 
-	// Not installed: a note on how to set it up, nothing started, no header toggle.
+	// Not installed: the setup popup, nothing started, no header toggle.
 	m, cmd := chordB(m)
-	if cmd != nil || started != 0 || !strings.Contains(m.errorMsg, "ccs serve install") || m.errorMsg != m.noteMsg {
-		t.Errorf("no agent: a grey note and nothing run: %q %v", m.errorMsg, cmd)
+	if cmd != nil || started != 0 || m.setup == nil || !strings.Contains(strip2(m.View()), "ccs serve isn't set up yet") {
+		t.Errorf("no agent: the setup popup and nothing run: %v %v", m.setup, cmd)
 	}
-	if strings.Contains(strip2(m.View()), "browser") {
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.setup != nil {
+		t.Error("esc closes the setup popup")
+	}
+	if strings.Contains(strings.Split(strip2(m.View()), "\n")[0], "browser") {
 		t.Error("the header shows ^X B only once it's set up")
 	}
 

@@ -270,6 +270,11 @@ func TestHeldAutoSelectOldestOneAtATime(t *testing.T) {
 	}
 	delete(m.heldPrompt, "asks") // answered
 	m.autoSelect()
+	if on() != "asks" {
+		t.Errorf("never two auto-selects back to back: on %s", on())
+	}
+	m.autoSelectAt = time.Now().Add(-time.Minute) // a while later
+	m.autoSelect()
 	if on() != "menu" {
 		t.Errorf("the next once it's settled: on %s", on())
 	}

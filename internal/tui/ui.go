@@ -141,6 +141,9 @@ type model struct {
 	heldNoteShown    bool              // heldNote is in the main view's note line too
 	heldErr          string            // the pane's last held-prompt error
 	selectHandled    map[string]string // SessionID -> the wait (or held prompt) auto-select has dealt with
+	autoSelectAt     time.Time         // the last auto-select: the next waits autoFocusIdle after it, as after a key
+	chatAfter        string            // answered from ccs: this session's message box takes the keys once its menu has gone
+	chatAfterID      string            // the held prompt that answer was for
 	serveQROpen      bool              // ^X B's popup while the agent runs: its address and QR code
 	serveQR          string            // the QR code, drawn
 	serveQRWidth     int               // its width in cells
@@ -1222,6 +1225,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, _, held := n.selectedHeld(); n.heldFocus && !held {
 		n.heldFocus, n.heldAutoAt = false, time.Time{}
 	}
+	n.keepChatAfterAnswer()
 	n.autoSelect()
 	if n.showUsage || n.helpOpen || n.popupOpen() { // another screen took over: the pane loses the keys
 		n.heldFocus = false

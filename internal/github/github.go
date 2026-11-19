@@ -72,10 +72,17 @@ type WatchedPR struct {
 	// (ccs depends), and AutoMerge whether GitHub will merge it by itself.
 	BlockedBy []string `json:"blocked_by,omitempty"`
 	AutoMerge bool     `json:"auto_merge,omitempty"`
+	// ClosedAfter is those of BlockedBy that closed without merging: ccs
+	// watch drops such a wait, so this lasts only while it couldn't.
+	ClosedAfter []string `json:"closed_after,omitempty"`
 
 	conflictsUnknown bool // GitHub hadn't worked out mergeability yet: keep the last answer
 	threadsUnknown   bool // not counted this pass (checks not green, or the query failed): keep the last count
 }
+
+// openBlocked is what it waits for that is still open (or not known): a
+// wait on a closed PR never warns of auto-merge.
+func (p *WatchedPR) openBlocked() []string { return openBlockers(p.BlockedBy, p.ClosedAfter) }
 
 // threadsClear: its review threads were counted and none is unresolved.
 func (p *WatchedPR) threadsClear() bool { return p.Threads != nil && *p.Threads == 0 }
@@ -144,7 +151,10 @@ type PREvent struct {
 	// auto when ccs watch claimed it for the session that opened it.
 	Session string `json:"session,omitempty"`
 	// On blocked, blocked_automerge and merged_early: the PRs it was to
-	// merge after that hadn't merged.
+	// merge after that hadn't merged (blocked and blocked_automerge: those
+	// still open). On dependency_dropped: the waits ccs watch forgot (Reason
+	// says why); on waits_on_closed: the closed PRs it still waits for,
+	// since they couldn't be forgotten.
 	After []string `json:"after,omitempty"`
 	// On approved and changes_requested: the reviewers whose reviews say so.
 	By        []string `json:"by,omitempty"`
@@ -290,7 +300,7 @@ func RunWatch(args []string) int {
 	noSessionEvents := fs.Bool("no-session-events", false, "don't emit session_stalled, session_done, session_active, session_started and session_ended as live sessions stall (idle with nothing pending), finish, work again, start and end")
 	stallAfter := fs.Duration("stall-after", 15*time.Minute, "how long a live session must be idle, with nothing pending, before session_stalled")
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, approved, changes_requested, threads_unresolved, threads_resolved, threads_unanswered, blocked, unblocked, blocked_automerge, merged_early (ccs depends), merged, closed, claimed; unless --no-session-events, session_stalled and session_done (a live session idle past --stall-after with nothing pending, or saying it is finished, as ccs sessions --triage buckets it), session_active (it left either), session_started and session_ended; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
+		fmt.Fprintf(fs.Output(), "Usage: ccs watch [flags]\n\nWatch an author's open PRs and append one JSON line per change to\n%s (and stdout).\nEvents: watch_started, new, ready, needs_review, review_not_needed, checks_failing, checks_passed,\nconflicts, approved, changes_requested, threads_unresolved, threads_resolved, threads_unanswered, blocked, unblocked, blocked_automerge, merged_early, dependency_dropped, waits_on_closed (ccs depends), merged, closed, claimed; unless --no-session-events, session_stalled and session_done (a live session idle past --stall-after with nothing pending, or saying it is finished, as ccs sessions --triage buckets it), session_active (it left either), session_started and session_ended; unless --no-nudge, nudged and nudge_failed (the live sessions that claimed a PR are told of its failing\nchecks, conflicts and new unanswered review threads). new says which local session opened the PR\n(opened_by, origin) and merged which one merged it or turned on auto-merge (merged_by, merge),\nread from the sessions' transcripts. Only one ccs watch runs at a time.\n\n", PREventsPath())
 		fs.PrintDefaults()
 	}
 	for _, a := range args {
@@ -400,8 +410,12 @@ func WatchPass(author, owner string, now time.Time) error {
 			e.OpenedBy, e.Origin = p.OpenedBy, p.Origin
 		case "approved", "changes_requested":
 			e.Review, e.By = p.Review, p.ReviewBy
-		case "blocked", "blocked_automerge", "merged_early":
+		case "blocked", "blocked_automerge":
+			e.After = p.openBlocked()
+		case "merged_early":
 			e.After = p.BlockedBy
+		case "waits_on_closed":
+			e.After, e.Reason = p.ClosedAfter, ClosedReason
 		case "merged":
 			e.MergedBy, e.Merge = p.MergedBy, p.Merge
 		}
@@ -424,19 +438,37 @@ func WatchPass(author, owner string, now time.Time) error {
 	}
 
 	// orderEvents says a PR's merge-order changes: when it starts waiting
-	// and when it no longer does, and at once when GitHub would merge a
+	// on an open PR and when it no longer waits at all, when a wait on a
+	// closed PR couldn't be dropped, and at once when GitHub would merge a
 	// waiting PR by itself.
 	orderEvents := func(n, prev *WatchedPR) {
-		blocked, wasBlocked := len(n.BlockedBy) > 0, len(prev.BlockedBy) > 0
 		switch {
-		case blocked && !wasBlocked:
+		case len(n.openBlocked()) > 0 && len(prev.openBlocked()) == 0:
 			emit(n, "blocked")
-		case !blocked && wasBlocked:
+		case len(n.BlockedBy) == 0 && len(prev.BlockedBy) > 0:
 			emit(n, "unblocked")
 			events[len(events)-1].After = prev.BlockedBy // what it waited for
 		}
-		if blocked && n.AutoMerge && !(wasBlocked && prev.AutoMerge) {
+		if slices.ContainsFunc(n.ClosedAfter, func(a string) bool { return !slices.Contains(prev.ClosedAfter, a) }) {
+			emit(n, "waits_on_closed") // a closed PR's wait that couldn't be dropped
+		}
+		if len(n.openBlocked()) > 0 && n.AutoMerge && !(len(prev.openBlocked()) > 0 && prev.AutoMerge) {
 			emit(n, "blocked_automerge")
+		}
+	}
+
+	// A wait on a PR closed without merging can never end: forget it, and
+	// say so, before the PRs are judged.
+	dropped, err := order.dropClosed()
+	if err != nil {
+		state.LogActivity("pr watch: couldn't drop the waits on PRs closed without merging: %v", err)
+	} else {
+		for _, p := range open {
+			if d := dropped[p.URL]; len(d) > 0 {
+				c := p
+				emit(&c, "dependency_dropped")
+				events[len(events)-1].After, events[len(events)-1].Reason = d, ClosedReason
+			}
 		}
 	}
 
@@ -450,6 +482,7 @@ func WatchPass(author, owner string, now time.Time) error {
 			if o != nil {
 				c := *o
 				c.BlockedBy = order.unmet(p.URL) // a dependency declared since still holds it
+				c.ClosedAfter = order.closedAfter(p.URL)
 				next.PRs[p.URL] = &c
 				if !seeding && o.State == "open" {
 					orderEvents(&c, o)
@@ -469,6 +502,7 @@ func WatchPass(author, owner string, now time.Time) error {
 		}
 		next.PRs[p.URL] = n
 		n.BlockedBy = order.unmet(p.URL)
+		n.ClosedAfter = order.closedAfter(p.URL)
 		// Who opened it: looked for until known. Only a PR new to the watcher
 		// with no local gh pr create behind it is called not local; one from
 		// before the watch may have been opened by a session long gone.
@@ -488,8 +522,11 @@ func WatchPass(author, owner string, now time.Time) error {
 			}
 			// Auto-merge already on for a PR that must wait: never quiet,
 			// or no later pass would see it change and say so.
-			if len(n.BlockedBy) > 0 && n.AutoMerge {
+			if len(n.openBlocked()) > 0 && n.AutoMerge {
 				emit(n, "blocked_automerge")
+			}
+			if len(n.ClosedAfter) > 0 {
+				emit(n, "waits_on_closed")
 			}
 			continue
 		}
@@ -612,6 +649,7 @@ func WatchPass(author, owner string, now time.Time) error {
 		return err
 	}
 	pruneDepends(&next) // only once what they said is written and saved
+	clearDropped(dropped)
 	return nil
 }
 
@@ -1491,8 +1529,10 @@ type PRRow struct {
 	// a session here should own it.
 	OpenedBy *PRActor `json:"opened_by,omitempty"`
 	Origin   string   `json:"origin,omitempty"`
-	// BlockedBy is the PRs it must merge after (ccs depends) that haven't merged.
-	BlockedBy []string `json:"blocked_by,omitempty"`
+	// BlockedBy is the PRs it must merge after (ccs depends) that haven't
+	// merged, and WaitsOnClosed those of them closed without merging.
+	BlockedBy     []string `json:"blocked_by,omitempty"`
+	WaitsOnClosed []string `json:"waits_on_closed,omitempty"`
 }
 
 // MergedRow is one line of ccs prs --merged: a PR ccs watch saw merge, and how.
@@ -1636,10 +1676,14 @@ func (p *WatchedPR) status() (int, string) {
 		return PRFix, threadsText(*p.Threads)
 	case p.Review == "changes_requested":
 		return PRFix, "changes requested"
-	case len(p.BlockedBy) > 0 && p.AutoMerge:
-		return PRFix, "auto-merge is on, but it must merge after " + prNames(p.BlockedBy)
+	case len(p.openBlocked()) > 0 && p.AutoMerge:
+		why := "auto-merge is on, but it must merge after " + prNames(p.openBlocked())
+		if len(p.ClosedAfter) > 0 {
+			why += "; " + closedText(p.ClosedAfter)
+		}
+		return PRFix, why
 	case len(p.BlockedBy) > 0:
-		return PRWaiting, "blocked: after " + prNames(p.BlockedBy)
+		return PRWaiting, blockedText(p.BlockedBy, p.ClosedAfter)
 	case p.Checks == "pending":
 		return PRWaiting, "checks running"
 	case p.Review == "approved":
@@ -1840,7 +1884,7 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 	if deps := LoadDepends(); len(deps.Depends) > 0 {
 		for u, p := range open {
 			c := *p
-			c.BlockedBy = listBlocked(u, deps, st, !offline && !watching)
+			c.BlockedBy, c.ClosedAfter = listBlocked(u, deps, st, !offline && !watching)
 			open[u] = &c
 		}
 	}
@@ -1901,7 +1945,7 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 
 	for u, p := range open {
 		g, why := p.status()
-		row := PRRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.NeedsReview(), Group: groupNames[g], Status: why, OpenedBy: p.OpenedBy, Origin: p.Origin, BlockedBy: p.BlockedBy}
+		row := PRRow{PR: u, Repo: p.Repo, Number: p.Number, Title: p.Title, Head: p.Head, NeedsReview: p.NeedsReview(), Group: groupNames[g], Status: why, OpenedBy: p.OpenedBy, Origin: p.Origin, BlockedBy: p.BlockedBy, WaitsOnClosed: p.ClosedAfter}
 		for _, c := range claims.Claims[u] {
 			o := OwnerOf(c, live)
 			row.Owners = append(row.Owners, o.Name)
@@ -1944,10 +1988,10 @@ func OpenPRsByOwner() (map[string][]PRRow, bool) {
 		}
 		c := *p
 		if deps.Depends[u] != nil {
-			c.BlockedBy = listBlocked(u, deps, st, false)
+			c.BlockedBy, c.ClosedAfter = listBlocked(u, deps, st, false)
 		}
 		g, why := c.status()
-		row := PRRow{PR: u, Repo: c.Repo, Number: c.Number, Title: c.Title, Head: c.Head, NeedsReview: c.NeedsReview(), Group: groupNames[g], Status: why, BlockedBy: c.BlockedBy}
+		row := PRRow{PR: u, Repo: c.Repo, Number: c.Number, Title: c.Title, Head: c.Head, NeedsReview: c.NeedsReview(), Group: groupNames[g], Status: why, BlockedBy: c.BlockedBy, WaitsOnClosed: c.ClosedAfter}
 		for _, cl := range claims.Claims[u] {
 			o := OwnerOf(cl, nil)
 			k := OwnerKey(o.Kind, o.Session)
@@ -2315,6 +2359,7 @@ type PRInfo struct {
 	// unresolved, so it can't be called clear (the watcher reads them all).
 	ThreadsUnread bool
 	BlockedBy     []string // the PRs it must merge after that haven't merged (ccs depends)
+	ClosedAfter   []string // those of BlockedBy closed without merging
 }
 
 // threadsText is "1 unresolved thread" or "N unresolved threads".
@@ -2377,7 +2422,7 @@ func (p PRInfo) Status() (int, string) {
 	case p.ThreadsUnread:
 		return PRWaiting, "over 100 review threads: see them on GitHub"
 	case len(p.BlockedBy) > 0: // never ready before what it waits for has merged
-		return PRWaiting, "blocked: after " + prNames(p.BlockedBy)
+		return PRWaiting, blockedText(p.BlockedBy, p.ClosedAfter)
 	case p.MergeState == "CLEAN" || p.MergeState == "HAS_HOOKS":
 		return PRReady, "ready to merge"
 	case p.MergeState == "UNSTABLE" && (p.Checks == "PENDING" || p.Checks == "EXPECTED"):
@@ -2595,7 +2640,7 @@ func nudgeText(p *WatchedPR, reasons []string) string {
 		case "conflicts":
 			what = append(what, "merge conflicts with its base")
 		case "blocked":
-			what = append(what, fmt.Sprintf("auto-merge on, though it must not merge before %s has (ccs depends): turn it off until then with gh pr merge --disable-auto %s", prNames(p.BlockedBy), p.URL))
+			what = append(what, fmt.Sprintf("auto-merge on, though it must not merge before %s has (ccs depends): turn it off until then with gh pr merge --disable-auto %s", prNames(p.openBlocked()), p.URL))
 		}
 	}
 	return fmt.Sprintf("%s (%s) has %s.\nThis session claimed it with ccs claim. If it's yours, deal with it; if not, run: ccs claim %s --release", p.URL, p.Title, strings.Join(what, "; "), p.URL)
@@ -2624,7 +2669,7 @@ func nudgeReasons(p *WatchedPR, sent *nudgeSent) []string {
 	if p.Conflicts && !sent.Conflicts {
 		reasons = append(reasons, "conflicts")
 	}
-	if len(p.BlockedBy) > 0 && p.AutoMerge && !sent.Blocked {
+	if len(p.openBlocked()) > 0 && p.AutoMerge && !sent.Blocked {
 		reasons = append(reasons, "blocked")
 	}
 	return reasons

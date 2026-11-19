@@ -170,6 +170,8 @@ var Registry = []Info{
 	{"watch.unblocked", "unblocked"},
 	{"watch.blocked_automerge", "auto-merge on while blocked"},
 	{"watch.merged_early", "merged before its dependency"},
+	{"watch.dependency_dropped", "a dependency on a PR closed unmerged dropped"},
+	{"watch.waits_on_closed", "waits on a PR closed unmerged"},
 	{"watch.merged", "merged"},
 	{"watch.closed", "closed"},
 	{"watch.claimed", "a PR claimed"},

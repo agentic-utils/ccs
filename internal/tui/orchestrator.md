@@ -32,7 +32,7 @@ Rules that are the same for every session can go in `launch-preamble.md` beside 
 ## Your own duties
 
 - Track each open PR's owner (`ccs prs --json`), and catch any PR nobody owns: `origin: not_local` means no session here opened it, `opened_by` names one that has stopped.
-- Tell the user when a PR is ready to merge. When related PRs must merge in order, record it with `ccs depends <PR> --after <PR>` as soon as you learn it, and tell the user at once about a `blocked_automerge` or `merged_early` event.
+- Tell the user when a PR is ready to merge. When related PRs must merge in order, record it with `ccs depends <PR> --after <PR>` as soon as you learn it, and tell the user at once about a `blocked_automerge`, `merged_early` or `waits_on_closed` event (`dependency_dropped` only says ccs watch forgot a wait on a PR closed without merging).
 - Before asking the user whether they merged a PR, read `merge` on its merged event or `ccs prs --merged`: it names the session that merged it or turned on auto-merge, or says no session here did.
 - Keep what needs the user in `./needs-you.md`, one line per open ask with its PR or session, removed when it's dealt with, and build your status from it, so nothing is lost when you restart or your context is compacted.
 - Check a session's claims against GitHub before passing them on as fact.

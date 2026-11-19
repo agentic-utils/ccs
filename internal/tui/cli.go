@@ -98,6 +98,7 @@ Usage: ccs [filter] [-- claude-flags...]
                             Stop (an orchestrator is told each time a session under it ends a turn;
                             ccs hook child-notices on|off turns that off for one) and SessionStart
                             (a new session's parent is recorded as it starts, however it was started)
+       ccs hook status      which of those are installed and which missing (exit 1 when any is)
        ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
                             claude mcp add --scope user ccs -- ccs mcp
        ccs stats [--json]   How often you use each ccs feature, and the ones never used;

@@ -31,7 +31,9 @@ type ParentRec struct {
 	ParentID   string    `json:"parent_id"`          // and its session id
 	ParentKind string    `json:"parent_kind,omitempty"`
 	At         time.Time `json:"at"`
-	// Source is what set it: "" a launch or adopt, "reorg" ccs reorg.
+	// Source is what set it: "" a launch or adopt, "reorg" ccs reorg,
+	// "start" the SessionStart hook, "brief" a handoff brief's first line
+	// (RecordBriefParents).
 	Source string `json:"source,omitempty"`
 }
 
@@ -39,6 +41,10 @@ type ParentRec struct {
 // launch or adoption winning.
 type ParentsFile struct {
 	Parents map[string]ParentRec `json:"parents"`
+	// Detached is each child `ccs adopt <name> --to none` detached, by the
+	// same key as Parents, so a brief's "Parent session:" line never puts it
+	// back; any later record for it (a launch, an adoption) clears it.
+	Detached map[string]time.Time `json:"detached,omitempty"`
 }
 
 // ParentsPath is launch-parents.json beside the session marks.
@@ -53,6 +59,9 @@ func LoadParents() ParentsFile {
 	}
 	if f.Parents == nil {
 		f.Parents = map[string]ParentRec{}
+	}
+	if f.Detached == nil {
+		f.Detached = map[string]time.Time{}
 	}
 	return f
 }
@@ -308,10 +317,104 @@ func SetParentsAt(recs []ParentRec, at time.Time) error {
 	return WithParents(func(f *ParentsFile) bool {
 		for _, r := range recs {
 			r.At = at
-			f.Parents[cmp.Or(r.Child, r.ChildID)] = r
+			key := cmp.Or(r.Child, r.ChildID)
+			f.Parents[key] = r
+			delete(f.Detached, key) // an explicit record ends a detach
 		}
 		return len(recs) > 0
 	})
+}
+
+// briefPrefix starts a session-handoff brief, whose first line names the
+// session that handed it off: "Parent session: `<name>`. Report back …".
+const briefPrefix = "Parent session: `"
+
+// BriefParent is the parent a handoff brief names, when text (a session's
+// first user message) starts with exactly "Parent session: `<name>`.".
+func BriefParent(text string) (string, bool) {
+	rest, ok := strings.CutPrefix(text, briefPrefix)
+	if !ok {
+		return "", false
+	}
+	name, tail, ok := strings.Cut(rest, "`")
+	if !ok || !strings.HasPrefix(tail, ".") || !state.SessionName.MatchString(name) {
+		return "", false
+	}
+	return name, true
+}
+
+// firstUserText is a conversation's first user message, "" when it has none.
+func firstUserText(c transcript.Conversation) string {
+	for _, msg := range c.Messages {
+		if msg.Role == "user" {
+			return msg.Text
+		}
+	}
+	return ""
+}
+
+// briefRecs is a record for each of convs that has no record and wasn't
+// detached, whose first user message is a handoff brief naming a session
+// among convs (the newest with that name) other than itself. A session
+// started by session-handoff's open-tab.sh, which ccs didn't launch, gets
+// its parent this way even without the SessionStart hook.
+func briefRecs(convs []transcript.Conversation, f ParentsFile) []ParentRec {
+	newest := map[string]transcript.Conversation{}
+	for _, c := range convs {
+		if c.Title == "" {
+			continue
+		}
+		if n, ok := newest[c.Title]; !ok || c.LastTimestamp > n.LastTimestamp {
+			newest[c.Title] = c
+		}
+	}
+	var recs []ParentRec
+	for _, c := range convs {
+		child := ""
+		if c.IsCustomTitle {
+			child = c.Title // records are keyed by the name a launch gives
+		}
+		key := cmp.Or(child, c.SessionID)
+		if _, ok := f.Parents[key]; ok {
+			continue
+		}
+		if _, ok := f.Parents[c.SessionID]; ok {
+			continue
+		}
+		if _, ok := f.Detached[key]; ok {
+			continue
+		}
+		name, ok := BriefParent(firstUserText(c))
+		if !ok || name == child {
+			continue
+		}
+		p, ok := newest[name]
+		if !ok || p.SessionID == c.SessionID {
+			continue
+		}
+		recs = append(recs, ParentRec{Child: child, ChildID: c.SessionID, Parent: name, ParentID: p.SessionID, ParentKind: p.Kind, Source: "brief"})
+	}
+	return recs
+}
+
+// RecordBriefParents records briefRecs for convs, once each: worked out
+// under the records' lock, so a launch or adoption written meanwhile wins.
+// It returns the records it added.
+func RecordBriefParents(convs []transcript.Conversation) ([]ParentRec, error) {
+	var added []ParentRec
+	err := WithParents(func(f *ParentsFile) bool {
+		added = briefRecs(convs, *f)
+		at := time.Now().UTC()
+		for i := range added {
+			added[i].At = at
+			f.Parents[cmp.Or(added[i].Child, added[i].ChildID)] = added[i]
+		}
+		return len(added) > 0
+	})
+	if err != nil {
+		return nil, err
+	}
+	return added, nil
 }
 
 // DropParent removes key's record if it is still rec (a reorg's planning
@@ -339,7 +442,8 @@ func Adopt(child, parent string) (string, error) {
 		err := WithParents(func(f *ParentsFile) bool {
 			_, had = f.Parents[child]
 			delete(f.Parents, child)
-			return had
+			f.Detached[child] = time.Now().UTC() // a brief's first line mustn't put it back
+			return true
 		})
 		if err != nil {
 			return "", err

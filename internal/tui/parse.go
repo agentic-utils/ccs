@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"cmp"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/agentic-utils/ccs/internal/sessions"
+	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -78,7 +80,29 @@ func (m *model) startRefresh(early bool) tea.Cmd {
 	reload, gen := m.reload, m.gen
 	return func() tea.Msg {
 		items, err := reload()
+		if err == nil {
+			recordBriefParents(items)
+		}
 		return refreshMsg{items: items, err: err, live: sessions.ReadLiveSessions(), gen: gen, early: early}
+	}
+}
+
+// recordBriefParents gives each listed session started by a handoff brief
+// ("Parent session: `<name>`." first, as session-handoff writes) its
+// parent, when nothing recorded one; the next live tick's reloadParents
+// shows it. Off the UI goroutine, from each scan.
+func recordBriefParents(items []listItem) {
+	convs := make([]transcript.Conversation, len(items))
+	for i := range items {
+		convs[i] = items[i].conv
+	}
+	added, err := sessions.RecordBriefParents(convs)
+	if err != nil {
+		state.LogActivity("brief parents: couldn't record: %v", err)
+		return
+	}
+	for _, r := range added {
+		state.LogActivity("brief parents: %s is under %s (its brief names it)", cmp.Or(r.Child, r.ChildID), r.Parent)
 	}
 }
 

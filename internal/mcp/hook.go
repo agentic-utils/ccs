@@ -128,6 +128,8 @@ func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0 // never fail a session's start, and print nothing: it would become its context
 	case "child-notices":
 		return runChildNotices(args[1:], stdout, stderr)
+	case "status":
+		return runHookStatus(stdout, stderr)
 	case "install", "uninstall":
 		path := claudeSettingsPath()
 		if slices.Contains(args[1:], "--print") {
@@ -149,7 +151,7 @@ func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 2
 }
 
-const hookUsage = "usage: ccs hook permission | ccs hook stop | ccs hook session-start | ccs hook child-notices on|off [--orchestrator <name>] | ccs hook install [--print] | ccs hook uninstall"
+const hookUsage = "usage: ccs hook permission | ccs hook stop | ccs hook session-start | ccs hook child-notices on|off [--orchestrator <name>] | ccs hook install [--print] | ccs hook uninstall | ccs hook status"
 
 // runChildNotices is `ccs hook child-notices on|off`: whether an
 // orchestrator (the calling session, unless --orchestrator names one) is
@@ -660,6 +662,84 @@ func editHookSettings(path string, install bool) (string, error) {
 		return "added ccs's " + hookList(changed) + " to " + path + " (the old file is beside it, .before-ccs-hook). Sessions started from now on use it; restart running ones to pick it up.", nil
 	}
 	return "removed ccs's " + hookList(changed) + " from " + path, nil
+}
+
+// HookState is one of ccs's hooks (ourHooks) by its Claude Code event, and
+// whether Claude Code's settings run it.
+type HookState struct {
+	Event     string
+	Installed bool
+}
+
+// HookStatus reads Claude Code's settings, the file `ccs hook install`
+// edits, and says which of ccs's hooks it runs. It only ever reads.
+func HookStatus() ([]HookState, error) { return hookStatusIn(claudeSettingsPath()) }
+
+func hookStatusIn(path string) ([]HookState, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	settings := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &settings); err != nil {
+			return nil, fmt.Errorf("%s isn't valid JSON: %v", path, err)
+		}
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	out := make([]HookState, 0, len(ourHooks))
+	for _, h := range ourHooks {
+		entries, _ := hooks[h.Event].([]any)
+		out = append(out, HookState{Event: h.Event, Installed: slices.ContainsFunc(entries, func(e any) bool { return isOurHookFor(e, h.Sub) })})
+	}
+	return out, nil
+}
+
+// HooksOutOfDate is the events of ccs's hooks missing from the settings
+// when at least one is there: installed by a ccs that had fewer, so
+// `ccs hook install` adds the rest. None installed is a choice, not out of
+// date, and an unreadable file says nothing.
+func HooksOutOfDate() []string {
+	st, err := HookStatus()
+	if err != nil {
+		return nil
+	}
+	var missing []string
+	some := false
+	for _, s := range st {
+		if s.Installed {
+			some = true
+		} else {
+			missing = append(missing, s.Event)
+		}
+	}
+	if !some {
+		return nil
+	}
+	return missing
+}
+
+// runHookStatus is `ccs hook status`: each hook installed or missing, exit
+// 1 when any is missing.
+func runHookStatus(stdout, stderr io.Writer) int {
+	st, err := HookStatus()
+	if err != nil {
+		fmt.Fprintln(stderr, "ccs hook:", err)
+		return 1
+	}
+	missing := 0
+	for _, s := range st {
+		state := "installed"
+		if !s.Installed {
+			state, missing = "missing", missing+1
+		}
+		fmt.Fprintf(stdout, "%-18s %s\n", s.Event, state)
+	}
+	if missing > 0 {
+		fmt.Fprintf(stdout, "run `ccs hook install` to add the missing (%s)\n", claudeSettingsPath())
+		return 1
+	}
+	return 0
 }
 
 // hookList names hooks as a sentence does: "Stop hook", "PermissionRequest

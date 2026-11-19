@@ -91,6 +91,7 @@ func TestMain(m *testing.M) {
 	mcpRun = func(string, ...string) ([]byte, error) { return nil, errors.New("tests run no claude or codex") }
 	namedTranscript = func(string) string { return "" }
 	orchestratorProbe = func() tea.Msg { return nil }
+	hooksOutOfDate = func() []string { return nil } // never the real Claude Code settings
 	proc.PsAll = func() (string, error) { return "", nil }
 	serveStatus = func() mcp.ServiceStatus { return mcp.ServiceStatus{} } // never launchd
 	mcp.Launchctl = func(...string) (string, error) { return "", errors.New("tests run no launchctl") }

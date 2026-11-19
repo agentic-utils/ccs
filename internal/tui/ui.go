@@ -220,7 +220,7 @@ type model struct {
 	updateErr         string // last install failure, shown in the popup with a retry
 	updateCheckFailed bool
 	updateHeld        bool   // popup waited behind another prompt; restart its key grace when it shows
-	updateWaitLogged  bool   // "update waits: holding N prompt(s)" logged for this wait
+	updateWaitLogged  bool   // "update waits: <why>" logged for this wait
 	restartReady      string // an installed update whose restart waits for held prompts to settle
 	updating          bool
 	dismissed         string // tag the user said "later" to
@@ -1699,19 +1699,20 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case autoUpdateTickMsg:
 		if m.restartReady != "" {
-			if heldCount() > 0 || runActive() {
+			if m.updateBlocker() != "" {
 				return m, autoUpdateTick()
 			}
 			m.restart, m.quitting = m.restartReady, true
-			state.LogUpdate("restarting into %s now that no prompt is held", m.updateTo)
+			state.LogUpdate("restarting into %s now that nothing stops it", m.updateTo)
+			logHandBack()
 			return m, tea.Quit
 		}
 		switch {
 		case m.updating || m.updateTo == "" || !m.autoUpdate || m.upgrade == nil || m.updateTo == m.autoFailed:
 			return m, nil // nothing to install on its own now
-		case heldCount() > 0 || runActive():
+		case m.updateBlocker() != "":
 			if !m.updateWaitLogged {
-				state.LogActivity("update waits: holding %d prompt(s), a command running: %v", heldCount(), runActive())
+				state.LogActivity("update waits: %s", m.updateBlocker())
 				m.updateWaitLogged = true
 			}
 			return m, autoUpdateTick()
@@ -1750,16 +1751,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateShownAt = time.Now()
 			return m, nil
 		}
-		// A prompt may have arrived while it installed: an automatic update
-		// waits until none is held (held questions come back after a restart,
-		// but one being answered right now would be interrupted).
-		if n := heldCount(); n > 0 && m.autoInstalling {
+		// An automatic update installed while you started answering a
+		// question (or ran a command) waits for that; held questions alone
+		// don't stop it, since the restart hands them back to their hooks.
+		if why := m.updateBlocker(); why != "" && m.autoInstalling {
 			m.restartReady = msg.path
-			state.LogActivity("update ready: waiting for %d held question(s)", n)
+			state.LogActivity("update ready: waiting for %s", why)
 			return m, autoUpdateTick()
 		}
 		m.restart = msg.path
 		m.quitting = true
+		logHandBack()
 		return m, tea.Quit
 
 	case tea.MouseMsg:
@@ -3138,11 +3140,8 @@ func (m model) viewScreen() string {
 	}
 	if m.updating {
 		status = fmt.Sprintf(" · updating to %s: %s...", m.updateTo, m.progress)
-	} else if n, run := heldCount(), runActive(); (n > 0 || run) && m.updateTo != "" && (m.restartReady != "" || (m.autoUpdate && m.upgrade != nil && m.updateTo != m.autoFailed)) {
-		status = fmt.Sprintf(" · update waiting: %d held", n)
-		if run {
-			status = " · update waiting: a ! command running"
-		}
+	} else if why := m.updateBlocker(); why != "" && m.updateTo != "" && (m.restartReady != "" || (m.autoUpdate && m.upgrade != nil && m.updateTo != m.autoFailed)) {
+		status = " · update waiting: " + why
 	}
 	// Each state with its key in front, in bold, as the hints read.
 	key := func(k string) string { return "\033[1m" + k + "\033[22m " }

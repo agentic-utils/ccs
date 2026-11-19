@@ -231,6 +231,59 @@ func (m model) updatePopup() string {
 	return box
 }
 
+// updateBlocker is why an automatic update can't restart ccs now, "" when
+// nothing stops it: a ! command running (bounded by its deadline), or a
+// held question half answered, whose progress the restart would lose (the
+// question itself comes back; what was picked or typed doesn't).
+func (m model) updateBlocker() string {
+	if runActive() {
+		return "a ! command running"
+	}
+	if m.menuInProgress() {
+		return "a question half answered"
+	}
+	return ""
+}
+
+// menuInProgress: a menu of a question still held has work the restart
+// would lose: an answer picked, your own text or a note, a box open, or
+// past its first question. The highlighted option alone doesn't count.
+func (m model) menuInProgress() bool {
+	for id, mn := range m.menus {
+		if _, held := m.heldByID(id); held && mn.inProgress() {
+			return true
+		}
+	}
+	return false
+}
+
+func (mn *heldMenu) inProgress() bool {
+	if mn.step > 0 || mn.editing != boxNone {
+		return true
+	}
+	for _, p := range mn.picks {
+		if len(p) > 0 {
+			return true
+		}
+	}
+	for _, texts := range []map[int]string{mn.other, mn.drafts, mn.notes} {
+		for _, s := range texts {
+			if strings.TrimSpace(s) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// logHandBack notes, once per restart into an update, the held questions
+// it hands back to their hooks.
+func logHandBack() {
+	if n := heldCount(); n > 0 {
+		state.LogActivity("update: restarting with %d held question(s) handed back; they come back after the restart", n)
+	}
+}
+
 // heldUpdateNote tells the offer's reader that questions held now survive the
 // restart: each hook dials the new ccs, which holds it again.
 func (m model) heldUpdateNote() string {
@@ -281,12 +334,14 @@ const updatedEnv = "CCS_UPDATED_FROM"
 // awayForUpdate: an automatic update may restart ccs now. You're away (ccs
 // isn't focused, or no key for autoUpdateIdle) and nothing would be lost or
 // cut short: no prompt or popup open, no unsent text in any message box, no
-// session or orchestrator opening, and no prompt held for this list (it
-// comes back after the restart, but one being answered would be cut off).
-// The restart keeps the screen,
+// session or orchestrator opening, and nothing updateBlocker names. Held
+// questions don't stop it: the restart hands each back to its hook
+// (releaseHold, Handoff with retry), which dials the new ccs and is held
+// again, bound to the same wait. Waiting for none to be held starved
+// updates for hours with many sessions. The restart keeps the screen,
 // search and selection.
 func (m model) awayForUpdate() bool {
-	if heldCount() > 0 || runActive() {
+	if m.updateBlocker() != "" {
 		return false
 	}
 	if !m.blurred && time.Since(m.lastKeyAt) < autoUpdateIdle {

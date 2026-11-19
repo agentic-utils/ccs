@@ -122,16 +122,23 @@ func claimHoldReal() {
 	}
 }
 
-// releaseHold lets every held prompt go to its tab and gives the hold up.
+// releaseHold gives the hold up on the way out (quit, an error, or the
+// restart into an update), handing every held prompt back with retry:
+// each hook dials the next holder, so its question isn't lost, dropped or
+// answered. Never a final release (Close), which would send them to their
+// tabs for good.
 func releaseHold(why string) {
 	tuiHold.Lock()
 	h := tuiHold.h
 	tuiHold.h = nil
 	tuiHold.Unlock()
 	if h != nil {
-		h.Handoff(why) // each hook dials the next holder: a restart keeps its questions
+		handBack(h, why)
 	}
 }
+
+// handBack hands h's prompts back with retry; a var so tests can see it.
+var handBack = func(h *mcp.Holder, why string) { h.Handoff(why) }
 
 type heldMsg struct {
 	prompts []mcp.HeldPrompt

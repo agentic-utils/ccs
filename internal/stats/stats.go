@@ -90,6 +90,7 @@ var Registry = []Info{
 	{"tui.prune", "^X X prune a transcript"},
 	{"tui.kill", "^X K stop a session and close its tab"},
 	{"tui.restart", "^X R restart a session"},
+	{"tui.handover", "^X W hand a session over to its parent and close it"},
 	{"tui.delete", "^X D delete a transcript"},
 	{"tui.new_session", "^X N start a new session"},
 	{"tui.orchestrator", "^X O open the orchestrator"},

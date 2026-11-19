@@ -42,6 +42,23 @@ func restartCmd(name string, force bool) tea.Cmd {
 // restartSession is sessions.RestartSession, stubbed in tests.
 var restartSession = sessions.RestartSession
 
+// handoverCmd asks the session called name (still id) to hand its
+// leftovers to its parent, then closes it (^X W, after y), off the UI
+// goroutine: it waits until the session goes idle after the notice.
+func handoverCmd(name, id string) tea.Cmd {
+	return func() tea.Msg {
+		text, err := closeHandover(name, id, 0, nil)
+		return closeDoneMsg{text, err}
+	}
+}
+
+// handoverParent and closeHandover are sessions.HandoverParentName and
+// sessions.CloseHandover, stubbed in tests.
+var (
+	handoverParent = sessions.HandoverParentName
+	closeHandover  = sessions.CloseHandover
+)
+
 func closeCmd(name string, pid int, id string) tea.Cmd {
 	return func() tea.Msg {
 		text, err := sessions.CloseSession(name, pid, id)

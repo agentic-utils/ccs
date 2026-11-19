@@ -75,12 +75,13 @@ type hookReply struct {
 	Answers  map[string]string `json:"answers,omitempty"`
 	Message  string            `json:"message,omitempty"`
 	Other    []string          `json:"other,omitempty"` // questions answered with free text ("Other…") instead of an option
+	Notes    map[string]string `json:"notes,omitempty"` // a note on a question's answer, by question text (Claude Code's annotations)
 }
 
 // maxOtherRunes caps a free-text ("Other…") answer.
 const maxOtherRunes = 2000
 
-// OtherText cleans a free-text answer: control characters out, trimmed,
+// OtherText cleans a free-text answer or a note: control characters out, trimmed,
 // capped at maxOtherRunes; "" when nothing is left. Both ends use it: what
 // sends the answer, and the hook, which trusts nothing it's sent.
 func OtherText(s string) string {
@@ -312,6 +313,18 @@ func hookDecision(req hookRequest, r hookReply) map[string]any {
 			answers[q.Question] = got
 		}
 		input["answers"] = answers
+		// Notes become Claude Code's annotations ({question: {notes}}, as
+		// its AskUserQuestion schema has them), only for its own questions,
+		// cleaned here whatever the sender did.
+		annotations := map[string]any{}
+		for _, q := range in.Questions {
+			if note := OtherText(r.Notes[q.Question]); note != "" {
+				annotations[q.Question] = map[string]any{"notes": note}
+			}
+		}
+		if len(annotations) > 0 {
+			input["annotations"] = annotations
+		}
 		return map[string]any{"behavior": "allow", "updatedInput": input}
 	}
 	return nil

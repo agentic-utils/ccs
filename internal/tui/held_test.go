@@ -16,6 +16,7 @@ type heldCall struct {
 	id, choice string
 	labels     map[int][]string
 	other      map[int]bool
+	notes      map[int]string
 }
 
 // stubHeld makes ccs serve hold these prompts; answers are recorded.
@@ -24,8 +25,8 @@ func stubHeld(t *testing.T, prompts ...mcp.HeldPrompt) *[]heldCall {
 	var calls []heldCall
 	oldList, oldAnswer, oldSock := heldPrompts, answerHeld, controlSock
 	heldPrompts = func() ([]mcp.HeldPrompt, error) { return prompts, nil }
-	answerHeld = func(id, choice string, labels map[int][]string, other map[int]bool) (string, error) {
-		calls = append(calls, heldCall{id, choice, labels, other})
+	answerHeld = func(id, choice string, labels map[int][]string, other map[int]bool, notes map[int]string) (string, error) {
+		calls = append(calls, heldCall{id, choice, labels, other, notes})
 		return "done " + choice, nil
 	}
 	controlSock = func() bool { return true }
@@ -47,7 +48,7 @@ func TestHeldShownInBottomPane(t *testing.T) {
 	m = run(m, m.heldCmd())
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
 	m.applyStats(map[string]sessions.SessionStat{"live": waiting(time.Now(), "permission prompt")})
-	if v := strip2(m.View()); !strings.Contains(v, "held by ccs") || !strings.Contains(v, "answer it here") {
+	if v := strip2(m.View()); !strings.Contains(v, "held by ccs") || !strings.Contains(v, "keys: menu") || !strings.Contains(v, "esc back to the list") {
 		t.Errorf("bottom pane:\n%s", v)
 	}
 }
@@ -66,7 +67,6 @@ func TestHeldNeedsServe(t *testing.T) {
 // the answer that types into the session's terminal.
 func TestHeldPermissionSwallowsDigits(t *testing.T) {
 	m, calls, typedp := paneModel(t, mcp.HeldPrompt{ID: "p3", Session: "live", Tool: "Bash", Summary: "ls"})
-	m = keyType(m, tea.KeyEnter)
 	conv := m.items[0].conv
 	for _, it := range m.items {
 		if it.conv.SessionID == "live" {
@@ -118,17 +118,16 @@ func keyType(m model, k tea.KeyType) model {
 	return run(res.(model), cmd)
 }
 
-// The bottom pane answers the selected session's held prompt: Enter focuses
-// it, A and D ask y/n, T sends it back, Esc leaves; nothing is typed into a
-// terminal.
+// The bottom pane answers the selected session's held prompt with no Enter
+// first: A and D ask y/n, T sends it back, a letter it doesn't use goes to
+// the search, Esc leaves it for the list; nothing is typed into a terminal.
 func TestHeldPaneAnswersAPermission(t *testing.T) {
 	m, calls, typed := paneModel(t, mcp.HeldPrompt{ID: "p6", Session: "live", Tool: "Bash", Summary: "make deploy"})
-	m = keyType(m, tea.KeyEnter)
-	if !m.heldFocus || m.chatFocus {
-		t.Fatalf("Enter focuses the held prompt's pane: held %v chat %v", m.heldFocus, m.chatFocus)
+	if !m.heldKeysActive() || m.chatFocus {
+		t.Fatalf("the held prompt has the keys at once: active %v chat %v", m.heldKeysActive(), m.chatFocus)
 	}
-	if v := strip2(m.View()); !strings.Contains(v, "back to its tab and open it") {
-		t.Errorf("the pane says what Enter does now:\n%s", v)
+	if v := strip2(m.View()); !strings.Contains(v, "open its tab") || !strings.Contains(v, "keys: menu") {
+		t.Errorf("the pane says what its keys do:\n%s", v)
 	}
 	m = press(m, "a")
 	if len(*calls) != 0 || m.heldConfirmed == nil || !strings.Contains(strip2(m.View()), "Allow Bash") {
@@ -141,16 +140,25 @@ func TestHeldPaneAnswersAPermission(t *testing.T) {
 	if len(*calls) != 1 || (*calls)[0].choice != "deny" {
 		t.Fatalf("d then y denies: %+v", *calls)
 	}
-	m = press(m, "x")
-	if m.textInput.Value() != "" || len(*calls) != 1 {
-		t.Error("other keys are the pane's: none reach the search")
-	}
 	m = press(m, "t")
 	if len(*calls) != 2 || (*calls)[1].choice != "mac" {
 		t.Errorf("t sends it back: %+v", *calls)
 	}
-	if m = keyType(m, tea.KeyEsc); m.heldFocus {
-		t.Error("Esc leaves the pane for the search")
+	if m = keyType(m, tea.KeyEsc); m.heldKeysActive() {
+		t.Error("Esc leaves it for the list")
+	}
+	m = press(m, "a")
+	if m.textInput.Value() != "a" || m.heldConfirmed != nil {
+		t.Errorf("after Esc, letters go to the search: %q", m.textInput.Value())
+	}
+	m = keyType(m, tea.KeyBackspace) // the search empty again, still on it
+	m = keyType(m, tea.KeyEnter)
+	if !m.heldKeysActive() {
+		t.Fatal("Enter gives it the keys again")
+	}
+	m = press(m, "x")
+	if m.textInput.Value() != "x" || len(*calls) != 2 {
+		t.Errorf("a letter it doesn't use goes to the search: %q %+v", m.textInput.Value(), *calls)
 	}
 	if *typed {
 		t.Error("nothing is ever typed into a terminal")

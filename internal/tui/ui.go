@@ -89,6 +89,7 @@ type model struct {
 	blurred          bool                 // the terminal says ccs isn't focused: nothing is being seen
 	menus            map[string]*heldMenu // each held question menu's progress, by prompt id (menu.go)
 	menuShown        string               // the held prompt whose menu is on screen: menuFresh starts when it changes
+	menuLeft         string               // the held prompt left with Esc: its keys go to the list until it's selected again (or →, Tab, Enter)
 	viewing          string               // the done session selected and seen: marked seen when the selection leaves it
 	snoozeOpen       bool                 // the ^X S picker
 	snoozeCursor     int
@@ -1216,6 +1217,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		n.heldFocus, n.heldAutoAt = false, time.Time{}
 	}
 	n.autoSelect()
+	if n.showUsage || n.helpOpen || n.popupOpen() { // another screen took over: the pane loses the keys
+		n.heldFocus = false
+	}
 	n.showMenu(n.heldShown())
 	if pr := n.prCmd(); pr != nil {
 		cmd = tea.Batch(cmd, pr)
@@ -1761,7 +1765,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		prevKey := m.lastKeyAt
 		m.lastKeyAt = time.Now()
-		if m.heldFocus && !m.helpOpen && !m.prompting() {
+		if h, _, ok := m.selectedHeld(); ok && m.menuLeft == h.ID && (msg.String() == "right" || msg.String() == "tab") && m.textInput.Value() == "" {
+			m.menuLeft = "" // give the held prompt the keys again
+			return m, nil
+		}
+		if m.heldKeysActive() {
 			if cmd, done := m.heldPaneKey(msg, prevKey); done {
 				return m, cmd
 			}
@@ -2651,16 +2659,19 @@ func (m model) shortcuts() [][2]string {
 		add(true, keyEnter, "send the message; on an empty box, go to its tab")
 		add(true, keyEsc, "leave the message box for the search")
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
-	case m.heldFocus:
-		add(true, "↑↓ j k", "a question: move over its options and Other…")
-		add(true, keyEnter+" 1-9", "a question: pick the option (Other… opens a box for your own answer)")
+	case m.heldKeysActive():
+		add(true, "↑↓ j k", "a question: move over its options and Other… (no Enter first: the menu has the keys while the search is empty)")
+		add(true, "1-9", "a question: highlight that option (a pick-any one: tick it)")
+		add(true, keyEnter, "a question: pick the highlighted option and send it (Other… opens a box for your own answer)")
 		add(true, "space", "a pick-any question: tick or untick; enter confirms")
+		add(true, "n", "a note on this question's answer, sent with it (empty removes it)")
 		add(true, "←", "back a question, keeping your answers (several end on a review: enter submits)")
 		add(true, "A D", "a permission prompt: allow or deny (asks y/n)")
 		add(true, "T", "send the prompt back to its tab")
-		add(true, keyEsc, "leave it for the search, keeping your answers")
+		add(true, keyEsc, "back to the list, keeping your answers (→ or tab returns to the menu)")
+		add(true, "^P ^N", "move the list, menu or not; any other letter types in the search")
 	case live && m.boxHidden() && m.heldPrompt[m.filtered[m.cursor].conv.SessionID].ID != "":
-		add(true, keyEnter, "answer the prompt ccs holds for it, here: its question's menu, or A allow / D deny (y/n); T back to its tab")
+		add(true, "→ "+keyEnter, "answer the prompt ccs holds for it, here: its question's menu, or A allow / D deny (y/n); T back to its tab")
 	case live && m.boxHidden():
 		add(true, keyEnter, "go to its tab to answer it")
 	case live:
@@ -2946,8 +2957,8 @@ func (m model) viewScreen() string {
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does
 		pairs, keep = chordPairs, 1
-	} else if m.heldFocus {
-		pairs, keep = []string{"1-9 A D", "answer", "T", "its tab", keyEsc, "search", "?", "help"}, 1
+	} else if m.heldKeysActive() {
+		pairs, keep = []string{"keys:", "menu", keyEsc, "back to the list", "T", "its tab", "?", "help"}, 2
 	} else if m.chatFocus {
 		send := "send"
 		if strings.TrimSpace(m.chatInput.Value()) == "" {

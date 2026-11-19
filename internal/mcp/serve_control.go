@@ -54,6 +54,7 @@ type controlRequest struct {
 	Choice  string              `json:"choice,omitempty"`  // allow, deny, mac, answer
 	Answers map[string][]string `json:"answers,omitempty"` // q<i> → labels, or one free-text answer when Other[q<i>]
 	Other   map[string]bool     `json:"other,omitempty"`   // q<i> answered with free text ("Other…")
+	Notes   map[string]string   `json:"notes,omitempty"`   // q<i>'s note on its answer
 }
 
 type controlReply struct {
@@ -145,7 +146,7 @@ var HeldPrompts = func() ([]HeldPrompt, error) {
 // it in its tab) or answer, with a question's chosen labels by its index,
 // or, for one in other, its free-text answer.
 // It says what was done. A var so TUI tests stub it.
-var AnswerHeld = func(id, choice string, labels map[int][]string, other map[int]bool) (string, error) {
-	r, err := controlCall(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: labelAnswers(labels), Other: otherFlags(other)})
+var AnswerHeld = func(id, choice string, labels map[int][]string, other map[int]bool, notes map[int]string) (string, error) {
+	r, err := controlCall(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: labelAnswers(labels), Other: otherFlags(other), Notes: noteFields(notes)})
 	return r.Text, err
 }

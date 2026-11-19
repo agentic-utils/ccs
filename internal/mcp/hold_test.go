@@ -45,17 +45,17 @@ func TestTUIHolderAnswers(t *testing.T) {
 	h := tuiHolder(t, focusedNow(), time.Minute)
 	out := runHook(t, askHook)
 	p := waitList(t, h)[0]
-	if _, err := h.Answer(p.ID, "answer", map[int][]string{0: {"Green"}}, nil); err == nil {
+	if _, err := h.Answer(p.ID, "answer", map[int][]string{0: {"Green"}}, nil, nil); err == nil {
 		t.Error("a label that isn't an option is refused")
 	}
-	if text, err := h.Answer(p.ID, "answer", map[int][]string{0: {"Blue"}}, nil); err != nil || !strings.Contains(text, "Blue") {
+	if text, err := h.Answer(p.ID, "answer", map[int][]string{0: {"Blue"}}, nil, nil); err != nil || !strings.Contains(text, "Blue") {
 		t.Fatalf("%q %v", text, err)
 	}
 	d := decisionOf(t, hookOutput(t, out))
 	if d["behavior"] != "allow" || d["updatedInput"].(map[string]any)["answers"].(map[string]any)["Which colour?"] != "Blue" {
 		t.Errorf("decision %v", d)
 	}
-	if _, err := h.Answer(p.ID, "allow", nil, nil); err == nil {
+	if _, err := h.Answer(p.ID, "allow", nil, nil, nil); err == nil {
 		t.Error("a second answer to the same prompt")
 	}
 }
@@ -132,7 +132,7 @@ func TestTwoTUIs(t *testing.T) {
 	if err != nil || len(ps) != 1 {
 		t.Fatalf("through the socket: %v %v", ps, err)
 	}
-	if text, err := AnswerHeld(ps[0].ID, "deny", nil, nil); err != nil || !strings.Contains(text, "Deny") {
+	if text, err := AnswerHeld(ps[0].ID, "deny", nil, nil, nil); err != nil || !strings.Contains(text, "Deny") {
 		t.Errorf("%q %v", text, err)
 	}
 	// Serve won't yield to a TUI: a TUI asking gets nowhere (it never asks,
@@ -258,7 +258,7 @@ func TestHolderWithoutMayHoldHolds(t *testing.T) {
 	if p.At.IsZero() {
 		t.Error("a held prompt says when it was held")
 	}
-	if _, err := h.Answer(p.ID, "allow", nil, nil); err != nil {
+	if _, err := h.Answer(p.ID, "allow", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d := decisionOf(t, hookOutput(t, out)); d["behavior"] != "allow" {

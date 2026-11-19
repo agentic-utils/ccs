@@ -55,7 +55,7 @@ func (m model) selectedLive() bool {
 // (Esc in the box, or a click on the search row).
 func (m *model) selectionMoved() {
 	m.chatFocus = m.selectedLive() && !m.boxHidden() && !m.showUsage
-	m.heldFocus, m.heldAutoAt, m.heldConfirmed = false, time.Time{}, nil
+	m.heldFocus, m.heldAutoAt, m.heldConfirmed, m.menuLeft = false, time.Time{}, nil, ""
 }
 
 // syncChatDraft gives the message box the selected session's draft, keeping

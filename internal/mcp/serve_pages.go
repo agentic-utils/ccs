@@ -125,6 +125,7 @@ label.field{display:block;margin:14px 0 6px;font-weight:600}
 {{range .P.Questions}}{{$key := .Key}}{{$multi := .Multi}}<fieldset><legend>{{.Question}}{{if .Multi}} <span class="dim">(pick any)</span>{{end}}</legend>
 {{range .Options}}<label class="opt"><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="{{.Label}}"><span>{{.Label}}{{if .Description}}<span class="desc">{{.Description}}</span>{{end}}</span></label>{{end}}
 <label class="opt"><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="__other__"><span>Other<span class="desc">your own answer{{if $multi}}, in place of any ticked{{end}}:</span><input type="text" name="{{$key}}_other" maxlength="2000" autocomplete="off"></span></label>
+<label class="opt"><span>Note<span class="desc">optional, on your answer</span><input type="text" name="{{$key}}_note" maxlength="2000" autocomplete="off"></span></label>
 </fieldset>{{end}}
 <button class="btn">Answer</button></form>
 {{else}}<pre class="wrap-text">{{.P.Summary}}</pre>{{if .P.Input}}<details><summary class="more">Full input</summary><pre>{{.P.Input}}</pre></details>{{end}}

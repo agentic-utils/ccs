@@ -56,10 +56,10 @@ func TestAnswerOtherThroughTheHolder(t *testing.T) {
 	if len(p.Questions) != 1 || p.Questions[0].Header != "Colour" || p.Questions[0].Descriptions[0] != "warm" {
 		t.Errorf("held question: %+v", p.Questions)
 	}
-	if _, err := h.Answer(p.ID, "answer", map[int][]string{0: {"   "}}, map[int]bool{0: true}); err == nil {
+	if _, err := h.Answer(p.ID, "answer", map[int][]string{0: {"   "}}, map[int]bool{0: true}, nil); err == nil {
 		t.Error("empty Other text is refused")
 	}
-	if text, err := h.Answer(p.ID, "answer", map[int][]string{0: {"Teal"}}, map[int]bool{0: true}); err != nil || !strings.Contains(text, "Teal") {
+	if text, err := h.Answer(p.ID, "answer", map[int][]string{0: {"Teal"}}, map[int]bool{0: true}, nil); err != nil || !strings.Contains(text, "Teal") {
 		t.Fatalf("%q %v", text, err)
 	}
 	d := decisionOf(t, hookOutput(t, out))

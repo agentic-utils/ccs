@@ -244,3 +244,24 @@ func TestServeWinsAgainstRacingTUIs(t *testing.T) {
 		second.Close("test over")
 	}
 }
+
+// With no MayHold (the TUI's way), a prompt is held and answerable whatever
+// the focus.
+func TestHolderWithoutMayHoldHolds(t *testing.T) {
+	h := NewHolder(HoldConfig{Who: "tui", Wait: func() time.Duration { return time.Minute }, Yields: true})
+	if err := h.Listen(false); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close("test over") })
+	out := runHook(t, bashHook)
+	p := waitList(t, h)[0]
+	if p.At.IsZero() {
+		t.Error("a held prompt says when it was held")
+	}
+	if _, err := h.Answer(p.ID, "allow", nil); err != nil {
+		t.Fatal(err)
+	}
+	if d := decisionOf(t, hookOutput(t, out)); d["behavior"] != "allow" {
+		t.Errorf("decision %v", d)
+	}
+}

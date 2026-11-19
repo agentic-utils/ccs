@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -74,35 +73,30 @@ var (
 )
 
 // tuiHold is this ccs's holder while it owns the hold: when no ccs serve
-// --allow-write (or another ccs) does, prompts from the hook are held for
-// this list, but only while ccs has the terminal's focus (you're looking at
-// it): unfocused, a new prompt goes straight to its tab, and losing focus,
-// tuiHoldWait or quitting lets held ones go there, with no decision. ccs
-// serve takes the hold over (yield) whenever it starts with --allow-write.
+// --allow-write (or another ccs) does, every prompt from the hook is held
+// for this list, whatever the focus, since questions arrive while you're
+// in another window, until it's answered (here, ^X W or the page), sent
+// back with T, or after tuiHoldWait, or ccs quits or yields to ccs serve;
+// none of those but an answer decides anything. ccs selects the session
+// holding it (autoSelect), so the question is in front of you when you
+// come back.
 var tuiHold struct {
 	sync.Mutex
 	h *mcp.Holder
 }
 
-// tuiFocused mirrors the terminal's focus for the holder, which asks off the
-// UI goroutine; tuiFocusKnown says a focus report has come at all. Unlike
-// the rest of ccs (where a terminal that doesn't report focus counts as
-// focused), holding starts unfocused: until the terminal says ccs has
-// focus, this ccs never claims the hold, so prompts go to their tabs.
-var tuiFocused, tuiFocusKnown atomic.Bool
+// tuiHoldWait is how long this ccs holds a prompt: the hook's longest.
+const tuiHoldWait = mcp.MaxHookWait
 
-// tuiHoldWait is how long this ccs holds a prompt: you're at the Mac, so short.
-const tuiHoldWait = 120 * time.Second
+// tuiHoldConfig is how this ccs holds: every prompt (no MayHold: focus
+// doesn't matter), no key-press release, tuiHoldWait, and it yields to ccs
+// serve.
+func tuiHoldConfig() mcp.HoldConfig {
+	return mcp.HoldConfig{Who: "tui", Wait: func() time.Duration { return tuiHoldWait }, Yields: true}
+}
 
 // newTUIHolder makes this ccs's holder; stubbed in tests.
-var newTUIHolder = func() *mcp.Holder {
-	return mcp.NewHolder(mcp.HoldConfig{
-		Who:     "tui",
-		Wait:    func() time.Duration { return tuiHoldWait },
-		MayHold: tuiFocused.Load,
-		Yields:  true,
-	})
-}
+var newTUIHolder = func() *mcp.Holder { return mcp.NewHolder(tuiHoldConfig()) }
 
 // ownHold is this ccs's holder while it owns the hold, else nil (never
 // owned, or yielded to ccs serve).
@@ -121,9 +115,6 @@ func ownHold() *mcp.Holder {
 var claimHold = claimHoldReal
 
 func claimHoldReal() {
-	if !tuiFocusKnown.Load() {
-		return // focus unknown: never hold
-	}
 	tuiHold.Lock()
 	defer tuiHold.Unlock()
 	if tuiHold.h != nil && tuiHold.h.Owns() {
@@ -143,18 +134,6 @@ func releaseHold(why string) {
 	tuiHold.Unlock()
 	if h != nil {
 		h.Close(why)
-	}
-}
-
-// holdFocus is the terminal's focus as the holder sees it; losing it lets
-// held prompts go to their tabs.
-func holdFocus(focused bool) {
-	tuiFocusKnown.Store(true)
-	tuiFocused.Store(focused)
-	if !focused {
-		if h := ownHold(); h != nil {
-			h.ReleaseAll("ccs lost focus")
-		}
 	}
 }
 
@@ -498,18 +477,23 @@ func heldKeysFor(h mcp.HeldPrompt) string {
 	return heldTypeHint + ", T back to its tab"
 }
 
-// autoSelect (part of ^X A): once you've stopped typing in ccs for
-// autoFocusIdle, select a session that started waiting on you (a prompt ccs
-// serve holds first, then a menu or prompt in its tab) and, when it's held,
-// focus its answer pane, behind the guard. Never while a popup or prompt is
-// open, the search holds text or any box holds unsent text. Once per wait.
-// A deliberate exception to "the selection never changes without the
-// user", asked for by turning ^X A on.
+// autoSelect: once you've stopped typing in ccs for autoFocusIdle, select
+// a session whose prompt ccs holds, the oldest first, and focus its answer
+// pane behind the guard, whether or not ^X A is on: the hold is how ccs
+// answers, so its question is put in front of you. With ^X A on it also
+// selects a session waiting in its tab. One at a time: never off a held
+// prompt that's still waiting (the next comes once it's answered or sent
+// back). Never while a popup or prompt is open, the search holds text or
+// any box holds unsent text. Once per wait. A deliberate exception to "the
+// selection never changes without the user".
 func (m *model) autoSelect() {
-	if !m.autoFocus || m.showUsage || m.prompting() || m.waitOpen || m.heldFocus || m.textInput.Value() != "" || m.hasDraft() ||
+	if m.showUsage || m.prompting() || m.waitOpen || m.heldFocus || m.textInput.Value() != "" || m.hasDraft() ||
 		heldNow().Sub(m.lastKeyAt) < autoFocusIdle ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return
+	}
+	if _, _, ok := m.selectedHeld(); ok {
+		return // on a held prompt that's still waiting: stay until it's answered or sent back
 	}
 	if m.selectHandled == nil {
 		m.selectHandled = map[string]string{}
@@ -519,14 +503,20 @@ func (m *model) autoSelect() {
 	for id := range m.heldPrompt {
 		ids = append(ids, id)
 	}
-	sort.Strings(ids)
+	sort.Slice(ids, func(i, j int) bool { // the oldest held first
+		a, b := m.heldPrompt[ids[i]], m.heldPrompt[ids[j]]
+		if !a.At.Equal(b.At) {
+			return a.At.Before(b.At)
+		}
+		return ids[i] < ids[j]
+	})
 	for _, id := range ids {
 		if m.live[id] && m.selectHandled[id] != "held "+m.heldPrompt[id].ID {
 			pick, mark, held = id, "held "+m.heldPrompt[id].ID, true
 			break
 		}
 	}
-	if pick == "" {
+	if pick == "" && m.autoFocus {
 		ids = ids[:0]
 		for id, st := range m.chatStatus {
 			if _, held := m.heldPrompt[id]; st.Status == "waiting" && m.live[id] && !held { // a held one is the branch above's

@@ -265,3 +265,28 @@ func TestHolderWithoutMayHoldHolds(t *testing.T) {
 		t.Errorf("decision %v", d)
 	}
 }
+
+// Active counts the prompts a holder has, so an automatic update can wait
+// for none: one held is 1, and once it's answered and delivered, 0.
+func TestHolderActiveCountsHeldPrompts(t *testing.T) {
+	h := tuiHolder(t, focusedNow(), time.Minute)
+	if h.Active() != 0 {
+		t.Fatal("nothing held yet")
+	}
+	out := runHook(t, askHook)
+	p := waitList(t, h)[0]
+	if h.Active() != 1 {
+		t.Errorf("one held: %d", h.Active())
+	}
+	if _, err := h.Answer(p.ID, "answer", map[int][]string{0: {"Blue"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	hookOutput(t, out)
+	for range 200 {
+		if h.Active() == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("answered and delivered: %d", h.Active())
+}

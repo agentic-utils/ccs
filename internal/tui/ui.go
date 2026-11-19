@@ -87,6 +87,7 @@ type model struct {
 	selectedAt       time.Time            // when it was selected: its preview waits previewDebounce
 	marks            *sessionMarks        // when each session was last looked at (done)
 	blurred          bool                 // the terminal says ccs isn't focused: nothing is being seen
+	hooksMissing     []string             // ccs's hooks missing from Claude Code's settings, when some are there (hooks.go)
 	menus            map[string]*heldMenu // each held question menu's progress, by prompt id (menu.go)
 	menuShown        string               // the held prompt whose menu is on screen: menuFresh starts when it changes
 	menuLeft         string               // the held prompt left with Esc: its keys go to the list until it's selected again (or →, Enter)
@@ -1348,6 +1349,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			live[msg.conv.SessionID] = true
 			m.live = live
 			m.opened[msg.conv.SessionID] = time.Now()
+			m.applyParentResume(msg)
 		case !msg.opened && m.updating:
 			m.errorMsg = "Update in progress - resume again once it finishes"
 		case !msg.opened:
@@ -1539,6 +1541,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.FocusMsg: // terminals that report focus; without it ccs counts as focused
 		m.blurred = false
+		return m, checkHooksCmd
+
+	case hooksMsg:
+		m.hooksMissing = msg.missing
 		return m, nil
 
 	case tea.BlurMsg:
@@ -1573,7 +1579,8 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.early {
 			return m, tea.Batch(usageCmds...) // the one-minute chain is still ticking on its own
 		}
-		return m, tea.Batch(append(usageCmds, transcript.RefreshTick())...)
+		// Claude Code's settings are read once a minute, with the scheduled scan.
+		return m, tea.Batch(append(usageCmds, checkHooksCmd, transcript.RefreshTick())...)
 
 	case usageMsg:
 		m.usageLoading = false
@@ -2975,6 +2982,9 @@ func (m model) helpPopup() string {
 	if !m.showUsage {
 		b.WriteString("\n" + legendLines() + "\n")
 	}
+	if len(m.hooksMissing) > 0 {
+		fmt.Fprintf(&b, "\n\033[33mhooks out of date:\033[0m %s %s missing from Claude Code's settings; run \033[1mccs hook install\033[0m (ccs hook status lists them)\n", strings.Join(m.hooksMissing, ", "), map[bool]string{true: "is", false: "are"}[len(m.hooksMissing) == 1])
+	}
 	b.WriteString("\n\033[90m" + hints("?/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -3073,6 +3083,9 @@ func (m model) viewScreen() string {
 		}
 		if m.checkLatest != nil { // a release build: one that updates
 			toggles = append(toggles, toggleHint("^X I", "auto-update", m.autoUpdate))
+		}
+		if n := m.hooksNote(); n != "" {
+			toggles = append(toggles, n)
 		}
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", state.Version, note, status)

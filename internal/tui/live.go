@@ -19,6 +19,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
+	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -38,7 +39,20 @@ type resumeDoneMsg struct {
 	fork   bool
 	opened bool
 	err    error
+	// parent is conv's recorded parent, resumed in a tab of its own as well
+	// (parentOpened) or not (parentErr, a note) because it wasn't running.
+	parent       *transcript.Conversation
+	parentOpened bool
+	parentErr    error
 }
+
+// Stubbed in tests: how resumeCmd opens a tab and checks liveness and
+// whether a parent can be resumed.
+var (
+	openResumeTab   = sessions.OpenResumeTab
+	liveSessionPIDs = sessions.LiveSessionPIDs
+	resumable       = sessions.Resumable
+)
 
 type liveMsg struct {
 	live       map[string]bool
@@ -283,18 +297,90 @@ func (m *model) resumeCmd(conv transcript.Conversation, fork bool) tea.Cmd {
 	if !fork {
 		m.markSeen(conv.SessionID) // you're going to look at it
 	}
+	var parent *transcript.Conversation
+	if !fork {
+		parent = m.closedParent(conv)
+	}
+	parentFlags := slices.Clone(m.claudeFlags)
 	flags := slices.Clone(m.claudeFlags)
 	if fork {
 		flags = append(flags, "--fork-session")
 	}
 	return func() tea.Msg {
 		if !fork {
-			if pid, ok := sessions.LiveSessionPIDs()[conv.SessionID]; ok {
+			if pid, ok := liveSessionPIDs()[conv.SessionID]; ok {
 				return focusDoneMsg{pid: pid, found: sessions.FocusSession(pid, true)}
 			}
 		}
-		opened, err := sessions.OpenResumeTab(conv, flags)
-		return resumeDoneMsg{conv: conv, fork: fork, opened: opened, err: err}
+		opened, err := openResumeTab(conv, flags)
+		done := resumeDoneMsg{conv: conv, fork: fork, opened: opened, err: err}
+		if opened && err == nil && parent != nil {
+			done.parent = parent
+			done.parentOpened, done.parentErr = resumeParent(*parent, parentFlags)
+		}
+		return done
+	}
+}
+
+// closedParent is conv's recorded parent when it is listed, not running and
+// not headless: resuming conv resumes it too, so the child has its parent
+// to report to. One level only; nil otherwise.
+func (m *model) closedParent(conv transcript.Conversation) *transcript.Conversation {
+	pid := m.launchParents()[conv.SessionID]
+	if pid == "" || m.live[pid] {
+		return nil
+	}
+	for i := range m.items {
+		if p := m.items[i].conv; p.SessionID == pid {
+			if p.Headless() {
+				return nil
+			}
+			return &p
+		}
+	}
+	return nil
+}
+
+// resumeParent opens parent in a tab of its own, after its child opened in
+// one, unless it has started meanwhile (checked afresh, so never a second
+// copy) or can't be resumed. Opened is false with no error when it was
+// running already. Off the UI goroutine.
+func resumeParent(parent transcript.Conversation, flags []string) (bool, error) {
+	if _, ok := liveSessionPIDs()[parent.SessionID]; ok {
+		return false, nil
+	}
+	if !resumable(parent.SessionID, parent.Kind == transcript.KindCodex) {
+		return false, fmt.Errorf("its transcript is gone")
+	}
+	opened, err := openResumeTab(parent, flags)
+	if err == nil && !opened {
+		err = fmt.Errorf("no tmux or iTerm to open it in")
+	}
+	return opened && err == nil, err
+}
+
+// applyParentResume is resumeDoneMsg's parent part: a parent opened counts
+// as live at once, as its child does; one that couldn't be opened is a grey
+// note, never an error, since the child opened all the same.
+func (m *model) applyParentResume(msg resumeDoneMsg) {
+	if msg.parent == nil {
+		return
+	}
+	name, child := m.sessionName(*msg.parent), m.sessionName(msg.conv)
+	switch {
+	case msg.parentOpened:
+		live := maps.Clone(m.live)
+		if live == nil {
+			live = make(map[string]bool)
+		}
+		live[msg.parent.SessionID] = true
+		m.live = live
+		m.opened[msg.parent.SessionID] = time.Now()
+		state.LogActivity("resumed %s too, as %s's parent", name, child)
+		m.note(fmt.Sprintf("resumed %s too, as %s's parent", name, child))
+	case msg.parentErr != nil:
+		state.LogActivity("couldn't resume %s, %s's parent: %v", name, child, msg.parentErr)
+		m.note(fmt.Sprintf("couldn't resume %s, its parent: %v", name, msg.parentErr))
 	}
 }
 

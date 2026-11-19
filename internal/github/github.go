@@ -772,7 +772,7 @@ func searchPRs(author, owner string, filters ...string) ([]WatchedPR, error) {
 			p := transcript.PRURL.FindStringSubmatch(r.URL)
 			repo = p[1] + "/" + p[2]
 		}
-		p := WatchedPR{URL: r.URL, Repo: repo, Number: r.Number, Title: r.Title, Draft: r.IsDraft, UpdatedAt: r.UpdatedAt, CreatedAt: r.CreatedAt, State: "open"}
+		p := WatchedPR{URL: r.URL, Repo: repo, Number: r.Number, Title: transcript.CleanText(r.Title), Draft: r.IsDraft, UpdatedAt: r.UpdatedAt, CreatedAt: r.CreatedAt, State: "open"}
 		if !parseTime(r.ClosedAt).IsZero() { // gh prints the zero time for an open PR
 			p.MergedAt = r.ClosedAt
 		}
@@ -886,7 +886,7 @@ func PRDetails(p WatchedPR) (*WatchedPR, error) {
 		case c.Status != "completed":
 			pending = true
 		case failedCheck[strings.ToUpper(c.Conclusion)]:
-			n.Failing = append(n.Failing, c.Name)
+			n.Failing = append(n.Failing, transcript.CleanText(c.Name))
 		}
 	}
 	for _, s := range status.Statuses {
@@ -895,7 +895,7 @@ func PRDetails(p WatchedPR) (*WatchedPR, error) {
 		case "pending":
 			pending = true
 		case "failure", "error":
-			n.Failing = append(n.Failing, s.Context)
+			n.Failing = append(n.Failing, transcript.CleanText(s.Context))
 		}
 	}
 	slices.Sort(n.Failing)
@@ -2539,7 +2539,7 @@ func QueryPRs(gh string, urls []string) (map[string]PRInfo, error) {
 			continue
 		}
 		pr := r.PullRequest
-		info := PRInfo{Number: pr.Number, Title: pr.Title, State: pr.State, Draft: pr.IsDraft, MergeState: pr.MergeStateStatus, Review: pr.ReviewDecision}
+		info := PRInfo{Number: pr.Number, Title: transcript.CleanText(pr.Title), State: pr.State, Draft: pr.IsDraft, MergeState: pr.MergeStateStatus, Review: pr.ReviewDecision}
 		for _, t := range pr.ReviewThreads.Nodes {
 			if !t.IsResolved {
 				info.Unresolved++
@@ -2550,9 +2550,10 @@ func QueryPRs(gh string, urls []string) (map[string]PRInfo, error) {
 			roll := n[0].Commit.StatusCheckRollup
 			info.Checks = roll.State
 			for _, c := range roll.Contexts.Nodes {
-				name, failed := c.Name, failedCheck[c.Conclusion]
+				// Names and titles come from GitHub: cleaned as they arrive.
+				name, failed := transcript.CleanText(c.Name), failedCheck[c.Conclusion]
 				if c.Context != "" { // a commit status rather than a check run
-					name, failed = c.Context, c.State == "FAILURE" || c.State == "ERROR"
+					name, failed = transcript.CleanText(c.Context), c.State == "FAILURE" || c.State == "ERROR"
 				}
 				if failed && name != "" && !slices.Contains(info.Failing, name) {
 					info.Failing = append(info.Failing, name)

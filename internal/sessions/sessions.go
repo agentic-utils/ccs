@@ -521,7 +521,7 @@ func realListAgents() (map[string]BgSession, error) {
 	bg := map[string]BgSession{}
 	for _, a := range all {
 		if a.Kind == "background" && a.ID != "" && a.SessionID != "" {
-			bg[a.SessionID] = BgSession{a.ID, a.State}
+			bg[a.SessionID] = BgSession{a.ID, transcript.CleanText(a.State)} // drawn as "bg <state>"
 		}
 	}
 	return bg, nil
@@ -530,6 +530,7 @@ func realListAgents() (map[string]BgSession, error) {
 // AppName is an app's name without a parenthesised edition: "T3 Code (Beta)"
 // reads "T3 Code", short enough for the list's grey row.
 func AppName(s string) string {
+	s = transcript.CleanText(s) // a process path, drawn on the grey row
 	if i := strings.Index(s, " ("); i > 0 {
 		return s[:i]
 	}
@@ -1638,7 +1639,16 @@ type SessionFile struct {
 	Cwd             string `json:"cwd"`
 }
 
+// cleaned is f with the text another program wrote cleaned as it enters
+// ccs (transcript/ingest.go). The socket path is kept raw: it is dialled,
+// not drawn.
+func (f SessionFile) cleaned() SessionFile {
+	f.Name, f.Status, f.WaitingFor, f.Cwd = transcript.CleanText(f.Name), transcript.CleanText(f.Status), transcript.CleanText(f.WaitingFor), transcript.CleanText(f.Cwd)
+	return f
+}
+
 func (f SessionFile) Stat() SessionStat {
+	f = f.cleaned()
 	st := SessionStat{Status: f.Status, WaitingFor: f.WaitingFor, Name: f.Name, Cwd: f.Cwd}
 	if f.StatusUpdatedAt > 0 {
 		st.Since = time.UnixMilli(f.StatusUpdatedAt)
@@ -1652,7 +1662,8 @@ func ReadSessionFile(pid int) (SessionFile, error) {
 	if err != nil {
 		return f, err
 	}
-	return f, json.Unmarshal(data, &f)
+	err = json.Unmarshal(data, &f)
+	return f.cleaned(), err
 }
 
 // ErrNotConnected means the socket couldn't be reached at all, so nothing

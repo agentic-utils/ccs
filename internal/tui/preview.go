@@ -42,15 +42,15 @@ func teammateBlocks(text string) []teammateBlock {
 		b := teammateBlock{from: "a teammate", body: strings.TrimSpace(m[2])}
 		for _, a := range teammateAttr.FindAllStringSubmatch(m[1], -1) {
 			switch a[1] {
-			case "teammate_id":
-				b.from = html.UnescapeString(a[2])
+			case "teammate_id": // decoding can make a control (&#27;): clean after it
+				b.from = transcript.DecodeClean(html.UnescapeString(a[2]))
 			case "summary":
-				b.note = html.UnescapeString(a[2])
+				b.note = transcript.DecodeClean(html.UnescapeString(a[2]))
 			}
 		}
 		var status map[string]any
 		if strings.HasPrefix(b.body, "{") && json.Unmarshal([]byte(b.body), &status) == nil {
-			str := func(k string) string { v, _ := status[k].(string); return v }
+			str := func(k string) string { v, _ := status[k].(string); return transcript.DecodeClean(v) } // JSON \u001b decodes to ESC
 			kind := strings.ReplaceAll(str("type"), "_", " ")
 			b.body = str("result")
 			if b.body == "" {

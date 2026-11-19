@@ -4,16 +4,12 @@ package tui
 // its page, or, when no ccs serve --allow-write runs, by this ccs itself
 // (tuiHold) for this list. Answered from here by their id (the owner's
 // holder directly, or the control socket: mcp.HeldPrompts, mcp.AnswerHeld),
-// never by typing into a terminal: the prompt isn't on screen in its tab
-// while it's held. The selected session's
-// held prompt is answered in the bottom pane (Enter or a click focuses it;
-// with ^X A on, ccs selects a session that starts waiting once you've
-// stopped typing, and focuses it there): a digit
-// picks a single question's option, A allows and D denies a permission
-// prompt (each asks y/n), and T sends it back to its tab. Nothing is ever
-// typed into a terminal to answer. Outside --preview a key press on the Mac
-// sends held prompts back to their tabs within seconds, so this matters most
-// in a preview and in those first seconds.
+// never by typing into a terminal. Claude Code shows the same menu in the
+// session's own tab meanwhile, and the first answer wins: one given in the
+// tab drops ccs's copy on the next live tick (mcp.Holder.Reconcile). The
+// selected session's held prompt is answered in the bottom pane: a
+// question's menu (menu.go), or A allows and D denies a permission prompt
+// (each asks y/n).
 
 import (
 	"errors"
@@ -257,7 +253,7 @@ func paneHintsFit(width int, pairs ...string) string {
 
 // heldKey handles a key for its session's held prompt, in the bottom
 // pane: a question's menu (menuKey) or a permission prompt's A and D (each
-// asking y/n) and T. done is false when the key isn't the prompt's.
+// asking y/n). done is false when the key isn't the prompt's.
 func (m *model) heldKey(k string, msg tea.KeyMsg, conv transcript.Conversation) (cmd tea.Cmd, done bool) {
 	h, ok := m.heldPrompt[conv.SessionID]
 	if !ok {
@@ -280,8 +276,6 @@ func (m *model) heldKey(k string, msg tea.KeyMsg, conv transcript.Conversation) 
 		}
 		m.heldConfirmed = &heldConfirm{id: h.ID, choice: choice, what: fmt.Sprintf("%s %s for %s? y/n", verb, h.Tool, name)}
 		return nil, true
-	case k == "T" || k == "t":
-		return m.answerHeldCmd(h, name, "mac", nil, nil, nil), true
 	}
 	return nil, false
 }
@@ -463,7 +457,7 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 	}
 	if k == "enter" {
 		m.heldFocus = false
-		return tea.Sequence(m.answerHeldCmd(h, m.sessionName(conv), "mac", nil, nil, nil), m.focusCmd(conv)), true
+		return m.focusCmd(conv), true // the menu is in its tab too: answer it there
 	}
 	return m.heldKey(k, msg, conv)
 }
@@ -536,5 +530,5 @@ func (m *model) autoSelect() {
 	if held {
 		m.heldFocus, m.heldAutoAt = true, heldNow()
 	}
-	state.LogActivity("auto-select: selected %s in ccs (%s)", m.focusName(pick), map[bool]string{true: "held by ccs", false: "waiting in its tab"}[held])
+	state.LogActivity("auto-select: selected %s in ccs (%s)", m.focusName(pick), map[bool]string{true: "held in ccs too", false: "waiting in its tab"}[held])
 }

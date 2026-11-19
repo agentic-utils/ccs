@@ -1478,6 +1478,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.live = msg.live
 		if msg.pids != nil {
 			m.livePIDs, m.unverified, m.lastScan, m.hosts = msg.pids, msg.unverified, msg.scan, msg.hosts
+			// A held prompt answered in its own tab (Claude Code shows it
+			// there too) is dropped from ccs at once.
+			if h := ownHold(); h != nil {
+				h.Reconcile(msg.scan)
+			}
 			if msg.bg != nil {
 				m.bg = msg.bg
 			}
@@ -2439,7 +2444,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatFocus = true
 				return m, nil
 			}
-			if _, _, held := m.selectedHeld(); held { // answer it here, not in its tab (it isn't there)
+			if _, _, held := m.selectedHeld(); held { // answer it here (it's in its tab too)
 				stats.Record("tui.held_pane", stats.Key)
 				m.heldFocus, m.heldAutoAt = true, time.Time{}
 				return m, nil
@@ -2729,11 +2734,10 @@ func (m model) shortcuts() [][2]string {
 		add(true, "n", "a note on this question's answer, sent with it (empty removes it)")
 		add(true, "←", "back a question, keeping your answers (several end on a review: enter submits)")
 		add(true, "A D", "a permission prompt: allow or deny (asks y/n)")
-		add(true, "T", "send the prompt back to its tab")
 		add(true, keyEsc, "back to the list, keeping your answers (→ or tab returns to the menu)")
 		add(true, "^P ^N", "move the list, menu or not; any other letter types in the search")
 	case live && m.boxHidden() && m.heldPrompt[m.filtered[m.cursor].conv.SessionID].ID != "":
-		add(true, "→ "+keyEnter, "answer the prompt ccs holds for it, here: its question's menu, or A allow / D deny (y/n); T back to its tab")
+		add(true, "→ "+keyEnter, "answer the prompt ccs holds for it, here: its question's menu, or A allow / D deny (y/n); it's in its tab too, and the first answer wins")
 	case live && m.boxHidden():
 		add(true, keyEnter, "go to its tab to answer it")
 	case live:
@@ -3021,7 +3025,7 @@ func (m model) viewScreen() string {
 	} else if m.chordX { // ^X pressed: what the next key does
 		pairs, keep = chordPairs, 1
 	} else if m.heldKeysActive() {
-		pairs, keep = []string{"keys:", "menu", keyEsc, "back to the list", "T", "its tab", "?", "help"}, 2
+		pairs, keep = []string{keyEsc, "back to the list", "keys:", "menu", "?", "help"}, 2 // Esc's hint goes first when it's narrow
 	} else if m.chatFocus {
 		send := "send"
 		if strings.TrimSpace(m.chatInput.Value()) == "" {

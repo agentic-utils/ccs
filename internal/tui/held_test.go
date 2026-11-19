@@ -119,7 +119,7 @@ func keyType(m model, k tea.KeyType) model {
 }
 
 // The bottom pane answers the selected session's held prompt with no Enter
-// first: A and D ask y/n, T sends it back, a letter it doesn't use goes to
+// first: A and D ask y/n, a letter it doesn't use goes to
 // the search, Esc leaves it for the list; nothing is typed into a terminal.
 func TestHeldPaneAnswersAPermission(t *testing.T) {
 	m, calls, typed := paneModel(t, mcp.HeldPrompt{ID: "p6", Session: "live", Tool: "Bash", Summary: "make deploy"})
@@ -140,10 +140,6 @@ func TestHeldPaneAnswersAPermission(t *testing.T) {
 	if len(*calls) != 1 || (*calls)[0].choice != "deny" {
 		t.Fatalf("d then y denies: %+v", *calls)
 	}
-	m = press(m, "t")
-	if len(*calls) != 2 || (*calls)[1].choice != "mac" {
-		t.Errorf("t sends it back: %+v", *calls)
-	}
 	if m = keyType(m, tea.KeyEsc); m.heldKeysActive() {
 		t.Error("Esc leaves it for the list")
 	}
@@ -157,7 +153,7 @@ func TestHeldPaneAnswersAPermission(t *testing.T) {
 		t.Fatal("Enter gives it the keys again")
 	}
 	m = press(m, "x")
-	if m.textInput.Value() != "x" || len(*calls) != 2 {
+	if m.textInput.Value() != "x" || len(*calls) != 1 {
 		t.Errorf("a letter it doesn't use goes to the search: %q %+v", m.textInput.Value(), *calls)
 	}
 	if *typed {

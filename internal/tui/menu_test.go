@@ -392,7 +392,7 @@ func TestMenuPromptReplaced(t *testing.T) {
 
 // T sends it back to its tab from any step; Esc at the first question
 // leaves the menu and keeps the progress.
-func TestMenuTAndEsc(t *testing.T) {
+func TestMenuEscAndNoT(t *testing.T) {
 	m, calls, tick := menuPane(t, twoQuestions())
 	m = keyType(m, tea.KeyEnter)
 	tick(time.Second)
@@ -405,9 +405,18 @@ func TestMenuTAndEsc(t *testing.T) {
 	if !m.heldKeysActive() || !strings.Contains(strip2(m.View()), "1. Yes ✓") {
 		t.Fatalf("progress kept:\n%s", strip2(m.View()))
 	}
+	// T is gone: the menu is in its tab too, so there's nothing to send back.
 	m = press(m, "t")
-	if len(*calls) != 1 || (*calls)[0].choice != "mac" {
-		t.Errorf("T sends it back: %+v", *calls)
+	if len(*calls) != 0 {
+		t.Errorf("t sends nothing: %+v", *calls)
+	}
+	if strings.Contains(strip2(m.View()), "back to its tab") {
+		t.Error("no hint offers T")
+	}
+	for _, sc := range m.shortcuts() {
+		if sc[0] == "T" || strings.Contains(sc[1], "back to its tab") {
+			t.Errorf("help still offers %q: %q", sc[0], sc[1])
+		}
 	}
 }
 
@@ -432,5 +441,34 @@ func TestMenuAfterAutoSelect(t *testing.T) {
 	m = press(m, "3")
 	if len(*calls) != 0 {
 		t.Errorf("a digit after an auto-select never sends: %+v", *calls)
+	}
+}
+
+// A paste (a message that isn't a key) goes to the held menu's open box,
+// Other or a note, never to the search beneath.
+func TestPasteReachesTheMenusBoxes(t *testing.T) {
+	for _, open := range []string{"other", "note"} {
+		t.Run(open, func(t *testing.T) {
+			m, _, _ := menuPane(t, colour())
+			if open == "other" {
+				m = keyType(m, tea.KeyUp) // Other…
+				m = keyType(m, tea.KeyEnter)
+			} else {
+				m = press(m, "n")
+			}
+			mn := m.menus[colour().ID]
+			want := map[string]int{"other": boxOther, "note": boxNote}[open]
+			if mn == nil || mn.editing != want {
+				t.Fatalf("the %s box is open: %+v", open, mn)
+			}
+			if in := m.keyboardBox(); in != &mn.box {
+				t.Errorf("the %s box has the paste", open)
+			}
+			before := m.textInput.Value()
+			res, _ := m.Update(struct{ fake string }{"pasted"}) // a message that isn't a key
+			if res.(model).textInput.Value() != before {
+				t.Error("the search box under the menu changed")
+			}
+		})
 	}
 }

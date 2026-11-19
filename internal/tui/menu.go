@@ -147,8 +147,6 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 			return nil, true
 		case "esc":
 			return nil, false // back to the list; the answers are kept
-		case "T", "t":
-			return m.answerHeldCmd(h, name, "mac", nil, nil, nil), true
 		}
 		return nil, false
 	}
@@ -165,8 +163,6 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 		}
 	case k == "esc":
 		return nil, false // back to the list at any step; the answers are kept
-	case k == "T" || k == "t":
-		return m.answerHeldCmd(h, name, "mac", nil, nil, nil), true
 	case k == "n" || k == "N":
 		m.menuOpen(mn, boxNote, mn.notes[mn.step], "a note on your answer")
 	case len(k) == 1 && k >= "1" && k <= "9":

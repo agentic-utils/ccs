@@ -133,7 +133,7 @@ label.field{display:block;margin:14px 0 6px;font-weight:600}
 <form method="post" action="{{.Base}}/act">{{template "csrf" .CSRF}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="allow"><input type="hidden" name="prompt" value="{{.P.ID}}"><input type="hidden" name="id" value="{{.SID}}"><input type="hidden" name="name" value="{{.SName}}"><button class="btn">Allow</button></form>
 <form method="post" action="{{.Base}}/act">{{template "csrf" .CSRF}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="deny"><input type="hidden" name="prompt" value="{{.P.ID}}"><input type="hidden" name="id" value="{{.SID}}"><input type="hidden" name="name" value="{{.SName}}"><button class="btn danger">Deny</button></form>
 </div>{{end}}
-<form method="post" action="{{.Base}}/act">{{template "csrf" .CSRF}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="mac"><input type="hidden" name="prompt" value="{{.P.ID}}"><input type="hidden" name="id" value="{{.SID}}"><input type="hidden" name="name" value="{{.SName}}"><button class="btn quiet">Show it in its tab instead</button></form>
+<p class="more">The same menu is in its tab too: the first answer wins.</p>
 </section>{{end}}
 
 {{define "triage"}}{{template "head" .}}

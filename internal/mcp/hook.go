@@ -74,6 +74,26 @@ type hookReply struct {
 	Behavior string            `json:"behavior,omitempty"`
 	Answers  map[string]string `json:"answers,omitempty"`
 	Message  string            `json:"message,omitempty"`
+	Other    []string          `json:"other,omitempty"` // questions answered with free text ("Other…") instead of an option
+}
+
+// maxOtherRunes caps a free-text ("Other…") answer.
+const maxOtherRunes = 2000
+
+// OtherText cleans a free-text answer: control characters out, trimmed,
+// capped at maxOtherRunes; "" when nothing is left. Both ends use it: what
+// sends the answer, and the hook, which trusts nothing it's sent.
+func OtherText(s string) string {
+	s = strings.TrimSpace(strings.Map(func(c rune) rune {
+		if c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) {
+			return -1
+		}
+		return c
+	}, s))
+	if r := []rune(s); len(r) > maxOtherRunes {
+		s = strings.TrimSpace(string(r[:maxOtherRunes]))
+	}
+	return s
 }
 
 // hookAckWait is how long the hook waits for ccs serve to acknowledge its
@@ -266,6 +286,15 @@ func hookDecision(req hookRequest, r hookReply) map[string]any {
 			got, ok := r.Answers[q.Question]
 			if !ok || got == "" {
 				return nil
+			}
+			if slices.Contains(r.Other, q.Question) {
+				// Free text ("Other…"), only for a question flagged as such,
+				// cleaned here whatever the sender did.
+				if got = OtherText(got); got == "" {
+					return nil
+				}
+				answers[q.Question] = got
+				continue
 			}
 			labels := map[string]bool{}
 			for _, o := range q.Options {

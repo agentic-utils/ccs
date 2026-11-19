@@ -21,7 +21,6 @@ import (
 	"os"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,11 +56,11 @@ var (
 		}
 		return mcp.HeldPrompts()
 	}
-	answerHeld = func(id, choice string, labels map[int][]string) (string, error) {
+	answerHeld = func(id, choice string, labels map[int][]string, other map[int]bool) (string, error) {
 		if h := ownHold(); h != nil {
-			return h.Answer(id, choice, labels)
+			return h.Answer(id, choice, labels, other)
 		}
-		return mcp.AnswerHeld(id, choice, labels)
+		return mcp.AnswerHeld(id, choice, labels, other)
 	}
 	controlSock = func() bool {
 		if ownHold() != nil {
@@ -201,126 +200,47 @@ func (m model) heldByID(id string) (mcp.HeldPrompt, bool) {
 	return mcp.HeldPrompt{}, false
 }
 
-// heldTyped: a held question menu with several questions or a pick-any one,
-// answered by typing one answer per question.
-func heldTyped(h mcp.HeldPrompt) bool { return len(h.Questions) > 0 && heldPick(h) == 0 }
-
-// heldTypeHint says how to type a menu's answers.
-const heldTypeHint = "type 1,2,… one per question (1+3 for pick-any), enter"
-
-// parseHeldAnswers reads typed answers: one per question, in order,
-// comma-separated; a pick-any question takes several numbers joined by
-// "+"; spaces are ignored. It returns the chosen labels by question and a
-// summary, or what's wrong.
-func parseHeldAnswers(h mcp.HeldPrompt, typed string) (map[int][]string, string, error) {
-	parts := strings.Split(strings.ReplaceAll(typed, " ", ""), ",")
-	if len(parts) != len(h.Questions) {
-		return nil, "", fmt.Errorf("%d answers for %d questions: one per question, comma-separated", len(parts), len(h.Questions))
-	}
-	labels := map[int][]string{}
-	var said []string
-	for i, part := range parts {
-		q := h.Questions[i]
-		nums := strings.Split(part, "+")
-		if len(nums) > 1 && !q.Multi {
-			return nil, "", fmt.Errorf("question %d takes one answer, not %s", i+1, part)
-		}
-		for _, n := range nums {
-			k, err := strconv.Atoi(n)
-			if err != nil || k < 1 || k > len(q.Options) {
-				return nil, "", fmt.Errorf("question %d has options 1-%d, not %q", i+1, len(q.Options), n)
-			}
-			if !slices.Contains(labels[i], q.Options[k-1]) {
-				labels[i] = append(labels[i], q.Options[k-1])
-			}
-		}
-		said = append(said, q.Question+" → "+strings.Join(labels[i], ", "))
-	}
-	return labels, strings.Join(said, " · "), nil
-}
-
-// heldPick: the single single-choice question a digit can answer, its option count.
-func heldPick(h mcp.HeldPrompt) int {
-	if len(h.Questions) != 1 || h.Questions[0].Multi {
-		return 0
-	}
-	return min(len(h.Questions[0].Options), 9)
-}
-
-// heldLines shows a held prompt, marked as ccs serve's, with its keys.
-func heldLines(h mcp.HeldPrompt, width int) []string {
+// heldLines shows a held prompt with its keys: a question's menu
+// (menu.go), or a permission prompt's tool with A, D and T.
+func (m model) heldLines(h mcp.HeldPrompt, width int) []string {
 	cut := func(s string) string { return transcript.Truncate(s, max(width, 10)) }
 	lines := []string{"", "\033[1;" + amber + "m⏸ held by ccs\033[0m \033[90m(not on screen in its tab)\033[0m"}
-	switch {
-	case len(h.Questions) > 0:
-		for _, q := range h.Questions {
-			title := q.Question
-			if q.Multi {
-				title += " (pick any)"
-			}
-			lines = append(lines, cut("\033[1m"+title+"\033[0m"))
-			for i, o := range q.Options {
-				lines = append(lines, cut(fmt.Sprintf("  %d. %s", i+1, o)))
-			}
-		}
-		if n := heldPick(h); n > 0 {
-			lines = append(lines, "\033[90m"+hints(fmt.Sprintf("1-%d", n), "answer", "T", "back to its tab")+"\033[0m")
-		} else {
-			lines = append(lines, "\033[90m"+heldTypeHint+", or "+hints("T", "back to its tab")+"\033[0m")
-		}
-	default:
-		lines = append(lines, cut("\033[1;"+amber+"m? wants to use "+h.Tool+"\033[0m "+h.Summary))
-		lines = append(lines, "\033[90m"+hints("A", "allow", "D", "deny", "T", "back to its tab")+"\033[0m")
+	if len(h.Questions) > 0 {
+		return append(lines, m.menuLines(h, width)...)
 	}
-	return lines
+	lines = append(lines, cut("\033[1;"+amber+"m? wants to use "+h.Tool+"\033[0m "+h.Summary))
+	return append(lines, "\033[90m"+hints("A", "allow", "D", "deny", "T", "back to its tab")+"\033[0m")
 }
 
-// heldKey handles a key in the overlay for its session's held prompt; done
-// is false when the key isn't one of the held prompt's.
-func (m *model) heldKey(k string, conv transcript.Conversation) (cmd tea.Cmd, done bool) {
+// heldKey handles a key for its session's held prompt, in ^X W and the
+// pane: a question's menu (menuKey) or a permission prompt's A and D (each
+// asking y/n) and T. done is false when the key isn't the prompt's.
+func (m *model) heldKey(k string, msg tea.KeyMsg, conv transcript.Conversation) (cmd tea.Cmd, done bool) {
 	h, ok := m.heldPrompt[conv.SessionID]
 	if !ok {
 		return nil, false
 	}
 	name := m.sessionName(conv)
+	if len(h.Questions) > 0 {
+		return m.menuKey(h, name, k, msg)
+	}
 	switch {
-	case heldTyped(h) && len(k) == 1 && strings.ContainsAny(k, "0123456789,+ "):
-		return nil, false // typed into the answer: the pane's buffer, or ^X W's box
-	case len(k) == 1 && k >= "1" && k <= "9":
+	case len(k) == 1 && k >= "0" && k <= "9":
 		// While a prompt is held every digit is the held prompt's: none may
-		// reach the terminal-typing answer below it, whatever the transcript
-		// last showed.
-		n := int(k[0] - '0')
-		if n > heldPick(h) {
-			m.setHeldNote("no option " + k + " here")
-			return nil, true
-		}
-		label := h.Questions[0].Options[n-1]
-		m.heldConfirmed = &heldConfirm{id: h.ID, choice: "answer", labels: map[int][]string{0: {label}},
-			what: fmt.Sprintf("Answer %s with %d. %s? y/n", name, n, label)}
+		// reach anything below it.
+		m.setHeldNote("a permission prompt: A allows, D denies")
 		return nil, true
-	case (k == "A" || k == "D") && len(h.Questions) == 0:
+	case k == "A" || k == "a" || k == "D" || k == "d":
 		choice, verb := "allow", "Allow"
-		if k == "D" {
+		if k == "D" || k == "d" {
 			choice, verb = "deny", "Deny"
 		}
 		m.heldConfirmed = &heldConfirm{id: h.ID, choice: choice, what: fmt.Sprintf("%s %s for %s? y/n", verb, h.Tool, name)}
 		return nil, true
-	case k == "T":
-		return m.answerHeldCmd(h, name, "mac", nil), true
+	case k == "T" || k == "t":
+		return m.answerHeldCmd(h, name, "mac", nil, nil), true
 	}
 	return nil, false
-}
-
-// heldTypedEnter parses typed answers for a held menu and, when they're
-// right, asks y/n with a summary of each question's answer.
-func (m *model) heldTypedEnter(h mcp.HeldPrompt, name, typed string) {
-	labels, summary, err := parseHeldAnswers(h, typed)
-	if err != nil {
-		m.heldErr, m.waitErr, m.heldNote, m.waitNote = err.Error()+": nothing sent", err.Error()+": nothing sent", "", ""
-		return
-	}
-	m.heldConfirmed = &heldConfirm{id: h.ID, choice: "answer", labels: labels, what: fmt.Sprintf("Answer %s: %s? y/n", name, summary)}
 }
 
 // heldConfirmKey: y sends the confirmed digit, A or D; anything else drops it.
@@ -332,7 +252,7 @@ func (m *model) heldConfirmKey(k string) tea.Cmd {
 		m.setHeldNote("not sent")
 		return nil
 	}
-	return m.answerHeldCmd(h, m.sessionNameByID(h.Session), c.choice, c.labels)
+	return m.answerHeldCmd(h, m.sessionNameByID(h.Session), c.choice, nil, nil)
 }
 
 func (m model) sessionNameByID(id string) string {
@@ -344,10 +264,10 @@ func (m model) sessionNameByID(id string) string {
 	return id
 }
 
-func (m *model) answerHeldCmd(h mcp.HeldPrompt, name, choice string, labels map[int][]string) tea.Cmd {
+func (m *model) answerHeldCmd(h mcp.HeldPrompt, name, choice string, labels map[int][]string, other map[int]bool) tea.Cmd {
 	m.heldAt = time.Time{} // ask again straight after
 	return func() tea.Msg {
-		text, err := answerHeld(h.ID, choice, labels)
+		text, err := answerHeld(h.ID, choice, labels, other)
 		return heldDoneMsg{name: name, text: text, err: err}
 	}
 }
@@ -384,7 +304,7 @@ func (m model) selectedHeld() (mcp.HeldPrompt, transcript.Conversation, bool) {
 // heldPaneLines is the bottom pane's held prompt: the prompt and its keys,
 // then the y/n, the last outcome, and how to focus or leave it.
 func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
-	lines := heldLines(h, m.paneWidth()-4)
+	lines := m.heldLines(h, m.paneWidth()-4)
 	switch {
 	case m.heldConfirmed != nil && m.heldConfirmed.id == h.ID:
 		lines = append(lines, "\033[1;"+amber+"m"+m.heldConfirmed.what+"\033[0m")
@@ -393,12 +313,12 @@ func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 	case m.heldNote != "":
 		lines = append(lines, "\033[90m"+m.heldNote+"\033[0m")
 	}
-	if m.heldFocus && heldTyped(h) {
-		lines = append(lines, "answer: "+m.heldInput+"█")
-	}
-	if m.heldFocus {
+	switch {
+	case m.heldFocus && len(h.Questions) > 0:
+		lines = append(lines, "\033[90m"+hints(keyEsc, "search (keeps your answers)")+"\033[0m")
+	case m.heldFocus:
 		lines = append(lines, "\033[90m"+hints(keyEnter, "back to its tab and open it", keyEsc, "search")+"\033[0m")
-	} else {
+	default:
 		lines = append(lines, "\033[90m"+hints(keyEnter, "answer it here")+"\033[0m")
 	}
 	return lines
@@ -417,12 +337,19 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 		return nil, false
 	}
 	k := msg.String()
+	menu := len(h.Questions) > 0
 	switch k {
-	case "up", "ctrl+p", "down", "ctrl+n", "pgup", "pgdown", "ctrl+c", "tab":
+	case "ctrl+p", "ctrl+n", "pgup", "pgdown", "ctrl+c", "tab":
 		return nil, false
+	case "up", "down":
+		if !menu {
+			return nil, false
+		}
 	case "esc":
-		m.heldFocus, m.heldConfirmed = false, nil
-		return nil, true
+		if !menu || m.heldConfirmed != nil {
+			m.heldFocus, m.heldConfirmed = false, nil
+			return nil, true
+		}
 	}
 	if !m.heldAutoAt.IsZero() {
 		now := heldNow()
@@ -435,32 +362,19 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 	if m.heldConfirmed != nil {
 		return m.heldConfirmKey(k), true
 	}
-	if heldTyped(h) {
-		switch {
-		case k == "enter" && strings.TrimSpace(m.heldInput) != "":
-			m.heldTypedEnter(h, m.sessionName(conv), m.heldInput)
-			if m.heldConfirmed != nil {
-				m.heldInput = ""
-			}
-			return nil, true
-		case k == "backspace":
-			if m.heldInput != "" {
-				m.heldInput = m.heldInput[:len(m.heldInput)-1]
-			}
-			return nil, true
-		case len(k) == 1 && strings.ContainsAny(k, "0123456789,+ "):
-			m.heldInput += k
+	if menu {
+		cmd, done := m.heldKey(k, msg, conv)
+		if !done && k == "esc" { // Esc at the first question: back to the search, progress kept
+			m.heldFocus = false
 			return nil, true
 		}
+		return cmd, true
 	}
 	if k == "enter" {
 		m.heldFocus = false
-		return tea.Sequence(m.answerHeldCmd(h, m.sessionName(conv), "mac", nil), m.focusCmd(conv)), true
+		return tea.Sequence(m.answerHeldCmd(h, m.sessionName(conv), "mac", nil, nil), m.focusCmd(conv)), true
 	}
-	if len(k) == 1 {
-		k = strings.ToUpper(k)
-	}
-	if cmd, done := m.heldKey(k, conv); done {
+	if cmd, done := m.heldKey(k, msg, conv); done {
 		return cmd, true
 	}
 	m.setHeldNote("keys here: " + strings.TrimSpace(heldKeysFor(h)))
@@ -471,10 +385,8 @@ func heldKeysFor(h mcp.HeldPrompt) string {
 	switch {
 	case len(h.Questions) == 0:
 		return "A allow, D deny, T back to its tab"
-	case heldPick(h) > 0:
-		return fmt.Sprintf("1-%d answer, T back to its tab", heldPick(h))
 	}
-	return heldTypeHint + ", T back to its tab"
+	return "↑↓ move, enter pick (space ticks pick-any), ← back, T back to its tab"
 }
 
 // autoSelect: once you've stopped typing in ccs for autoFocusIdle, select

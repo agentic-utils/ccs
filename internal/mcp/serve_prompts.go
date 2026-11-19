@@ -176,7 +176,7 @@ func (s *server) promptViews(session string, names map[string]string) []promptVi
 // AskUserQuestion, with the chosen labels, each one of its options), deny,
 // or let it go to the Mac (no decision). The hook checks the answers again
 // against its own input and builds what it gives Claude Code itself.
-func promptDecision(p *heldPrompt, choice string, answers map[string][]string, who string) (hookReply, string, error) {
+func promptDecision(p *heldPrompt, choice string, answers map[string][]string, other map[string]bool, who string) (hookReply, string, error) {
 	switch choice {
 	case "mac":
 		return hookReply{}, "Let it go to its tab on the Mac, where it shows as usual.", nil
@@ -196,9 +196,18 @@ func promptDecision(p *heldPrompt, choice string, answers map[string][]string, w
 			return hookReply{}, "", errors.New("couldn't read the question")
 		}
 		out := map[string]string{}
-		var said []string
+		var said, others []string
 		for i, q := range in.Questions {
 			got := answers["q"+strconv.Itoa(i)]
+			if other["q"+strconv.Itoa(i)] { // free text ("Other…") as its answer
+				if len(got) != 1 || OtherText(got[0]) == "" {
+					return hookReply{}, "", fmt.Errorf("type an answer for %q", q.Question)
+				}
+				text := OtherText(got[0])
+				out[q.Question], others = text, append(others, q.Question)
+				said = append(said, fmt.Sprintf("%s → %s", q.Question, text))
+				continue
+			}
 			var labels []string
 			for _, o := range q.Options {
 				labels = append(labels, o.Label)
@@ -214,7 +223,7 @@ func promptDecision(p *heldPrompt, choice string, answers map[string][]string, w
 			out[q.Question] = strings.Join(got, ", ")
 			said = append(said, fmt.Sprintf("%s → %s", q.Question, strings.Join(got, ", ")))
 		}
-		return hookReply{Behavior: "allow", Answers: out}, "Answer:\n" + strings.Join(said, "\n"), nil
+		return hookReply{Behavior: "allow", Answers: out, Other: others}, "Answer:\n" + strings.Join(said, "\n"), nil
 	}
 	return hookReply{}, "", fmt.Errorf("unknown choice %q", choice)
 }

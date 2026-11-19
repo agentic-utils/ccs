@@ -117,28 +117,54 @@ func (m model) chatAsk() []string {
 	if m.waitSignal(conv) != waitPrompt {
 		return nil
 	}
-	lines := askLines(conv, m.paneWidth()-2)
 	if h, _, held := m.heldDrawn(); held {
-		lines = m.heldPaneLines(h)
-		for i, l := range lines {
-			lines[i] = "  " + l
-		}
-		body, tail, review := m.heldSplit(h, lines)
-		room := m.askLimit() - len(tail)
+		body, tail, room, review := m.heldParts(h)
+		var inner []string
 		if review {
 			out, _ := reviewWindow(body, mn(m, h).revTop, room)
-			return append(out, tail...)
+			inner = append(out, tail...)
+		} else {
+			inner = append(cursorWindow(body, room), tail...)
 		}
-		return append(cursorWindow(body, room), tail...)
+		return heldBox(inner, m.paneWidth(), m.heldKeysActive())
 	}
+	lines := askLines(conv, m.paneWidth()-2)
 	for i, l := range lines {
 		lines[i] = "  " + l
 	}
 	return cutAsk(lines, m.askLimit())
 }
 
-// askLimit is how many rows the bottom pane gives a question: half the screen.
+// askLimit is how many rows the bottom pane gives a question ccs doesn't
+// hold (only its tab can answer it): half the screen.
 func (m model) askLimit() int { return max(m.height/2, 3) }
+
+// heldLimit is how many rows a held prompt's box takes at most, borders
+// included: it grows to the menu, but the transcript above keeps at least
+// a third of the pane. heldRoom is what's inside the borders.
+func (m model) heldLimit() int {
+	_, _, top := m.listLayout()
+	return max((m.height-top)*2/3-1, 7)
+}
+
+func (m model) heldRoom() int { return m.heldLimit() - 2 }
+
+// heldInner is the text width inside a held prompt's box: the pane less the
+// border and one column of padding each side.
+func (m model) heldInner() int { return m.paneWidth() - 4 }
+
+// heldBox draws a held prompt inside the message box's own frame: the same
+// rounded border, purple while it has the keys (as the message box is when
+// focused), grey otherwise, the full pane wide.
+func heldBox(inner []string, width int, active bool) []string {
+	border := lipgloss.Color("240")
+	if active {
+		border = lipgloss.Color("62")
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(max(width-2, 1)).Render(strings.Join(inner, "\n"))
+	return strings.Split(box, "\n")
+}
 
 // cutAsk cuts a question taller than the pane; its tab shows the rest.
 func cutAsk(lines []string, limit int) []string {
@@ -161,7 +187,7 @@ func reviewWindow(lines []string, top, limit int) (out []string, atEnd bool) {
 	if top+room >= len(lines) {
 		return lines[top:], true
 	}
-	return append(append([]string{}, lines[top:top+room]...), "  \033[90m↓ more (↑↓ PgUp/PgDn scroll; enter sends once you've seen the end)\033[0m"), false
+	return append(append([]string{}, lines[top:top+room]...), "\033[90m↓ more · enter sends once you've seen the end\033[0m"), false
 }
 
 // noteReview clamps a held menu's review scroll to what the pane shows and
@@ -176,8 +202,7 @@ func (m *model) noteReview() {
 	if mn == nil || mn.step < len(h.Questions) {
 		return
 	}
-	body, tail, _ := m.heldSplit(h, m.heldPaneLines(h))
-	limit := m.askLimit() - len(tail)
+	body, _, limit, _ := m.heldParts(h)
 	if len(body) > limit {
 		mn.revTop = min(max(mn.revTop, 0), len(body)-(limit-1))
 	} else {
@@ -191,6 +216,20 @@ func (m *model) noteReview() {
 	}
 }
 
+// heldParts is a held prompt's box contents split as heldSplit does, with
+// room, the rows its body gets. A short screen gives the body the room
+// first: the footer's rule and "enter sends" go before the hint row does,
+// and an open box only gives up the blank line above it. chatAsk draws by
+// it and noteReview scrolls by it, so both agree on what's on screen.
+func (m model) heldParts(h mcp.HeldPrompt) (body, tail []string, room int, review bool) {
+	body, tail, review = m.heldSplit(h, m.heldPaneLines(h))
+	room = m.heldRoom() - len(tail)
+	for room < 5 && len(tail) > 1 && (mn(m, h).editing == boxNone || ansi.Strip(tail[0]) == "") {
+		tail, room = tail[1:], room+1
+	}
+	return body, tail, room, review
+}
+
 // heldSplit splits a held prompt's pane into its body (header, question,
 // options; or the review), which scrolls when the pane is short, and its
 // footer (what Enter sends, an open box, the hint row, the outcome note),
@@ -200,25 +239,25 @@ func (m model) heldSplit(h mcp.HeldPrompt, pane []string) (body, tail []string, 
 		return pane, nil, false
 	}
 	mnu := mn(m, h)
-	n := 1 + len(m.menuLines(h, m.paneWidth()-4, false)) // the leading blank line, then the menu without its footer
+	n := len(m.menuLines(h, m.heldInner(), false)) // the menu without its footer
 	if mnu.editing != boxNone && mnu.step < len(h.Questions) {
-		n -= 3 // the open box (a blank, the box, its hints) belongs to the footer
+		n -= 2 + len(menuBoxLines(mnu, m.heldInner())) // the open box (a blank, its lines, its hints) belongs to the footer
 	}
 	n = min(max(n, 0), len(pane))
 	return pane[:n], pane[n:], mnu.step >= len(h.Questions)
 }
 
-// cursorWindow fits a question's body into room lines, keeping its first
-// two (a blank and the header line) and the highlighted "❯" row on screen,
+// cursorWindow fits a question's body into room lines, keeping its header
+// line and the highlighted "❯" row on screen,
 // with "↑ more" or "↓ more" where options are out of view.
 func cursorWindow(body []string, room int) []string {
-	if len(body) <= room || room < 5 {
+	if len(body) <= room || room < 4 {
 		if len(body) > room && room > 0 {
 			return body[:room]
 		}
 		return body
 	}
-	head, rest := body[:2], body[2:]
+	head, rest := body[:1], body[1:]
 	at := 0
 	for i, l := range rest {
 		if strings.Contains(l, "❯") {
@@ -331,6 +370,9 @@ func (m model) chatView() string {
 	box := m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus, m.paneWidth())
 	if m.boxHidden() {
 		status, _, _ := strings.Cut(box, "\n")
+		if _, _, held := m.heldDrawn(); held { // the question in the message box's place, under its status line
+			return strings.Join(append([]string{status}, m.chatAsk()...), "\n")
+		}
 		return strings.Join(append(m.chatAsk(), status), "\n")
 	}
 	return box

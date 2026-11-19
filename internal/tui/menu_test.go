@@ -56,7 +56,7 @@ func ctrl(m model, k tea.KeyType) model { return keyType(m, k) }
 func TestMenuSingleQuestion(t *testing.T) {
 	m, calls, _ := menuPane(t, colour())
 	v := strip2(m.View())
-	for _, want := range []string{"also in its tab", "esc list", "Colour · 1 of 1", "Which colour?", "1. Red", "warm", "Other…", "enter sends: Red"} {
+	for _, want := range []string{"also in its tab", "esc list", "Colour · 1 of 1", "Which colour?", "1. Red", "warm", "Other…", "enter sends → Red"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the menu lacks %q:\n%s", want, v)
 		}
@@ -71,7 +71,7 @@ func TestMenuSingleQuestion(t *testing.T) {
 	if m.textInput.Value() != "" {
 		t.Fatalf("j and k are the menu's, not the search's: %q", m.textInput.Value())
 	}
-	if v := strip2(m.View()); !strings.Contains(v, "enter sends: Green") {
+	if v := strip2(m.View()); !strings.Contains(v, "enter sends → Green") {
 		t.Errorf("the footer follows the cursor:\n%s", v)
 	}
 	m = keyType(m, tea.KeyEnter)
@@ -85,7 +85,7 @@ func TestMenuSingleQuestion(t *testing.T) {
 func TestMenuDigitHighlights(t *testing.T) {
 	m, calls, _ := menuPane(t, colour())
 	m = press(m, "3")
-	if len(*calls) != 0 || !strings.Contains(strip2(m.View()), "enter sends: Blue") {
+	if len(*calls) != 0 || !strings.Contains(strip2(m.View()), "enter sends → Blue") {
 		t.Fatalf("a digit highlights, never sends: %+v", *calls)
 	}
 	m = keyType(m, tea.KeyEnter)
@@ -206,7 +206,7 @@ func TestMenuSeveralQuestions(t *testing.T) {
 	if len(*calls) != 0 || !strings.Contains(strip2(m.View()), "2 of 2") {
 		t.Fatalf("on to question 2: %+v\n%s", *calls, strip2(m.View()))
 	}
-	if strings.Contains(strip2(m.View()), "enter sends:") {
+	if strings.Contains(strip2(m.View()), "enter sends →") {
 		t.Error("several questions end on the review, not a footer")
 	}
 	tick(time.Second)
@@ -230,7 +230,7 @@ func TestMenuSeveralQuestions(t *testing.T) {
 	}
 	m = keyType(m, tea.KeyEnter)
 	v := strip2(m.View())
-	if !strings.Contains(v, "Review your answers") || !strings.Contains(v, "→ Yes") || !strings.Contains(v, "→ lint, vet") || len(*calls) != 0 {
+	if !strings.Contains(v, "Review · 2 answers") || !strings.Contains(v, "→ Yes") || !strings.Contains(v, "→ lint, vet") || len(*calls) != 0 {
 		t.Fatalf("the review:\n%s", v)
 	}
 	m = keyType(m, tea.KeyLeft)
@@ -299,7 +299,7 @@ func TestMenuNotes(t *testing.T) {
 	m = typeIn(m, "warm please")
 	m = keyType(m, tea.KeyEnter)
 	v := strip2(m.View())
-	if !strings.Contains(v, "note: warm please") || !strings.Contains(v, "enter sends: Red · note: warm please") || len(*calls) != 0 {
+	if !strings.Contains(v, "note: warm please") || !strings.Contains(v, "enter sends → Red") || !strings.Contains(v, "note: warm please") || len(*calls) != 0 {
 		t.Fatalf("the note shows, nothing sent:\n%s", v)
 	}
 	m = press(m, "n")
@@ -347,7 +347,7 @@ func TestMenuReviewShowsTheWholeAnswer(t *testing.T) {
 	tick(time.Second)
 	lines := m.menuLines(long, 40, true)
 	joined := strings.Join(strings.Fields(strip2(strings.Join(lines, " "))), " ")
-	for _, want := range []string{"Review your answers", "→ “" + strings.Join(strings.Fields(answer), " ") + "”", "and on to its end", "→ Yes"} {
+	for _, want := range []string{"Review · 2 answers", "→ (Other) " + strings.Join(strings.Fields(answer), " "), "and on to its end", "→ Yes"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("the review lacks %q:\n%s", want, strings.Join(lines, "\n"))
 		}

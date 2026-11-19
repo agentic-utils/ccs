@@ -4,7 +4,7 @@ package tui
 // bottom pane, as Claude Code's own menu works: one question at a time,
 // ↑/↓ (j/k) over its options and a last "Other…" row, Enter picks (a digit
 // jumps to an option and picks it), Space ticks a pick-any question's
-// options and Enter confirms them, "Other…" opens a one-line box for your
+// options and Enter confirms them, "Other…" opens a wrapping box for your
 // own answer, n adds a note to the question's answer (as Claude Code's own
 // menu does), ← goes back a question keeping the answers. One question is
 // sent as soon as it's answered; several end on a review (Enter submits,
@@ -24,7 +24,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/mcp"
-	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // menuFresh is how long Enter, digits and Space do nothing after a question
@@ -32,7 +31,7 @@ import (
 // can't answer it unread.
 const menuFresh = 500 * time.Millisecond
 
-// The menu's one-line boxes.
+// The menu's boxes, drawn soft-wrapped by menuBoxLines.
 const (
 	boxNone  = iota
 	boxOther // "Other…": your own answer
@@ -137,10 +136,10 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 			mn.revTop++ // clamped by noteReview
 			return nil, true
 		case "pgup":
-			mn.revTop = max(0, mn.revTop-max(m.askLimit()-2, 1))
+			mn.revTop = max(0, mn.revTop-max(m.heldRoom()-2, 1))
 			return nil, true
 		case "pgdown":
-			mn.revTop += max(m.askLimit()-2, 1)
+			mn.revTop += max(m.heldRoom()-2, 1)
 			return nil, true
 		case "left":
 			mn.step, mn.shownAt = len(qs)-1, heldNow()
@@ -306,10 +305,11 @@ func (m *model) menuSubmit(h mcp.HeldPrompt, name string, mn *heldMenu) tea.Cmd 
 	return m.answerHeldCmd(h, name, "answer", labels, other, notes)
 }
 
-// menuAnswer is a question's answer as the review shows it.
+// menuAnswer is a question's answer as the review shows it: the chosen
+// options joined with ", ", or "(Other)" and your own text.
 func (mn *heldMenu) menuAnswer(i int, q mcp.HeldQuestion) string {
 	if t := mn.other[i]; t != "" {
-		return "“" + t + "”"
+		return "\033[22;90m(Other)\033[0;1m " + t
 	}
 	var out []string
 	for _, n := range mn.picks[i] {
@@ -335,16 +335,21 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 	qs := h.Questions
 	var lines []string
 	if mn.step >= len(qs) {
-		lines = append(lines, paneHeader("\033[1mReview your answers\033[0m", width), "")
+		answers := "answers"
+		if len(qs) == 1 {
+			answers = "answer"
+		}
+		lines = append(lines, paneHeader(fmt.Sprintf("\033[1mReview\033[0m \033[90m· %d %s\033[0m", len(qs), answers), width), paneRule(width))
 		for i, q := range qs {
-			lines = append(lines, transcript.Truncate(q.Question, width)) // the question may be cut: what's sent is below, whole
-			lines = append(lines, wrapIndent("  → ", "\033[1m", mn.menuAnswer(i, q), width)...)
+			num := fmt.Sprintf("%-3d", i+1)
+			lines = append(lines, wrapIndent(num, "\033[90m", q.Question, width)...)
+			lines = append(lines, wrapIndent("   → ", "\033[1m", mn.menuAnswer(i, q), width)...)
 			if n := mn.notes[i]; n != "" {
-				lines = append(lines, wrapIndent("  note: ", "\033[90m", n, width)...)
+				lines = append(lines, wrapIndent("     note: ", "\033[90m", n, width)...)
 			}
 		}
 		if active {
-			lines = append(lines, "", paneHintsFit(width, "↑↓", "scroll", keyEnter, "send", "←", "back", keyEsc, "list"))
+			lines = append(lines, paneRule(width), paneHintsFit(width, keyEnter, "send", "←", "edit", "↑↓", "scroll", keyEsc, "list"))
 		}
 		return lines
 	}
@@ -408,20 +413,21 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 	}
 	switch mn.editing {
 	case boxOther:
-		return append(lines, "", "  "+mn.box.View(), paneHintsFit(width, keyEnter, "save", keyEsc, "cancel"))
+		lines = append(append(lines, ""), menuBoxLines(mn, width)...)
+		return append(lines, paneHintsFit(width, keyEnter, "save", keyEsc, "cancel"))
 	case boxNote:
-		return append(lines, "", "  note "+mn.box.View(), paneHintsFit(width, keyEnter, "save (empty removes it)", keyEsc, "cancel"))
+		lines = append(append(lines, ""), menuBoxLines(mn, width)...)
+		return append(lines, paneHintsFit(width, keyEnter, "save (empty removes it)", keyEsc, "cancel"))
 	}
 	if !active {
 		return lines
 	}
-	if len(qs) == 1 { // no review: say what Enter sends, with its note, before it's sent
-		sends := mn.pending(q)
+	if len(qs) == 1 { // no review: say what Enter sends, with its note, as the review would
+		lines = append(lines, paneRule(width))
+		lines = append(lines, wrapIndent("\033[90menter sends\033[0m → ", "\033[1m", mn.pending(q), width)...)
 		if nt := mn.notes[mn.step]; nt != "" {
-			sends += " · note: " + nt
+			lines = append(lines, wrapIndent("     note: ", "\033[90m", nt, width)...)
 		}
-		lines = append(lines, "")
-		lines = append(lines, wrapIndent("enter sends: ", "\033[90m", sends, width)...)
 	} else {
 		lines = append(lines, "")
 	}
@@ -462,7 +468,7 @@ func descLines(text, indent string, width, most int) []string {
 func (mn *heldMenu) pending(q mcp.HeldQuestion) string {
 	if q.Multi {
 		if t := mn.other[mn.step]; t != "" {
-			return "“" + t + "”"
+			return "(Other) " + t
 		}
 		var out []string
 		for _, n := range mn.picks[mn.step] {
@@ -477,7 +483,7 @@ func (mn *heldMenu) pending(q mcp.HeldQuestion) string {
 		return q.Options[mn.cursor]
 	}
 	if t := mn.other[mn.step]; t != "" {
-		return "“" + t + "”"
+		return "(Other) " + t
 	}
 	return "Other… (enter opens its box)"
 }
@@ -488,11 +494,100 @@ func wrapIndent(prefix, style, text string, width int) []string {
 	indent := strings.Repeat(" ", ansi.StringWidth(prefix))
 	var out []string
 	for i, l := range strings.Split(ansi.Wrap(text, max(width-len(indent), 10), " "), "\n") {
+		l = strings.TrimRight(l, " ")
 		lead := indent
 		if i == 0 {
 			lead = prefix
 		}
 		out = append(out, lead+style+l+"\033[0m")
+	}
+	return out
+}
+
+// paneRule is a dim rule across a held prompt's box, between its parts.
+func paneRule(width int) string { return "\033[90m" + strings.Repeat("─", max(width, 1)) + "\033[0m" }
+
+// menuBoxMaxLines is how many lines an open Other… or note box grows to.
+const menuBoxMaxLines = 4
+
+// menuBoxLines draws the open Other… or note box soft-wrapped to width: its
+// text split into rows that fit, at most menuBoxMaxLines of them, the rows
+// on screen following the cursor, which is always drawn (reverse video).
+// The text itself never gets a newline; editing is the textinput's
+// (editKey), only the drawing is ours, since a textinput scrolls sideways.
+func menuBoxLines(mn *heldMenu, width int) []string {
+	prefix := "\033[1;" + amber + "m›\033[0m "
+	if mn.editing == boxNote {
+		prefix = "\033[90mnote\033[0m \033[1;" + amber + "m›\033[0m "
+	}
+	pw := ansi.StringWidth(prefix)
+	room := max(width-pw, 10)
+	val := []rune(mn.box.Value())
+	pos := min(max(mn.box.Position(), 0), len(val))
+	cursor := func(r string) string { return "\033[7m" + r + "\033[27m" }
+	if len(val) == 0 {
+		ph := ansi.Truncate(mn.box.Placeholder, max(room-1, 1), "…")
+		return []string{prefix + cursor(" ") + "\033[90m" + ph + "\033[0m"}
+	}
+	type span struct{ start, end int }
+	var rows []span
+	cells := func(rs []rune) (n int) {
+		for _, r := range rs {
+			n += max(ansi.StringWidth(string(r)), 1)
+		}
+		return n
+	}
+	start, w, brk := 0, 0, -1 // brk: just after the row's last space, where a word wrap cuts
+	for i, r := range val {
+		rw := max(ansi.StringWidth(string(r)), 1)
+		if w+rw > room {
+			cut := i
+			if brk > start && r != ' ' { // wrap the word whole; a word longer than the row is cut
+				cut = brk
+			}
+			rows = append(rows, span{start, cut})
+			start, w, brk = cut, cells(val[cut:i]), -1
+		}
+		w += rw
+		if r == ' ' {
+			brk = i + 1
+		}
+	}
+	rows = append(rows, span{start, len(val)})
+	if pos == len(val) && w >= room { // the cursor past a full last row starts a new one
+		rows = append(rows, span{len(val), len(val)})
+	}
+	cur := len(rows) - 1
+	for i, r := range rows {
+		if pos >= r.start && pos < r.end {
+			cur = i
+			break
+		}
+	}
+	top := max(cur-(menuBoxMaxLines-1), 0)
+	if len(rows)-top > menuBoxMaxLines && cur < top+menuBoxMaxLines {
+		rows = rows[:top+menuBoxMaxLines]
+	}
+	rows = rows[top:]
+	indent := strings.Repeat(" ", pw)
+	out := make([]string, 0, len(rows))
+	for i, r := range rows {
+		lead := indent
+		if i == 0 && top == 0 {
+			lead = prefix
+		} else if i == 0 {
+			lead = strings.Repeat(" ", max(pw-2, 0)) + "\033[90m…\033[0m " // earlier lines are above
+		}
+		text := ""
+		if pos >= r.start && pos < r.end {
+			text = string(val[r.start:pos]) + cursor(string(val[pos])) + string(val[pos+1:r.end])
+		} else {
+			text = string(val[r.start:r.end])
+			if i+top == cur { // the cursor at the end of the text
+				text += cursor(" ")
+			}
+		}
+		out = append(out, lead+text)
 	}
 	return out
 }

@@ -78,7 +78,14 @@ func answerBlue(t *testing.T, h *Holder, out <-chan string) {
 func TestHeldPromptSurvivesARestart(t *testing.T) {
 	stubOwnFile(t, "waiting", time.Now())
 	out := handedOff(t)
-	if log := activityLog(t); !strings.Contains(log, "handed s-1's AskUserQuestion prompt back for a restart") {
+	// The prompt's own handler writes this line after Handoff returns, and
+	// other tests write to the same activity log meanwhile: wait for it
+	// rather than race it.
+	want := "handed s-1's AskUserQuestion prompt back for a restart"
+	for deadline := time.Now().Add(2 * time.Second); !strings.Contains(activityLog(t), want) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if log := activityLog(t); !strings.Contains(log, want) {
 		t.Errorf("the log says it was handed back:\n%s", log)
 	}
 	b := tuiHolder(t, focusedNow(), time.Minute)

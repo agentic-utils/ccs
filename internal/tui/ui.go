@@ -3103,9 +3103,6 @@ func (m model) viewScreen() string {
 	var toggles []string
 	if !m.showUsage && !m.chordX {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
-		if ownHold() != nil { // this ccs holds prompts from the hook for its list
-			toggles = append(toggles, "\033[90mholding prompts\033[0m")
-		}
 		if m.serve.Installed { // set up for remote use: say whether it's reachable
 			toggles = append(toggles, toggleHint("^X B", "browser", m.serve.Running))
 		}

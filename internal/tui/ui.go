@@ -211,7 +211,10 @@ type model struct {
 	updatedOpen       bool
 	updateErr         string // last install failure, shown in the popup with a retry
 	updateCheckFailed bool
-	updateHeld        bool // popup waited behind another prompt; restart its key grace when it shows
+	updateHeld        bool      // popup waited behind another prompt; restart its key grace when it shows
+	updateWarn        string    // the offer's warning that a restart sends held prompts back to their tabs
+	updateConfirmAt   time.Time // when that warning was shown: a second Enter within heldRestartConfirm restarts
+	updateWaitLogged  bool      // "update waits: holding N prompt(s)" logged for this wait
 	updating          bool
 	dismissed         string // tag the user said "later" to
 	restart           string // after an upgrade: binary to exec once the TUI exits
@@ -1684,7 +1687,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.updating || m.updateTo == "" || !m.autoUpdate || m.upgrade == nil || m.updateTo == m.autoFailed:
 			return m, nil // nothing to install on its own now
+		case heldCount() > 0:
+			if !m.updateWaitLogged {
+				state.LogActivity("update waits: holding %d prompt(s)", heldCount())
+				m.updateWaitLogged = true
+			}
+			return m, autoUpdateTick()
 		case !m.awayForUpdate():
+			m.updateWaitLogged = false
 			return m, autoUpdateTick()
 		}
 		state.LogUpdate("auto-update: installing %s while you're away", m.updateTo)
@@ -2214,10 +2224,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch msg.String() {
 			case "enter":
-				m.updateOpen = false
 				if m.upgrade == nil {
+					m.updateOpen = false
 					return m, nil
 				}
+				// A restart sends every prompt this list holds back to its
+				// tab: say so, and restart only on a second Enter soon after.
+				if n := heldCount(); n > 0 && (m.updateConfirmAt.IsZero() || time.Since(m.updateConfirmAt) > heldRestartConfirm) {
+					m.updateConfirmAt = time.Now()
+					m.updateWarn = fmt.Sprintf("Restarting sends %d held question(s) back to their tabs: %s again to restart.", n, keyEnter)
+					return m, nil
+				}
+				m.updateOpen, m.updateWarn, m.updateConfirmAt = false, "", time.Time{}
 				stats.Record("tui.update_install", stats.Key)
 				return m, m.startInstall()
 			case "esc":

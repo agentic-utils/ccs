@@ -56,6 +56,7 @@ What happens to each prompt:
   - A session missing from a scan, because its file is unreadable or caught mid-rewrite, counts as unknown and keeps the copy. Only its claude process having exited ends it.
   - An answer sent from ccs or the page is checked against the session's status just before it goes, and again right after it's taken to be sent. It's refused with "answered in its tab already" if the tab got there first.
   - **Known limit:** a tab answer landing in the few milliseconds between that last check and the reply can't be caught. Then both answers go out, but ccs's goes only to that prompt's own hook, which Claude Code has already settled, so it can't land on any other prompt.
+- **ccs doesn't update itself while it holds a prompt.** An automatic update restarts ccs, and a restart sends every held prompt back to its tab, so it waits until none is held (an answer on its way counts). Choosing "update and restart" yourself with prompts held warns first, and restarts on a second Enter within 5 seconds.
 - **The answer goes back on that prompt's own hook connection,** so it settles that prompt and no other. A prompt answered, let go or ended meanwhile is gone, and a late answer sends nothing. Allow (with a question's answers in `updatedInput`) or Deny is only ever sent when you choose it on the page.
 - **ccs stops offering a held prompt, with no decision, when:**
   - a key is pressed on the Mac after it arrived, which means you're back there (checked every 3 seconds; not in `--preview`, where you're at the Mac by design);

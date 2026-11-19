@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -53,7 +54,14 @@ type Holder struct {
 	lock    *os.File      // the flock; nil when not owning
 	stops   []func()
 	closing bool
+
+	active atomic.Int32 // prompts held now, an answer on its way included
 }
+
+// Active is how many prompts this holder has right now, held or with an
+// answer still being delivered: a ccs restart would send them all back to
+// their tabs, so an automatic update waits for none.
+func (h *Holder) Active() int { return int(h.active.Load()) }
 
 // NewHolder makes a holder; Listen makes it the owner.
 func NewHolder(cfg HoldConfig) *Holder {
@@ -271,7 +279,9 @@ func (h *Holder) holdPrompt(c net.Conn) {
 	}
 	rel := h.rel
 	h.book.add(p)
+	h.active.Add(1)
 	h.mu.Unlock()
+	defer h.active.Add(-1) // once the handler returns: after any reply is written
 	defer h.book.take(p.id)
 	state.LogActivity("%s: holding %s's %s prompt %s", h.cfg.Who, shortID(req.SessionID), req.ToolName, p.id)
 

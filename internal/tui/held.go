@@ -532,3 +532,16 @@ func (m *model) autoSelect() {
 	}
 	state.LogActivity("auto-select: selected %s in ccs (%s)", m.focusName(pick), map[bool]string{true: "held in ccs too", false: "waiting in its tab"}[held])
 }
+
+// heldCount is how many prompts this ccs holds now, an answer on its way
+// included; stubbed in tests.
+var heldCount = func() int {
+	if h := ownHold(); h != nil {
+		return h.Active()
+	}
+	return 0
+}
+
+// heldRestartConfirm is how long a second Enter on the update offer has to
+// confirm a restart that would send held prompts back to their tabs.
+const heldRestartConfirm = 5 * time.Second

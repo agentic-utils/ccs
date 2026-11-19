@@ -217,6 +217,9 @@ func (m model) updatePopup() string {
 	if m.upgrade != nil && m.updateErr != "" {
 		body += hints(keyEnter, "retry", keyEsc, "later")
 	} else if m.upgrade != nil {
+		if m.updateWarn != "" {
+			body += m.updateWarn + "\n\n"
+		}
 		body += hints(keyEnter, "update and restart", keyEsc, "later", "^L", "changelog")
 	} else {
 		body += "Update with your package manager.    " + hints(keyEsc, "close")
@@ -270,8 +273,13 @@ const updatedEnv = "CCS_UPDATED_FROM"
 // awayForUpdate: an automatic update may restart ccs now. You're away (ccs
 // isn't focused, or no key for autoUpdateIdle) and nothing would be lost or
 // cut short: no prompt or popup open, no unsent text in any message box, no
-// session or orchestrator opening. The restart keeps the screen, search and selection.
+// session or orchestrator opening, and no prompt held for this list (a
+// restart would send it back to its tab). The restart keeps the screen,
+// search and selection.
 func (m model) awayForUpdate() bool {
+	if heldCount() > 0 {
+		return false
+	}
 	if !m.blurred && time.Since(m.lastKeyAt) < autoUpdateIdle {
 		return false
 	}

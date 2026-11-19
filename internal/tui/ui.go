@@ -1501,12 +1501,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.FocusMsg: // terminals that report focus; without it ccs counts as focused
 		m.blurred = false
-		holdFocus(true)
 		return m, nil
 
 	case tea.BlurMsg:
 		m.blurred = true
-		holdFocus(false) // prompts this ccs holds go to their tabs
 		return m, nil
 
 	case autoFocusMsg:
@@ -2947,10 +2945,7 @@ func (m model) viewScreen() string {
 	var toggles []string
 	if !m.showUsage && !m.chordX {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
-		switch {
-		case !tuiFocusKnown.Load(): // the terminal hasn't reported focus: this ccs never holds
-			toggles = append(toggles, "\033[90mnot holding: focus unknown\033[0m")
-		case ownHold() != nil: // this ccs holds prompts from the hook for its list
+		if ownHold() != nil { // this ccs holds prompts from the hook for its list
 			toggles = append(toggles, "\033[90mholding prompts\033[0m")
 		}
 		if m.serve.Installed { // set up for remote use: say whether it's reachable

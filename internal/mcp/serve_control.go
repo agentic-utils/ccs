@@ -32,6 +32,7 @@ type HeldPrompt struct {
 	ID        string         `json:"id"`
 	Session   string         `json:"session"`
 	Tool      string         `json:"tool"`
+	At        time.Time      `json:"at"` // when it was held: the oldest is answered first
 	Summary   string         `json:"summary,omitempty"`
 	Questions []HeldQuestion `json:"questions,omitempty"` // an AskUserQuestion's; none for a permission prompt
 }
@@ -62,7 +63,7 @@ type controlReply struct {
 func heldList(b *promptBook) []HeldPrompt {
 	var out []HeldPrompt
 	for _, p := range b.list("") {
-		h := HeldPrompt{ID: p.id, Session: p.req.SessionID, Tool: p.req.ToolName}
+		h := HeldPrompt{ID: p.id, Session: p.req.SessionID, Tool: p.req.ToolName, At: p.at}
 		if p.req.ToolName == "AskUserQuestion" {
 			var in askInput
 			json.Unmarshal(p.req.ToolInput, &in)

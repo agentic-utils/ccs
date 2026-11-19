@@ -39,8 +39,12 @@ var hookSockPath = func() string { return filepath.Join(filepath.Dir(state.Setti
 // hook go first.
 const hookTimeout = 1860
 
-// maxHookWait is the longest ccs serve holds a prompt (--hook-wait).
+// maxHookWait is the longest a prompt is held (ccs serve's --hook-wait,
+// and the TUI's hold); MaxHookWait for the TUI.
 const maxHookWait = 30 * time.Minute
+
+// MaxHookWait is maxHookWait, for the TUI's hold.
+const MaxHookWait = maxHookWait
 
 // hookRequest is the part of Claude Code's hook input ccs uses.
 type hookRequest struct {

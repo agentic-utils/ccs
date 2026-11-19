@@ -662,6 +662,9 @@ func (m *model) autoFocusCmd() tea.Cmd {
 		if h, ok := m.focusHandled[sid]; st.Status != "waiting" || ok && h.Equal(st.Since) {
 			continue
 		}
+		if _, held := m.heldPrompt[sid]; held { // its tab shows no menu: ccs selects it instead (autoSelect)
+			continue
+		}
 		id = sid // ponytail: any one of several waits; the rest follow once it's answered
 	}
 	pid, ok := m.livePIDs[id]

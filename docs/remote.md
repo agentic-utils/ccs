@@ -69,9 +69,9 @@ What happens to each prompt:
 **Who holds a prompt.** Whoever owns the hold socket, as an flock on `serve-hook.lock` beside it:
 - **`ccs serve --allow-write`, whenever it runs.** It takes the hold over from a ccs TUI that has it (the TUI's held prompts go to their tabs, undecided), and a second ccs serve is refused.
 - **Otherwise, the first open ccs TUI.** Other TUIs answer through it.
-  - It holds a prompt only while ccs has the terminal's focus, because then you're looking at it. Unfocused, a new prompt goes straight to its tab.
-  - Focus starts unknown: until the terminal reports focus to ccs, it never holds, and the header says "not holding: focus unknown". A terminal that never reports focus (tmux without `focus-events on`, for one) leaves every prompt in its tab, which is safe.
-  - A held prompt goes to its tab when ccs loses focus, after 2 minutes, or when ccs quits. An answer you've confirmed with y goes through even if ccs loses focus a moment later. A key press doesn't release it, because you type in ccs to answer.
+  - It holds every prompt, whatever the focus, until it's answered. Questions arrive while you're in another window, and a prompt let go to its tab can't be answered from ccs any more (the hook has returned). The header shows "holding prompts".
+  - ccs selects the session holding it and focuses its answer pane, whether or not ^X A is on, so the question is in front of you when you come back: the oldest first, once no key has been pressed in ccs for 2 seconds, never over unsent text, a typed search or an open popup, and with the typing pause after the move. It stays on that prompt until it's answered or sent back, then moves to the next. It never switches terminal tabs for a held prompt (its tab shows no menu); ^X A's tab switching is for prompts it doesn't hold.
+  - A held prompt goes to its tab only when you send it back (T), after 30 minutes, when ccs quits, or when ccs serve takes the hold over; none of those decides anything. An answer you've confirmed with y goes through even if one of those happens a moment later.
   - When ccs serve stops, a TUI takes the hold within a couple of seconds.
 - **Nothing running:** with no ccs serve and no ccs TUI, the hook prints nothing and the prompt shows in its tab at once.
 

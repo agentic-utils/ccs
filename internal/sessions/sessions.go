@@ -1101,7 +1101,9 @@ func Resumable(id string, codex bool) bool {
 // LaunchSession starts o in a new iTerm tab and waits until it's running.
 func LaunchSession(o LaunchOpts) (Launched, error) {
 	l, err := launchSession(o)
-	if o.RecordParent && !o.InPlace && (err == nil || l.PID > 0) {
+	// The parent was recorded by name before the tab opened (launchSession);
+	// now that the child's pid is known, fill in its session id.
+	if o.RecordParent && !o.InPlace && l.PID > 0 {
 		recordLaunchParent(o.Name, l.PID)
 	}
 	return l, err
@@ -1172,8 +1174,21 @@ func launchSession(o LaunchOpts) (Launched, error) {
 	if o.InPlace {
 		return Launched{}, ExecScript(script)
 	}
+	// Every refusal is behind us: record the parent now, by name, before the
+	// tab opens. A session that starts slower than the wait below (or a
+	// caller that gives up first, such as an MCP client's timeout) still
+	// nests under its parent once it comes up. If it never comes up, the
+	// record names a session that doesn't exist, which is harmless.
+	var rec ParentRec
+	recorded := false
+	if o.RecordParent {
+		rec, recorded = recordLaunchParent(o.Name, 0)
+	}
 	tty, err := OpenLaunchTab(script)
 	if err != nil {
+		if recorded && !errors.Is(err, proc.ErrTimedOut) {
+			DropParent(o.Name, rec) // no tab opened: nothing will start
+		}
 		return Launched{}, fmt.Errorf("couldn't open a tab: %v", err)
 	}
 	if o.Focus {

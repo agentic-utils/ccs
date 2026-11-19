@@ -17,17 +17,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
 	"net"
 	"net/http"
+	"net/mail"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/idna"
 
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
@@ -150,6 +155,7 @@ type serveFlags struct {
 	addr, host, team, aud, emails string
 	write, preview                bool
 	hookWait                      time.Duration
+	parentPID                     int // --parent-pid: exit once this isn't our parent (ccs's ^X B preview)
 }
 
 // parseServeFlags parses and checks `ccs serve`'s flags, refusing what
@@ -165,6 +171,7 @@ func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 	fs.StringVar(&f.emails, "email", "", "comma-separated emails allowed in (required)")
 	fs.BoolVar(&f.write, "allow-write", false, "allow sending, launching, closing and restarting (read-only without it)")
 	fs.DurationVar(&f.hookWait, "hook-wait", maxHookWait, "with --allow-write: how long a prompt from `ccs hook permission` waits for the page before it shows in its tab (at most 30m)")
+	fs.IntVar(&f.parentPID, "parent-pid", 0, "exit once this process is no longer the parent (used by ccs's ^X B preview)")
 	fs.BoolVar(&f.preview, "preview", false, "a preview for this Mac's browser at http://127.0.0.1:<port>, with no Cloudflare Access (read-only unless --allow-write)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: ccs serve --host <hostname> --team <team> --aud <tag> --email <you@example.com> [--addr 127.0.0.1:7467] [--allow-write]")
@@ -201,6 +208,12 @@ func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 		return f, 2
 	}
 	if !f.preview {
+		host, err := normHost(f.host)
+		if err != nil {
+			fmt.Fprintln(stderr, "ccs serve:", err)
+			return f, 2
+		}
+		f.host = host
 		if err := accessFlagsOK(f); err != nil {
 			fmt.Fprintln(stderr, "ccs serve:", err)
 			return f, 2
@@ -209,11 +222,29 @@ func parseServeFlags(args []string, stderr io.Writer) (f serveFlags, code int) {
 	return f, 0
 }
 
+// normHost is the hostname as the browser's Host header will carry it:
+// lowercase ASCII, an internationalised name in its punycode form (IDNA), and
+// a trailing dot (a fully qualified name) dropped.
+func normHost(h string) (string, error) {
+	h = strings.TrimSuffix(strings.TrimSpace(h), ".")
+	if h == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(h, " /:@	") || strings.HasPrefix(h, ".") || strings.Contains(h, "..") {
+		return "", fmt.Errorf("--host is the bare hostname the tunnel serves, such as ccs.example.com, not %q", h)
+	}
+	a, err := idna.Lookup.ToASCII(h)
+	if err != nil {
+		return "", fmt.Errorf("--host %q isn't a valid hostname: %v", h, err)
+	}
+	return strings.ToLower(a), nil
+}
+
 // accessFlagsOK refuses Access values that can't be right: a hostname with
 // a scheme, path, port or space; a team or AUD tag with a space or slash;
-// an email list with an entry that isn't an address.
+// an email list with an entry that isn't a plain address (net/mail).
 func accessFlagsOK(f serveFlags) error {
-	if strings.ContainsAny(f.host, " /:\t") || strings.HasPrefix(f.host, ".") || strings.HasSuffix(f.host, ".") {
+	if strings.ContainsAny(f.host, " /:\t") || strings.HasPrefix(f.host, ".") {
 		return fmt.Errorf("--host is the bare hostname the tunnel serves, such as ccs.example.com, not %q", f.host)
 	}
 	if strings.ContainsAny(f.team, " /:\t") {
@@ -223,11 +254,18 @@ func accessFlagsOK(f serveFlags) error {
 		return fmt.Errorf("--aud is the Access application's AUD tag, a string of letters and digits, not %q", f.aud)
 	}
 	for _, e := range strings.Split(f.emails, ",") {
-		if e = strings.TrimSpace(e); e != "" && (!strings.Contains(e, "@") || strings.ContainsAny(e, " /")) {
+		if e = strings.TrimSpace(e); e != "" && !plainAddress(e) {
 			return fmt.Errorf("--email takes email addresses, separated by commas: %q isn't one", e)
 		}
 	}
 	return nil
+}
+
+// plainAddress: e is one email address and nothing else (no display name or
+// angle brackets), as net/mail parses it.
+func plainAddress(e string) bool {
+	a, err := mail.ParseAddress(e)
+	return err == nil && a.Name == "" && a.Address == e
 }
 
 // RunServe is `ccs serve`, and `ccs serve install|uninstall|start|stop|status`
@@ -253,6 +291,12 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 	if err != nil {
 		fmt.Fprintln(stderr, "ccs serve:", err)
 		return 1
+	}
+	if f.parentPID > 0 {
+		go watchParent(f.parentPID, os.Getppid, func() {
+			state.LogActivity("serve: parent %d is gone, stopping", f.parentPID)
+			os.Exit(0)
+		})
 	}
 	if link := s.announce(stdout, ln.Addr().String()); link != "" {
 		go openPreview(link)
@@ -287,6 +331,19 @@ func RunServe(args []string, stdout, stderr io.Writer, load func() ([]transcript
 		return 1
 	}
 	return 0
+}
+
+// parentPoll is how often a child ccs serve checks its parent is still there.
+var parentPoll = 2 * time.Second
+
+// watchParent calls gone once getppid no longer returns pid: the ccs that
+// started this preview has quit or been killed (the child is then adopted
+// by launchd), so the preview mustn't outlive it.
+func watchParent(pid int, getppid func() int, gone func()) {
+	for getppid() == pid {
+		time.Sleep(parentPoll)
+	}
+	gone()
 }
 
 // announce says where ccs serve is: a preview's secret link (returned, to
@@ -335,8 +392,42 @@ func newToken() string {
 	return hex.EncodeToString(b)
 }
 
-// openPreview opens the preview's link in the browser; stubbed in tests.
-var openPreview = func(link string) { proc.RunBounded(10*time.Second, nil, "open", link) }
+// openPreview opens the preview's link in the browser without putting it on
+// a command line, where ps would show its token to anyone on the Mac: it
+// writes a page that redirects there into a private folder (0700, the file
+// 0600), opens that file, and removes it once the browser has had time to
+// read it. Stubbed in tests.
+var openPreview = func(link string) {
+	page, cleanup, err := previewRedirect(link)
+	if err != nil {
+		state.LogActivity("serve: couldn't open the preview in the browser: %v", err)
+		return
+	}
+	defer cleanup()
+	proc.RunBounded(10*time.Second, nil, "open", page)
+	time.Sleep(previewPageLife)
+}
+
+// previewPageLife is how long the redirect page is kept for the browser.
+var previewPageLife = 30 * time.Second
+
+// previewRedirect writes the page that sends the browser on to link, and
+// returns its path and how to remove it.
+func previewRedirect(link string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "ccs-preview-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { os.RemoveAll(dir) }
+	page := filepath.Join(dir, "open.html")
+	esc := html.EscapeString(link)
+	body := `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=` + esc + `"><title>ccs serve</title><a href="` + esc + `">Open ccs serve</a>`
+	if err := os.WriteFile(page, []byte(body), 0o600); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return page, cleanup, nil
+}
 
 // previewUser is who the activity log names for a --preview request.
 const previewUser = "preview (this Mac)"

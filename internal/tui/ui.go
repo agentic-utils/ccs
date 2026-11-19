@@ -2550,9 +2550,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Anything else (e.g. a Ctrl+V paste's result) is for the input that has focus.
+	// Anything else (e.g. a Ctrl+V paste's result) is for the input that has
+	// the keyboard: never a box hidden under a popup or form.
 	var cmd tea.Cmd
 	if _, isKey := msg.(tea.KeyMsg); !isKey {
+		if in := m.keyboardBox(); in != nil {
+			*in, cmd = editKey(*in, msg)
+			return m, cmd
+		}
+		if m.keyboardOwned() {
+			return m, nil // a popup with no text box has the keyboard
+		}
 		switch {
 		case m.renaming:
 			m.renameInput, cmd = editKey(m.renameInput, msg)
@@ -2614,6 +2622,34 @@ type popup struct {
 // and popupOpen checks them.
 // popupOpen: a popup is open; it takes the keys and the wheel.
 func (m model) popupOpen() bool {
+	return slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open })
+}
+
+// keyboardBox is the text box inside whatever popup, form or menu has the
+// keyboard, for messages that aren't keys (a Ctrl+V paste's result): the
+// setup form's focused field, the links filter, or the held menu's Other or
+// note box. Nil when none of those has it.
+func (m *model) keyboardBox() *textinput.Model {
+	switch {
+	case m.setup != nil:
+		if m.setup.step == setupForm && m.setup.focus >= 0 && m.setup.focus < len(m.setup.fields) {
+			return &m.setup.fields[m.setup.focus]
+		}
+		return nil
+	case m.linksOpen:
+		return &m.linksInput
+	}
+	if h, _, ok := m.selectedHeld(); ok && m.heldKeysActive() {
+		if mn := m.menus[h.ID]; mn != nil && mn.editing != boxNone {
+			return &mn.box
+		}
+	}
+	return nil
+}
+
+// keyboardOwned: a popup or form with no text box of its own has the
+// keyboard, so nothing typed or pasted may reach a box beneath it.
+func (m model) keyboardOwned() bool {
 	return slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open })
 }
 

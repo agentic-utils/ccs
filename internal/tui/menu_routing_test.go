@@ -96,8 +96,15 @@ func TestMenuSearchTakesTheKeys(t *testing.T) {
 	}
 }
 
-// Tab always opens the usage screen: with the menu active, focused, and
-// after Esc. The menu never catches a ^X chord either.
+// usageChord is ^X Y: the usage screen, even while sessions wait.
+func usageChord(m model) model {
+	return press(keyType(m, tea.KeyCtrlX), "y")
+}
+
+// The menu never catches Tab: with the menu active, focused, and after Esc,
+// Tab goes to the next waiting session (here its own, the only one) and
+// answers nothing; ^X Y opens the usage screen. The menu never catches a
+// ^X chord either.
 func TestMenuTabOpensUsage(t *testing.T) {
 	for name, set := range map[string]func(model) model{
 		"active":    func(m model) model { return m },
@@ -107,8 +114,11 @@ func TestMenuTabOpensUsage(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, calls, _ := menuPane(t, colour())
 			m = set(m)
-			if m = keyType(m, tea.KeyTab); !m.showUsage {
-				t.Fatalf("Tab opens the usage screen (%s)", name)
+			if m = keyType(m, tea.KeyTab); m.showUsage || len(*calls) != 0 || m.filtered[m.cursor].conv.SessionID != "live" {
+				t.Fatalf("Tab goes to the waiting session, never to the menu (%s): usage %v calls %v", name, m.showUsage, *calls)
+			}
+			if m = usageChord(m); !m.showUsage {
+				t.Fatalf("^X Y opens the usage screen (%s)", name)
 			}
 			if m.heldKeysActive() {
 				t.Fatal("behind the usage screen the menu takes no keys")

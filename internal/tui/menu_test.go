@@ -142,8 +142,8 @@ func TestMenuEscAndTheList(t *testing.T) {
 		t.Error("→ gives the menu the keys again")
 	}
 	m = keyType(m, tea.KeyEsc)
-	if m = keyType(m, tea.KeyTab); !m.showUsage {
-		t.Errorf("Tab always opens the usage screen, even after Esc: usage %v", m.showUsage)
+	if m = usageChord(m); !m.showUsage {
+		t.Errorf("^X Y opens the usage screen, even after Esc: usage %v", m.showUsage)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestMenuFirstAppearanceGuard(t *testing.T) {
 func TestMenuNotBehindTheUsageScreen(t *testing.T) {
 	m, calls, tick := menuPane(t, colour())
 	m.heldFocus = true
-	m = keyType(m, tea.KeyTab)
+	m = usageChord(m)
 	if !m.showUsage || m.heldFocus || m.heldKeysActive() {
 		t.Fatalf("usage open, the menu loses the keys: usage %v focus %v", m.showUsage, m.heldFocus)
 	}

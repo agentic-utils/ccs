@@ -2022,6 +2022,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleHeader()
 			return m, nil
 		}
+		if k == "^x y" && !m.prompting() && !m.acctOpen { // your usage: Tab goes to waiting sessions while any wait
+			return m, m.toggleUsage()
+		}
 		if k == "^x b" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.serve", stats.Key)
 			m.helpOpen = false
@@ -2398,12 +2401,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if msg.String() == "tab" {
-			m.showUsage = !m.showUsage
-			if m.showUsage {
-				stats.Record("tui.usage_screen", stats.Key)
-				return m, tea.Batch(m.usageCmd(), m.allowanceCmd())
+			// While something needs you, Tab goes to it (the next one after
+			// the selection, wrapping); otherwise, and on the usage screen,
+			// it's the usage screen as ever, which ^X Y also opens.
+			if !m.showUsage {
+				if id, ok := m.nextWaiting(); ok {
+					stats.Record("tui.next_waiting", stats.Key)
+					m.selectSession(id)
+					return m, nil
+				}
 			}
-			return m, nil
+			return m, m.toggleUsage()
 		}
 		if m.showUsage && k != "ctrl+c" {
 			return m, nil // the usage screen has no other keys; typing mustn't edit a hidden search
@@ -2829,14 +2837,28 @@ func (m model) shortcuts() [][2]string {
 	add(m.profileStop == nil, "^X Q", "record a CPU profile, for when ccs feels slow")
 	add(m.profileStop != nil, "^X Q", "stop recording and save the CPU profile")
 	add(hasCswap, "^X U", "switch Claude account (cswap)")
+	add(true, "^X Y", "your usage: token use and allowance, even while sessions wait")
 
 	group("ccs")
 	add(true, "^R", "refresh sessions, PRs and allowance now; check for an update")
-	add(true, keyTab, "token use of every session in the last 12h, and your allowance")
+	waiting := m.anyWaiting()
+	add(waiting && !m.showUsage, keyTab, "go to the next session waiting on you (a question or prompt), wrapping round")
+	add(!waiting || m.showUsage, keyTab, "token use of every session in the last 12h, and your allowance")
 	add(true, "^L", "what changed in each ccs release")
 	add(true, "?", "this help, from an empty search or message box (after text it's a ?)")
 	add(true, "^C", "quit")
 	return out
+}
+
+// toggleUsage opens the usage screen (Tab with nothing waiting, or ^X Y),
+// or goes back from it.
+func (m *model) toggleUsage() tea.Cmd {
+	m.showUsage = !m.showUsage
+	if m.showUsage {
+		stats.Record("tui.usage_screen", stats.Key)
+		return tea.Batch(m.usageCmd(), m.allowanceCmd())
+	}
+	return nil
 }
 
 // headerLine fits the title row into width so it never wraps (listLayout
@@ -2880,7 +2902,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // and what it does, never a mode's on/off (that shows when no chord is
 // pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
 // which is left unadvertised (headless runs stay out of the header).
-var chordPairs = []string{"A", "auto-focus", "B", "browser (ccs serve)", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "waiting", "X", "prune", keyEsc, "cancel"}
+var chordPairs = []string{"A", "auto-focus", "B", "browser (ccs serve)", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "X", "prune", "Y", "usage", keyEsc, "cancel"}
 
 func toggleHint(key, label string, on bool) string {
 	state := "off"
@@ -3050,8 +3072,11 @@ func (m model) viewScreen() string {
 		}
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", state.Version, note, status)
-	pairs, keep := []string{"?", "help", "^C", "quit"}, 2 // the rest are in ? help
-	if m.showUsage {                                      // only Tab, account, help and quit do anything there
+	pairs, keep := []string{keyTab, "usage", "?", "help", "^C", "quit"}, 2 // the rest are in ? help
+	if m.anyWaiting() {                                                    // Tab goes to the next waiting session; ^X Y is the usage screen then
+		pairs = []string{keyTab, "next waiting", "^X Y", "usage", "?", "help", "^C", "quit"}
+	}
+	if m.showUsage { // only Tab, account, help and quit do anything there
 		pairs, keep = []string{keyTab, "back", "^X U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
 		pairs = append(pairs, "^C", "quit")
 	} else if m.chordX { // ^X pressed: what the next key does

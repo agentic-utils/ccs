@@ -75,21 +75,22 @@ type model struct {
 	cursor           int
 	previewScroll    int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width            int
-	table            bool              // ^X T: the full-width table instead of the sidebar
-	parents          map[string]string // spawned SessionID -> the session whose claude -p started it
-	noParent         map[string]int    // spawned SessionID -> len(items) when no parent was found
-	grouped          bool              // ^X X G: sessions grouped by folder
-	chordX           bool              // ^X pressed: the next key picks a ccs action
-	byID             map[string]int    // m.items by session id, for shownAncestor; rebuilt when an entry is stale
-	treeView         int               // ^X C: treeLive or treeClosed, for every tree (saved)
-	headerCollapsed  bool              // ^X F or a click on the summary line: the details under it are hidden
-	selectedID       string            // the selected session, to see when it changes
-	selectedAt       time.Time         // when it was selected: its preview waits previewDebounce
-	marks            *sessionMarks     // when each session was last looked at (done)
-	blurred          bool              // the terminal says ccs isn't focused: nothing is being seen
-	heldInput        string            // a held menu's answers typed in the bottom pane ("1, 1+3")
-	viewing          string            // the done session selected and seen: marked seen when the selection leaves it
-	snoozeOpen       bool              // the ^X S picker
+	table            bool                 // ^X T: the full-width table instead of the sidebar
+	parents          map[string]string    // spawned SessionID -> the session whose claude -p started it
+	noParent         map[string]int       // spawned SessionID -> len(items) when no parent was found
+	grouped          bool                 // ^X X G: sessions grouped by folder
+	chordX           bool                 // ^X pressed: the next key picks a ccs action
+	byID             map[string]int       // m.items by session id, for shownAncestor; rebuilt when an entry is stale
+	treeView         int                  // ^X C: treeLive or treeClosed, for every tree (saved)
+	headerCollapsed  bool                 // ^X F or a click on the summary line: the details under it are hidden
+	selectedID       string               // the selected session, to see when it changes
+	selectedAt       time.Time            // when it was selected: its preview waits previewDebounce
+	marks            *sessionMarks        // when each session was last looked at (done)
+	blurred          bool                 // the terminal says ccs isn't focused: nothing is being seen
+	menus            map[string]*heldMenu // each held question menu's progress, by prompt id (menu.go)
+	menuShown        string               // the held prompt whose menu is on screen: menuFresh starts when it changes
+	viewing          string               // the done session selected and seen: marked seen when the selection leaves it
+	snoozeOpen       bool                 // the ^X S picker
 	snoozeCursor     int
 	autoFocus        bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)
 	focusBusy        bool                 // an auto-focus attempt is in flight
@@ -1243,6 +1244,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		n.heldFocus, n.heldAutoAt = false, time.Time{}
 	}
 	n.autoSelect()
+	n.showMenu(n.heldShown())
 	if pr := n.prCmd(); pr != nil {
 		cmd = tea.Batch(cmd, pr)
 	}
@@ -2696,14 +2698,15 @@ func (m model) shortcuts() [][2]string {
 		add(true, keyEsc, "leave the message box for the search")
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
 	case m.heldFocus:
-		add(true, "1-9", "answer its question with that option (asks y/n)")
-		add(true, "1, 1+3", "several questions or pick-any: one answer per question, then enter (asks y/n)")
-		add(true, "A D", "allow or deny the permission prompt ccs holds (asks y/n)")
+		add(true, "↑↓ j k", "a question: move over its options and Other…")
+		add(true, keyEnter+" 1-9", "a question: pick the option (Other… opens a box for your own answer)")
+		add(true, "space", "a pick-any question: tick or untick; enter confirms")
+		add(true, "←", "back a question, keeping your answers (several end on a review: enter submits)")
+		add(true, "A D", "a permission prompt: allow or deny (asks y/n)")
 		add(true, "T", "send the prompt back to its tab")
-		add(true, keyEnter, "send it back to its tab and open the tab")
-		add(true, keyEsc, "leave it for the search")
+		add(true, keyEsc, "leave it for the search, keeping your answers")
 	case live && m.boxHidden() && m.heldPrompt[m.filtered[m.cursor].conv.SessionID].ID != "":
-		add(true, keyEnter, "answer the prompt ccs holds for it, here: a digit or typed answers, A allow or D deny (y/n), T back to its tab")
+		add(true, keyEnter, "answer the prompt ccs holds for it, here: its question's menu, or A allow / D deny (y/n); T back to its tab")
 	case live && m.boxHidden():
 		add(true, keyEnter, "go to its tab to answer it")
 	case live:

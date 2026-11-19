@@ -39,9 +39,11 @@ type HeldPrompt struct {
 
 // HeldQuestion is one question of a held AskUserQuestion.
 type HeldQuestion struct {
-	Question string   `json:"question"`
-	Multi    bool     `json:"multi,omitempty"`
-	Options  []string `json:"options"`
+	Question     string   `json:"question"`
+	Header       string   `json:"header,omitempty"`
+	Multi        bool     `json:"multi,omitempty"`
+	Options      []string `json:"options"`
+	Descriptions []string `json:"descriptions,omitempty"` // each option's, in order
 }
 
 // controlRequest is a line the TUI sends. It has no field for tool input:
@@ -50,7 +52,8 @@ type controlRequest struct {
 	Op      string              `json:"op"` // list, answer, yield
 	Prompt  string              `json:"prompt,omitempty"`
 	Choice  string              `json:"choice,omitempty"`  // allow, deny, mac, answer
-	Answers map[string][]string `json:"answers,omitempty"` // q<i> → labels
+	Answers map[string][]string `json:"answers,omitempty"` // q<i> → labels, or one free-text answer when Other[q<i>]
+	Other   map[string]bool     `json:"other,omitempty"`   // q<i> answered with free text ("Other…")
 }
 
 type controlReply struct {
@@ -68,9 +71,10 @@ func heldList(b *promptBook) []HeldPrompt {
 			var in askInput
 			json.Unmarshal(p.req.ToolInput, &in)
 			for _, q := range in.Questions {
-				hq := HeldQuestion{Question: transcript.CleanText(q.Question), Multi: q.MultiSelect}
+				hq := HeldQuestion{Question: transcript.CleanText(q.Question), Header: transcript.CleanText(q.Header), Multi: q.MultiSelect}
 				for _, o := range q.Options {
 					hq.Options = append(hq.Options, transcript.CleanText(o.Label))
+					hq.Descriptions = append(hq.Descriptions, transcript.CleanText(o.Description))
 				}
 				h.Questions = append(h.Questions, hq)
 			}
@@ -138,9 +142,10 @@ var HeldPrompts = func() ([]HeldPrompt, error) {
 }
 
 // AnswerHeld answers a held prompt by its id: choice allow, deny, mac (show
-// it in its tab) or answer, with a question's chosen labels by its index.
+// it in its tab) or answer, with a question's chosen labels by its index,
+// or, for one in other, its free-text answer.
 // It says what was done. A var so TUI tests stub it.
-var AnswerHeld = func(id, choice string, labels map[int][]string) (string, error) {
-	r, err := controlCall(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: labelAnswers(labels)})
+var AnswerHeld = func(id, choice string, labels map[int][]string, other map[int]bool) (string, error) {
+	r, err := controlCall(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: labelAnswers(labels), Other: otherFlags(other)})
 	return r.Text, err
 }

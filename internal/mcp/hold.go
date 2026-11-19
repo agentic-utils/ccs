@@ -376,7 +376,7 @@ func (h *Holder) control(req controlRequest, who string) controlReply {
 		if p == nil {
 			return controlReply{Error: gone}
 		}
-		reply, what, err := promptDecision(p, req.Choice, req.Answers, who)
+		reply, what, err := promptDecision(p, req.Choice, req.Answers, req.Other, who)
 		if err != nil {
 			return controlReply{Error: err.Error()}
 		}
@@ -394,12 +394,22 @@ func (h *Holder) control(req controlRequest, who string) controlReply {
 func (h *Holder) List() []HeldPrompt { return heldList(h.book) }
 
 // Answer settles a prompt h holds, as the control socket's answer does.
-func (h *Holder) Answer(id, choice string, labels map[int][]string) (string, error) {
-	r := h.control(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: labelAnswers(labels)}, tuiUser)
+func (h *Holder) Answer(id, choice string, labels map[int][]string, other map[int]bool) (string, error) {
+	r := h.control(controlRequest{Op: "answer", Prompt: id, Choice: choice, Answers: labelAnswers(labels), Other: otherFlags(other)}, tuiUser)
 	if r.Error != "" {
 		return "", errors.New(r.Error)
 	}
 	return r.Text, nil
+}
+
+func otherFlags(other map[int]bool) map[string]bool {
+	out := map[string]bool{}
+	for i, on := range other {
+		if on {
+			out["q"+strconv.Itoa(i)] = true
+		}
+	}
+	return out
 }
 
 func labelAnswers(labels map[int][]string) map[string][]string {

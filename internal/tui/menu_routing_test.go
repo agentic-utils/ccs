@@ -159,7 +159,7 @@ func TestMenuReviewScrollsBeforeSending(t *testing.T) {
 	tick(time.Second)
 	m = redraw(m)
 	v := strip2(m.View())
-	if !strings.Contains(v, "Review your answers") || !strings.Contains(v, "↓ more") || strings.Contains(v, "NOTE END") {
+	if !strings.Contains(v, "Review · 2 answers") || !strings.Contains(v, "↓ more") || strings.Contains(v, "NOTE END") {
 		t.Fatalf("a tall review shows its start and says there's more:\n%s", v)
 	}
 	m = keyType(m, tea.KeyEnter)

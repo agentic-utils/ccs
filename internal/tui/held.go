@@ -202,11 +202,11 @@ func (m model) heldByID(id string) (mcp.HeldPrompt, bool) {
 // (menu.go), or a permission prompt's tool with A, D and T.
 func (m model) heldLines(h mcp.HeldPrompt, width int, active bool) []string {
 	if len(h.Questions) > 0 {
-		return append([]string{""}, m.menuLines(h, width, active)...)
+		return m.menuLines(h, width, active)
 	}
 	// A permission prompt, in the menu's style: one header line, what it
 	// wants to run wrapped, one hint row.
-	lines := []string{"", paneHeader("\033[1;"+amber+"m"+h.Tool+"\033[0m \033[90m· permission\033[0m", width)}
+	lines := []string{paneHeader("\033[1;"+amber+"m"+h.Tool+"\033[0m \033[90m· permission\033[0m", width)}
 	lines = append(lines, wrapIndent("", "\033[1m", h.Summary, width)...)
 	if !active {
 		return lines
@@ -344,7 +344,7 @@ func (m model) selectedHeld() (mcp.HeldPrompt, transcript.Conversation, bool) {
 // how to give them to it.
 func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 	active := m.heldKeysActive()
-	lines := m.heldLines(h, m.paneWidth()-4, active)
+	lines := m.heldLines(h, m.heldInner(), active)
 	switch {
 	case m.heldConfirmed != nil && m.heldConfirmed.id == h.ID:
 		lines = append(lines, "\033[1;"+amber+"m"+m.heldConfirmed.what+"\033[0m")

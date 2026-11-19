@@ -25,8 +25,19 @@ func writeAccess() mcp.HeldPrompt {
 	}}}
 }
 
-// paneText is the bottom pane's held prompt as drawn, colours stripped.
-func paneText(m model) []string { return strings.Split(strip2(strings.Join(m.chatAsk(), "\n")), "\n") }
+// paneText is the bottom pane's held prompt as drawn, colours stripped,
+// inside its box: the border rows dropped, the side borders and padding cut.
+func paneText(m model) []string {
+	var out []string
+	for _, l := range strings.Split(strip2(strings.Join(m.chatAsk(), "\n")), "\n") {
+		if strings.HasPrefix(l, "╭") || strings.HasPrefix(l, "╰") {
+			continue
+		}
+		l = strings.TrimPrefix(strings.TrimSuffix(l, "│"), "│ ")
+		out = append(out, strings.TrimRight(l, " "))
+	}
+	return out
+}
 
 // The pane looks like Claude Code's menu at 80 and 120 columns: one header
 // line ("Write access · 1 of 1", "also in its tab" on the right), the question
@@ -65,7 +76,7 @@ func TestMenuPaneLook(t *testing.T) {
 		}
 		joined := strings.Join(lines, "\n")
 		flat := strings.Join(strings.Fields(joined), " ")
-		for _, want := range []string{"❯ 1. Off; tick to turn on (Recommended)", "2. Ask as a separate step", "3. Other…", "enter sends: Off; tick to turn on (Recommended)"} {
+		for _, want := range []string{"❯ 1. Off; tick to turn on (Recommended)", "2. Ask as a separate step", "3. Other…", "enter sends → Off; tick to turn on (Recommended)"} {
 			if !strings.Contains(flat, want) {
 				t.Errorf("%d cols: lacks %q:\n%s", width, want, joined)
 			}
@@ -135,7 +146,7 @@ func TestMenuHintRowPerStep(t *testing.T) {
 	m = keyType(m, tea.KeyEnter)
 	tick(time.Second)
 	m = redraw(m)
-	if h := hint(m); h != "↑↓ scroll · enter send · ← back · esc list" {
+	if h := hint(m); h != "enter send · ← edit · ↑↓ scroll · esc list" {
 		t.Errorf("the review: %q\n%s", h, strings.Join(paneText(m), "\n"))
 	}
 }

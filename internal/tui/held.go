@@ -141,6 +141,7 @@ type heldMsg struct {
 type heldDoneMsg struct {
 	name, text string
 	session    string // the session the answer was for: its outcome shows only there
+	prompt     string // the held prompt answered
 	err        error
 }
 
@@ -305,7 +306,7 @@ func (m *model) answerHeldCmd(h mcp.HeldPrompt, name, choice string, labels map[
 	m.heldAt = time.Time{} // ask again straight after
 	return func() tea.Msg {
 		text, err := answerHeld(h.ID, choice, labels, other, notes)
-		return heldDoneMsg{name: name, session: h.Session, text: text, err: err}
+		return heldDoneMsg{name: name, session: h.Session, prompt: h.ID, text: text, err: err}
 	}
 }
 
@@ -321,6 +322,7 @@ func (m *model) applyHeldDone(msg heldDoneMsg) {
 		m.heldErr = "Couldn't answer " + msg.name + ": " + msg.err.Error()
 	default:
 		m.setHeldNote("✓ " + msg.name + ": " + strings.ReplaceAll(msg.text, "\n", " · "))
+		m.chatAfter, m.chatAfterID = msg.session, msg.prompt // keepChatAfterAnswer gives it the keys
 		return
 	}
 	m.heldNote = ""
@@ -473,12 +475,12 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 // selection never changes without the user".
 func (m *model) autoSelect() {
 	if m.showUsage || m.prompting() || m.heldFocus || m.textInput.Value() != "" || m.hasDraft() ||
-		heldNow().Sub(m.lastKeyAt) < autoFocusIdle ||
+		heldNow().Sub(m.lastActive()) < autoFocusIdle ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return
 	}
-	if _, _, ok := m.selectedHeld(); ok {
-		return // on a held prompt that's still waiting: stay until it's answered or sent back
+	if m.selectionNeedsYou() {
+		return // you may be reading its question: stay until it's answered (Tab moves on)
 	}
 	if m.selectHandled == nil {
 		m.selectHandled = map[string]string{}
@@ -527,10 +529,66 @@ func (m *model) autoSelect() {
 		return // not in the list (filtered out): nothing to select
 	}
 	m.selectSession(pick)
+	m.autoSelectAt = heldNow()
 	if held {
 		m.heldFocus, m.heldAutoAt = true, heldNow()
 	}
 	state.LogActivity("auto-select: selected %s in ccs (%s)", m.focusName(pick), map[bool]string{true: "held in ccs too", false: "waiting in its tab"}[held])
+}
+
+// lastActive is when you last did anything in ccs that auto-select must
+// wait out: a key, the mouse (a click or the wheel moves the selection
+// too), or ccs's own last auto-select, so two never land back to back.
+func (m model) lastActive() time.Time {
+	t := m.lastKeyAt
+	for _, u := range []time.Time{m.lastMouse, m.autoSelectAt} {
+		if u.After(t) {
+			t = u
+		}
+	}
+	return t
+}
+
+// selectionNeedsYou: the selected session itself waits on you (a question
+// ccs holds for it, or a menu or prompt in its tab) or its message box
+// holds unsent text. Auto-select and auto-focus never take you away from
+// it, since you may be reading it; Tab moves on by hand.
+func (m model) selectionNeedsYou() bool {
+	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+		return false
+	}
+	c := m.filtered[m.cursor].conv
+	if _, held := m.heldPrompt[c.SessionID]; held {
+		return true
+	}
+	return m.waitSignal(c) == waitPrompt || strings.TrimSpace(m.chatInput.Value()) != ""
+}
+
+// keepChatAfterAnswer: once a question answered from ccs has gone from the
+// pane, the same session's message box takes the keys, as ^S would give
+// them. Another question of that session's drawn first keeps them for its
+// menu; moving the selection drops it.
+func (m *model) keepChatAfterAnswer() {
+	id := m.chatAfter
+	if id == "" {
+		return
+	}
+	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) || m.filtered[m.cursor].conv.SessionID != id {
+		m.chatAfter, m.chatAfterID = "", ""
+		return
+	}
+	if h, _, drawn := m.heldDrawn(); drawn && h.ID != m.chatAfterID {
+		m.chatAfter, m.chatAfterID = "", "" // the next question: its menu has the keys
+		return
+	}
+	if h, held := m.heldPrompt[id]; held && h.ID == m.chatAfterID || m.boxHidden() {
+		return // the answered one still showing: wait for it to go
+	}
+	if !m.selectedLive() || m.showUsage || m.popupOpen() || m.prompting() || m.textInput.Value() != "" {
+		return
+	}
+	m.chatFocus, m.heldFocus, m.heldAutoAt = true, false, time.Time{}
+	m.chatAfter, m.chatAfterID = "", ""
 }
 
 // heldCount is how many prompts this ccs holds now, an answer on its way

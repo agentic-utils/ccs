@@ -81,8 +81,10 @@ func askAwaiting(conv *Conversation, id string) int {
 func noteAskResult(conv *Conversation, i int, content json.RawMessage, isError bool, line []byte, ts string) {
 	conv.Asks = slices.Clone(conv.Asks) // copies of the conversation share the slice
 	a := &conv.Asks[i]
-	a.Answered, a.AnswerTs, a.AnswerAt, a.Failed = true, ts, len(conv.Messages), isError
-	a.Result = strings.TrimSpace(ResultText(content))
+	// An earlier ask, so cleanSince doesn't see it: cleaned here, and the
+	// answers looked up by the cleaned question its record already holds.
+	a.Answered, a.AnswerTs, a.AnswerAt, a.Failed = true, CleanText(ts), len(conv.Messages), isError
+	a.Result = CleanText(strings.TrimSpace(ResultText(content)))
 	if !bytes.Contains(line, []byte(`"answers"`)) {
 		return
 	}
@@ -97,9 +99,16 @@ func noteAskResult(conv *Conversation, i int, content json.RawMessage, isError b
 	if json.Unmarshal(line, &r) != nil {
 		return
 	}
+	answers, notesOf := map[string]string{}, map[string]string{}
+	for q, v := range r.ToolUseResult.Answers {
+		answers[CleanText(q)] = CleanText(v)
+	}
+	for q, v := range r.ToolUseResult.Annotations {
+		notesOf[CleanText(q)] = CleanText(v.Notes)
+	}
 	for _, q := range a.Questions { // in the order asked
-		ans, ok := r.ToolUseResult.Answers[q.Question]
-		notes := strings.TrimSpace(r.ToolUseResult.Annotations[q.Question].Notes)
+		ans, ok := answers[q.Question]
+		notes := strings.TrimSpace(notesOf[q.Question])
 		if ok || notes != "" {
 			a.Answers = append(a.Answers, AskAnswer{q.Question, ans, notes})
 		}

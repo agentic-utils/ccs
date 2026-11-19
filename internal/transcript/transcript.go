@@ -534,6 +534,13 @@ func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, tail 
 
 // ParseLine applies one JSONL record to conv; false if it isn't valid JSON.
 func ParseLine(conv *Conversation, line []byte) bool {
+	m := markOf(conv)
+	applied := parseLine(conv, line)
+	cleanSince(conv, m) // ingest.go: what the line added is cleaned before anything reads it
+	return applied
+}
+
+func parseLine(conv *Conversation, line []byte) bool {
 	var raw RawMessage
 	if err := json.Unmarshal(line, &raw); err != nil {
 		return false
@@ -1723,7 +1730,10 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 	var meta codexMeta
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	m := markOf(conv)
 	for sc.Scan() {
+		cleanSince(conv, m) // ingest.go: the previous record's additions
+		m = markOf(conv)
 		var rec CodexRecord
 		if json.Unmarshal(sc.Bytes(), &rec) != nil {
 			continue
@@ -1810,6 +1820,7 @@ func parseCodexUncached(path string, info os.FileInfo) (*Conversation, error) {
 	} else {
 		conv.Title = codexThreadNames()[conv.SessionID]
 	}
+	cleanSince(conv, m) // the last record's additions, and the title
 	conv.ParsedBytes = conv.Size
 	FinishParse(conv)
 	conv.SearchText = SearchTextOf(*conv)
@@ -2015,7 +2026,7 @@ func noteEnds(conv *Conversation, line []byte) {
 	for _, m := range taskEnd.FindAllSubmatch(line, -1) {
 		if i := slices.IndexFunc(conv.Tasks, func(t BgTask) bool { return t.ID == string(m[1]) }); i >= 0 && conv.Tasks[i].Status == "" {
 			conv.Tasks = slices.Clone(conv.Tasks)
-			conv.Tasks[i].Status = string(m[2])
+			conv.Tasks[i].Status = CleanText(string(m[2])) // an earlier task: cleanSince only sees new ones
 		}
 	}
 }
@@ -2083,9 +2094,9 @@ func SubagentsOf(conv Conversation) []Subagent {
 		if err != nil || json.Unmarshal(data, &meta) != nil {
 			continue
 		}
-		s := Subagent{Name: meta.Name, Finished: meta.Finished}
+		s := Subagent{Name: CleanText(meta.Name), Finished: meta.Finished} // meta.json: cleaned as it's read (ingest.go)
 		if s.Name == "" {
-			s.Name = meta.Description
+			s.Name = CleanText(meta.Description)
 		}
 		transcript := strings.TrimSuffix(path, ".meta.json") + ".jsonl"
 		s.Started = firstTimestamp(transcript)
@@ -2745,6 +2756,7 @@ func PeerParts(text string) (from, body string, ok bool) {
 // ShortAddr is a SendMessage address for show: "session 123" for a socket,
 // an agent's id as it is.
 func ShortAddr(a string) string {
+	a = CleanText(a) // drawn: a PeerRef.Addr is kept raw for matching, so it is cleaned here
 	if strings.HasPrefix(a, "uds:") {
 		return "session " + strings.TrimSuffix(filepath.Base(a), ".sock")
 	}

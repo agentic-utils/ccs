@@ -254,6 +254,8 @@ A PR that substantially changes what the list looks like (a new pane, popup, sec
 
 - Every interaction must be possible from the keyboard; the mouse (click, wheel) is only ever a shortcut for something a key already does
 
+- Untrusted text is cleaned where it enters ccs, never left to whoever draws it: `transcript.ParseLine` and `ParseCodexFile` clean what each line adds (`ingest.go`: `cleanSince`), and session files (`SessionFile.cleaned`), subagents' meta.json, `claude agents --json` and GitHub's answers (titles, check names) are cleaned as they're read. Fields code matches byte for byte (session ids, file paths, `PeerRef.Key`/`.Addr`) stay raw and are cleaned where drawn (`ShortAddr`). Text decoded later (HTML entities, JSON inside a message) is cleaned after decoding (`transcript.DecodeClean`). `TestUntrustedTextIsCleanedWhereItEnters` feeds escapes through every source; a new source or field goes in it
+
 - Use conventional commits (feat:, fix:, docs:, etc.)
 - Run tests before releasing
 - Keep it simple: packages and files split by area as listed under Architecture; put new code in the package and file for its area, and never make a package import one listed after it

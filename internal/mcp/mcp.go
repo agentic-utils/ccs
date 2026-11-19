@@ -412,11 +412,57 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	if !filepath.IsAbs(a.Cwd) {
 		return "", fmt.Errorf("cwd must be an absolute path")
 	}
-	l, err := sessions.LaunchSession(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex, NoPreamble: a.Preamble != nil && !*a.Preamble, RecordParent: true})
-	if err != nil {
-		return "", err
+	return capped("launch_session", a.Name, a.Name+" is still starting: check with list_sessions in a minute (its parent is recorded already; the outcome goes to ccs's activity log)", func() (string, error) {
+		l, err := launchFn(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex, NoPreamble: a.Preamble != nil && !*a.Preamble, RecordParent: true})
+		if err != nil {
+			return "", err
+		}
+		return l.Text(a.Name), nil
+	})
+}
+
+// launchFn and closeFn are launch_session's and close_session's work;
+// tests stub them.
+var (
+	launchFn = sessions.LaunchSession
+	closeFn  = sessions.CloseByNameID
+)
+
+// sessionCallCap is the longest launch_session or close_session holds the
+// reply. The server answers one request at a time, and clients give a tool
+// call about 10s: a launch can wait far longer for a slow start, which used
+// to time the call out and hold up every later one.
+var sessionCallCap = 8 * time.Second
+
+// capped runs f, answering with its result if it finishes within
+// sessionCallCap, else with slow while f carries on in the background (the
+// server lives as long as the session that called it) and its outcome goes
+// to the activity log.
+func capped(tool, name, slow string, f func() (string, error)) (string, error) {
+	type result struct {
+		text string
+		err  error
 	}
-	return l.Text(a.Name), nil
+	done := make(chan result, 1)
+	go func() {
+		text, err := f()
+		done <- result{text, err}
+	}()
+	select {
+	case r := <-done:
+		return r.text, r.err
+	case <-time.After(sessionCallCap):
+		go func() {
+			r := <-done
+			if r.err != nil {
+				state.LogActivity("%s %s: %v", tool, name, r.err)
+			} else {
+				first, _, _ := strings.Cut(r.text, "\n")
+				state.LogActivity("%s %s: %s", tool, name, first)
+			}
+		}()
+		return slow, nil
+	}
 }
 
 // closeCall is close_session: at once, or with graceful after asking the
@@ -433,7 +479,9 @@ func closeCall(name string, raw json.RawMessage) (string, error) {
 		}
 	}
 	if !a.Graceful {
-		return sessions.CloseByNameID(name, a.ID)
+		return capped("close_session", name, name+" is still closing: check with list_sessions in a minute (the outcome goes to ccs's activity log)", func() (string, error) {
+			return closeFn(name, a.ID)
+		})
 	}
 	// The wrap-up takes minutes and a tool call has far less, so this answers
 	// once the notice is sent, as restart_session answers once its tab is up;

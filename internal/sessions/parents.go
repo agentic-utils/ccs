@@ -283,10 +283,10 @@ var CallingSession = func() (Caller, bool) {
 // recordLaunchParent notes that the calling session launched name (childID
 // "" while it hasn't registered). A launch from outside any session (^X N,
 // a shell) records nothing and leaves an earlier record as it was.
-func recordLaunchParent(name string, childPID int) {
+func recordLaunchParent(name string, childPID int) (ParentRec, bool) {
 	me, ok := CallingSession()
 	if !ok || me.Name == name {
-		return
+		return ParentRec{}, false
 	}
 	childID := ""
 	if childPID > 0 {
@@ -299,7 +299,9 @@ func recordLaunchParent(name string, childPID int) {
 	}
 	if err := setParent(name, childID, me); err != nil {
 		state.LogActivity("launch %s: couldn't record its parent %s: %v", name, me.Name, err)
+		return ParentRec{}, false
 	}
+	return ParentRec{Child: name, ChildID: childID, Parent: me.Name, ParentID: me.ID, ParentKind: me.Kind}, true
 }
 
 func setParent(name, childID string, p Caller) error {

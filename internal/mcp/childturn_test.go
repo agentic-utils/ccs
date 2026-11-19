@@ -268,7 +268,7 @@ func TestHookInstallBoth(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	os.WriteFile(path, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"notify-me"}]}]}}`), 0o600)
 	msg, err := editHookSettings(path, true)
-	if err != nil || !strings.Contains(msg, "PermissionRequest and Stop") {
+	if err != nil || !strings.Contains(msg, "PermissionRequest, Stop and SessionStart hooks") {
 		t.Fatalf("installs both: %v %q", err, msg)
 	}
 	var s struct {
@@ -296,7 +296,7 @@ func TestHookInstallBoth(t *testing.T) {
 	if msg, _ := editHookSettings(path, true); !strings.Contains(msg, "already") {
 		t.Errorf("both there: already: %q", msg)
 	}
-	if msg, _ := editHookSettings(path, false); !strings.Contains(msg, "removed ccs's PermissionRequest and Stop hook") {
+	if msg, _ := editHookSettings(path, false); !strings.Contains(msg, "removed ccs's PermissionRequest, Stop and SessionStart hooks") {
 		t.Errorf("removes both: %q", msg)
 	}
 	b, _ = os.ReadFile(path)

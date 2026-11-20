@@ -65,6 +65,11 @@ type liveMsg struct {
 	hosts      map[string]string               // live sessions run by an app, not in a terminal: the app's name
 	bg         map[string]sessions.BgSession   // background sessions (claude --bg); nil when not asked this tick
 	gen        int
+	// The live sessions' subagent rows (subagents.go) and their meta, when
+	// subsKnown: read in time this tick, so a missing row was dropped.
+	subRows   []transcript.Conversation
+	subStats  map[string]transcript.Subagent
+	subsKnown bool
 }
 
 func liveTick() tea.Cmd {
@@ -111,6 +116,26 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 		}
 		var mu sync.Mutex
 		var wg sync.WaitGroup
+		// The live sessions' subagent rows, beside the transcript reads
+		// and under the same deadline; one still stuck from an earlier
+		// tick isn't started again, and its rows stand meanwhile.
+		if _, busy := sessions.LiveReads.LoadOrStore(subagentRowsKey, true); !busy {
+			starts := make(map[string]string, len(scanned))
+			for id, s := range scanned {
+				starts[id] = s.Start
+			}
+			parents, since, prevSubs := subagentParents(byID, live, starts)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer sessions.LiveReads.Delete(subagentRowsKey)
+				defer transcript.RecoverWorker()
+				rows, subs := subagentRowsFor(parents, since, prevSubs, time.Now())
+				mu.Lock()
+				msg.subRows, msg.subStats, msg.subsKnown = rows, subs, true
+				mu.Unlock()
+			}()
+		}
 		for id := range check {
 			conv, ok := byID[id]
 			if !ok {
@@ -259,6 +284,14 @@ func (m *model) opening(id string, fork bool) bool {
 // exited, or whose file can't be read right now, is reported instead of
 // resumed a second time.
 func (m *model) focusCmd(conv transcript.Conversation) tea.Cmd {
+	if conv.Kind == transcript.KindSubagent { // it runs inside its session: that's what opens
+		p, ok := m.subagentParentOf(conv)
+		if !ok {
+			m.note(subagentNote)
+			return nil
+		}
+		conv = p
+	}
 	if m.inT3(conv.SessionID) {
 		return m.openT3Cmd(conv)
 	}
@@ -284,6 +317,14 @@ func (m *model) focusCmd(conv transcript.Conversation) tea.Cmd {
 // a session resumed elsewhere since the last live tick is focused, not
 // resumed a second time. Forks always open a new session.
 func (m *model) resumeCmd(conv transcript.Conversation, fork bool) tea.Cmd {
+	if conv.Kind == transcript.KindSubagent { // Enter opens its session; there's nothing of its own to fork
+		p, ok := m.subagentParentOf(conv)
+		if fork || !ok {
+			m.note(subagentNote)
+			return nil
+		}
+		conv = p
+	}
 	if !fork && m.inT3(conv.SessionID) {
 		return m.openT3Cmd(conv)
 	}

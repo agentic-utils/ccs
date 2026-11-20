@@ -443,6 +443,9 @@ func ParseAppended(prev *Conversation) (*Conversation, error) {
 		return &c, nil
 	}
 	if info.Size() < prev.Size || prev.TailApplied || prev.ParsedBytes > info.Size() {
+		if prev.Kind == KindSubagent { // ParseConversationFile skips agent-*.jsonl
+			return parseSubagentWhole(prev.FilePath, prev.ParentID, prev.Title, prev.Cwd)
+		}
 		return ParseConversationFile(prev.FilePath, time.Time{}, 0)
 	}
 	file, err := os.Open(prev.FilePath)
@@ -1103,6 +1106,9 @@ func (c Conversation) Questions() []askQuestion {
 // --all (showHeadless). Apps you type in start sessions as cli,
 // claude-desktop or sdk-ts, never sdk-cli.
 func (c Conversation) Headless() bool {
+	if c.Kind == KindSubagent { // listed only while its session runs it (SubagentConv)
+		return false
+	}
 	if c.Kind == KindCodex {
 		return c.CodexExec && !c.IsCustomTitle
 	}
@@ -1654,6 +1660,9 @@ func AgentGlyph(conv Conversation) (glyph, colour string) {
 	if conv.Kind == KindCodex {
 		return "⬡", "37"
 	}
+	if conv.Kind == KindSubagent { // the ◆ its session's count uses
+		return "◆", SubagentColour
+	}
 	return "✻", "38;5;173"
 }
 
@@ -2111,6 +2120,8 @@ const MaxTaskLines = 5
 // included), from the meta.json Claude Code writes beside its transcript in
 // <session>/subagents/.
 type Subagent struct {
+	ID        string // its transcript's name without .jsonl (agent-<id>): its row's SessionID (SubagentConv)
+	Path      string // its transcript
 	Name      string
 	Started   time.Time
 	LastWrite time.Time // its transcript's: a working subagent writes every few seconds
@@ -2197,8 +2208,8 @@ func SubagentsOf(conv Conversation) []Subagent {
 				c.name = CleanText(meta.Description)
 			}
 		}
-		s := Subagent{Name: c.name, Finished: c.finished}
 		transcript := strings.TrimSuffix(path, ".meta.json") + ".jsonl"
+		s := Subagent{ID: strings.TrimSuffix(filepath.Base(transcript), ".jsonl"), Path: transcript, Name: c.name, Finished: c.finished}
 		s.Started = c.subagentStarted(transcript)
 		subagentCache.metas[path] = c
 		if info, err := os.Stat(transcript); err == nil {

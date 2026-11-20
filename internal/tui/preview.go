@@ -928,9 +928,9 @@ const (
 // (under 40 columns the time goes too), never the glyph.
 func (m model) headerSummary(conv transcript.Conversation, query, when string) string {
 	parts := []string{highlight(transcript.Truncate(filepath.Base(conv.Cwd), 24), query)}
-	if conv.Kind == transcript.KindCodex {
+	if conv.Kind != "" { // codex, or a Claude subagent
 		glyph, colour := transcript.AgentGlyph(conv)
-		parts = append(parts, "\033["+colour+"m"+glyph+"\033[0m codex")
+		parts = append(parts, "\033["+colour+"m"+glyph+"\033[0m "+conv.Kind)
 	}
 	if conv.LastError != "" {
 		parts = append(parts, "\033[1;31m! "+conv.LastError+"\033[0m")
@@ -1049,9 +1049,9 @@ func (m model) renderPreview(item listItem, height int) string {
 // sessionStats is the preview header's model, token and error lines.
 func sessionStats(conv transcript.Conversation) []string {
 	var lines []string
-	if conv.Kind == transcript.KindCodex {
+	if conv.Kind != "" {
 		glyph, colour := transcript.AgentGlyph(conv)
-		lines = append(lines, "\033[1;33mAgent:\033[0m   \033["+colour+"m"+glyph+"\033[0m codex")
+		lines = append(lines, "\033[1;33mAgent:\033[0m   \033["+colour+"m"+glyph+"\033[0m "+conv.Kind)
 	}
 	if conv.ActiveModel != "" || conv.ContextTokens > 0 {
 		window := conv.WindowSize()

@@ -135,6 +135,7 @@ type model struct {
 	bg               map[string]sessions.BgSession // background sessions (claude --bg), opened with claude attach
 	agentsAt         time.Time                     // when claude agents was last asked
 	confirmStop      string                        // ^X K asked whether to stop this session: y stops it
+	orderingTabs     bool                          // ^X J is putting the terminal tabs in list order
 	confirmServeStop bool                          // ^X B asked whether to stop ccs serve's agent: y stops it
 	heldPrompt       map[string]mcp.HeldPrompt     // prompts held by ccs serve or this ccs, by session (held.go)
 	heldAt           time.Time
@@ -1422,6 +1423,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.orchOffer, m.orchAsked, m.orchSince = &msg.plan, msg.opened, time.Now()
 		return m, nil
 
+	case tabsOrderedMsg:
+		m.orderingTabs = false
+		switch {
+		case msg.err != nil:
+			m.errorMsg = "^X J: " + msg.err.Error()
+		case msg.moved == 0:
+			m.note("Tabs are already in list order")
+		default:
+			m.note(fmt.Sprintf("Put %d tabs in list order", msg.moved))
+		}
+		return m, nil
 	case orchestratorDoneMsg:
 		m.orchBusy = false
 		m.syncOrchestrator()
@@ -2157,6 +2169,20 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				m.orchBusy, m.errorMsg = true, ""
 				return m, orchestratorKeyCmd
+			}
+			return m, nil
+		}
+		if k == "^x j" && !m.prompting() && !m.acctOpen && !m.showUsage {
+			stats.Record("tui.order_tabs", stats.Key)
+			m.helpOpen = false
+			switch {
+			case m.orderingTabs:
+				m.errorMsg = "Still ordering tabs..."
+			case !sessions.CanOpenTabs():
+				m.errorMsg = "^X J orders tabs in iTerm or tmux, and this is neither"
+			default:
+				m.orderingTabs, m.errorMsg = true, ""
+				return m, orderTabsCmd(m.tabPIDs())
 			}
 			return m, nil
 		}
@@ -2986,6 +3012,8 @@ func (m model) shortcuts() [][2]string {
 	group("^X then a letter: view and tools")
 	add(sessions.CanOpenTabs(), "^X N", "start a new session in an iTerm tab or tmux window, in this one's folder")
 	add(sessions.CanOpenTabs(), "^X O", "open the orchestrator, setting one up if there is none")
+	add(sessions.CanOpenTabs(), "^X J", "put the tabs of live sessions in list order (iTerm needs its Python API on)")
+	add(sessions.CanOpenTabs(), "^X J", "put the tabs of live sessions in list order (iTerm needs its Python API on)")
 	add(!m.grouped, "^X G", "group the list by folder")
 	add(m.grouped, "^X G", "stop grouping by folder")
 	add(m.reorgBusy == "", "^X M", "move sessions into topics: Sonnet plans, you accept or drop it")

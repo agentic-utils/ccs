@@ -96,6 +96,7 @@ var Registry = []Info{
 	{"tui.delete", "^X D delete a transcript"},
 	{"tui.new_session", "^X N start a new session"},
 	{"tui.orchestrator", "^X O open the orchestrator"},
+	{"tui.order_tabs", "^X J put terminal tabs in list order"},
 	{"tui.orchestrator_setup", "accept the offer to set up an orchestrator"},
 	{"tui.tree_view", "^X C cycle closed sessions / folded trees"},
 	{"tui.group", "^X G group by folder"},

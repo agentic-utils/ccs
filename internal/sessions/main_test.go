@@ -41,6 +41,10 @@ func TestMain(m *testing.M) {
 	CheckLaunchShell = func() error { return nil }
 	CloseTab = func(string) bool { return false }
 	FocusTTY = func(string, bool) bool { return false }
+	TmuxRun = func(...string) (string, error) { return "", errors.New("tests run no tmux") }
+	ITermAPI = func() (iTermAPI, error) { return nil, errors.New("tests talk to no iTerm") }
+	ITermSessionTTYs = func() (map[string]string, error) { return nil, errors.New("tests ask no iTerm") }
+	ITermCookie = func() (string, string, error) { return "", "", errors.New("tests ask no iTerm") }
 	ExecScript = func(string) error { return errors.New("tests exec nothing") }
 	SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }
 	CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }

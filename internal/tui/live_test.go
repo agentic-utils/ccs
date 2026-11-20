@@ -375,3 +375,60 @@ func TestMovedTranscript(t *testing.T) {
 		t.Error("listed from the newest copy: want not moved")
 	}
 }
+
+// TestOrderTabsChord: ^X J hands OrderTabs the ttys of the live sessions in
+// terminals, in list order; a background session and one in an app have no
+// tab of their own, and an exited one has no tty.
+func TestOrderTabsChord(t *testing.T) {
+	m := initialModel(buildItems([]transcript.Conversation{
+		{SessionID: "new", Title: "Newest", LastTimestamp: "2026-09-29T12:00:00Z"},
+		{SessionID: "bg", Title: "Background", LastTimestamp: "2026-09-29T11:30:00Z"},
+		{SessionID: "app", Title: "In an app", LastTimestamp: "2026-09-29T11:00:00Z"},
+		{SessionID: "gone", Title: "Exited", LastTimestamp: "2026-09-29T10:30:00Z"},
+		{SessionID: "old", Title: "Oldest", LastTimestamp: "2026-09-29T10:00:00Z"},
+	}), "", nil)
+	m.width, m.height = 120, 40
+	m.live = map[string]bool{"new": true, "bg": true, "app": true, "old": true}
+	m.livePIDs = map[string]int{"new": 1, "bg": 2, "app": 3, "old": 5}
+	m.bg = map[string]sessions.BgSession{"bg": {}}
+	m.hosts = map[string]string{"app": "T3 Code"}
+	m.sortList()
+
+	defer func(o func(int) string, f func([]string) (int, error)) { proc.TTYOf, sessions.OrderTabs = o, f }(proc.TTYOf, sessions.OrderTabs)
+	proc.TTYOf = func(pid int) string { return fmt.Sprintf("/dev/ttys%03d", pid) }
+	var got []string
+	sessions.OrderTabs = func(ttys []string) (int, error) { got = ttys; return 2, nil }
+
+	if m2, cmd := chord(m, "j"); cmd != nil || !strings.Contains(m2.errorMsg, "neither") {
+		t.Fatalf("outside tmux and iTerm: %q", m2.errorMsg)
+	}
+	t.Setenv("TMUX", "/tmp/tmux-1/default,1,0")
+	m, cmd := chord(m, "j")
+	if cmd == nil || !m.orderingTabs {
+		t.Fatal("^X J starts ordering")
+	}
+	if m2, cmd2 := chord(m, "j"); cmd2 != nil || !strings.Contains(m2.errorMsg, "Still") {
+		t.Errorf("never twice at once: %q", m2.errorMsg)
+	}
+	var want []string
+	for _, it := range m.filtered {
+		if id := it.conv.SessionID; id == "new" || id == "old" {
+			want = append(want, fmt.Sprintf("/dev/ttys%03d", m.livePIDs[id]))
+		}
+	}
+	res, _ := m.Update(cmd())
+	m = res.(model)
+	if !slices.Equal(got, want) || len(want) != 2 {
+		t.Errorf("ordered %v, want %v", got, want)
+	}
+	if m.orderingTabs || m.errorMsg != "Put 2 tabs in list order" {
+		t.Errorf("result: %q", m.errorMsg)
+	}
+
+	sessions.OrderTabs = func([]string) (int, error) { return 0, errors.New("iTerm's API is off") }
+	m, cmd = chord(m, "j")
+	res, _ = m.Update(cmd())
+	if m = res.(model); !strings.Contains(m.errorMsg, "^X J: iTerm's API is off") {
+		t.Errorf("failure: %q", m.errorMsg)
+	}
+}

@@ -76,13 +76,26 @@ func (m model) foldOwner(i int) (id, name string, ok bool) {
 		if it.depth == 0 {
 			break
 		}
-		j := i - 1 // its parent: the nearest row above it, shallower
-		for j >= 0 && m.filtered[j].depth >= it.depth {
-			j--
-		}
-		i = j
+		i = m.parentRow(i)
 	}
 	return "", "", false
+}
+
+// parentRow is the row of the session the row at i is nested under: the
+// nearest row above it that is shallower. -1 for a top-level row. A nested
+// row's parent is always listed (nestFamilies nests only under a shown
+// session, and a fold or a closed line hides a parent's whole tree with it),
+// so the parent's own row is the one found, never a further ancestor.
+func (m model) parentRow(i int) int {
+	if i < 0 || i >= len(m.filtered) || m.filtered[i].depth == 0 {
+		return -1
+	}
+	d := m.filtered[i].depth
+	j := i - 1
+	for j >= 0 && m.filtered[j].depth >= d {
+		j--
+	}
+	return j
 }
 
 // foldName is how a fold's owner is named in notes and help.

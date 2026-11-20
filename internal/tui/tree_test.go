@@ -529,3 +529,82 @@ func TestCodexSessionNestsUnderItsLauncher(t *testing.T) {
 		t.Errorf("under lead, which launched it before it began (late began after): %v %v", depth, order)
 	}
 }
+
+// escFamily lists grandparent ─ parent ─ child, spawned sessions nested by
+// the parent each names, plus an unrelated top-level session, all running.
+func escFamily(t *testing.T) model {
+	t.Helper()
+	os.Remove(sessions.ParentsPath())
+	now := time.Now().UTC().Format(time.RFC3339)
+	conv := func(id, title, parent string) transcript.Conversation {
+		return transcript.Conversation{SessionID: id, Title: title, ParentID: parent, Spawned: parent != "",
+			LastTimestamp: now, Messages: []transcript.Message{{Role: "user", Text: "work on " + title}}}
+	}
+	m := initialModel(buildItems([]transcript.Conversation{
+		conv("other-id", "other", ""), conv("gp-id", "grandparent", ""),
+		conv("p-id", "parent", "gp-id"), conv("c-id", "child", "p-id"),
+	}), "", nil)
+	m.width, m.height = 120, 30
+	m.live = map[string]bool{"other-id": true, "gp-id": true, "p-id": true, "c-id": true}
+	m.refilter()
+	depth := map[string]int{}
+	for _, it := range m.filtered {
+		depth[it.conv.SessionID] = it.depth
+	}
+	if depth["gp-id"] != 0 || depth["p-id"] != 1 || depth["c-id"] != 2 {
+		t.Fatalf("the family should nest three deep: %v", depth)
+	}
+	return m
+}
+
+// Esc walks up the family a level a press, then does what it always did at
+// the top: clear the search and go back to the top of the list.
+func TestEscWalksUpToTheParentThenTheSearch(t *testing.T) {
+	m := moveTo(t, escFamily(t), "c-id")
+	m.textInput.SetValue("work") // matches all four: the family stays nested
+	m.updateFilter()
+	m = moveTo(t, m, "c-id")
+	m.chatFocus = false // as after a first Esc out of its message box
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+	m, _ = key(m, esc)
+	if selected(m) != "p-id" || m.textInput.Value() != "work" || m.chatFocus {
+		t.Fatalf("Esc on the child selects its parent, keeps the search and stays out of its box: %s, %q, focus %v", selected(m), m.textInput.Value(), m.chatFocus)
+	}
+	m, _ = key(m, esc)
+	if selected(m) != "gp-id" || m.textInput.Value() != "work" {
+		t.Fatalf("Esc again selects the grandparent: %s, %q", selected(m), m.textInput.Value())
+	}
+	m, _ = key(m, esc)
+	if m.textInput.Value() != "" || m.cursor != 0 || m.chatFocus {
+		t.Errorf("at the top Esc clears the search and goes back to the top: %q, cursor %d", m.textInput.Value(), m.cursor)
+	}
+}
+
+// In the message box, the first Esc only leaves the box; the next walks up.
+func TestEscLeavesTheMessageBoxBeforeWalkingUp(t *testing.T) {
+	m := moveTo(t, escFamily(t), "c-id")
+	m.chatFocus = true
+	esc := tea.KeyMsg{Type: tea.KeyEsc}
+	m, _ = key(m, esc)
+	if m.chatFocus || selected(m) != "c-id" {
+		t.Fatalf("the first Esc leaves the box, the child still selected: focus %v, %s", m.chatFocus, selected(m))
+	}
+	m, _ = key(m, esc)
+	if selected(m) != "p-id" {
+		t.Errorf("the next Esc selects the parent: %s", selected(m))
+	}
+}
+
+// A popup that owns the keyboard keeps its own Esc: it closes, and the
+// selection stays where it was.
+func TestEscInAPopupLeavesTheSelection(t *testing.T) {
+	m := moveTo(t, escFamily(t), "c-id")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	if !m.helpOpen {
+		t.Fatal("? on an empty search opens help")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.helpOpen || selected(m) != "c-id" {
+		t.Errorf("Esc closes help and leaves the child selected: open %v, %s", m.helpOpen, selected(m))
+	}
+}

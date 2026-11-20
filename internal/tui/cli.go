@@ -140,7 +140,9 @@ Key bindings:
   ↑/↓, Ctrl+P/N   Move through the list
   PgUp/PgDn       Scroll the conversation (the mouse wheel too)
   Ctrl+] / Ctrl+\  Jump to the next / previous search hit
-  Esc             Clear the search and go back to the top
+  Esc             On a nested session, select the one it's nested under
+                  (each press one level up); at the top, clear the search
+                  and go back to the top
 
  This session
   Enter           Resume it in claude, in a new tab in tmux or iTerm; on one

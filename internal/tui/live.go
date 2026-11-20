@@ -517,6 +517,43 @@ func (m model) hostedApp(id string) string {
 	return m.hosts[id]
 }
 
+// tabPIDs is the pid of each live session in a terminal, in list order as
+// shown (pinned first, put-away last, children after their parent; with a
+// search typed, the matches only), for ^X J. Background sessions and those in
+// an app have no tab of their own to move.
+func (m model) tabPIDs() []int {
+	var pids []int
+	for _, it := range m.filtered {
+		id := it.conv.SessionID
+		pid, ok := m.livePIDs[id]
+		if _, bg := m.bg[id]; ok && !bg && m.hostedApp(id) == "" {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// tabsOrderedMsg is ^X J's result: how many tabs moved, or why it failed.
+type tabsOrderedMsg struct {
+	moved int
+	err   error
+}
+
+// orderTabsCmd puts the tabs of pids' sessions in that order, off the UI
+// goroutine: each pid's tty, then sessions.OrderTabs.
+func orderTabsCmd(pids []int) tea.Cmd {
+	return func() tea.Msg {
+		ttys := make([]string, 0, len(pids))
+		for _, pid := range pids {
+			if tty := proc.TTYOf(pid); tty != "" {
+				ttys = append(ttys, tty)
+			}
+		}
+		moved, err := sessions.OrderTabs(ttys)
+		return tabsOrderedMsg{moved, err}
+	}
+}
+
 // inT3 reports session id live in T3 Code, which Enter opens there.
 func (m model) inT3(id string) bool { return m.live[id] && m.hostedApp(id) == sessions.T3App }
 

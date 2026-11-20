@@ -178,6 +178,9 @@ Key bindings:
  Ctrl+X then a letter: view and tools
   Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder
   Ctrl+X O        Open the orchestrator, setting one up if there is none
+  Ctrl+X J        Put the tabs of live sessions in list order: tmux windows in each
+                  tmux session, iTerm tabs in each window (needs iTerm's Python
+                  API on); other tabs stay put
   Ctrl+X C        Show the closed sessions under the selected session (its parent's
                   when it has none), or hide them again; a click on the line too
   Ctrl+X G        Group the list by folder (again to stop)

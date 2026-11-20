@@ -85,6 +85,7 @@ func TestMain(m *testing.M) {
 	sessions.CheckLaunchShell = func() error { return nil }
 	sessions.CloseTab = func(string) bool { return false }
 	sessions.FocusTTY = func(string, bool) bool { return false }
+	sessions.OrderTabs = func([]string) (int, error) { return 0, errors.New("tests move no tabs") }
 	focusPID = func(int, bool) bool { return false }
 	sessions.ExecScript = func(string) error { return errors.New("tests exec nothing") }
 	sessions.SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }

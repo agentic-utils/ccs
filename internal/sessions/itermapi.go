@@ -87,12 +87,12 @@ func iTermHandshake(c net.Conn, cookie, key string) (*iTermConn, error) {
 		"X-Iterm2-Key":             {key},
 	}
 	if err := req.Write(c); err != nil {
-		return nil, fmt.Errorf("iTerm API: %w", err)
+		return nil, apiErr(err)
 	}
 	r := bufio.NewReader(c)
 	resp, err := http.ReadResponse(r, req)
 	if err != nil {
-		return nil, fmt.Errorf("iTerm API: %w", err)
+		return nil, apiErr(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
@@ -105,6 +105,16 @@ func iTermHandshake(c net.Conn, cookie, key string) (*iTermConn, error) {
 }
 
 func (ic *iTermConn) Close() error { return ic.c.Close() }
+
+// apiErr says what went wrong talking to iTerm without the socket's path,
+// which a *net.OpError would otherwise put in ccs's error row.
+func apiErr(err error) error {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		return fmt.Errorf("iTerm API: %s: %v", op.Op, op.Err)
+	}
+	return fmt.Errorf("iTerm API: %v", err)
+}
 
 // writeFrame sends one masked binary frame, as a websocket client must.
 func (ic *iTermConn) writeFrame(op byte, payload []byte) error {
@@ -197,12 +207,12 @@ func (ic *iTermConn) call(field int, req []byte) ([]byte, error) {
 	msg := pbVarint(nil, 1, uint64(id))
 	msg = pbBytes(msg, field, req)
 	if err := ic.writeFrame(0x2, msg); err != nil {
-		return nil, fmt.Errorf("iTerm API: %w", err)
+		return nil, apiErr(err)
 	}
 	for {
 		b, err := ic.readMessage()
 		if err != nil {
-			return nil, fmt.Errorf("iTerm API: %w", err)
+			return nil, apiErr(err)
 		}
 		var gotID int64
 		var answer []byte
@@ -248,8 +258,8 @@ func (ic *iTermConn) Windows() ([]iTermWindow, error) {
 }
 
 // parseITermWindows reads a ListSessionsResponse: windows (1), each with tabs
-// (1) and window_id (2); a tab has tab_id (2), a split tree root (3) and
-// minimized_sessions (6).
+// (1) and window_id (2); a tab has tab_id (2), a split tree root (3),
+// minimized_sessions (6) and floating_panes (12).
 func parseITermWindows(b []byte) ([]iTermWindow, error) {
 	var wins []iTermWindow
 	var perr error
@@ -272,6 +282,12 @@ func parseITermWindows(b []byte) ([]iTermWindow, error) {
 						t.Sessions = append(t.Sessions, splitTreeSessions(data)...)
 					case 6:
 						t.Sessions = append(t.Sessions, summaryID(data))
+					case 12: // floating_panes: FloatingPane, its session (1)
+						pbEach(data, func(num int, _ uint64, data []byte) {
+							if num == 1 {
+								t.Sessions = append(t.Sessions, summaryID(data))
+							}
+						})
 					}
 				})
 				if err != nil && perr == nil {

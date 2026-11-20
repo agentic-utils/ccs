@@ -126,8 +126,12 @@ func sessionRow(conv transcript.Conversation, l sessions.LiveSession, ok bool, n
 	if l.Stat.Cwd != "" && l.Stat.Cwd != r.Cwd && !transcript.DirExists(r.Cwd) && transcript.DirExists(l.Stat.Cwd) {
 		r.Cwd = l.Stat.Cwd // its recorded folder moved: where the process runs now
 	}
-	if !l.Stat.Since.IsZero() {
-		r.Since = l.Stat.Since.UTC().Format(time.RFC3339)
+	statusAt := l.Stat.Since
+	if l.Stat.Status == "busy" {
+		statusAt = conv.TurnStart(statusAt) // the file's time can be turns old
+	}
+	if !statusAt.IsZero() {
+		r.Since = statusAt.UTC().Format(time.RFC3339)
 	}
 	switch l.Stat.Status {
 	case "waiting":

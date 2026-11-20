@@ -1080,3 +1080,44 @@ func TestPRsFromGhOutput(t *testing.T) {
 		t.Errorf("answered calls are dropped: %v", c.GHCalls)
 	}
 }
+
+// A session file can say busy since yesterday across many turns: Claude Code
+// doesn't always move statusUpdatedAt between them. The turn in progress began
+// with the first user line after the last turn end the transcript records.
+func TestTurnStartAfterAStaleStatusTime(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 40, 0, 0, time.UTC)
+	ts := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339Nano) }
+	stale := now.Add(-20 * time.Hour) // statusUpdatedAt, never rewritten since
+	conv := &Conversation{}
+	line := func(s string, args ...any) { ParseLine(conv, []byte(fmt.Sprintf(s, args...))) }
+	line(`{"type":"user","timestamp":%q,"message":{"role":"user","content":"first"}}`, ts(21*time.Hour))
+	line(`{"type":"system","subtype":"turn_duration","durationMs":5000,"timestamp":%q}`, ts(21*time.Hour-5*time.Second))
+	if got := conv.TurnStart(stale); !got.Equal(stale) {
+		t.Errorf("a turn end before the status time keeps it: %v", got)
+	}
+	// Later turns end with only a stop_hook_summary (turn_duration stopped).
+	line(`{"type":"user","timestamp":%q,"message":{"role":"user","content":"second"}}`, ts(time.Hour))
+	line(`{"type":"system","subtype":"stop_hook_summary","timestamp":%q}`, ts(time.Hour-3*time.Second))
+	if got := conv.TurnStart(stale); !got.Equal(now.Add(-time.Hour + 3*time.Second)) {
+		t.Errorf("no turn begun since the last end: from that end, got %v", got)
+	}
+	line(`{"type":"queue-operation","operation":"enqueue","timestamp":%q}`, ts(90*time.Second+20*time.Millisecond))
+	line(`{"type":"user","timestamp":%q,"message":{"role":"user","content":"third"}}`, ts(90*time.Second))
+	line(`{"type":"user","timestamp":%q,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"ok"}]}}`, ts(30*time.Second))
+	if got := conv.TurnStart(stale); !got.Equal(now.Add(-90 * time.Second)) {
+		t.Errorf("the turn began with its prompt 90s ago, got %v", got)
+	}
+	fresh := now.Add(-10 * time.Second)
+	if got := conv.TurnStart(fresh); !got.Equal(fresh) {
+		t.Errorf("a status time after the last turn end is the turn's start: %v", got)
+	}
+	if got := conv.TurnStart(time.Time{}); !got.IsZero() {
+		t.Errorf("no status time stays none: %v", got)
+	}
+	// A user line written after the end but stamped a little before it.
+	line(`{"type":"system","subtype":"stop_hook_summary","timestamp":%q}`, ts(10*time.Second))
+	line(`{"type":"user","timestamp":%q,"message":{"role":"user","content":"fourth"}}`, ts(11*time.Second))
+	if got := conv.TurnStart(stale); !got.Equal(now.Add(-10 * time.Second)) {
+		t.Errorf("a turn never begins before the end it follows, got %v", got)
+	}
+}

@@ -210,3 +210,21 @@ func TestSessionRowLiveCwd(t *testing.T) {
 		t.Errorf("not live: Cwd = %s, want /gone", r.Cwd)
 	}
 }
+
+// A busy session's since is when the turn in progress began, not a status
+// time its session file kept from a turn the day before.
+func TestSessionRowBusySinceThisTurn(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 40, 0, 0, time.UTC)
+	conv := transcript.Conversation{SessionID: "a"}
+	transcript.ParseLine(&conv, []byte(`{"type":"system","subtype":"stop_hook_summary","timestamp":"`+now.Add(-5*time.Minute).Format(time.RFC3339Nano)+`"}`))
+	transcript.ParseLine(&conv, []byte(`{"type":"user","timestamp":"`+now.Add(-2*time.Minute).Format(time.RFC3339Nano)+`","message":{"role":"user","content":"go"}}`))
+	stale := now.Add(-20 * time.Hour)
+	busy := sessions.LiveSession{PID: 1, Stat: sessions.SessionStat{Status: "busy", Since: stale}}
+	if r := sessionRow(conv, busy, true, now); r.Since != "2026-11-20T12:38:00Z" || r.state(now) != "busy 2m" {
+		t.Errorf("busy: since %s, %q; want this turn's 2m", r.Since, r.state(now))
+	}
+	idle := sessions.LiveSession{PID: 1, Stat: sessions.SessionStat{Status: "idle", Since: stale}}
+	if r := sessionRow(conv, idle, true, now); r.Since != "2026-11-19T16:40:00Z" {
+		t.Errorf("idle keeps the file's time: %s", r.Since)
+	}
+}

@@ -399,9 +399,11 @@ func workingLine(conv transcript.Conversation, st sessions.SessionStat, now time
 	_, colour := transcript.AgentGlyph(conv)
 	frame := spinnerFrames[int(now.UnixMilli()/int64(chatFastRefresh/time.Millisecond))%len(spinnerFrames)]
 	var facts []string
-	if !st.Since.IsZero() { // the status clock starts with the turn; steps don't reset it
-		facts = append(facts, formatTook(now.Sub(st.Since)))
-		if n := conv.OutputSince(st.Since); n > 0 {
+	// The status clock starts with the turn and steps don't reset it, but
+	// Claude Code doesn't always reset it between turns either.
+	if start := conv.TurnStart(st.Since); !start.IsZero() {
+		facts = append(facts, formatTook(now.Sub(start)))
+		if n := conv.OutputSince(start); n > 0 {
 			count := transcript.FormatTokens(int(n))
 			if n >= 1000 && n < 10000 { // the 2.5k Claude Code would say, not 2k
 				count = fmt.Sprintf("%.1fk", float64(n)/1000)

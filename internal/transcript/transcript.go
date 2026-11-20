@@ -96,6 +96,8 @@ type Conversation struct {
 	Launches      []string       // names it started with launch_session or ccs launch, oldest first: evidence for ccs reorg
 	Peers         []PeerRef      // its messages to and from other sessions, to link the two ends
 	outputs       []replyOutput  // each reply's output tokens, for the working line's count this turn
+	turnEnd       time.Time      // the last turn end the transcript records (turn_duration, stop_hook_summary, Codex's task_complete)
+	turnBegan     time.Time      // the first user line after turnEnd: when the next turn began; zero until one
 	Tools         []ToolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
 	Asks          []Ask          // its AskUserQuestion menus and their answers (asks.go), for read_session; not messages either
 	PeerNotes     map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
@@ -555,8 +557,11 @@ func parseLine(conv *Conversation, line []byte) bool {
 	case "pr-link":
 		addPR(conv, raw.PRURL)
 	case "system":
-		if raw.Subtype == "turn_duration" {
+		switch raw.Subtype {
+		case "turn_duration":
 			noteTurnEnd(conv, raw.DurationMs, raw.Timestamp)
+		case "stop_hook_summary": // written at every turn's end when Stop hooks run, turn_duration or not
+			noteTurnEnd(conv, 0, raw.Timestamp)
 		}
 	case "ai-title":
 		if conv.Title == "" {
@@ -584,6 +589,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 			conv.lastCwd = raw.Cwd
 		}
 		trackTools(conv, raw.Message.Content, raw.Timestamp, line)
+		noteTurnBegan(conv, raw.Timestamp)
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
 		text := extractText(raw.Message.Content)
 		// "/model" logs its result as command output; a switch after the last
@@ -796,6 +802,44 @@ func noteTurnEnd(conv *Conversation, ms int64, ts string) {
 	if ms > 0 {
 		conv.Tools = append(conv.Tools, ToolUse{At: len(conv.Messages), Ts: ts, Took: time.Duration(ms) * time.Millisecond})
 	}
+	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil && t.After(conv.turnEnd) {
+		conv.turnEnd, conv.turnBegan = t, time.Time{}
+	}
+}
+
+// noteTurnBegan notes a user line: the first after a turn end begins the
+// next turn. Lines aren't always written in timestamp order, so a turn never
+// begins before the end it follows.
+func noteTurnBegan(conv *Conversation, ts string) {
+	if conv.turnEnd.IsZero() || !conv.turnBegan.IsZero() {
+		return
+	}
+	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+		conv.turnBegan = later(t, conv.turnEnd)
+	}
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+// TurnStart is when the turn a busy session is in began, given since, its
+// session file's statusUpdatedAt. Claude Code doesn't always move that
+// between turns: a session can say busy since yesterday across a dozen
+// turns. So a turn end the transcript records after since wins: the turn
+// began with the first user line after that end or, with none yet, at the
+// end itself. Zero since (a file with no status time) stays zero.
+func (c Conversation) TurnStart(since time.Time) time.Time {
+	if since.IsZero() || !c.turnEnd.After(since) {
+		return since
+	}
+	if !c.turnBegan.IsZero() {
+		return c.turnBegan
+	}
+	return c.turnEnd
 }
 
 // maxToolArg caps a tool call's one-line argument (a command keeps its lines

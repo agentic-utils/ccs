@@ -147,7 +147,7 @@ func TestHeldPaneAnswersAPermission(t *testing.T) {
 	if m.textInput.Value() != "a" || m.heldConfirmed != nil {
 		t.Errorf("after Esc, letters go to the search: %q", m.textInput.Value())
 	}
-	m = keyType(m, tea.KeyBackspace) // the search empty again, still on it
+	m = selectLive(keyType(m, tea.KeyBackspace)) // the search empty again, back on it
 	m = keyType(m, tea.KeyEnter)
 	if !m.heldKeysActive() {
 		t.Fatal("Enter gives it the keys again")

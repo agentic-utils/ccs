@@ -28,8 +28,8 @@ func TestDoneUntilSeen(t *testing.T) {
 	m.blurred = true // not looking yet
 	m.sortList()
 	v := listView(m)
-	if strings.Contains(v, "done") || !strings.Contains(v, "idle 2") || strings.Index(v, "finished while away") > strings.Index(v, "finished before") {
-		t.Errorf("done sessions share idle's section, newest first:\n%s", v)
+	if strings.Contains(v, "done") || strings.Contains(v, "idle 2") || strings.Index(v, "finished while away") > strings.Index(v, "finished before") {
+		t.Errorf("done sessions get no section of their own, newest first:\n%s", v)
 	}
 	if r := m.formatListItem(m.filtered[0], false); !strings.Contains(r, "\033["+doneColour+"mfinished while away") {
 		t.Errorf("done: its title in cyan: %q", r)
@@ -160,7 +160,7 @@ func TestSnoozeAndSettle(t *testing.T) {
 	m.live = map[string]bool{"s": true}
 	m.chatStatus = map[string]sessions.SessionStat{"s": {Status: "waiting"}}
 	m.sortList()
-	if v := strip2(m.View()); strings.Contains(v, "snoozed 1") || !strings.Contains(v, "waiting on you 1") {
+	if v := strip2(m.View()); strings.Contains(v, "snoozed 1") || m.filtered[0].conv.SessionID != "s" {
 		t.Errorf("a question wakes it:\n%s", v)
 	}
 	m.chatStatus = map[string]sessions.SessionStat{"s": {Status: "idle"}}

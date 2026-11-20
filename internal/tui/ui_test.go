@@ -602,7 +602,8 @@ func TestDeleteConversationFullFlow(t *testing.T) {
 		t.Fatalf("initial filtered should be 2, got %d", len(m.filtered))
 	}
 
-	m.deleteIndex = 0
+	// file2 was created after file1, so it started later and sorts first.
+	m.deleteIndex = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == session1 })
 	m.confirmDelete = true
 
 	// Execute deletion (needs pointer receiver)
@@ -1186,7 +1187,6 @@ func TestLiveMarkerColours(t *testing.T) {
 	row := func(status string) string {
 		m.chatStatus = map[string]sessions.SessionStat{"s": {Status: status}}
 		it := m.filtered[0]
-		it.sectioned = false // no section heading to say it, so the circle does
 		return m.formatListItem(it, false)
 	}
 	if r := row("idle"); strings.Contains(r, "●") || !strings.Contains(r, "✻\033[0m s ") {
@@ -1233,10 +1233,10 @@ func TestSidebarAndTable(t *testing.T) {
 	}
 	listTop, _, _ := m.listLayout()
 	sw := m.sidebarWidth()
-	if !strings.Contains(lines[listTop], "closed 40") {
-		t.Errorf("the list opens with its state section's header: %q", lines[listTop])
+	if row := lines[listTop]; !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(lines[listTop], sw+1, m.width), "▾ ") {
+		t.Errorf("the list opens with its newest session, no state heading above it: %q", row)
 	}
-	if row := lines[listTop+1]; !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(lines[listTop], sw+1, m.width), "▾ ") {
+	if row := lines[listTop]; !strings.Contains(ansi.Cut(row, 0, sw), "session 0") || !strings.HasPrefix(ansi.Cut(lines[listTop], sw+1, m.width), "▾ ") {
 		t.Errorf("sidebar row and preview should sit side by side: %q", row)
 	}
 	if ansi.Cut(lines[listTop], sw, sw+1) != "┃" {
@@ -1248,8 +1248,8 @@ func TestSidebarAndTable(t *testing.T) {
 	if last := lines[len(lines)-1]; !strings.HasSuffix(last, "┃") {
 		t.Errorf("the preview opens at the newest message, so its thumb is at the bottom: %q", last)
 	}
-	if !strings.Contains(ansi.Cut(lines[listTop+2], 0, sw), "now · p") {
-		t.Errorf("a session's second row should say when it was active and its project: %q", lines[listTop+2])
+	if !strings.Contains(ansi.Cut(lines[listTop+1], 0, sw), "now · p") {
+		t.Errorf("a session's second row should say when it was active and its project: %q", lines[listTop+1])
 	}
 	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + rowOf(m, 3) + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.cursor != 3 {
@@ -1372,7 +1372,7 @@ func TestGroupByFolder(t *testing.T) {
 		conv("ccs-main", "/c/ccs", "2026-10-23T09:00:00Z"),
 	}), "", nil)
 	m.width, m.height = 120, 30
-	m.live = map[string]bool{"ccs-main": true} // open in claude, so its group goes first
+	m.live = map[string]bool{"ccs-main": true} // open in claude, which doesn't move its group
 	m.livePIDs = map[string]int{"ccs-main": os.Getpid()}
 	m.sortList()
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "api-old" })
@@ -1382,26 +1382,28 @@ func TestGroupByFolder(t *testing.T) {
 	for _, it := range m.filtered {
 		order = append(order, it.conv.SessionID)
 	}
-	// ccs-main is open in claude: its folder in the open half; then the
-	// not-open half, where ccs comes again for its worktree session.
-	if got := strings.Join(order, " "); got != "ccs-main api-new api-old ccs-tree" {
-		t.Errorf("open sessions' folders first, then the rest, worktrees with their repo: %s", got)
+	// Groups by their newest-started session (api-new, then ccs-tree),
+	// newest first within each; being open in claude moves nothing.
+	if got := strings.Join(order, " "); got != "api-new api-old ccs-tree ccs-main" {
+		t.Errorf("folders by their newest session, worktrees with their repo: %s", got)
 	}
 	if m.filtered[m.cursor].conv.SessionID != "api-old" {
 		t.Error("grouping should keep the selection on its session")
 	}
 	listTop, _, _ := m.listLayout()
 	lines := strings.Split(strip2(m.View()), "\n")
-	// State sections first (idle, then not open, after a blank row), folders within each.
-	for at, want := range map[int]string{0: "idle 1", 1: "ccs 1", 5: "closed 3", 6: "api 2", 11: "ccs 1"} {
+	// No state sections: a header per folder, and nothing else.
+	for at, want := range map[int]string{0: "api 2", 5: "ccs 2"} {
 		if !strings.Contains(lines[listTop+at], want) {
-			t.Errorf("row %d should be the header %q:\n%s", at, want, strings.Join(lines[listTop:listTop+14], "\n"))
+			t.Errorf("row %d should be the header %q:\n%s", at, want, strings.Join(lines[listTop:listTop+10], "\n"))
 		}
 	}
-	if gap := ansi.Cut(lines[listTop+4], 0, m.sidebarWidth()); strings.TrimSpace(gap) != "" {
-		t.Errorf("a blank row should part a section from the one above, got %q", gap)
+	for _, l := range lines[listTop : listTop+10] {
+		if strings.Contains(l, "idle") || strings.Contains(l, "closed") {
+			t.Errorf("no state heading: %q", l)
+		}
 	}
-	if folder, title := strings.Index(lines[listTop+1], "ccs"), strings.Index(lines[listTop+2], "ccs-main"); title <= folder {
+	if folder, title := strings.Index(lines[listTop+5], "ccs"), strings.Index(lines[listTop+6], "ccs-tree"); title <= folder {
 		t.Errorf("a session should sit in from its folder's header: header at %d, title at %d", folder, title)
 	}
 	cur := m.cursor
@@ -1409,11 +1411,7 @@ func TestGroupByFolder(t *testing.T) {
 	if m.cursor != cur {
 		t.Error("clicking a group's header selects nothing")
 	}
-	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	if m.cursor != cur {
-		t.Error("clicking the blank row between sections selects nothing")
-	}
-	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 7, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m = m.handleMouse(tea.MouseMsg{X: 5, Y: listTop + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.filtered[m.cursor].conv.SessionID != "api-new" {
 		t.Errorf("clicking the row under a header should select its session, got %s", m.filtered[m.cursor].conv.SessionID)
 	}
@@ -1432,7 +1430,7 @@ func TestGroupByFolder(t *testing.T) {
 	}
 
 	m, _ = chord(m, "g")
-	if m.grouped || m.filtered[0].conv.SessionID != "ccs-main" || m.filtered[1].conv.SessionID != "api-new" {
+	if m.grouped || m.filtered[0].conv.SessionID != "api-new" || m.filtered[1].conv.SessionID != "ccs-tree" {
 		t.Error("^G again should go back to the usual order")
 	}
 	if g := grey("api-old"); !strings.HasSuffix(g, "· api") {
@@ -1519,11 +1517,12 @@ func TestSpawnedSessionsNestUnderTheirParent(t *testing.T) {
 	for _, it := range m.filtered {
 		got = append(got, fmt.Sprintf("%s:%d", it.conv.SessionID, it.depth))
 	}
-	// The child waits on a menu, so its family comes first, parent on top.
-	if strings.Join(got, " ") != "parent:0 child:1 late:0 other:0" {
-		t.Errorf("a spawned session sits under its parent, its family where its most urgent member is: %v", got)
+	// Newest started first; the child waiting on a menu doesn't move its
+	// family, which sits where its newest-started member (the parent) is.
+	if strings.Join(got, " ") != "late:0 parent:0 child:1 other:0" {
+		t.Errorf("a spawned session sits under its parent, its family where its newest member is: %v", got)
 	}
-	if row := strip2(m.sidebarRow(m.filtered[1], false, 40)[0]); !strings.Contains(row, "└ Test of a skill") {
+	if row := strip2(m.sidebarRow(m.filtered[2], false, 40)[0]); !strings.Contains(row, "└ Test of a skill") {
 		t.Errorf("a child is marked └: %q", row)
 	}
 }
@@ -1731,7 +1730,7 @@ func TestScrollingDoesntSort(t *testing.T) {
 		{SessionID: "a", LastTimestamp: "2026-01-02"}, {SessionID: "b", LastTimestamp: "2026-01-01"},
 	}), "", nil)
 	m.width, m.height = 120, 30
-	m.live = map[string]bool{"b": true} // as a tick sets it; the tick's own sort would bring b up
+	m.marks = &sessionMarks{Settled: map[string]string{"a": "2026-01-02"}} // put away: a sort takes it to the bottom
 	for _, msg := range []tea.Msg{tea.KeyMsg{Type: tea.KeyDown}, tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress}} {
 		res, _ := m.Update(msg)
 		if m = res.(model); m.filtered[0].conv.SessionID != "a" {

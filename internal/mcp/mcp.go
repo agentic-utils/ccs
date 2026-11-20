@@ -276,7 +276,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "child_notices",
-		"description": "Turn child-turn notices on or off for an orchestrator (as ccs hook child-notices on|off). With ccs's Stop hook installed (ccs hook install), each time a session you launched or adopted finishes a turn you get an automatic notice from \"ccs hook\": its name, its bucket now (waiting_on_user, waiting_on_external, done or idle), its last message cut to 300 characters and its open PRs, and a child_turn line goes to pr-events.jsonl. Turns started only by an automatic ccs notice, turns that ended with a SendMessage to you, and a repeat in the same bucket within 30 seconds aren't told. On by default.",
+		"description": "Turn child-turn notices on or off for an orchestrator (as ccs hook child-notices on|off). With ccs's Stop hook installed (ccs hook install), each time a session you launched or adopted finishes a turn you get an automatic notice from \"ccs hook\": its name, its bucket now (waiting_on_user, done or idle), its last message cut to 300 characters and its open PRs, and a child_turn line goes to pr-events.jsonl. Turns started only by an automatic ccs notice, turns that sent you a SendMessage, children now waiting_on_external (CI, reviews, tasks, wake-ups), and a repeat in the same bucket within 30 seconds aren't told. On by default.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -167,23 +167,40 @@ func (m model) attention(c transcript.Conversation) int {
 // selection in list order, wrapping round (so the selection itself last);
 // failing that, one the search hides (selectSession clears the search for
 // it). tier is the one it came from; ok is false when no tier has any.
+//
+// The header asks on every frame, so it is one pass that works out each
+// session's attention once (it reads the session's PRs), not a pass per
+// tier over the list and again over every session.
 func (m model) nextWaiting() (id string, tier int, ok bool) {
-	for tier := attentionWaits; tier <= attentionTiers; tier++ {
-		if n := len(m.filtered); n > 0 {
-			cur := min(m.cursor, n-1)
-			for k := 1; k <= n; k++ {
-				if c := m.filtered[(cur+k)%n].conv; m.attention(c) == tier {
-					return c.SessionID, tier, true
-				}
-			}
+	tier = attentionTiers + 1
+	// note keeps the first session met in the most urgent tier so far, and
+	// says when nothing can beat it.
+	note := func(c transcript.Conversation) bool {
+		if a := m.attention(c); a != attentionNone && a < tier {
+			id, tier = c.SessionID, a
 		}
-		for _, it := range m.items {
-			if m.attention(it.conv) == tier {
-				return it.conv.SessionID, tier, true
+		return tier == attentionWaits
+	}
+	shown := make(map[string]bool, len(m.filtered))
+	if n := len(m.filtered); n > 0 {
+		cur := min(m.cursor, n-1)
+		for k := 1; k <= n; k++ {
+			c := m.filtered[(cur+k)%n].conv
+			shown[c.SessionID] = true
+			if note(c) {
+				return id, tier, true
 			}
 		}
 	}
-	return "", attentionNone, false
+	for _, it := range m.items { // hidden by the search: only a more urgent tier
+		if !shown[it.conv.SessionID] && note(it.conv) {
+			break
+		}
+	}
+	if id == "" {
+		return "", attentionNone, false
+	}
+	return id, tier, true
 }
 
 // tabHint is the header's word for where Tab goes next: "needs you" for

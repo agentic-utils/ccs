@@ -67,7 +67,7 @@ func TestSubagentPRs(t *testing.T) {
 	}
 	write(a, ghLines("t3", "gh pr merge 4 --merge", "✓ Merged pull request o/r#4"))
 	github.SubPRCache.Lock()
-	delete(github.SubPRCache.Dirs, sub) // past subagentPRsTTL
+	delete(github.SubPRCache.Dirs, conv.FilePath) // past subagentPRsTTL
 	github.SubPRCache.Unlock()
 	if got := github.PRsOf(conv); !slices.Contains(got, prD) {
 		t.Errorf("a subagent's later output is read too: %v", got)

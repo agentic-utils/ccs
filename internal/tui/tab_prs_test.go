@@ -7,6 +7,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 const (
@@ -119,5 +120,27 @@ func TestTabPRsSkipPutAway(t *testing.T) {
 	m.marks.Snoozed = map[string]time.Time{"menu": time.Now().Add(time.Hour)}
 	if m = tab(m); selected(m) == "menu" || m.attention(m.filtered[m.cursor].conv) != attentionOpenPR {
 		t.Fatalf("menu is snoozed: on %s, want one with an open PR", selected(m))
+	}
+}
+
+// The header asks where Tab goes on every frame: one look at each session's
+// PRs, not one per tier and again over the hidden ones. With nothing needing
+// you that was five passes over the list and five over every session.
+func TestNextWaitingReadsEachSessionOnce(t *testing.T) {
+	m := prTabModel(t)
+	calls := map[string]int{}
+	prsOf = func(c transcript.Conversation) []string { calls[c.SessionID]++; return github.PRsOf(c) }
+	t.Cleanup(func() { prsOf = github.PRsOf })
+	m.prs = map[string]github.PRInfo{} // no open PR anywhere: every tier is empty
+	if _, _, ok := m.nextWaiting(); ok {
+		t.Fatal("nothing needs you and no open PRs: no stop")
+	}
+	for _, it := range m.items {
+		if calls[it.conv.SessionID] > 1 {
+			t.Errorf("%s: PRs read %d times in one look", it.conv.SessionID, calls[it.conv.SessionID])
+		}
+	}
+	if len(calls) == 0 {
+		t.Error("the PR tiers are checked")
 	}
 }

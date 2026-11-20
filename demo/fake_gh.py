@@ -9,6 +9,7 @@ PRS = {  # owner/repo#n: (title, state, mergeStateStatus, reviewDecision, rollup
     "example/payments-api#790": ("Retry webhooks with backoff", "MERGED", "UNKNOWN", "APPROVED", "SUCCESS", None),
     "example/infra#97": ("Lock timeout for migrations", "OPEN", "BLOCKED", "REVIEW_REQUIRED", "PENDING", None),
     "example/web#41": ("Single-column settings on mobile", "OPEN", "BLOCKED", "REVIEW_REQUIRED", "FAILURE", "lint"),
+    "example/web#43": ("Dark mode for the settings page", "OPEN", "CLEAN", "APPROVED", "SUCCESS", None),
 }
 
 def pr(key):

@@ -6,7 +6,7 @@
 
 Launch, watch, search and resume your coding CLI sessions: [Claude Code](https://claude.ai/claude-code) conversations and the Codex sessions beside them.
 
-![Demo: the orchestrator with the sessions it launched as a tree, a session waiting on a question, PRs and their links, searching, help and the usage screen](demo.gif)
+![Demo: an orchestrator with a sub-orchestrator and their workers as a tree, a worker's handover, Tab to a session waiting on a question answered from its menu, PRs and their links, a ! command in the message box, searching and the usage screen](demo.gif)
 
 ## Features
 

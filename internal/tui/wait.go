@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/stats"
@@ -127,23 +128,34 @@ const (
 	attentionWaits  // a question ccs holds, or a menu or prompt in its tab (needsYou)
 	attentionAsked  // idle, its last message asks something (the light magenta ●)
 	attentionUnread // done since you last looked (the cyan ●)
-	attentionTiers  = attentionUnread
+	attentionReady  // a PR ready to merge (the PRS column's ✓)
+	attentionOpenPR // any other open PR: needs you, waiting or draft
+	attentionTiers  = attentionOpenPR
 )
 
 // attention is c's tier for Tab. Done-unread is the cyan ● exactly: a live,
 // idle session (liveGroup 2) whose last message you haven't looked at, and
 // not the one being read now; an exited session shows no circle, so it
-// isn't a stop. A settled or snoozed session is never one.
+// isn't a stop. The PR tiers count PRs as the PRS column does (prCounts:
+// not looked up yet or not found doesn't count; merged and closed aren't
+// open), live or not. A settled or snoozed session is never one.
 func (m model) attention(c transcript.Conversation) int {
 	switch {
 	case m.needsYou(c):
 		return attentionWaits
-	case !m.live[c.SessionID] || m.putAway(c) != awake:
+	case m.putAway(c) != awake:
 		return attentionNone
+	case !m.live[c.SessionID]: // no circle, so only its PRs can make it a stop
 	case m.waitSignal(c) == waitAsked:
 		return attentionAsked
 	case m.liveGroup(c) == 2 && m.unseen(c) && c.SessionID != m.viewing:
 		return attentionUnread
+	}
+	switch n := m.prCounts(c); {
+	case n[github.PRReady] > 0:
+		return attentionReady
+	case n[github.PRFix]+n[github.PRWaiting]+n[prDraft] > 0:
+		return attentionOpenPR
 	}
 	return attentionNone
 }
@@ -154,30 +166,43 @@ func (m model) attention(c transcript.Conversation) int {
 // once every higher one is empty. Within the tier, the first after the
 // selection in list order, wrapping round (so the selection itself last);
 // failing that, one the search hides (selectSession clears the search for
-// it). ok is false when nothing needs the user.
-func (m model) nextWaiting() (id string, ok bool) {
+// it). tier is the one it came from; ok is false when no tier has any.
+func (m model) nextWaiting() (id string, tier int, ok bool) {
 	for tier := attentionWaits; tier <= attentionTiers; tier++ {
 		if n := len(m.filtered); n > 0 {
 			cur := min(m.cursor, n-1)
 			for k := 1; k <= n; k++ {
 				if c := m.filtered[(cur+k)%n].conv; m.attention(c) == tier {
-					return c.SessionID, true
+					return c.SessionID, tier, true
 				}
 			}
 		}
 		for _, it := range m.items {
 			if m.attention(it.conv) == tier {
-				return it.conv.SessionID, true
+				return it.conv.SessionID, tier, true
 			}
 		}
 	}
-	return "", false
+	return "", attentionNone, false
 }
 
-// anyWaiting: something needs the user (any of attention's tiers), so Tab goes to it.
+// tabHint is the header's word for where Tab goes next: "needs you" for
+// the first three tiers, "PRs" once only the PR tiers are left, "" for none.
+func (m model) tabHint() string {
+	switch _, tier, ok := m.nextWaiting(); {
+	case !ok:
+		return ""
+	case tier >= attentionReady:
+		return "PRs"
+	}
+	return "needs you"
+}
+
+// anyWaiting: something needs the user (the first three tiers, not the PR
+// ones), as the header's "needs you" says.
 func (m model) anyWaiting() bool {
-	_, ok := m.nextWaiting()
-	return ok
+	_, tier, ok := m.nextWaiting()
+	return ok && tier < attentionReady
 }
 
 // waitingCount is how many live sessions wait on a menu or prompt, for the

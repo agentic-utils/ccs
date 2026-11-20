@@ -2534,7 +2534,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.stopRun() { // a ! command's box: stop it, or close it
 					return m, nil
 				}
-				m.chatFocus = false // back to the search
+				m.chatFocus = false // out of the box, the session still selected; the next Esc walks up
 				return m, nil
 			case "ctrl+c":
 				if m.run != nil && m.run.running && m.stopRun() {
@@ -2570,8 +2570,19 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch k {
 		case "esc":
-			// Esc clears the search and goes back to the top of the list;
-			// Ctrl+C quits.
+			// Esc on a nested session selects the session it's nested
+			// under, one level a press, the search left as it is. At a
+			// top-level session it clears the search and goes back to the
+			// top of the list; Ctrl+C quits.
+			if p := m.parentRow(m.cursor); p >= 0 {
+				stats.Record("tui.esc_parent", stats.Key)
+				m.cursor, m.previewScroll = p, 0
+				m.selectionMoved()
+				// Typing stays out of a live parent's message box, so
+				// the next Esc walks on up rather than leaving the box.
+				m.chatFocus = false
+				return m, nil
+			}
 			if m.textInput.Value() != "" {
 				m.textInput.SetValue("")
 				m.updateFilter()
@@ -2580,6 +2591,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor, m.previewScroll = 0, 0
 				m.selectionMoved()
 			}
+			m.chatFocus = false // typing goes to the search, even when the top session is live
 			return m, nil
 
 		case "ctrl+c":
@@ -2884,13 +2896,18 @@ func (m model) shortcuts() [][2]string {
 	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
 	add(sel, "pgup/dn", "scroll the conversation (the mouse wheel too)")
 	add(sel && m.textInput.Value() != "" && len(m.hitLines()) > 0, "^] ^\\", "jump to the next / previous search hit")
-	add(!m.chatFocus && m.textInput.Value() != "", keyEsc, "clear the search and go back to the top")
+	switch nested := sel && m.parentRow(m.cursor) >= 0; {
+	case !m.chatFocus && nested:
+		add(true, keyEsc, "select the session this one is nested under (again: its parent, then the search)")
+	case !m.chatFocus && m.textInput.Value() != "":
+		add(true, keyEsc, "clear the search and go back to the top")
+	}
 
 	group("this session")
 	switch {
 	case m.chatFocus:
 		add(true, keyEnter, "send the message; on an empty box, go to its tab")
-		add(true, keyEsc, "leave the message box for the search (a command's output: stop it, or close it)")
+		add(true, keyEsc, "leave the message box, keeping the session selected (a command's output: stop it, or close it)")
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
 		add(true, "!cmd", "run cmd here, in ccs, in the session's folder; its output shows above the box (PgUp/PgDn scroll)")
 		add(m.runSendable(), "^S", "send the finished command's result to the session it ran for: o with its output, e the exit code only")

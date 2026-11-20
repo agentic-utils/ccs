@@ -758,6 +758,81 @@ func TestCloseRefusals(t *testing.T) {
 	}
 }
 
+// A tab CloseTab can't find is fine when nothing runs on its tty any more
+// (claude exec'd in place of the shell, so the terminal closed the tab
+// itself); a shell still there, or a ps that fails, is still an error.
+func TestCloseSessionTabGone(t *testing.T) {
+	write := sessionsFixture(t)
+	oldTTY, oldSig, oldTab, oldWait, oldPs, oldGone, oldSleep := proc.TTYOf, proc.SignalPID, CloseTab, CloseWait, proc.PsAll, TabGoneWait, Sleep
+	t.Cleanup(func() {
+		proc.TTYOf, proc.SignalPID, CloseTab, CloseWait, proc.PsAll, TabGoneWait, Sleep = oldTTY, oldSig, oldTab, oldWait, oldPs, oldGone, oldSleep
+	})
+	proc.TTYOf = func(int) string { return "/dev/ttys026" }
+	CloseWait = 2 * time.Second
+	TabGoneWait = 0
+	Sleep = func(time.Duration) {}
+	// stop starts a session and closes it: a real process that SIGTERM ends.
+	stop := func(tabFound bool, ps func() (string, error)) (string, int, []string, error) {
+		child := exec.Command("sleep", "30")
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		exited := make(chan struct{})
+		go func() { child.Wait(); close(exited) }()
+		t.Cleanup(func() { child.Process.Kill() })
+		pid := child.Process.Pid
+		write(fmt.Sprintf("%d.json", pid), pid, "gone")
+		proc.SignalPID = func(p int, sig syscall.Signal) error {
+			err := syscall.Kill(p, sig)
+			<-exited
+			return err
+		}
+		var asked []string
+		CloseTab = func(tty string) bool { asked = append(asked, tty); return tabFound }
+		proc.PsAll = ps
+		msg, err := CloseSession("gone", pid, fmt.Sprintf("id-gone-%d", pid))
+		return msg, pid, asked, err
+	}
+
+	msg, _, asked, err := stop(false, func() (string, error) { return "  1 ??       /sbin/launchd\n 2 ttys027  -zsh\n", nil })
+	if err != nil || !strings.Contains(msg, "closed gone") || !strings.Contains(msg, "closed itself") || len(asked) != 1 {
+		t.Errorf("tab already gone: %q, %v, asked %v", msg, err, asked)
+	}
+
+	if _, _, _, err := stop(false, func() (string, error) { return " 2 ttys026  -zsh\n", nil }); err == nil || !strings.Contains(err.Error(), "found no tab on /dev/ttys026") {
+		t.Errorf("a shell still on the tty means a tab was missed: %v", err)
+	}
+
+	if _, _, _, err := stop(false, func() (string, error) { return "", errors.New("ps failed") }); err == nil || !strings.Contains(err.Error(), "found no tab") {
+		t.Errorf("a failed ps can't say the tab went: %v", err)
+	}
+
+	msg, pid, asked, err := stop(true, func() (string, error) { return " 2 ttys026  -zsh\n", nil })
+	if err != nil || msg != fmt.Sprintf("closed gone (pid %d, /dev/ttys026)", pid) || len(asked) != 1 || asked[0] != "/dev/ttys026" {
+		t.Errorf("tab still there gets closed: %q, %v, asked %v", msg, err, asked)
+	}
+}
+
+// The login that ran the tab's shell can outlive the session by a moment:
+// TTYEmptied waits for it.
+func TestTTYEmptiedWaitsForTheLogin(t *testing.T) {
+	oldPs, oldGone, oldSleep := proc.PsAll, TabGoneWait, Sleep
+	t.Cleanup(func() { proc.PsAll, TabGoneWait, Sleep = oldPs, oldGone, oldSleep })
+	TabGoneWait = time.Minute
+	Sleep = func(time.Duration) {}
+	calls := 0
+	proc.PsAll = func() (string, error) {
+		calls++
+		if calls < 3 {
+			return " 9 ttys026  /usr/bin/login -fpl me\n", nil
+		}
+		return "", nil
+	}
+	if !TTYEmptied("/dev/ttys026") || calls != 3 {
+		t.Errorf("calls %d", calls)
+	}
+}
+
 func readLog(path string) string {
 	b, _ := os.ReadFile(path)
 	return string(b)

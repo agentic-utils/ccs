@@ -1546,9 +1546,46 @@ func CloseSession(name string, pid int, id string) (string, error) {
 		Sleep(100 * time.Millisecond)
 	}
 	if !CloseTab(tty) {
+		if TTYEmptied(tty) {
+			return fmt.Sprintf("closed %s (pid %d, %s; its tab closed itself)", name, pid, tty), nil
+		}
 		return "", fmt.Errorf("stopped %s (pid %d), but found no tab on %s to close", name, pid, tty)
 	}
 	return fmt.Sprintf("closed %s (pid %d, %s)", name, pid, tty), nil
+}
+
+// TabGoneWait is how long TTYEmptied waits for the last process on a tty
+// (the login that ran the session's shell) to follow the session out.
+var TabGoneWait = 2 * time.Second
+
+// TTYEmptied reports that nothing runs on tty any more, so the tab CloseTab
+// couldn't find went with the session: claude exec'd in place of the tab's
+// shell (a resume opened in a tab), and the terminal closes a tab whose
+// process ended. A shell still there means a tab really was missed; a ps
+// that fails says nothing, so both are false.
+func TTYEmptied(tty string) bool {
+	short := strings.TrimPrefix(tty, "/dev/")
+	deadline := time.Now().Add(TabGoneWait)
+	for {
+		out, err := proc.PsAll()
+		if err != nil {
+			return false
+		}
+		inUse := false
+		for _, line := range strings.Split(out, "\n") {
+			if f := strings.Fields(line); len(f) >= 2 && f[1] == short {
+				inUse = true
+				break
+			}
+		}
+		if !inUse {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		Sleep(100 * time.Millisecond)
+	}
 }
 
 // CloseTab closes the tmux pane or iTerm session on tty.

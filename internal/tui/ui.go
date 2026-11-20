@@ -71,6 +71,8 @@ var selectedStyle = lipgloss.NewStyle().
 
 // model is the bubbletea application state
 type model struct {
+	subagents map[string]transcript.Subagent // the subagent rows' meta, by row id, as of the last live tick (subagents.go)
+
 	items            []listItem
 	filtered         []listItem
 	textInput        textinput.Model
@@ -765,7 +767,7 @@ func (m *model) nestFamilies() {
 		isAlive = func(i, d int) bool {
 			if alive[i] == 0 {
 				alive[i] = 2
-				if c := m.filtered[i].conv; m.live[c.SessionID] || codexSubagentBusy(c) || justClosed(c) {
+				if c := m.filtered[i].conv; m.live[c.SessionID] || codexSubagentBusy(c) || m.subagentAliveRow(c) || justClosed(c) {
 					alive[i] = 1
 				}
 				for _, k := range kids[i] {
@@ -786,7 +788,7 @@ func (m *model) nestFamilies() {
 	}
 	for i := range m.filtered { // a nested session that just closed: shown a while, marked
 		c := m.filtered[i].conv
-		m.filtered[i].cooling = parent[i] >= 0 && !m.live[c.SessionID] && !codexSubagentBusy(c) && justClosed(c)
+		m.filtered[i].cooling = parent[i] >= 0 && !m.live[c.SessionID] && !codexSubagentBusy(c) && !m.subagentAliveRow(c) && justClosed(c)
 	}
 	order := make([]int, 0, n) // the new list, as indexes into m.filtered
 	seen := make([]bool, n)
@@ -988,7 +990,7 @@ var putAwaySections = [...]struct{ name, colour string }{
 // spawnParent is the session whose claude -p started c, "" if none is known.
 // Found once and kept; a miss is retried when the list grows.
 func (m *model) spawnParent(c transcript.Conversation) string {
-	if c.ParentID != "" { // a Codex subagent names its parent thread
+	if c.ParentID != "" { // a Codex subagent names its parent thread, a Claude one's row its session
 		return c.ParentID
 	}
 	if c.Team != "" { // an agent-team teammate: its team's lead
@@ -1544,6 +1546,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.live[id] = true
 			}
 		}
+		if msg.subsKnown && msg.gen == m.gen && !m.prompting() {
+			msg.updated = append(msg.updated, m.applySubagents(msg.subRows, msg.subStats)...)
+		}
 		if len(msg.updated) > 0 && msg.gen == m.gen && !m.prompting() {
 			m.applyLive(msg.updated)
 		}
@@ -1910,6 +1915,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k == "^x s" && len(m.filtered) > 0 && m.marks != nil && !m.prompting() && !m.acctOpen && !m.showUsage {
 			m.helpOpen = false
+			if m.refuseSubagent() {
+				return m, nil
+			}
 			if c := m.filtered[m.cursor].conv; m.putAway(c) != awake {
 				stats.Record("tui.wake", stats.Key)
 				m.wake(c.SessionID)
@@ -2206,6 +2214,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.pin", stats.Key)
 			m.helpOpen = false
+			if m.refuseSubagent() {
+				return m, nil
+			}
 			m.togglePin()
 			return m, nil
 		}
@@ -2640,6 +2651,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, true)
 
 		case "^x d":
+			if m.refuseSubagent() {
+				return m, nil
+			}
 			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindCodex {
 				m.note("A Codex session: ccs leaves Codex's files alone (codex delete removes one)")
 				return m, nil
@@ -2656,6 +2670,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshNow()
 
 		case "^x e":
+			if m.refuseSubagent() {
+				return m, nil
+			}
 			if len(m.filtered) > 0 {
 				conv := m.filtered[m.cursor].conv
 				if conv.Kind == transcript.KindCodex {
@@ -2681,6 +2698,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "^x x":
+			if m.refuseSubagent() {
+				return m, nil
+			}
 			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindCodex {
 				m.note("A Codex session: ccs only prunes Claude's transcripts")
 				return m, nil

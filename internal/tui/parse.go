@@ -117,6 +117,11 @@ func (m *model) applyRefresh(msg refreshMsg) {
 		selectedID = m.filtered[m.cursor].conv.SessionID
 	}
 	prevScroll := m.previewScroll
+	for _, it := range m.items { // subagent rows come from the live tick, not the scan
+		if it.conv.Kind == transcript.KindSubagent {
+			msg.items = append(msg.items, it)
+		}
+	}
 	m.items = msg.items
 	m.lastFilterQuery = "" // force a full rescan, not incremental narrowing
 	m.hits = &hitCounter{byID: make(map[string]int)}

@@ -211,6 +211,9 @@ func (m model) treePrefix(it listItem) string {
 // running.
 func (m model) titleColour(it listItem) string {
 	conv := it.conv
+	if conv.Kind == transcript.KindSubagent {
+		return m.subagentTitleColour(conv)
+	}
 	if !m.live[conv.SessionID] {
 		return "90"
 	}

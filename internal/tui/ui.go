@@ -1055,6 +1055,20 @@ func codexLauncher(items []listItem, i int) int {
 	return best
 }
 
+// itemAt is id's index in m.items, through m.byID, rebuilt when an entry
+// is stale or missing (the list changed).
+func (m *model) itemAt(id string) (int, bool) {
+	if i, ok := m.byID[id]; ok && i < len(m.items) && m.items[i].conv.SessionID == id {
+		return i, true
+	}
+	m.byID = make(map[string]int, len(m.items))
+	for i, it := range m.items {
+		m.byID[it.conv.SessionID] = i
+	}
+	i, ok := m.byID[id]
+	return i, ok
+}
+
 // shownAncestor is id, or when id isn't shown (a headless codex exec whose
 // subagents are listed, say), the nearest session above it that is: its
 // launch parent or the session that spawned it, a few levels up at most.
@@ -1063,19 +1077,8 @@ func (m *model) shownAncestor(id string, at map[string]int, launched map[string]
 	if _, ok := at[id]; ok || id == "" {
 		return id
 	}
-	find := func(id string) (int, bool) {
-		if i, ok := m.byID[id]; ok && i < len(m.items) && m.items[i].conv.SessionID == id {
-			return i, true
-		}
-		m.byID = make(map[string]int, len(m.items)) // stale or missing: the list changed
-		for i, it := range m.items {
-			m.byID[it.conv.SessionID] = i
-		}
-		i, ok := m.byID[id]
-		return i, ok
-	}
 	for range 5 {
-		i, ok := find(id)
+		i, ok := m.itemAt(id)
 		if !ok {
 			return ""
 		}
@@ -1801,10 +1804,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatTickResult:
 		m.chatTickOn = false // rescheduled by Update while its session stays live
-		m.setStat(msg.id, msg.stat)
 		if msg.conv != nil && msg.gen == m.gen && !m.prompting() {
 			m.applyLive([]transcript.Conversation{*msg.conv})
 		}
+		m.setStat(msg.id, msg.stat) // after the transcript, which can say a busy turn ended
 		m.checkDelivered(msg.id)
 		return m, m.heldCmd() // quickly while a wait's held copy is due (heldPending)
 

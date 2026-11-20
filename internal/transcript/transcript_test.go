@@ -1121,3 +1121,46 @@ func TestTurnStartAfterAStaleStatusTime(t *testing.T) {
 		t.Errorf("a turn never begins before the end it follows, got %v", got)
 	}
 }
+
+// A busy status older than the transcript's last turn end, with nothing
+// said since, is a turn that's over. Any user or assistant line, or a
+// queued prompt, written after the end means a turn is running.
+func TestTurnOverAfterAStaleBusy(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 40, 0, 0, time.UTC)
+	ts := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339Nano) }
+	stale := now.Add(-2 * time.Hour)
+	ended := func() *Conversation {
+		conv := &Conversation{}
+		ParseLine(conv, []byte(fmt.Sprintf(`{"type":"user","timestamp":%q,"message":{"role":"user","content":"go"}}`, ts(time.Hour))))
+		ParseLine(conv, []byte(fmt.Sprintf(`{"type":"system","subtype":"stop_hook_summary","timestamp":%q}`, ts(time.Minute))))
+		return conv
+	}
+	conv := ended()
+	if end, over := conv.TurnOver(stale); !over || !end.Equal(now.Add(-time.Minute)) {
+		t.Errorf("ended a minute ago: got %v %v", end, over)
+	}
+	if _, over := conv.TurnOver(now.Add(-time.Second)); over {
+		t.Error("a status time after the end is a turn of its own")
+	}
+	if _, over := conv.TurnOver(time.Time{}); over {
+		t.Error("no status time can't be judged")
+	}
+	for name, l := range map[string]string{
+		"user":      `{"type":"user","timestamp":%q,"message":{"role":"user","content":"next"}}`,
+		"assistant": `{"type":"assistant","timestamp":%q,"message":{"id":"b","role":"assistant","content":[]}}`,
+		"queued":    `{"type":"attachment","timestamp":%q,"attachment":{"type":"queued_command","commandMode":"prompt","prompt":"next"}}`,
+	} {
+		conv := ended()
+		ParseLine(conv, []byte(fmt.Sprintf(l, ts(30*time.Second))))
+		if _, over := conv.TurnOver(stale); over {
+			t.Errorf("a %s line after the end is a running turn", name)
+		}
+	}
+	// A later end settles it again.
+	conv = ended()
+	ParseLine(conv, []byte(fmt.Sprintf(`{"type":"user","timestamp":%q,"message":{"role":"user","content":"next"}}`, ts(30*time.Second))))
+	ParseLine(conv, []byte(fmt.Sprintf(`{"type":"system","subtype":"turn_duration","durationMs":1000,"timestamp":%q}`, ts(10*time.Second))))
+	if _, over := conv.TurnOver(stale); !over {
+		t.Error("the next turn ended too")
+	}
+}

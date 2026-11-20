@@ -228,3 +228,15 @@ func TestSessionRowBusySinceThisTurn(t *testing.T) {
 		t.Errorf("idle keeps the file's time: %s", r.Since)
 	}
 }
+
+// A session file left on busy after its turn ended reads idle since that end.
+func TestSessionRowStaleBusyIsIdle(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 40, 0, 0, time.UTC)
+	conv := transcript.Conversation{SessionID: "a"}
+	transcript.ParseLine(&conv, []byte(`{"type":"user","timestamp":"`+now.Add(-10*time.Minute).Format(time.RFC3339Nano)+`","message":{"role":"user","content":"go"}}`))
+	transcript.ParseLine(&conv, []byte(`{"type":"system","subtype":"stop_hook_summary","timestamp":"`+now.Add(-5*time.Minute).Format(time.RFC3339Nano)+`"}`))
+	busy := sessions.LiveSession{PID: 1, Stat: sessions.SessionStat{Status: "busy", Since: now.Add(-20 * time.Hour)}}
+	if r := sessionRow(conv, busy, true, now); r.Status != "idle" || r.Since != "2026-11-20T12:35:00Z" {
+		t.Errorf("got %s since %s, want idle since the turn's end", r.Status, r.Since)
+	}
+}

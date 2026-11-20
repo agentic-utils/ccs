@@ -119,21 +119,25 @@ func sessionRow(conv transcript.Conversation, l sessions.LiveSession, ok bool, n
 	if !ok {
 		return r
 	}
-	r.Live, r.PID, r.Status, r.WaitingFor = true, l.PID, l.Stat.Status, l.Stat.WaitingFor
+	st := l.Stat
+	if end, over := conv.TurnOver(st.Since); over && st.Status == "busy" && conv.Kind != transcript.KindCodex {
+		st.Status, st.Since = "idle", end // busy left in the file after its turn ended, as the TUI's setStat reads it
+	}
+	r.Live, r.PID, r.Status, r.WaitingFor = true, l.PID, st.Status, st.WaitingFor
 	if l.Stat.Name != "" {
 		r.Name = l.Stat.Name
 	}
 	if l.Stat.Cwd != "" && l.Stat.Cwd != r.Cwd && !transcript.DirExists(r.Cwd) && transcript.DirExists(l.Stat.Cwd) {
 		r.Cwd = l.Stat.Cwd // its recorded folder moved: where the process runs now
 	}
-	statusAt := l.Stat.Since
-	if l.Stat.Status == "busy" {
+	statusAt := st.Since
+	if st.Status == "busy" {
 		statusAt = conv.TurnStart(statusAt) // the file's time can be turns old
 	}
 	if !statusAt.IsZero() {
 		r.Since = statusAt.UTC().Format(time.RFC3339)
 	}
-	switch l.Stat.Status {
+	switch st.Status {
 	case "waiting":
 		r.Question = conv.PendingAsk()
 	case "idle":

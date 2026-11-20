@@ -40,7 +40,7 @@ func treeModel(t *testing.T) model {
 	}
 	convs := []transcript.Conversation{
 		conv("hub", time.Minute), conv("worker", time.Minute), conv("sub", time.Minute), conv("leaf", time.Hour),
-		conv("fresh", time.Minute), conv("ops", 2*time.Minute), conv("deploy", 2*time.Minute), conv("loner", time.Minute),
+		conv("fresh", 90*time.Second), conv("ops", 2*time.Minute), conv("deploy", 2*time.Minute), conv("loner", time.Minute),
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 140, 40

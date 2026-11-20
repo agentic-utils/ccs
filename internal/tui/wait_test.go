@@ -334,22 +334,6 @@ func TestWaitingMultiSelectShownInPreviewPane(t *testing.T) {
 	}
 }
 
-func TestListOrdersWaitingThenIdleThenBusy(t *testing.T) {
-	m := selectLive(waitModel(t))
-	m.applyStats(map[string]sessions.SessionStat{"menu": waiting(time.Now(), "input needed"), "asks": {Status: "idle"}, "live": {Status: "busy"}})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}) // any update re-sorts
-	var got []string
-	for _, it := range m.filtered {
-		got = append(got, it.conv.SessionID)
-	}
-	if len(got) < 4 || strings.Join(got[:3], ",") != "menu,asks,live" || m.live[got[3]] {
-		t.Errorf("waiting, idle, busy, then sessions not open: got %v", got)
-	}
-	if m.filtered[m.cursor].conv.SessionID != "live" {
-		t.Errorf("the cursor stays on its session while rows move: %s", m.filtered[m.cursor].conv.SessionID)
-	}
-}
-
 func TestLongQuestionWrapsInFull(t *testing.T) {
 	long := strings.Repeat("the question goes on ", 12) + "END"
 	desc := strings.Repeat("a long description ", 10) + "TAIL"
@@ -375,24 +359,6 @@ func TestLongQuestionWrapsInFull(t *testing.T) {
 	}
 }
 
-func TestStatusChangeKeepsTheSelectionOnItsSession(t *testing.T) {
-	m := selectLive(waitModel(t))
-	m.applyStats(map[string]sessions.SessionStat{"live": {Status: "idle"}, "asks": {Status: "idle"}})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
-	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
-	row := m.cursor
-	// It goes busy (say Enter resumed it): busy sorts below idle.
-	m.applyStats(map[string]sessions.SessionStat{"live": {Status: "busy"}, "asks": {Status: "idle"}})
-	res, _ := m.Update(struct{}{}) // a tick, not a key
-	m = res.(model)
-	if m.filtered[m.cursor].conv.SessionID != "live" {
-		t.Errorf("the selection should stay on its session, got %s", m.filtered[m.cursor].conv.SessionID)
-	}
-	if m.cursor <= row {
-		t.Errorf("the busy session should have moved below row %d, it's at %d", row, m.cursor)
-	}
-}
-
 func TestQuestionMarkColours(t *testing.T) {
 	conv := transcript.Conversation{SessionID: "s", Messages: []transcript.Message{{Role: "assistant", Text: "Want me to add that?"}}}
 	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
@@ -408,23 +374,6 @@ func TestQuestionMarkColours(t *testing.T) {
 	m.hosts = map[string]string{"s": "Zed"}
 	if _, marks := m.listMarks(listItem{conv: conv}); !strings.Contains(marks, "\033["+waitColour+"m○") {
 		t.Errorf("one in an app keeps its hollow ○ while waiting: %q", marks)
-	}
-}
-
-func TestAskedSortsBetweenWaitingAndIdle(t *testing.T) {
-	mk := func(id, last string) transcript.Conversation {
-		return transcript.Conversation{SessionID: id, LastTimestamp: "2026-10-23T10:00:00Z", Messages: []transcript.Message{{Role: "assistant", Text: last}}}
-	}
-	m := initialModel(buildItems([]transcript.Conversation{mk("busy", "working"), mk("idle", "done."), mk("asked", "Want that?"), mk("menu", "pick one")}), "", nil)
-	m.live = map[string]bool{"busy": true, "idle": true, "asked": true, "menu": true}
-	m.chatStatus = map[string]sessions.SessionStat{"busy": {Status: "busy"}, "idle": {Status: "idle"}, "asked": {Status: "idle"}, "menu": {Status: "waiting"}}
-	m.sortList()
-	var got []string
-	for _, it := range m.filtered {
-		got = append(got, it.conv.SessionID)
-	}
-	if strings.Join(got, ",") != "menu,asked,idle,busy" {
-		t.Errorf("amber ?, green ?, idle, busy: got %v", got)
 	}
 }
 

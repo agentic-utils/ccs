@@ -37,9 +37,9 @@ type listItem struct {
 	rank        int    // matchRank for the current search, 0 without one
 	depth       int    // nested under the session that started it (sortList)
 	familyCwd   string // its top-level session's cwd, which ^X G groups the family by
-	state       int    // its liveGroup as of the last sortList
-	familyState int    // liveGroup of its family's most urgent session: the state section it's listed in
-	sectioned   bool   // familyState is set: listed under a section heading (nestFamilies)
+	state       int    // its putAway as of the last sortList: awake, settled or snoozed
+	started     int64  // when it started (startedAt), Unix nanoseconds, as of the last sortList
+	familyState int    // the section its family is listed in: the least put away of its sessions' states, or a pin or orchestrator place (nestFamilies)
 	kids        int    // sessions launched under it (an orchestrator's tree), any depth
 	guides      string // in an orchestrator's tree: the │ and spaces its ancestors draw before its own connector
 	lastKid     bool   // the last of its parent's children: └, not ├
@@ -594,10 +594,11 @@ func (m *model) hideReorgRuns() {
 	})
 }
 
-// liveGroup is where a session sits in the list: waiting on a menu or
-// prompt, then idle with a question in its last message, then idle (done
-// ones too, marked only by colour, so opening one never moves it), then
-// busy, then closed (not running in claude or codex).
+// liveGroup is a session's state, most urgent first: waiting on a menu or
+// prompt, idle with a question in its last message, idle (done ones too),
+// busy, closed (not running in claude or codex), then put away (settled,
+// snoozed). The list doesn't sort by it (sortList); it only says what state
+// a session is in.
 func (m model) liveGroup(c transcript.Conversation) int {
 	switch {
 	case m.putAway(c) != awake: // the bottom sections: settled, snoozed
@@ -614,9 +615,13 @@ func (m model) liveGroup(c transcript.Conversation) int {
 	return 2
 }
 
-// sortList orders the list by liveGroup, then best search match (named after
-// the query, then the words as a phrase), then newest, keeping the cursor on
-// the same session. Statuses change on ticks, so Update runs it after every
+// sortList orders the list by when each session started, newest first, so
+// rows move only when a new session appears: a session's state, unread
+// messages and PRs never reorder it (the title's colour shows the state, and
+// Tab finds what needs you). Put-away sessions (settled, snoozed) go to the
+// bottom and pinned ones to the top; while searching, the best match (named
+// after the query, then the words as a phrase) comes before started time.
+// It keeps the cursor on the same session. Update runs it after every
 // message but those that only move the selection (movesOnly).
 func (m *model) sortList() {
 	if len(m.filtered) == 0 {
@@ -636,7 +641,8 @@ func (m *model) sortList() {
 		m.foldedAway = nil
 	}
 	for i := range m.filtered { // once each: the comparisons below run n log n times
-		m.filtered[i].state = m.liveGroup(m.filtered[i].conv)
+		it := &m.filtered[i]
+		it.state, it.started = m.putAway(it.conv), startedAt(it.conv)
 	}
 	sortItems(m.filtered, func(a, b *listItem) bool {
 		if a.state != b.state {
@@ -645,13 +651,16 @@ func (m *model) sortList() {
 		if a.rank != b.rank {
 			return a.rank < b.rank
 		}
-		return a.conv.LastTimestamp > b.conv.LastTimestamp
+		if a.started != b.started {
+			return a.started > b.started
+		}
+		return a.conv.SessionID < b.conv.SessionID
 	})
 	m.nestFamilies()
-	// State sections (waiting, asked, idle, busy, not open), a family in its
-	// most urgent session's; with ^X G, folders within each, a group where its
-	// first session lands, so the one holding a question comes first.
-	// Families stay together under their top session's folder.
+	// Sections (orchestrator, pinned, the rest, settled, snoozed), a family in
+	// its least put-away session's; with ^X G, folders within each, a group
+	// where its first session lands, so groups go by their newest-started
+	// session. Families stay together under their top session's folder.
 	first := map[group]int{}
 	if m.grouped {
 		for i := range m.filtered {
@@ -714,8 +723,7 @@ func (m *model) step(dir int) bool {
 
 // nestFamilies puts each shown spawned session right under the shown session
 // that started it (depth 1, its own children depth 2…). A family sits where
-// its first member was in the sorted list, so a child waiting on a question
-// still brings its family up.
+// its first member was in the sorted list: its newest-started session's place.
 func (m *model) nestFamilies() {
 	n := len(m.filtered)
 	at := make(map[string]int, n)
@@ -877,7 +885,7 @@ func (m *model) nestFamilies() {
 			state = orchFamily // above the pins too
 		}
 		for i := start; i < end; i++ {
-			out[i].familyState, out[i].sectioned = state, true
+			out[i].familyState = state
 		}
 		start = end
 	}
@@ -925,7 +933,7 @@ func (m model) familyPin(family []listItem) int {
 }
 
 // groupOf is the ^X G group a session is listed under: its family's folder,
-// within its state section. Pinned families keep their own order, ungrouped.
+// within its section. Pinned families keep their own order, ungrouped.
 func groupOf(it *listItem) group {
 	if it.familyState < 0 {
 		return group{state: it.familyState}
@@ -933,7 +941,7 @@ func groupOf(it *listItem) group {
 	return group{it.familyState, groupKey(it.familyCwd)}
 }
 
-// group identifies a folder within a state section; comparable, so building
+// group identifies a folder within a section; comparable, so building
 // one allocates nothing (sortList compares them n log n times).
 type group struct {
 	state  int
@@ -947,7 +955,7 @@ const (
 	orchestratorSec = -2
 )
 
-// sectionOf is the state section a familyState is listed in: pinned ones
+// sectionOf is the section a familyState is listed in: pinned ones
 // (negative, in pin order) share one, and the orchestrator has its own.
 func sectionOf(state int) int {
 	if state == orchFamily {
@@ -965,15 +973,16 @@ const (
 	askedColour = "38;5;219"
 )
 
-// pinnedSection heads the pinned sessions, above every state.
+// pinnedSection heads the pinned sessions, above the rest.
 var pinnedSection = struct{ name, colour string }{"pinned", "1;37"}
 
 // orchestratorSection heads the orchestrator, above the pinned ones.
 var orchestratorSection = struct{ name, colour string }{orchestratorName, "1;37"}
 
-// stateSections name liveGroup's values, the list's sections, and colour them.
-var stateSections = [...]struct{ name, colour string }{
-	{"waiting on you", "1;" + waitColour}, {"asked you something", askedColour}, {"idle", "32"}, {"busy", amber}, {"closed", "90"}, {"settled", "90"}, {"snoozed", "90"},
+// putAwaySections name putAway's values, the list's sections below the
+// pins, and colour them. Awake sessions have no heading: they're the list.
+var putAwaySections = [...]struct{ name, colour string }{
+	awake: {}, settled: {"settled", "90"}, snoozed: {"snoozed", "90"},
 }
 
 // spawnParent is the session whose claude -p started c, "" if none is known.
@@ -3588,9 +3597,9 @@ type listRow struct {
 	foldName   string
 }
 
-// listRows lays the list out in screen rows: a header before each state
-// section (after a blank row, except the first; none over a lone session
-// named as the section, namesSection), and with ^X G before each folder within it (sortList keeps a
+// listRows lays the list out in screen rows: a header before each section
+// (after a blank row, except the first; none over the awake sessions, the
+// list itself, or a lone session named as the section, namesSection), and with ^X G before each folder within it (sortList keeps a
 // section's and a group's sessions together).
 func (m model) listRows() []listRow {
 	counts := map[group]int{}
@@ -3613,12 +3622,12 @@ func (m model) listRows() []listRow {
 					sec.name += "s"
 				}
 			case s >= 0:
-				sec = stateSections[min(s, len(stateSections)-1)]
+				sec = putAwaySections[min(s, len(putAwaySections)-1)]
 			}
 			if i > 0 { // a blank row parts it from the section above
 				rows = append(rows, listRow{item: -1})
 			}
-			if !namesSection(sec.name, sections[s], it) {
+			if sec.name != "" && !namesSection(sec.name, sections[s], it) {
 				rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
 			}
 		}

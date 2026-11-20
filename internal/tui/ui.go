@@ -2472,13 +2472,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if msg.String() == "tab" {
-			// Tab is only ever for the sessions that need you: the next one
+			// Tab is only ever for the sessions that need you, then those
+			// with a PR ready to merge, then any other open PR: the next one
 			// after the selection, wrapping. On the usage screen it goes back
-			// to the list first. With nothing waiting it says so and does
-			// nothing else; ^X Y is the usage screen.
+			// to the list first. With none it says so and does nothing
+			// else; ^X Y is the usage screen.
 			m.showUsage = false
-			if id, ok := m.nextWaiting(); ok {
-				stats.Record("tui.next_waiting", stats.Key)
+			if id, tier, ok := m.nextWaiting(); ok {
+				if tier >= attentionReady {
+					stats.Record("tui.next_pr", stats.Key)
+				} else {
+					stats.Record("tui.next_waiting", stats.Key)
+				}
 				m.selectSession(id)
 				return m, nil
 			}
@@ -2958,7 +2963,7 @@ func (m model) shortcuts() [][2]string {
 
 	group("ccs")
 	add(true, "^R", "refresh sessions, PRs and allowance now; check for an update")
-	add(true, keyTab, "next session that needs you: questions, then asked, then unread")
+	add(true, keyTab, "needs you (question, asked, unread), then ready PRs, open PRs")
 	add(true, "^L", "what changed in each ccs release")
 	add(true, "?", "this help, from an empty search or message box (after text it's a ?)")
 	add(true, "^C", "quit")
@@ -3191,8 +3196,8 @@ func (m model) viewScreen() string {
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", state.Version, note, status)
 	pairs, keep := []string{"^X Y", "usage", "?", "help", "^C", "quit"}, 2 // the rest are in ? help
-	if m.anyWaiting() {                                                    // Tab is only for the sessions that need you
-		pairs = append([]string{keyTab, "needs you"}, pairs...)
+	if h := m.tabHint(); h != "" {                                         // Tab is only for the sessions that need you, then PRs
+		pairs = append([]string{keyTab, h}, pairs...)
 	}
 	if m.showUsage { // only these keys do anything there
 		pairs, keep = []string{keyEsc, "back", "^X U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help

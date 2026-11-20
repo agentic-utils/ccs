@@ -76,6 +76,7 @@ var Registry = []Info{
 	{"tui.refresh", "^R refresh now"},
 	{"tui.usage_screen", "^X Y: token use and allowance"},
 	{"tui.next_waiting", "Tab while something waits: select the next session waiting on you"},
+	{"tui.next_pr", "Tab with nothing waiting: select the next session with a PR ready to merge, else an open PR"},
 	{"tui.changelog", "^L changelog"},
 	{"tui.help", "? help"},
 	{"tui.pin", "^X P pin or unpin"},

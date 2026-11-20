@@ -18,6 +18,7 @@ Launch, watch, search and resume your coding CLI sessions: [Claude Code](https:/
 - Background tasks and subagents: a session open in `claude` shows `⧗N` for its running background commands and monitors and a pink `◆N` for its running subagents, and the preview lists both with how long each has run
 - Every count in the list has its own glyph, explained at the bottom of `?` help: `⌕N` search hits, and each session's PRs as `✓` ready, `✗` needs you, `◷` waiting (checks running, review required, blocked), `○` draft, `+` merged
 - Auto-refreshes every minute; a green `●` marks conversations open in a running `claude`, and ones started by another session's `claude -p` sit `└` under it
+- Artifacts: the claude.ai pages a session (or its subagents) published, opened or read with Claude Code's Artifact tool show on the preview's `Artifacts:` line (the latest, and how many more), and `Ctrl+O` lists them all by title, after its PRs, to open with Enter
 - Rename conversations (`Ctrl+X E`)
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)

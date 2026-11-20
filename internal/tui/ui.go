@@ -2903,7 +2903,7 @@ func (m model) shortcuts() [][2]string {
 		add(sel, keyEnter, "resume it in claude, in a new tab in tmux or iTerm")
 	}
 	add(sel, "^F", "fork it: a new session with the same history, in a new tab")
-	add(sel && len(m.linksWithPRs()) > 0, "^O", "open a link in view or one of its PRs")
+	add(sel && len(m.linksWithPRs()) > 0, "^O", "open a link in view, one of its PRs or artifacts")
 
 	group("^X then a letter: this session")
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top of the list")

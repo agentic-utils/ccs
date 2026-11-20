@@ -76,31 +76,33 @@ type Conversation struct {
 
 	// Incremental parsing state: bytes consumed up to the last complete line,
 	// and whether a user line was seen (it decides Spawned).
-	ParsedBytes int64
-	sawUser     bool
-	firstCwd    string         // the folder its first user line was in
-	lastCwd     string         // the folder its latest user line was in; Cwd falls back to it when firstCwd is gone (resolveCwd)
-	sdkCLI      bool           // its first user line's entrypoint is sdk-cli (claude -p)
-	firstPrompt string         // the first promptId seen
-	morePrompts bool           // a second promptId: something talked to it after its first prompt
-	CodexExec   bool           // a Codex session started by codex exec
-	PeerQueued  []string       // recent messages from other sessions/ccs the session has queued, for delivery status
-	lastUsageID string         // one reply spans several lines with the same id and usage; count it once
-	TailApplied bool           // an unterminated last line parsed as a record, so resuming at ParsedBytes would repeat it
-	Pending     *toolCall      // the last tool call still without a result: what a waiting session asks about
-	PRs         []string       // its PRs, first touched first: Claude Code's pr-link records, and those gh pr create/merge printed (ghPRCall)
-	GHCalls     []string       // gh pr create/merge calls awaiting their output
-	Spawns      []SpawnCmd     // claude -p commands it ran, to find the sessions they started
-	Launches    []string       // names it started with launch_session or ccs launch, oldest first: evidence for ccs reorg
-	Peers       []PeerRef      // its messages to and from other sessions, to link the two ends
-	outputs     []replyOutput  // each reply's output tokens, for the working line's count this turn
-	Tools       []ToolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
-	Asks        []Ask          // its AskUserQuestion menus and their answers (asks.go), for read_session; not messages either
-	PeerNotes   map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
-	calls       []BgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
-	Tasks       []BgTask       // its background tasks (tasks.go)
-	Schedules   []Schedule     // its ScheduleWakeup and CronCreate wake-ups (schedules.go)
-	schedCalls  []schedCall    // ScheduleWakeup/CronCreate/CronDelete calls awaiting their result
+	ParsedBytes   int64
+	sawUser       bool
+	firstCwd      string         // the folder its first user line was in
+	lastCwd       string         // the folder its latest user line was in; Cwd falls back to it when firstCwd is gone (resolveCwd)
+	sdkCLI        bool           // its first user line's entrypoint is sdk-cli (claude -p)
+	firstPrompt   string         // the first promptId seen
+	morePrompts   bool           // a second promptId: something talked to it after its first prompt
+	CodexExec     bool           // a Codex session started by codex exec
+	PeerQueued    []string       // recent messages from other sessions/ccs the session has queued, for delivery status
+	lastUsageID   string         // one reply spans several lines with the same id and usage; count it once
+	TailApplied   bool           // an unterminated last line parsed as a record, so resuming at ParsedBytes would repeat it
+	Pending       *toolCall      // the last tool call still without a result: what a waiting session asks about
+	PRs           []string       // its PRs, first touched first: Claude Code's pr-link records, and those gh pr create/merge printed (ghPRCall)
+	GHCalls       []string       // gh pr create/merge calls awaiting their output
+	Artifacts     []Artifact     // claude.ai pages it published, opened or read with the Artifact tool, first touched first (artifacts.go)
+	artifactCalls []artifactCall // Artifact calls awaiting their result
+	Spawns        []SpawnCmd     // claude -p commands it ran, to find the sessions they started
+	Launches      []string       // names it started with launch_session or ccs launch, oldest first: evidence for ccs reorg
+	Peers         []PeerRef      // its messages to and from other sessions, to link the two ends
+	outputs       []replyOutput  // each reply's output tokens, for the working line's count this turn
+	Tools         []ToolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
+	Asks          []Ask          // its AskUserQuestion menus and their answers (asks.go), for read_session; not messages either
+	PeerNotes     map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
+	calls         []BgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
+	Tasks         []BgTask       // its background tasks (tasks.go)
+	Schedules     []Schedule     // its ScheduleWakeup and CronCreate wake-ups (schedules.go)
+	schedCalls    []schedCall    // ScheduleWakeup/CronCreate/CronDelete calls awaiting their result
 
 	// ReadAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -702,6 +704,7 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string, line []b
 		if b.Type == "tool_result" {
 			noteResult(conv, b.ToolUseID, b.Content)
 			noteScheduleResult(conv, b.ToolUseID, b.Content, b.IsError, line, ts)
+			noteArtifactResult(conv, b.ToolUseID, b.Content, b.IsError, line, ts)
 			if i := askAwaiting(conv, b.ToolUseID); i >= 0 {
 				noteAskResult(conv, i, b.Content, b.IsError, line, ts)
 			}
@@ -718,6 +721,7 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string, line []b
 			conv.Pending = &call
 			noteCall(conv, call, ts)
 			noteScheduleCall(conv, call)
+			noteArtifactCall(conv, call)
 			if call.Name == "SendMessage" {
 				noteSent(conv, call.Input, ts) // drawn as a "To" message, not a tool call
 			} else {

@@ -619,14 +619,15 @@ func (m model) visibleLinks() []linkItem {
 	return out
 }
 
-// linksWithPRs is what ^O lists: the selected session's PRs, then the other
-// links in view.
+// linksWithPRs is what ^O lists: the sessions it messaged, its PRs, its
+// artifacts, then the other links in view.
 func (m model) linksWithPRs() []linkItem {
 	if len(m.filtered) == 0 {
 		return nil
 	}
 	conv := m.filtered[m.cursor].conv
 	out := append(m.sessionLinks(conv), m.prLinks(conv)...)
+	out = append(out, artifactLinks(conv)...)
 	for _, l := range m.visibleLinks() {
 		if !slices.ContainsFunc(out, func(p linkItem) bool { return p.url == l.url }) {
 			out = append(out, l)
@@ -897,6 +898,7 @@ func (m model) previewHeader(conv transcript.Conversation, query string) []strin
 	rows = append(rows, sessionStats(conv)...)
 	width := m.paneWidth() - len(detailIndent)
 	rows = append(rows, m.prLines(conv, width)...)
+	rows = append(rows, artifactLines(conv, width)...)
 	rows = append(rows, m.taskLines(conv, width)...)
 	rows = append(rows, m.subagentLines(conv, width)...)
 	for _, r := range rows {
@@ -1394,4 +1396,47 @@ func barCell(r, top, size int) string {
 func withBar(line string, w int, cell string) string {
 	line = ansi.Truncate(line, w-1, "")
 	return line + "\033[0m" + strings.Repeat(" ", max(w-1-ansi.StringWidth(line), 0)) + cell
+}
+
+// artifactLines is the preview header's Artifacts line, width wide: how many
+// claude.ai pages the session (or its subagents) published, opened or read,
+// and the latest one as a link; ^O lists them all.
+func artifactLines(conv transcript.Conversation, width int) []string {
+	as := transcript.ArtifactsOf(conv)
+	a, ok := transcript.LatestArtifact(as)
+	if !ok {
+		return nil
+	}
+	line := "\033[1;33mArtifacts:\033[0m " + hyperlink(a.URL, artifactTitle(a))
+	if !a.Published {
+		line += " \033[90m· opened\033[0m"
+	}
+	if more := len(as) - 1; more > 0 {
+		line += fmt.Sprintf(" \033[90m· %d more · ^O all\033[0m", more)
+	}
+	return []string{ansi.Truncate(line, max(width, 20), "…") + "\033[0m"}
+}
+
+// artifactLinks is conv's artifacts for the ^O popup, newest first, each by
+// its title; one it only opened or read says so.
+func artifactLinks(conv transcript.Conversation) []linkItem {
+	as := slices.Clone(transcript.ArtifactsOf(conv))
+	slices.SortStableFunc(as, func(a, b transcript.Artifact) int { return strings.Compare(b.Ts, a.Ts) })
+	var out []linkItem
+	for _, a := range as {
+		text := "◇ " + artifactTitle(a)
+		if !a.Published {
+			text += " \033[90m· opened\033[39m"
+		}
+		out = append(out, linkItem{a.URL, text})
+	}
+	return out
+}
+
+// artifactTitle is how an artifact is named: its title, else its address.
+func artifactTitle(a transcript.Artifact) string {
+	if t := strings.TrimSpace(transcript.CleanText(a.Title)); t != "" {
+		return t
+	}
+	return strings.TrimPrefix(a.URL, "https://")
 }

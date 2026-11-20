@@ -697,3 +697,24 @@ func TestWorkingLineIsOnTheLeftBesideNotes(t *testing.T) {
 		t.Errorf("idle says nothing: %q", got)
 	}
 }
+
+// The working line times the turn in progress, not a status time Claude Code
+// left from a turn the day before.
+func TestWorkingLineIgnoresAStaleStatusTime(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 40, 0, 0, time.UTC)
+	ts := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339Nano) }
+	conv := &transcript.Conversation{}
+	for _, l := range []string{
+		`{"type":"user","timestamp":"` + ts(20*time.Hour) + `","message":{"role":"user","content":"yesterday"}}`,
+		`{"type":"assistant","timestamp":"` + ts(20*time.Hour-time.Second) + `","message":{"id":"a","usage":{"input_tokens":5,"output_tokens":9000},"content":[]}}`,
+		`{"type":"system","subtype":"stop_hook_summary","timestamp":"` + ts(20*time.Hour-2*time.Second) + `"}`,
+		`{"type":"user","timestamp":"` + ts(90*time.Second) + `","message":{"role":"user","content":"now"}}`,
+		`{"type":"assistant","timestamp":"` + ts(30*time.Second) + `","message":{"id":"b","usage":{"input_tokens":5,"output_tokens":1200},"content":[]}}`,
+	} {
+		transcript.ParseLine(conv, []byte(l))
+	}
+	st := sessions.SessionStat{Status: "busy", Since: now.Add(-20 * time.Hour)}
+	if got := strip2(workingLine(*conv, st, now)); !strings.HasSuffix(got, " Working… (1m 30s · ↓ 1.2k tokens)") {
+		t.Errorf("got %q, want this turn's 1m 30s and its tokens only", got)
+	}
+}

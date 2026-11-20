@@ -148,7 +148,7 @@ func (m model) previewLines() []string {
 		return nil // still scrolling through the list: the header alone
 	}
 	conv := m.filtered[m.cursor].conv
-	conv.PeerNotes = m.peerLabels(conv)                                         // the other ends, which other sessions' transcripts show
+	conv.PeerNotes = m.cachedPeerLabels(conv)                                   // the other ends, which other sessions' transcripts show
 	return cachedPreview(m.preview, conv, m.textInput.Value(), m.paneWidth()-1) // the last column is the scrollbar
 }
 

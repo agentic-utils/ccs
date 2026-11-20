@@ -630,6 +630,58 @@ func TestPeerMessagesLinkBothEnds(t *testing.T) {
 	}
 }
 
+// The preview's peer labels walk every session, so scrolling and redrawing
+// must reuse them; they're worked out again only when a session changes.
+func TestPeerLabelsNotRebuiltPerFrameOrScroll(t *testing.T) {
+	a := transcript.Conversation{SessionID: "a", Title: "sender", Cwd: "/p"}
+	lines := []string{`{"type":"user","timestamp":"2026-10-30T10:00:00Z","message":{"role":"user","content":"start"}}`}
+	for i := 0; i < 60; i++ { // enough to scroll
+		lines = append(lines, fmt.Sprintf(`{"type":"assistant","timestamp":"2026-10-30T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"step %d"},{"type":"tool_use","id":"t%d","name":"SendMessage","input":{"to":"uds:/tmp/cc-socks/4242.sock","summary":"note %d","message":"message number %d"}}]}}`, i, i, i, i))
+	}
+	for _, l := range lines {
+		transcript.ParseLine(&a, []byte(l))
+	}
+	transcript.FinishParse(&a)
+	b := transcript.Conversation{SessionID: "b", Title: "recipient", Cwd: "/p", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}
+	m := initialModel(buildItems([]transcript.Conversation{a, b}), "", nil)
+	m.width, m.height = 160, 30
+	m.livePIDs = map[string]int{"b": 4242}
+	m.selectSession("a")
+	if v := strip2(m.View()); !strings.Contains(v, "To recipient · note 59") {
+		t.Fatalf("the label is drawn:\n%s", v)
+	}
+	for i := 0; i < 20; i++ {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyPgUp})
+		m.View()
+		res, _ := m.Update(tea.MouseMsg{X: 100, Y: 20, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+		m = res.(model)
+		m.View()
+	}
+	if m.previewScroll == 0 {
+		t.Fatal("PgUp should have scrolled the preview")
+	}
+	if n := m.peerNotes.builds; n != 1 {
+		t.Errorf("peer labels built %d times over 40 scroll steps and frames, want 1", n)
+	}
+	// A change in another session is seen: renamed, the label follows.
+	for i := range m.items {
+		if m.items[i].conv.SessionID == "b" {
+			m.items[i].conv.Title = "renamed"
+		}
+	}
+	m.previewScroll = 0
+	if v := strip2(m.View()); !strings.Contains(v, "To renamed · note 59") {
+		t.Errorf("a renamed recipient is relabelled:\n%s", v)
+	}
+	if n := m.peerNotes.builds; n != 2 {
+		t.Errorf("built %d times after the rename, want 2", n)
+	}
+	m.livePIDs = nil
+	if v := strip2(m.View()); strings.Contains(v, "To renamed") {
+		t.Errorf("a recipient no longer live isn't named by its socket:\n%s", v)
+	}
+}
+
 func TestSentMessageDoesNotHideAQuestion(t *testing.T) {
 	c := transcript.Conversation{SessionID: "s", Messages: []transcript.Message{{Role: "assistant", Text: "Which one?"}, {Role: "sent", Text: "fyi", To: "x"}}}
 	m := initialModel(buildItems([]transcript.Conversation{c}), "", nil)

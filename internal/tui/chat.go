@@ -829,6 +829,67 @@ func (m model) peerLabels(conv transcript.Conversation) map[int]string {
 	return out
 }
 
+// peerLabelCache memoises peerLabels for the selected conversation. Working
+// them out walks every session's peer messages and copies every listed
+// conversation, and the preview asks on every frame and every scroll step, so
+// it's done again only when something it reads has changed (peerLabelKey).
+type peerLabelCache struct {
+	key    uint64
+	valid  bool
+	notes  map[int]string
+	builds int // how often peerLabels ran, for tests
+}
+
+// cachedPeerLabels is peerLabels through m.peerNotes.
+func (m model) cachedPeerLabels(conv transcript.Conversation) map[int]string {
+	c := m.peerNotes
+	if c == nil || len(conv.Peers) == 0 {
+		return m.peerLabels(conv)
+	}
+	k := m.peerLabelKey(conv)
+	if !c.valid || c.key != k {
+		c.key, c.valid, c.notes = k, true, m.peerLabels(conv)
+		c.builds++
+	}
+	return c.notes
+}
+
+// peerLabelKey hashes what peerLabels reads: conv's peers, and for every
+// listed session (in order, since a name match takes the first) its id, its
+// peers, title and message count (sessionName falls back to its topic), and
+// the name its status gives it, plus the live sessions' pids. It reads the
+// items in place, never copying a conversation.
+func (m model) peerLabelKey(conv transcript.Conversation) uint64 {
+	h := uint64(14695981039346656037)
+	str := func(s string) {
+		for i := 0; i < len(s); i++ {
+			h = (h ^ uint64(s[i])) * 1099511628211
+		}
+		h = (h ^ 0xff) * 1099511628211 // separator
+	}
+	num := func(n int) { h = (h ^ uint64(n)) * 1099511628211 }
+	str(conv.SessionID)
+	num(len(conv.Peers))
+	for i := range m.items {
+		c := &m.items[i].conv
+		str(c.SessionID)
+		str(c.Title)
+		num(len(c.Peers))
+		num(len(c.Messages))
+		str(m.chatStatus[c.SessionID].Name)
+	}
+	var live uint64 // the map's order is random: sum each entry's own hash
+	for id, pid := range m.livePIDs {
+		e := uint64(14695981039346656037)
+		for i := 0; i < len(id); i++ {
+			e = (e ^ uint64(id[i])) * 1099511628211
+		}
+		live += (e ^ uint64(pid)) * 1099511628211
+	}
+	num(int(live))
+	return h
+}
+
 // convByID indexes the listed sessions.
 func (m model) convByID() map[string]transcript.Conversation {
 	out := make(map[string]transcript.Conversation, len(m.items))

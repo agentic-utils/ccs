@@ -124,6 +124,7 @@ type model struct {
 	errorMsg         string                        // Show deletion/prune errors
 	noteMsg          string                        // errorMsg set by note(): information, not an error, so not red
 	preview          *previewCache                 // memoised preview lines for the selected conversation
+	peerNotes        *peerLabelCache               // memoised peerLabels for the selected conversation
 	hits             *hitCounter                   // memoised per-query hit counts, keyed by SessionID
 	lastFilterQuery  string                        // lowercased query the current m.filtered was built from
 	live             map[string]bool               // SessionIDs attached to a running claude process
@@ -507,6 +508,7 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		textInput:   ti,
 		claudeFlags: claudeFlags,
 		preview:     &previewCache{},
+		peerNotes:   &peerLabelCache{},
 		opened:      make(map[string]time.Time),
 		kicked:      make(map[string]bool),
 		hits:        &hitCounter{byID: make(map[string]int)},

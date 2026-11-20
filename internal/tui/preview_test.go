@@ -1207,3 +1207,37 @@ func TestChannelEventDrawnDim(t *testing.T) {
 		t.Errorf("a search hit should unfold it:\n%s", strip2(strings.Join(hit, "\n")))
 	}
 }
+
+func TestArtifactsInHeaderAndLinksPopup(t *testing.T) {
+	m := initialModel(nil, "", nil)
+	older := "https://claude.ai/artifact/Older1"
+	newer := "https://claude.ai/code/artifact/0b5e6c1a-1111-4222-8333-944455556666"
+	conv := transcript.Conversation{SessionID: "s", Cwd: "/p",
+		Artifacts: []transcript.Artifact{
+			{URL: older, Title: "Made-up Plan", Ts: "2026-10-01T09:00:00Z", Published: true},
+			{URL: newer, Title: "Shared Notes", Ts: "2026-10-01T10:00:00Z"},
+		},
+		Messages: []transcript.Message{{Role: "assistant", Text: "hi", Ts: "2026-10-01T10:00:00Z"}}}
+	lines := artifactLines(conv, 100)
+	if len(lines) != 1 || strip2(lines[0]) != "Artifacts: Shared Notes · opened · 1 more · ^O all" {
+		t.Errorf("the latest, whether it was only opened, and how many more: %q", lines)
+	}
+	if !strings.Contains(lines[0], "\033]8;;"+newer) {
+		t.Errorf("the latest is a link: %q", lines[0])
+	}
+	if artifactLines(transcript.Conversation{}, 100) != nil {
+		t.Error("no artifacts, no line")
+	}
+	m.items = []listItem{{conv: conv}}
+	m.filtered = m.items
+	m.width, m.height = 120, 30
+	links := m.linksWithPRs()
+	if len(links) < 2 || links[0].url != newer || links[1].url != older {
+		t.Fatalf("its artifacts newest first, each once: %+v", links)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	v := strip2(m.View())
+	if !strings.Contains(v, "› ◇ Shared Notes · opened") || !strings.Contains(v, "◇ Made-up Plan claude.ai/artifact/Older1") {
+		t.Errorf("^O lists them by title, with their address:\n%s", v)
+	}
+}

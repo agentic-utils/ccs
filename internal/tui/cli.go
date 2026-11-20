@@ -156,7 +156,7 @@ Key bindings:
                   (tmux or iTerm) so Claude Code runs it; only while idle
   !!x //x         Send "!x" or "/x" as an ordinary message
   Ctrl+F          Fork it: a new session with the same history, in a new tab
-  Ctrl+O          Open a link in view or one of its PRs
+  Ctrl+O          Open a link in view, one of its PRs or artifacts
 
  Ctrl+X then a letter: this session
   Ctrl+X P        Pin it to the top of the list (again to unpin)

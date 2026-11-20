@@ -329,3 +329,54 @@ func TestStopHookDeadline(t *testing.T) {
 	close(release)
 	<-finished
 }
+
+func TestChildTurnSkipsSentEarlierAndWaiting(t *testing.T) {
+	path, sent := childTurnFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	at := now.Add(-2 * time.Minute)
+	sendTo := func(to string) map[string]any {
+		return map[string]any{"type": "tool_use", "name": "SendMessage", "input": map[string]any{"to": to, "message": "HANDOVER x"}}
+	}
+
+	// It told the parent earlier in the turn, then went on working: not told.
+	turn(t, path, at, "open the PR", say("Watching CI."), sendTo("boss"), bash("gh pr checks 12"))
+	if _, ok := childTurn(stop(path), now); ok {
+		t.Error("a SendMessage to the parent before the last tool call isn't told")
+	}
+
+	// A message queued mid-turn doesn't end the turn: what it sent before still counts.
+	writeLines(t, path,
+		userLine(at, "open the PR", false),
+		assistantLine(at.Add(10*time.Second), sendTo("boss")),
+		map[string]any{"type": "attachment", "timestamp": at.Add(20 * time.Second).Format(time.RFC3339Nano), "attachment": map[string]any{"type": "queued_command", "prompt": "also bump the version"}},
+		assistantLine(at.Add(30*time.Second), bash("make bump")),
+		assistantLine(at.Add(40*time.Second), say("Bumped.")))
+	if _, ok := childTurn(stop(path), now); ok {
+		t.Error("a SendMessage to the parent before a queued message isn't told")
+	}
+
+	// It told the parent in an earlier turn only: told.
+	writeLines(t, path,
+		userLine(at, "open the PR", false),
+		assistantLine(at.Add(10*time.Second), sendTo("boss")),
+		assistantLine(at.Add(20*time.Second), say("Sent.")),
+		userLine(at.Add(time.Minute), "now fix the docs", false),
+		assistantLine(at.Add(70*time.Second), say("Should I also update the README?")))
+	if _, ok := childTurn(stop(path), now); !ok {
+		t.Error("a SendMessage in an earlier turn doesn't stop this one being told")
+	}
+
+	// Waiting on CI: not told. The same turn with a question in it: told.
+	stubOwned(map[string][]github.PRRow{ownerKey("claude", "k1"): {{PR: "https://github.com/o/r/pull/12", Group: "waiting", Status: "checks running"}}})
+	turn(t, path, at, "push the fix", say("Pushed; waiting on CI."))
+	if _, ok := childTurn(stop(path), now.Add(time.Hour)); ok {
+		t.Error("a child waiting_on_external isn't told")
+	}
+	turn(t, path, at, "push the fix", say("Pushed. Should I also bump the timeout?"))
+	if e, ok := childTurn(stop(path), now.Add(2*time.Hour)); !ok || e.Bucket != BucketWaitingOnUser {
+		t.Errorf("a question still gets through with CI running: %v %+v", ok, e)
+	}
+	if len(*sent) != 2 {
+		t.Errorf("two notices sent in all: %d", len(*sent))
+	}
+}

@@ -143,13 +143,12 @@ func SetChildNotices(parent string, on bool, now time.Time) error {
 }
 
 // turnTail is what the hook reads from the end of the transcript: the
-// prompt that started the last turn, the turn's last tool call, and the
+// prompt that started the last turn, who the turn sent messages to, and the
 // conversation as far as the tail goes.
 type turnTail struct {
-	Prompt   string // the last prompt's text (typed, queued or a cross-session message)
-	LastTool string // the name of the last tool call after it
-	LastTo   string // with SendMessage, its "to"
-	Conv     transcript.Conversation
+	Prompt string   // the last prompt's text (typed, queued or a cross-session message)
+	SentTo []string // the "to" of each SendMessage call after it
+	Conv   transcript.Conversation
 }
 
 // readTurnTail reads the last childTurnTail bytes of path.
@@ -202,11 +201,13 @@ func (t *turnTail) note(line []byte) {
 	if json.Unmarshal(line, &l) != nil || l.IsSide {
 		return
 	}
-	prompt := func(s string) { t.Prompt, t.LastTool, t.LastTo = strings.TrimSpace(s), "", "" }
+	prompt := func(s string) { t.Prompt, t.SentTo = strings.TrimSpace(s), nil }
 	switch l.Type {
 	case "attachment":
 		if l.Attachment.Type == "queued_command" {
-			prompt(l.Attachment.Prompt)
+			// Arrived mid-turn: the same turn goes on, so what it already
+			// sent still counts.
+			t.Prompt = strings.TrimSpace(l.Attachment.Prompt)
 		}
 	case "user":
 		var s string
@@ -241,8 +242,8 @@ func (t *turnTail) note(line []byte) {
 		}
 		json.Unmarshal(l.Message.Content, &blocks)
 		for _, b := range blocks {
-			if b.Type == "tool_use" {
-				t.LastTool, t.LastTo = b.Name, b.Input.To
+			if b.Type == "tool_use" && b.Name == "SendMessage" {
+				t.SentTo = append(t.SentTo, b.Input.To)
 			}
 		}
 	}
@@ -465,13 +466,23 @@ func childTurn(req stopRequest, now time.Time) (ChildTurnEvent, bool) {
 	if autoNotice.MatchString(tail.Prompt) {
 		return ChildTurnEvent{}, false // a notice started it: telling the parent would cascade up the tree
 	}
-	if tail.LastTool == "SendMessage" && ppid != 0 && toParent(tail.LastTo, rec.Parent, parentSocket(ppid)) {
-		return ChildTurnEvent{}, false // it just told the parent itself
+	if ppid != 0 {
+		socket := parentSocket(ppid)
+		for _, to := range tail.SentTo {
+			if toParent(to, rec.Parent, socket) {
+				return ChildTurnEvent{}, false // it told the parent itself during the turn
+			}
+		}
 	}
 	tail.Conv.Title = me.Stat.Name
 	me.Stat.Status, me.Stat.Since = "idle", now // the turn has just ended, whatever the file says yet
 	prs := ownedPRs(now)[ownerKey("claude", req.SessionID)]
 	row := triageOf(tail.Conv, me, prs, now, DefaultStallAfter)
+	if row.Bucket == BucketWaitingOnExternal {
+		// Waiting on CI, a reviewer, its tasks or a wake-up: the parent can do
+		// nothing yet, and ccs watch nudges the child when a check fails.
+		return ChildTurnEvent{}, false
+	}
 	e := ChildTurnEvent{At: now.UTC().Format(time.RFC3339), Event: "child_turn", Session: cmpOr(me.Stat.Name, rec.Child), SessionID: req.SessionID, Parent: rec.Parent, ParentID: cmpOr(pid, rec.ParentID), Bucket: row.Bucket, Reason: row.Reason, Last: row.LastSaid, PRs: row.OpenPRs}
 
 	skip := false

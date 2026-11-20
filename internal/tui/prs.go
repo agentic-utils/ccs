@@ -13,6 +13,10 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
+// prsOf is a session's PRs, its subagents' included (github.PRsOf); tests
+// count it.
+var prsOf = github.PRsOf
+
 // A session's PRs are the ones Claude Code itself links to it: a "pr-link"
 // record each time a gh command in the session touches a PR (create, view,
 // checks, merge...), the same record behind Claude Code's own PR badge.
@@ -51,7 +55,7 @@ func prMark(group int) (string, string) {
 // sessionPRs is conv's PRs, ready first, merged and closed last, otherwise
 // in the order the session first touched them.
 func (m model) sessionPRs(conv transcript.Conversation) []string {
-	urls := slices.Clone(github.PRsOf(conv))
+	urls := slices.Clone(prsOf(conv))
 	slices.SortStableFunc(urls, func(a, b string) int {
 		ga, _ := m.prs[a].Status()
 		gb, _ := m.prs[b].Status()
@@ -73,7 +77,7 @@ func prGroup(p github.PRInfo) int {
 // prCounts is how many of conv's PRs are in each group (prReady…prClosed,
 // then prDraft); one GitHub can't find isn't counted.
 func (m model) prCounts(conv transcript.Conversation) (n [prDraft + 1]int) {
-	for _, u := range github.PRsOf(conv) {
+	for _, u := range prsOf(conv) {
 		if s := m.prs[u].State; s == "" || s == "GONE" { // not looked up yet, or not found
 			continue
 		}
@@ -242,7 +246,7 @@ func (m *model) prCmd() tea.Cmd {
 			if !m.live[it.conv.SessionID] && it.conv.LastTimestamp < cutoff && it.conv.SessionID != selected {
 				continue
 			}
-			for _, u := range github.PRsOf(it.conv) {
+			for _, u := range prsOf(it.conv) {
 				if !seen[u] && !m.prs[u].Final() {
 					seen[u] = true
 					urls = append(urls, u)
@@ -258,7 +262,7 @@ func (m *model) prCmd() tea.Cmd {
 		landed := m.prSelected != conv.SessionID // just selected: its open PRs are refreshed once
 		m.prSelected = conv.SessionID
 		var urls []string
-		for _, u := range github.PRsOf(conv) {
+		for _, u := range prsOf(conv) {
 			p, have := m.prs[u]
 			if ((landed && !p.Final()) || (!have && !m.prSelAsked[u])) && len(urls) < github.PRBatch {
 				urls = append(urls, u)

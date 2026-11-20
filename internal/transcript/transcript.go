@@ -2068,10 +2068,37 @@ const subagentResumed = 5 * time.Second
 // subagentsTTL is how long subagentsOf trusts what it last read.
 const subagentsTTL = 2 * time.Second
 
+// readSubagentMeta reads a subagent's meta.json; tests count it.
+var readSubagentMeta = os.ReadFile
+
 var subagentCache = struct {
 	sync.Mutex
-	m map[string]subagentsRead
-}{m: map[string]subagentsRead{}}
+	m     map[string]subagentsRead
+	metas map[string]subagentMeta // by meta.json path
+}{m: map[string]subagentsRead{}, metas: map[string]subagentMeta{}}
+
+// subagentMeta is what one meta.json said, kept while its modification time
+// (mod) stays the same, and when its transcript began once a line said so
+// (started; zero until then): a session with hundreds of subagents would
+// otherwise reread and parse every one of them, and open each transcript,
+// every subagentsTTL.
+type subagentMeta struct {
+	mod            time.Time
+	name           string
+	finished       bool
+	started        time.Time
+	startedFromLog bool
+}
+
+// subagentStarted is when transcript began (firstTimestamp), from cache
+// once one of its lines gave it.
+func (c *subagentMeta) subagentStarted(transcript string) time.Time {
+	if c.startedFromLog {
+		return c.started
+	}
+	c.started, c.startedFromLog = firstLogged(transcript)
+	return c.started
+}
 
 type subagentsRead struct {
 	at   time.Time
@@ -2090,25 +2117,34 @@ func SubagentsOf(conv Conversation) []Subagent {
 	metas, _ := filepath.Glob(filepath.Join(dir, "agent-*.meta.json"))
 	var subs []Subagent
 	for _, path := range metas {
-		var meta struct {
-			Name, Description string
-			Finished          bool
-		}
-		data, err := os.ReadFile(path)
-		if err != nil || json.Unmarshal(data, &meta) != nil {
+		mi, err := os.Stat(path)
+		if err != nil {
 			continue
 		}
-		s := Subagent{Name: CleanText(meta.Name), Finished: meta.Finished} // meta.json: cleaned as it's read (ingest.go)
-		if s.Name == "" {
-			s.Name = CleanText(meta.Description)
+		c, ok := subagentCache.metas[path]
+		if !ok || !c.mod.Equal(mi.ModTime()) {
+			var meta struct {
+				Name, Description string
+				Finished          bool
+			}
+			data, err := readSubagentMeta(path)
+			if err != nil || json.Unmarshal(data, &meta) != nil {
+				continue
+			}
+			c = subagentMeta{mod: mi.ModTime(), name: CleanText(meta.Name), finished: meta.Finished, started: c.started, startedFromLog: c.startedFromLog} // meta.json: cleaned as it's read (ingest.go)
+			if c.name == "" {
+				c.name = CleanText(meta.Description)
+			}
 		}
+		s := Subagent{Name: c.name, Finished: c.finished}
 		transcript := strings.TrimSuffix(path, ".meta.json") + ".jsonl"
-		s.Started = firstTimestamp(transcript)
+		s.Started = c.subagentStarted(transcript)
+		subagentCache.metas[path] = c
 		if info, err := os.Stat(transcript); err == nil {
 			s.LastWrite = info.ModTime()
 			// Resumed (SendMessage to a finished subagent): Claude Code leaves
 			// finished set, but the transcript goes on past the meta.json write.
-			if mi, err := os.Stat(path); err == nil && s.Finished && s.LastWrite.Sub(mi.ModTime()) > subagentResumed {
+			if s.Finished && s.LastWrite.Sub(mi.ModTime()) > subagentResumed {
 				s.Finished = false
 			}
 		}
@@ -2130,9 +2166,16 @@ func SubagentsOf(conv Conversation) []Subagent {
 // firstTimestamp is when a transcript began: the first of its first lines
 // with a timestamp, else when the file was last written.
 func firstTimestamp(path string) time.Time {
+	t, _ := firstLogged(path)
+	return t
+}
+
+// firstLogged is firstTimestamp, and whether a line gave it (the file's
+// date can still change; a line's can't).
+func firstLogged(path string) (time.Time, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, false
 	}
 	defer f.Close()
 	r := bufio.NewReader(f)
@@ -2140,16 +2183,16 @@ func firstTimestamp(path string) time.Time {
 		line, err := r.ReadBytes('\n')
 		var rec struct{ Timestamp time.Time }
 		if json.Unmarshal(line, &rec) == nil && !rec.Timestamp.IsZero() {
-			return rec.Timestamp
+			return rec.Timestamp, true
 		}
 		if err != nil {
 			break
 		}
 	}
 	if info, err := f.Stat(); err == nil {
-		return info.ModTime()
+		return info.ModTime(), false
 	}
-	return time.Time{}
+	return time.Time{}, false
 }
 
 // CcsNote is the leading note on a message ccs sends for the user (see

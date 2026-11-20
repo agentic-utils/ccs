@@ -216,7 +216,7 @@ type model struct {
 	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
 	autoUpdate        bool   // ^X I: install a new version once you're away (the default)
-	profileStop       func() // ^X R: a CPU profile is being recorded to profilePath; this stops it
+	profileStop       func() // ^X Q: a CPU profile is being recorded to profilePath; this stops it
 	profilePath       string
 	autoFailed        string    // the version an automatic install failed for: offered, not retried
 	autoInstalling    bool      // this install started on its own: the new ccs says so

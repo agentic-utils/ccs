@@ -28,7 +28,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// startProfile records a CPU profile to path (CCS_CPUPROFILE, or ^X R),
+// startProfile records a CPU profile to path (CCS_CPUPROFILE, or ^X Q),
 // for chasing slowness: go tool pprof -top it. Returns the stop.
 func startProfile(path string) (func(), error) {
 	f, err := os.Create(path)

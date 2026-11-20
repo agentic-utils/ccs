@@ -2230,15 +2230,40 @@ func PRsOf(conv transcript.Conversation) []string {
 // subagentPRsTTL is how long subagentPRs trusts what it last read.
 const subagentPRsTTL = 10 * time.Second
 
+// SubPRCache is what subagentPRs last read, by the session's transcript
+// path (the list asks for every session on every frame, so a hit builds no
+// path), and how far each subagent transcript has been read; tests clear it.
 var SubPRCache = struct {
 	sync.Mutex
 	Dirs  map[string]subPRsRead
 	files map[string]*subPRFile
 }{Dirs: map[string]subPRsRead{}, files: map[string]*subPRFile{}}
 
+// subPRsRead is one read of a session's subagents. quiet: none of their
+// transcripts had been written within transcript.SubagentIdle, so past the
+// TTL only a change to the session's own transcript (size) or to its
+// subagents folders (a new subagent or workflow: folders) reads them again.
 type subPRsRead struct {
-	at  time.Time
-	prs []string
+	at      time.Time
+	prs     []string
+	size    int64
+	folders [2]time.Time
+	quiet   bool
+}
+
+// subagentGlob lists a session's subagent transcripts; tests count it.
+var subagentGlob = filepath.Glob
+
+// subagentFolders is the modification time of a session's subagents folder
+// and its workflows folder, zero for one that doesn't exist: each changes
+// when a subagent or workflow starts.
+func subagentFolders(dir string) (mods [2]time.Time) {
+	for i, d := range []string{dir, filepath.Join(dir, "workflows")} {
+		if info, err := os.Stat(d); err == nil {
+			mods[i] = info.ModTime()
+		}
+	}
+	return mods
 }
 
 // subPRFile is how far one subagent transcript has been read: its complete
@@ -2251,44 +2276,75 @@ type subPRFile struct {
 
 // subagentPRs is the PRs conv's subagents opened or merged (ghPRCall),
 // reread at most every subagentPRsTTL and then only what each transcript
-// appended (the list asks on every frame).
+// appended (the list asks on every frame). Once they are all quiet, past the
+// TTL it costs two stats of their folders until something changes: a ccs
+// up for a day lists thousands of sessions whose subagents are long done,
+// and globbing and opening all of them every TTL held a core.
 func subagentPRs(conv transcript.Conversation) []string {
-	dir := filepath.Join(strings.TrimSuffix(conv.FilePath, ".jsonl"), "subagents")
+	if conv.FilePath == "" {
+		return nil
+	}
 	SubPRCache.Lock()
 	defer SubPRCache.Unlock()
-	if r, ok := SubPRCache.Dirs[dir]; ok && time.Since(r.at) < subagentPRsTTL {
+	r, ok := SubPRCache.Dirs[conv.FilePath]
+	if ok && time.Since(r.at) < subagentPRsTTL {
 		return r.prs
 	}
-	paths, _ := filepath.Glob(filepath.Join(dir, "agent-*.jsonl"))
-	more, _ := filepath.Glob(filepath.Join(dir, "workflows", "*", "agent-*.jsonl"))
+	dir := filepath.Join(strings.TrimSuffix(conv.FilePath, ".jsonl"), "subagents")
+	folders := subagentFolders(dir)
+	if ok && r.quiet && r.size == conv.Size && r.folders == folders {
+		r.at = time.Now()
+		SubPRCache.Dirs[conv.FilePath] = r
+		return r.prs
+	}
+	var paths []string
+	if !folders[0].IsZero() {
+		paths, _ = subagentGlob(filepath.Join(dir, "agent-*.jsonl"))
+	}
+	if !folders[1].IsZero() {
+		more, _ := subagentGlob(filepath.Join(dir, "workflows", "*", "agent-*.jsonl"))
+		paths = append(paths, more...)
+	}
 	var prs []string
-	for _, path := range append(paths, more...) {
+	quiet := true
+	for _, path := range paths {
 		f := SubPRCache.files[path]
 		if f == nil {
 			f = &subPRFile{}
 			SubPRCache.files[path] = f
 		}
-		f.read(path)
+		if mod := f.read(path); time.Since(mod) < transcript.SubagentIdle {
+			quiet = false
+		}
 		for _, u := range f.prs {
 			if !slices.Contains(prs, u) {
 				prs = append(prs, u)
 			}
 		}
 	}
-	SubPRCache.Dirs[dir] = subPRsRead{time.Now(), prs}
+	SubPRCache.Dirs[conv.FilePath] = subPRsRead{time.Now(), prs, conv.Size, folders, quiet}
 	return prs
 }
 
 // read takes in what path appended since the last read; a file that shrank
-// is read again from the start.
-func (f *subPRFile) read(path string) {
+// is read again from the start. It returns when path was last written (zero
+// when it can't be read), and opens it only when its size moved.
+func (f *subPRFile) read(path string) (mod time.Time) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	mod = info.ModTime()
+	if info.Size() == f.off {
+		return mod
+	}
 	file, err := os.Open(path)
 	if err != nil {
-		return
+		return mod
 	}
 	defer file.Close()
 	if info, err := file.Stat(); err != nil || info.Size() == f.off {
-		return
+		return mod
 	} else if info.Size() < f.off {
 		*f = subPRFile{}
 	}

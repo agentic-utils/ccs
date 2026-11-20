@@ -84,54 +84,60 @@ func slotOrder(tabs [][]string, rank map[string]int) []int {
 // current one, and its panes' ttys.
 type tmuxWindow struct {
 	id     string
+	index  string
 	active bool
 	ttys   []string
 }
 
 // tmuxPanesFormat is the list-panes format tmuxSessions reads.
-const tmuxPanesFormat = "#{session_id} #{window_id} #{window_active} #{pane_tty}"
+const tmuxPanesFormat = "#{session_id} #{window_id} #{window_index} #{window_active} #{pane_tty}"
+
+// tmuxSession is one tmux session's id and its windows in index order.
+type tmuxSession struct {
+	id   string
+	wins []tmuxWindow
+}
 
 // tmuxSessions groups `tmux list-panes -a -F tmuxPanesFormat` output into each
 // session's windows, in index order (list-panes -a lists them that way). A
 // window linked into two sessions is listed under each.
-func tmuxSessions(panes string) [][]tmuxWindow {
-	var out [][]tmuxWindow
-	sess := ""
+func tmuxSessions(panes string) []tmuxSession {
+	var out []tmuxSession
 	for _, line := range strings.Split(panes, "\n") {
 		f := strings.Fields(line)
-		if len(f) != 4 {
+		if len(f) != 5 {
 			continue
 		}
-		if f[0] != sess || len(out) == 0 {
-			sess = f[0]
-			out = append(out, nil)
+		if len(out) == 0 || out[len(out)-1].id != f[0] {
+			out = append(out, tmuxSession{id: f[0]})
 		}
-		ws := out[len(out)-1]
-		if n := len(ws); n > 0 && ws[n-1].id == f[1] {
-			ws[n-1].ttys = append(ws[n-1].ttys, f[3])
+		s := &out[len(out)-1]
+		if n := len(s.wins); n > 0 && s.wins[n-1].index == f[2] {
+			s.wins[n-1].ttys = append(s.wins[n-1].ttys, f[4])
 		} else {
-			ws = append(ws, tmuxWindow{id: f[1], active: f[2] == "1", ttys: []string{f[3]}})
+			s.wins = append(s.wins, tmuxWindow{id: f[1], index: f[2], active: f[3] == "1", ttys: []string{f[4]}})
 		}
-		out[len(out)-1] = ws
 	}
 	return out
 }
 
-// tmuxSwaps is the swap-window -s/-t pairs that put wins in order (indexes
-// into wins, from slotOrder), one place at a time.
-func tmuxSwaps(wins []tmuxWindow, order []int) [][2]string {
-	cur := make([]string, len(wins))
-	for i, w := range wins {
-		cur[i] = w.id
+// tmuxSwaps is the swap-window -s/-t pairs that put the session's windows in
+// order (indexes into its windows, from slotOrder), one place at a time.
+// Each target is the session and a window index, never a bare @id: a window
+// linked into two sessions could resolve in the other one, and the swap
+// would then move windows between sessions.
+func tmuxSwaps(s tmuxSession, order []int) [][2]string {
+	cur := make([]int, len(s.wins)) // which window sits at each place
+	for i := range cur {
+		cur[i] = i
 	}
 	var swaps [][2]string
 	for i, o := range order {
-		want := wins[o].id
-		if cur[i] == want {
+		if cur[i] == o {
 			continue
 		}
-		j := slices.Index(cur, want)
-		swaps = append(swaps, [2]string{want, cur[i]})
+		j := slices.Index(cur, o)
+		swaps = append(swaps, [2]string{s.id + ":" + s.wins[j].index, s.id + ":" + s.wins[i].index})
 		cur[i], cur[j] = cur[j], cur[i]
 	}
 	return swaps
@@ -149,13 +155,13 @@ func orderTmux(rank map[string]int) (int, error) {
 		return 0, fmt.Errorf("tmux list-panes: %w", err)
 	}
 	moved := 0
-	for _, wins := range tmuxSessions(panes) {
-		tabs := make([][]string, len(wins))
-		active := ""
-		for i, w := range wins {
+	for _, s := range tmuxSessions(panes) {
+		tabs := make([][]string, len(s.wins))
+		active := -1
+		for i, w := range s.wins {
 			tabs[i] = w.ttys
 			if w.active {
-				active = w.id
+				active = i
 			}
 		}
 		order := slotOrder(tabs, rank)
@@ -163,9 +169,10 @@ func orderTmux(rank map[string]int) (int, error) {
 			continue
 		}
 		// -d keeps the current place selected, which now shows another
-		// window, so the window that was current is selected again after.
-		for _, s := range tmuxSwaps(wins, order) {
-			if _, err := TmuxRun("swap-window", "-d", "-s", s[0], "-t", s[1]); err != nil {
+		// window, so the window that was current is selected again after,
+		// at the place it moved to.
+		for _, sw := range tmuxSwaps(s, order) {
+			if _, err := TmuxRun("swap-window", "-d", "-s", sw[0], "-t", sw[1]); err != nil {
 				return moved, fmt.Errorf("tmux swap-window: %w", err)
 			}
 		}
@@ -174,8 +181,8 @@ func orderTmux(rank map[string]int) (int, error) {
 				moved++
 			}
 		}
-		if active != "" {
-			if _, err := TmuxRun("select-window", "-t", active); err != nil {
+		if p := slices.Index(order, active); active >= 0 && p >= 0 {
+			if _, err := TmuxRun("select-window", "-t", s.id+":"+s.wins[p].index); err != nil {
 				return moved, fmt.Errorf("tmux select-window: %w", err)
 			}
 		}
@@ -245,11 +252,15 @@ func orderITerm(rank map[string]int) (int, error) {
 		return 0, err
 	}
 	defer api.Close()
-	wins, err := api.Windows()
+	// The ttys first: a session's tty never changes, but its tab can move to
+	// another window, and ReorderTabs moves any tab it's given into the
+	// window named. So the windows are read last, just before reordering,
+	// and nothing slow (AppleScript) runs between the two.
+	ttyOf, err := ITermSessionTTYs()
 	if err != nil {
 		return 0, err
 	}
-	ttyOf, err := ITermSessionTTYs()
+	wins, err := api.Windows()
 	if err != nil {
 		return 0, err
 	}

@@ -98,6 +98,7 @@ type Conversation struct {
 	outputs       []replyOutput  // each reply's output tokens, for the working line's count this turn
 	turnEnd       time.Time      // the last turn end the transcript records (turn_duration, stop_hook_summary, Codex's task_complete)
 	turnBegan     time.Time      // the first user line after turnEnd: when the next turn began; zero until one
+	turnStirred   bool           // a user or assistant line (or a queued prompt) came after turnEnd, in file order
 	Tools         []ToolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
 	Asks          []Ask          // its AskUserQuestion menus and their answers (asks.go), for read_session; not messages either
 	PeerNotes     map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
@@ -590,6 +591,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 		}
 		trackTools(conv, raw.Message.Content, raw.Timestamp, line)
 		noteTurnBegan(conv, raw.Timestamp)
+		conv.turnStirred = true
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
 		text := extractText(raw.Message.Content)
 		// "/model" logs its result as command output; a switch after the last
@@ -616,6 +618,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 		if json.Unmarshal(raw.Attachment, &a) != nil || a.Type != "queued_command" || a.CommandMode != "prompt" {
 			break
 		}
+		conv.turnStirred = true
 		text := extractText(a.Prompt)
 		if isChannelEvent(text) {
 			conv.Messages = append(conv.Messages, Message{Role: "channel", Text: text, Ts: raw.Timestamp})
@@ -633,6 +636,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 			conv.PeerQueued = append(conv.PeerQueued, text)
 		}
 	case "assistant":
+		conv.turnStirred = true
 		if raw.IsAPIError {
 			conv.LastError = strings.TrimSpace(fmt.Sprintf("%s %s", strconv.Itoa(raw.APIErrorStatus), raw.Error))
 			conv.LastErrorTs = raw.Timestamp
@@ -803,8 +807,21 @@ func noteTurnEnd(conv *Conversation, ms int64, ts string) {
 		conv.Tools = append(conv.Tools, ToolUse{At: len(conv.Messages), Ts: ts, Took: time.Duration(ms) * time.Millisecond})
 	}
 	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil && t.After(conv.turnEnd) {
-		conv.turnEnd, conv.turnBegan = t, time.Time{}
+		conv.turnEnd, conv.turnBegan, conv.turnStirred = t, time.Time{}, false
 	}
+}
+
+// TurnOver: a session whose file says busy since since has in fact finished
+// its turn. Claude Code can leave a session's status on busy after the turn
+// ends, so a turn end the transcript records after since, with no user or
+// assistant line written after it, means idle since that end. A user line
+// after it is a real new turn, even with since still stale. Zero since (a
+// file with no status time) can't be judged and is never over.
+func (c Conversation) TurnOver(since time.Time) (time.Time, bool) {
+	if since.IsZero() || c.turnStirred || !c.turnEnd.After(since) {
+		return time.Time{}, false
+	}
+	return c.turnEnd, true
 }
 
 // noteTurnBegan notes a user line: the first after a turn end begins the

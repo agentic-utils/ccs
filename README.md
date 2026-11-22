@@ -4,13 +4,21 @@
 [![Release](https://img.shields.io/github/v/release/agentic-utils/ccs)](https://github.com/agentic-utils/ccs/releases/latest)
 [![License](https://img.shields.io/github/license/agentic-utils/ccs)](LICENSE)
 
-Launch, watch, search and resume your coding CLI sessions: [Claude Code](https://claude.ai/claude-code) conversations and the Codex sessions beside them.
+Launch, watch, search and resume your coding CLI sessions across [Claude Code](https://claude.ai/claude-code), [Codex](https://github.com/openai/codex), and [Antigravity CLI (`agy`)](https://antigravity.google).
 
 ![Demo: an orchestrator with a sub-orchestrator and their workers as a tree, a worker's handover, Tab to a session waiting on a question answered from its menu, PRs and their links, a ! command in the message box, searching and the usage screen](demo.gif)
 
+## Supported CLIs
+
+| CLI | Glyph | Data location | Resume | Launch | Messaging / Nudges | PR claims |
+|-----|-------|---------------|--------|--------|--------------------|-----------|
+| **Claude Code** (`claude`) | `✻` (orange) | `~/.claude/projects` & `~/.claude/sessions` | `claude --resume <id>` (and `Ctrl+F` fork) | `ccs launch` | Message socket (fallback: terminal typing) | Process ancestry |
+| **Codex** (`codex`) | `⬡` (grey) | `$CODEX_HOME/sessions` (default `~/.codex`) | `codex resume <id>` (and `Ctrl+F` fork) | `ccs launch --codex` | `codex queue --thread` | `CODEX_THREAD_ID` |
+| **Antigravity CLI** (`agy`) | `✦` (blue) | `$ANTIGRAVITY_APP_DATA_DIR` (default `~/.gemini/antigravity-cli`) | `agy --conversation <id>` | `ccs launch --agy` | Terminal typing (iTerm / tmux) | `ANTIGRAVITY_CONVERSATION_ID` |
+
 ## Features
 
-- Search through all your Claude Code conversations, and your Codex sessions beside them (each row starts with its agent: an orange `✻` for Claude, `⬡` for Codex; a Codex row's grey line starts `codex`, so searching `codex` finds them all)
+- Search through all your Claude Code, Codex, and agy conversations side by side (each row starts with its agent: an orange `✻` for Claude, `⬡` for Codex, a blue `✦` for agy; Codex and agy rows start their grey line with `codex` or `agy`, so searching `codex` or `agy` finds them all)
 - See session names (your custom titles or Claude's auto-generated ones) in the list
 - Preview conversation context with search term highlighting
 - See context size (tokens as of the last reply), message counts, hit counts, and file size per conversation
@@ -23,6 +31,7 @@ Launch, watch, search and resume your coding CLI sessions: [Claude Code](https:/
 - Delete conversations with confirmation prompt
 - Prune bloated conversations losslessly (`ccs prune`)
 - Codex sessions: read from `$CODEX_HOME/sessions` (default `~/.codex`), with their model and context, PRs their `gh pr create`/`merge` printed, and its name coloured by its state (plain idle, amber busy) while a `codex` tab has the thread open. Enter switches to that tab, else opens `codex resume <id>` in a new tab with `ccs launch --codex`'s sandbox (network on, your approval mode); `Ctrl+F` runs `codex fork <id>`; the message box sends with `codex queue`. A headless `codex exec` run sits `└` under the Claude session that ran it (when its prompt is on the command line), and a Codex subagent under its parent thread. ccs never renames, deletes or prunes a Codex session's files Their preview shows tokens and an estimated cost at OpenAI's published per-token prices (requests over the long-context threshold at its rate; a model ccs has no price for shows tokens only).
+- Antigravity CLI (`agy`) sessions: read from `$ANTIGRAVITY_APP_DATA_DIR` (default `~/.gemini/antigravity-cli`), with their title, workspace, model, 1M context, token usage, PRs their `gh pr create`/`merge` printed, subagent nesting, and live status (idle, busy, waiting) detected from presence locks and running `agy` tabs. Enter switches to that tab, else opens `agy --conversation <id>` in a new tab; the message box and `ccs watch` nudges type into its terminal; `ccs launch --agy`, `ccs close`, `ccs claim` (via `ANTIGRAVITY_CONVERSATION_ID`), `ccs prs --agy-session-id`, and `ccs mcp` all support agy sessions. ccs never forks, renames, deletes or prunes an agy session's files.
 - An orchestrator session at the top of the list that starts one named session per task, tracks their PRs and merge order, and closes them when they finish (`ccs orchestrator`, or `Ctrl+X O` in the list); every session that launches others is drawn as a tree of them, its closed sessions hidden behind one line until `Ctrl+X C` shows them
 - Start, close and restart named sessions in iTerm tabs or tmux windows (`ccs launch`, `ccs close`, `ccs restart`, or `Ctrl+X N` / `Ctrl+X K` / `Ctrl+X R` in the list)
 - Hand a session over to its parent and close it (`ccs close --handover <name>`, or `Ctrl+X W`): it's asked to send its parent what it finished, its leftover work and what it created, then it's closed once it goes idle, its PR claims and child sessions move to the parent, and the parent gets an automatic notice saying whether the handover arrived. Refused when it has no running parent
@@ -51,6 +60,7 @@ Claude starts it when needed (no ccs window has to be open, no network port). It
 ccs launch --name fix-login --brief brief.md --cwd ~/code/app   # claude, the brief as its first prompt
 ccs launch --name fix-login --resume <session-id>               # resume one under a name (refused, with no tab opened, when there's no such session)
 ccs launch --name tests --brief brief.md --codex                # codex instead
+ccs launch --name tests --brief brief.md --agy                  # agy instead
 ccs close fix-login
 ccs sessions                                                    # what each running session is doing
 ccs sessions --json                                             # the same, for scripts and other sessions
@@ -439,10 +449,11 @@ ccs prs --json           # the same, for scripts
 ccs prs --statusline     # e.g. "PRs 3 ready · 1 need you · 2 unowned", from saved state only
 ccs prs --claude-session-id <id> --statusline   # one session's PRs: "PRs ✓1 ✗1 2" (ready, need you, waiting)
 ccs prs --codex-session-id <thread id> --json   # a Codex session's
+ccs prs --agy-session-id <conv id> --json       # an agy session's
 ccs prs --merged         # what merged in the last week, and which session merged it (--json too)
 ```
 
-`--claude-session-id` keeps only the PRs a Claude Code session claims (its id is the `session_id` in Claude Code's status line input), and `--codex-session-id` a Codex session's (its thread id); each matches only claims of its own kind, by id, not name, so a `/rename` or two sessions with one name can't confuse it. `--json` gives each PR's `owners` (names) and `owners_detail` (`name`, `kind` claude or codex, `session` id), and `opened_by` and `origin` as the `new` event has them.
+`--claude-session-id` keeps only the PRs a Claude Code session claims (its id is the `session_id` in Claude Code's status line input), `--codex-session-id` a Codex session's (its thread id), and `--agy-session-id` an agy session's (its conversation id); each matches only claims of its own kind, by id, not name, so a `/rename` or two sessions with one name can't confuse it. `--json` gives each PR's `owners` (names) and `owners_detail` (`name`, `kind` claude, codex or agy, `session` id), and `opened_by` and `origin` as the `new` event has them.
 
 `ccs prs --merged` answers "who merged that?": each PR `ccs watch` saw merge in the last week, with `merged by <session>`, `auto-merge, turned on by <session>` or `not merged by a local session`.
 
@@ -460,7 +471,7 @@ Recording costs almost nothing: a use is added to an in-memory buffer, and the b
 
 ## How it works
 
-ccs reads conversation history from `~/.claude/projects/` and presents them in an interactive TUI. Live sessions come from `~/.claude/sessions/<pid>.json`, counted only while that pid is still running. When you select a conversation, it changes to the original project directory and runs `claude --resume <session-id>`.
+ccs reads conversation history from `~/.claude/projects/` (Claude Code), `$CODEX_HOME/sessions/` (Codex), and `$ANTIGRAVITY_APP_DATA_DIR/brain/` (Antigravity CLI `agy`), presenting them together in an interactive TUI. Live sessions come from `~/.claude/sessions/<pid>.json` for Claude Code, running `codex` TUI processes for Codex, and `presence/*.lock` / running `agy` TUI processes for agy. When you select a conversation, it focuses the running tab or changes to the project directory and resumes it with the matching CLI.
 
 ## License
 

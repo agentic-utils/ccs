@@ -1363,6 +1363,9 @@ func callingSession() (PRClaim, error) {
 	if c, ok := codexSession(); ok {
 		return c, nil
 	}
+	if c, ok := agySession(); ok {
+		return c, nil
+	}
 	live := LiveByPID()
 	pid := os.Getppid()
 	for range 30 {
@@ -1374,19 +1377,21 @@ func callingSession() (PRClaim, error) {
 		}
 		pid = ParentPID(pid)
 	}
-	return PRClaim{}, errors.New("not run from a Claude Code or Codex session: ccs claim must be run by the session that owns the PR")
+	return PRClaim{}, errors.New("not run from a Claude Code, Codex or agy session: ccs claim must be run by the session that owns the PR")
 }
 
 // LiveNamed is the running sessions called name: Claude Code ones as
-// LiveByPID has them, and Codex ones as claims keyed by thread. Stubbed in
-// tests.
+// LiveByPID has them, Codex ones as claims keyed by thread, and agy ones by
+// conversation id. Stubbed in tests.
 var LiveNamed = func(name string) []PRClaim {
 	var out []PRClaim
 	for id, s := range sessions.ScanSessions(nil) {
 		switch {
 		case s.Codex && codexName(id) == name: // CodexStat carries no name
 			out = append(out, PRClaim{Session: id, Kind: "codex", Thread: id, Name: name})
-		case !s.Codex && s.Stat.Name == name:
+		case s.Agy && sessions.AgyName(id) == name:
+			out = append(out, PRClaim{Session: id, Kind: transcript.KindAgy, Name: name})
+		case !s.Codex && !s.Agy && s.Stat.Name == name:
 			out = append(out, PRClaim{Session: id, Name: name, PID: s.PID, ProcStart: s.Start})
 		}
 	}
@@ -1405,11 +1410,14 @@ func namedSession(name string) (PRClaim, error) {
 	return PRClaim{}, fmt.Errorf("%d running sessions are named %s: claim from the one that owns it", len(found), name)
 }
 
-// claimLive: the claim's session still runs in the same process (a Codex
-// session: codexLive).
+// claimLive: the claim's session still runs in the same process (Codex:
+// CodexLive; agy: AgyLive).
 func claimLive(c PRClaim, live map[int]PRClaim) bool {
-	if c.Kind == "codex" {
+	if c.Kind == transcript.KindCodex {
 		return sessions.CodexLive(c.Thread)
+	}
+	if c.Kind == transcript.KindAgy {
+		return sessions.AgyLive(c.Session)
 	}
 	s, ok := live[c.PID]
 	return ok && s.Session == c.Session && s.ProcStart == c.ProcStart
@@ -1418,7 +1426,7 @@ func claimLive(c PRClaim, live map[int]PRClaim) bool {
 // ownerName is the name c's session goes by now: a /rename after the claim
 // changes the session file's name, never the claim's session or pid.
 func ownerName(c PRClaim, live map[int]PRClaim) string {
-	if s, ok := live[c.PID]; ok && c.Kind != "codex" && s.Session == c.Session && s.Name != "" {
+	if s, ok := live[c.PID]; ok && c.Kind != transcript.KindCodex && c.Kind != transcript.KindAgy && s.Session == c.Session && s.Name != "" {
 		return s.Name
 	}
 	return c.Name
@@ -1603,14 +1611,18 @@ type PROwner struct {
 	Session string `json:"session"`
 }
 
-// OwnerOf is c as a prOwner: a Codex claim's id is its thread.
+// OwnerOf is c as a prOwner: a Codex claim's id is its thread, an agy claim's
+// is its conversation id.
 func OwnerOf(c PRClaim, live map[int]PRClaim) PROwner {
 	o := PROwner{Name: ownerName(c, live), Kind: "claude", Session: c.Session}
-	if c.Kind == "codex" {
-		o.Kind = "codex"
+	switch c.Kind {
+	case transcript.KindCodex:
+		o.Kind = transcript.KindCodex
 		if c.Thread != "" {
 			o.Session = c.Thread
 		}
+	case transcript.KindAgy:
+		o.Kind = transcript.KindAgy
 	}
 	return o
 }
@@ -2116,6 +2128,7 @@ func RunPRs(args []string, stdout, stderr io.Writer) int {
 	owner := fs.String("owner", "", "GitHub owner (org or user) whose repos to list (default: every owner, or the running ccs watch's)")
 	claudeID := fs.String("claude-session-id", "", "only the PRs this Claude Code session claims")
 	codexID := fs.String("codex-session-id", "", "only the PRs this Codex session (thread id) claims")
+	agyID := fs.String("agy-session-id", "", "only the PRs this agy session (conversation id) claims")
 	merged := fs.Bool("merged", false, "list the PRs ccs watch saw merge in the last week instead, with the local session that merged each or turned on auto-merge")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: ccs prs [flags]\n\nList the author's open PRs with the session that owns each (ccs claim, or\nccs watch for the session that opened it), flagging unowned PRs and PRs\nclaimed by two live sessions. Uses ccs watch's state when it is under %s\nold or ccs watch is running, else asks GitHub, once per that time across\nevery ccs process.\n\n", prsFresh)
@@ -2156,12 +2169,15 @@ func RunPRs(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ccs prs:", err)
 		return 1
 	}
-	one := *claudeID != "" || *codexID != ""
+	one := *claudeID != "" || *codexID != "" || *agyID != ""
 	if *claudeID != "" {
 		rep = rep.OwnedBy("claude", *claudeID)
 	}
 	if *codexID != "" {
 		rep = rep.OwnedBy("codex", *codexID)
+	}
+	if *agyID != "" {
+		rep = rep.OwnedBy(transcript.KindAgy, *agyID)
 	}
 	switch {
 	case *line && one:
@@ -2210,6 +2226,16 @@ func codexName(thread string) string {
 		}
 	}
 	return sessions.CodexThreadName(thread)
+}
+
+// agySession is the agy session this process runs in, from the
+// ANTIGRAVITY_CONVERSATION_ID agy gives every command; ok false outside agy.
+func agySession() (PRClaim, bool) {
+	id := os.Getenv("ANTIGRAVITY_CONVERSATION_ID")
+	if !transcript.AgyConvID.MatchString(id) {
+		return PRClaim{}, false
+	}
+	return PRClaim{Session: id, Kind: transcript.KindAgy, Name: cmp.Or(sessions.AgyName(id), id)}, true
 }
 
 // PRsOf is conv's PRs and then its subagents' not among them.
@@ -2667,8 +2693,11 @@ type NudgeEvent struct {
 
 // SendNudge delivers a nudge to a live session; stubbed in tests.
 var SendNudge = func(c PRClaim, text string) error {
-	if c.Kind == "codex" {
+	if c.Kind == transcript.KindCodex {
 		return sessions.CodexQueue(c.Thread, sessions.CodexNudgeNote+text)
+	}
+	if c.Kind == transcript.KindAgy {
+		return sessions.AgyDeliver(c.Session, sessions.AgyNudgeNote+text)
 	}
 	f, err := sessions.ReadSessionFile(c.PID)
 	if err != nil {

@@ -358,6 +358,8 @@ func (m *model) typeSlash(conv transcript.Conversation, text string) tea.Cmd {
 		return refuse(word + " not typed: it has control characters")
 	case conv.Kind == transcript.KindCodex:
 		return refuse(word + " not typed: " + name + " is a Codex session; slash commands go to Claude Code sessions only")
+	case conv.Kind == transcript.KindAgy:
+		return refuse(word + " not typed: " + name + " is an agy session; slash commands go to Claude Code sessions only")
 	case m.hostedApp(id) != "":
 		return refuse(word + " not typed: " + name + " runs in " + m.hostedApp(id) + ", which ccs can't type into")
 	case m.heldPrompt[id].ID != "":

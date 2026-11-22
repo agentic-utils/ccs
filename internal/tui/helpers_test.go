@@ -55,7 +55,7 @@ func TestMain(m *testing.M) {
 	claimHold = func() {}          // a test never takes the real hold lock or sockets
 	// Not in iTerm unless a test says so: inITerm also reads these, and a
 	// test must never drive the real iTerm (open tabs, type into sessions).
-	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID"} {
+	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"} {
 		os.Unsetenv(k)
 	}
 	// Keep tests from writing into the real update log.
@@ -103,6 +103,11 @@ func TestMain(m *testing.M) {
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil } // never the machine's own Codex tabs
 	transcript.CodexProcCwd = func(int) string { return "" }
+	// never the real agy: its data folder is a temp one, and nothing is delivered.
+	transcript.AgyHome = func() string { return filepath.Join(dir, "agy") }
+	sessions.AgyDeliver = func(string, string) error { return errors.New("tests deliver nothing to agy") }
+	sessions.LiveAgySessions = func() map[string]sessions.LiveSession { return nil }
+	sessions.AgyPresenceLocks = func() map[int]string { return nil }
 	proc.TTYOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	github.Login = func() (string, error) { return "", errors.New("tests ask gh nothing") }

@@ -390,7 +390,11 @@ func resumeParent(parent transcript.Conversation, flags []string) (bool, error) 
 	if _, ok := liveSessionPIDs()[parent.SessionID]; ok {
 		return false, nil
 	}
-	if !resumable(parent.SessionID, parent.Kind == transcript.KindCodex) {
+	if parent.Kind == transcript.KindAgy {
+		if !sessions.ResumableKind(parent.SessionID, transcript.KindAgy) {
+			return false, fmt.Errorf("its transcript is gone")
+		}
+	} else if !resumable(parent.SessionID, parent.Kind == transcript.KindCodex) {
 		return false, fmt.Errorf("its transcript is gone")
 	}
 	opened, err := openResumeTab(parent, flags)

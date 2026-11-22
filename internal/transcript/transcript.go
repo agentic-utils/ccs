@@ -62,13 +62,14 @@ type Conversation struct {
 	LastError      string     `json:"last_error"`     // latest surfaced API error, cleared by a later successful reply
 	LastErrorTs    string     `json:"last_error_ts"`
 	Usage          TokenUsage `json:"usage"`               // summed over replies (main transcript, not subagents)
-	Kind           string     `json:"kind,omitempty"`      // "codex" for a Codex session; empty for Claude's
+	Kind           string     `json:"kind,omitempty"`      // "codex" for Codex, "agy" for agy CLI; empty for Claude's
 	Reasoning      int64      `json:"reasoning,omitempty"` // Codex: reasoning tokens, part of Usage.Output
 	Cost           float64    `json:"cost,omitempty"`      // Codex: USD at OpenAI's prices (openAIPrices); 0 when a model isn't in the table
 	Unpriced       bool       `json:"unpriced,omitempty"`  // Codex: some usage came from a model openAIPrices doesn't have
-	ParentID       string     `json:"parent_id,omitempty"` // a Codex subagent's parent thread
+	ParentID       string     `json:"parent_id,omitempty"` // a Codex or agy subagent's parent thread/conversation
 	Window         int        `json:"-"`                   // the context window the transcript states (Codex does); 0: inferred from the model
 	CodexBusy      bool       // a Codex session's last turn hasn't finished
+	AgyBusy        bool       // an agy session's last turn hasn't finished
 
 	// Built once at parse and shared through parseCache, so a refresh
 	// doesn't rebuild the search text of unchanged conversations.
@@ -219,7 +220,7 @@ func ContextWindow(model string, peak int) int {
 		return 1_000_000
 	case strings.Contains(m, "haiku") || m == "":
 		return 200_000
-	case strings.Contains(m, "opus"), strings.Contains(m, "sonnet"), strings.Contains(m, "fable"):
+	case strings.Contains(m, "opus"), strings.Contains(m, "sonnet"), strings.Contains(m, "fable"), strings.Contains(m, "gemini"):
 		return 1_000_000
 	}
 	return 200_000
@@ -421,6 +422,9 @@ func ParseConversationUncached(path string, info os.FileInfo) (*Conversation, er
 func ParseAppended(prev *Conversation) (*Conversation, error) {
 	if prev.Kind == KindCodex { // small, and a resume rewrites it: parsed again whole
 		return ParseCodexFile(prev.FilePath, time.Time{}, 0)
+	}
+	if prev.Kind == KindAgy {
+		return ParseAgyFile(prev.FilePath, time.Time{}, 0)
 	}
 	readAt := time.Now()
 	info, err := os.Stat(prev.FilePath)
@@ -920,7 +924,8 @@ type SpawnCmd struct{ Ts, Text string }
 // claude --bg, cswap run … -p).
 func IsSpawn(cmd string) bool {
 	return strings.Contains(cmd, "claude") && (strings.Contains(cmd, " -p") || strings.Contains(cmd, "--print") || strings.Contains(cmd, "--bg") || strings.Contains(cmd, "--background")) ||
-		strings.Contains(cmd, "cswap run") || StartsCodex(cmd)
+		strings.Contains(cmd, "cswap run") || StartsCodex(cmd) ||
+		strings.Contains(cmd, "agy") && (strings.Contains(cmd, " -p") || strings.Contains(cmd, "--print") || strings.Contains(cmd, "--prompt "))
 }
 
 // StartsCodex: a command that starts a codex exec run, directly or through
@@ -1140,7 +1145,7 @@ func FinishParse(conv *Conversation) {
 // It depends only on the first and latest folders, so an incremental parse
 // gives what a full parse would.
 func resolveCwd(conv *Conversation) {
-	if conv.Kind == KindCodex || conv.firstCwd == "" { // Codex: its folder comes from session_meta
+	if conv.Kind == KindCodex || conv.Kind == KindAgy || conv.firstCwd == "" { // Codex/agy: folder comes from metadata
 		return
 	}
 	conv.Cwd = conv.firstCwd
@@ -1217,6 +1222,8 @@ func parseForScan(path string, cutoff time.Time, maxSize int64) (conv *Conversat
 	parse := ParseConversationFile
 	if isCodexRollout(path) {
 		parse = ParseCodexFile
+	} else if IsAgyTranscript(path) {
+		parse = ParseAgyFile
 	}
 	conv, err := parse(path, cutoff, maxSize)
 	if err != nil {
@@ -1284,7 +1291,8 @@ func GetConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 
 	// Worker pool to limit concurrent file operations
 	const numWorkers = 8
-	files = append(files, CodexRollouts()...) // Codex's sessions sit in the same list
+	files = append(files, CodexRollouts()...)  // Codex's sessions sit in the same list
+	files = append(files, AgyTranscripts()...) // agy's sessions sit in the same list
 	if err := holdScanSlot(files); err != nil {
 		return nil, err
 	}
@@ -1655,12 +1663,14 @@ func GHOutputPRs(out string) []string {
 const KindCodex = "codex"
 
 // AgentGlyph marks every row with the agent behind it, one cell wide: ✻,
-// the asterisk Claude Code draws, in Claude's orange; ⬡ for Codex.
+// the asterisk Claude Code draws, in Claude's orange; ⬡ for Codex; ✦ for agy.
 func AgentGlyph(conv Conversation) (glyph, colour string) {
-	if conv.Kind == KindCodex {
+	switch conv.Kind {
+	case KindCodex:
 		return "⬡", "37"
-	}
-	if conv.Kind == KindSubagent { // the ◆ its session's count uses
+	case KindAgy:
+		return "✦", "38;5;75"
+	case KindSubagent: // the ◆ its session's count uses
 		return "◆", SubagentColour
 	}
 	return "✻", "38;5;173"

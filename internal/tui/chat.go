@@ -333,10 +333,15 @@ func (m model) chatTickCmd() tea.Cmd {
 				msg = res
 			}
 		}()
-		if conv.Kind == transcript.KindCodex {
+		switch conv.Kind {
+		case transcript.KindCodex:
 			res.stat = sessions.CodexStat(conv.FilePath)
-		} else if f, err := sessions.ReadSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
-			res.stat = f.Stat()
+		case transcript.KindAgy:
+			res.stat = sessions.AgyStat(conv.SessionID, conv.FilePath)
+		default:
+			if f, err := sessions.ReadSessionFile(pid); err == nil && f.SessionID == conv.SessionID {
+				res.stat = f.Stat()
+			}
 		}
 		if _, busy := sessions.LiveReads.LoadOrStore(conv.FilePath, true); !busy {
 			defer sessions.LiveReads.Delete(conv.FilePath)
@@ -571,10 +576,13 @@ func (m *model) sendLine(conv transcript.Conversation, draft, payload string) te
 			}
 		}()
 		deliver := deliverMessage
-		if kind == transcript.KindCodex {
+		switch kind {
+		case transcript.KindCodex:
 			deliver = func(_ int, id, name, text string, _ bool) (string, error) {
 				return sessions.DeliverCodex(id, name, text)
 			}
+		case transcript.KindAgy:
+			deliver = sessions.DeliverAgy
 		}
 		note, err := deliver(pid, id, name, wire, verified)
 		return sendDoneMsg{id: id, note: note, err: err, text: draft}

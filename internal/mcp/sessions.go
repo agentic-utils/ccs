@@ -106,8 +106,9 @@ func sessionRow(conv transcript.Conversation, l sessions.LiveSession, ok bool, n
 	r := SessionRow{Name: transcript.GetTopic(conv), Session: conv.SessionID, Kind: "claude", Cwd: conv.Cwd,
 		LastError: conv.LastError, LastErrorAt: conv.LastErrorTs, PRs: github.PRsOf(conv),
 		LastMessage: conv.LastTimestamp, Messages: len(conv.Messages)}
-	if conv.Kind == transcript.KindCodex {
-		r.Kind = transcript.KindCodex
+	switch conv.Kind {
+	case transcript.KindCodex, transcript.KindAgy:
+		r.Kind = conv.Kind
 	}
 	if open := watchedOpen(); open != nil {
 		for _, u := range r.PRs {
@@ -120,7 +121,7 @@ func sessionRow(conv transcript.Conversation, l sessions.LiveSession, ok bool, n
 		return r
 	}
 	st := l.Stat
-	if end, over := conv.TurnOver(st.Since); over && st.Status == "busy" && conv.Kind != transcript.KindCodex {
+	if end, over := conv.TurnOver(st.Since); over && st.Status == "busy" && conv.Kind != transcript.KindCodex && conv.Kind != transcript.KindAgy {
 		st.Status, st.Since = "idle", end // busy left in the file after its turn ended, as the TUI's setStat reads it
 	}
 	r.Live, r.PID, r.Status, r.WaitingFor = true, l.PID, st.Status, st.WaitingFor
@@ -172,6 +173,8 @@ func SessionRows(convs []transcript.Conversation, live map[string]sessions.LiveS
 			c := transcript.Conversation{SessionID: id, Title: l.Stat.Name}
 			if l.Codex {
 				c.Kind = transcript.KindCodex
+			} else if l.Agy {
+				c.Kind = transcript.KindAgy
 			}
 			r := sessionRow(c, l, true, now)
 			r.Name = l.Stat.Name

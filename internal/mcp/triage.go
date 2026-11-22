@@ -301,11 +301,15 @@ func TriageRows(convs []transcript.Conversation, live map[string]sessions.LiveSe
 			c = transcript.Conversation{SessionID: id, Title: l.Stat.Name}
 			if l.Codex {
 				c.Kind = transcript.KindCodex
+			} else if l.Agy {
+				c.Kind = transcript.KindAgy
 			}
 		}
 		kind := "claude"
 		if c.Kind == transcript.KindCodex || l.Codex {
 			kind = transcript.KindCodex
+		} else if c.Kind == transcript.KindAgy || l.Agy {
+			kind = transcript.KindAgy
 		}
 		r := triageOf(c, l, prs[ownerKey(kind, id)], now, stallAfter)
 		r.Parent = parents[id]

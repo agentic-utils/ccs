@@ -17,7 +17,7 @@ import (
 // processes, Codex or link handler, as in tui's TestMain. A test that needs
 // one of these stubs it itself.
 func TestMain(m *testing.M) {
-	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID"} {
+	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"} {
 		os.Unsetenv(k)
 	}
 	dir, _ := os.MkdirTemp("", "ccs-test-sessions")
@@ -48,6 +48,10 @@ func TestMain(m *testing.M) {
 	ExecScript = func(string) error { return errors.New("tests exec nothing") }
 	SpawnRestartHelper = func(string, int, string, time.Duration) error { return errors.New("tests spawn no helper") }
 	CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
+	transcript.AgyHome = func() string { return filepath.Join(dir, "agy") }
+	AgyDeliver = func(string, string) error { return errors.New("tests deliver nothing to agy") }
+	LiveAgySessions = func() map[string]LiveSession { return nil }
+	AgyPresenceLocks = func() map[int]string { return nil }
 	LiveCodexSessions = func() map[string]LiveSession { return nil }
 	transcript.CodexHome = func() string { return filepath.Join(dir, "codex") }
 	transcript.CodexProcCwd = func(int) string { return "" }

@@ -724,6 +724,7 @@ func Header(c transcript.Conversation) string {
 }
 
 func mcpSearch(convs []transcript.Conversation, query string, n int) (string, error) {
+	query = strings.TrimSpace(query) // as the list reads it: "  foo " is "foo"
 	terms := strings.Fields(strings.ToLower(query))
 	if len(terms) == 0 {
 		return "", fmt.Errorf("query is empty")

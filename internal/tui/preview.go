@@ -120,7 +120,7 @@ func countHits(conv transcript.Conversation, query string) int {
 
 // hitCount returns the memoised hit count for item under the current query.
 func (m model) hitCount(item listItem) int {
-	query := m.textInput.Value()
+	query := m.searchQuery()
 	if query == "" {
 		return 0
 	}
@@ -148,8 +148,8 @@ func (m model) previewLines() []string {
 		return nil // still scrolling through the list: the header alone
 	}
 	conv := m.filtered[m.cursor].conv
-	conv.PeerNotes = m.cachedPeerLabels(conv)                                   // the other ends, which other sessions' transcripts show
-	return cachedPreview(m.preview, conv, m.textInput.Value(), m.paneWidth()-1) // the last column is the scrollbar
+	conv.PeerNotes = m.cachedPeerLabels(conv)                               // the other ends, which other sessions' transcripts show
+	return cachedPreview(m.preview, conv, m.searchQuery(), m.paneWidth()-1) // the last column is the scrollbar
 }
 
 // previewDebounce is how long the selection must rest before its
@@ -218,6 +218,7 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 	var msgLines []string
 
 	// Find messages containing the query
+	query = strings.TrimSpace(query) // spaces alone are no search
 	terms := strings.Fields(strings.ToLower(query))
 	matchSet := make(map[int]bool)
 	if query != "" {
@@ -507,7 +508,7 @@ func (m model) hitLines() []int { return hitLinesIn(m.previewLines()) }
 // jumpHit scrolls the preview so the next (or previous) search hit is at the
 // top, wrapping round at either end.
 func (m *model) jumpHit(next bool) {
-	if len(m.filtered) == 0 || m.textInput.Value() == "" {
+	if len(m.filtered) == 0 || !m.searching() {
 		return
 	}
 	lines := m.previewLines()
@@ -878,7 +879,7 @@ func (m model) maxPreviewScroll() int {
 // header, matching what View gives renderPreview.
 func (m model) previewMessageRows(conv transcript.Conversation) int {
 	_, _, previewTop := m.listLayout()
-	return max(m.height-previewTop-m.chatRows()-len(m.previewHeader(conv, m.textInput.Value())), 1)
+	return max(m.height-previewTop-m.chatRows()-len(m.previewHeader(conv, m.searchQuery())), 1)
 }
 
 // previewHeader is the preview's fixed header (always visible above the
@@ -1001,7 +1002,7 @@ func (m *model) toggleHeader() {
 }
 
 func (m model) renderPreview(item listItem, height int) string {
-	query := m.textInput.Value()
+	query := m.searchQuery()
 	conv := item.conv
 
 	header := m.previewHeader(conv, query) // fixed, always visible

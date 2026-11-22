@@ -1903,3 +1903,107 @@ func TestDeleteConversationErrorHandling(t *testing.T) {
 		t.Errorf("expected IsNotExist error, got: %v", err)
 	}
 }
+
+// spacedModel is startedModel with only c named and every session long
+// enough that a search preview would leave messages out, so a search that
+// ranks (c, named, would go first) or trims the preview shows.
+func spacedModel(t *testing.T) model {
+	t.Helper()
+	m := startedModel(t)
+	for i := range m.items {
+		c := m.items[i].conv
+		if c.SessionID != "c" {
+			c.Title = ""
+		}
+		for n := range 8 {
+			c.Messages = append(c.Messages, transcript.Message{Role: "user", Text: "deploy step " + string(rune('a'+n))})
+		}
+		c.SearchText = ""
+		m.items[i] = buildItems([]transcript.Conversation{c})[0]
+	}
+	m.textInput.SetValue("")
+	m.updateFilter()
+	return m
+}
+
+// A search of only spaces is no search: the list in its usual order, no
+// HITS, the whole conversation in the preview, no hit jumps, ? still help.
+func TestSpacesAloneAreNoSearch(t *testing.T) {
+	base := spacedModel(t)
+	order, lines := startOrder(base), base.previewLines()
+	if order != "b,a,c" {
+		t.Fatalf("with no search the list is newest started first: %s", order)
+	}
+	for _, q := range []string{" ", "   ", "\t", " \t "} {
+		m := spacedModel(t)
+		m.textInput.SetValue(q)
+		m.updateFilter()
+		if m.searching() || m.searchQuery() != "" {
+			t.Errorf("%q: counts as a search", q)
+		}
+		if got := startOrder(m); got != order {
+			t.Errorf("%q: the list is reordered or filtered: %s, want %s", q, got, order)
+		}
+		for _, it := range m.filtered {
+			if it.rank != 0 || m.hitCount(it) != 0 {
+				t.Errorf("%q: %s ranked %d with %d hits", q, it.conv.SessionID, it.rank, m.hitCount(it))
+			}
+		}
+		if got := m.previewLines(); !slices.Equal(got, lines) {
+			t.Errorf("%q: the preview isn't the whole conversation: %d lines, want %d", q, len(got), len(lines))
+		}
+		if got := buildPreviewLines(m.filtered[0].conv, q, 80); !slices.Equal(got, buildPreviewLines(m.filtered[0].conv, "", 80)) {
+			t.Errorf("%q: buildPreviewLines differs from no search", q)
+		}
+		m.previewScroll = 3
+		if m.jumpHit(true); m.previewScroll != 3 {
+			t.Errorf("%q: ^] jumped to a hit", q)
+		}
+		m.hideSidebar = true
+		if m.sidebarWidth() != 0 {
+			t.Errorf("%q: a hidden sidebar comes back as for a search", q)
+		}
+		m.hideSidebar = false
+		if m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")}); !m.helpOpen {
+			t.Errorf("%q: ? isn't help", q)
+		}
+	}
+}
+
+// Spaces around the words change nothing: "  deploy " finds, ranks, counts
+// and previews as "deploy" does, after an update from the live tick too.
+func TestPaddedSearchMatchesUnpadded(t *testing.T) {
+	plain := spacedModel(t)
+	plain.textInput.SetValue("deploy")
+	plain.updateFilter()
+	for _, q := range []string{"  deploy ", "\tdeploy", "deploy  "} {
+		m := spacedModel(t)
+		m.textInput.SetValue(q)
+		m.updateFilter()
+		if got, want := startOrder(m), startOrder(plain); got != want {
+			t.Errorf("%q: %s, want %s", q, got, want)
+		}
+		for i, it := range m.filtered {
+			if it.rank != plain.filtered[i].rank || m.hitCount(it) != plain.hitCount(plain.filtered[i]) {
+				t.Errorf("%q: %s rank %d hits %d, want %d and %d", q, it.conv.SessionID, it.rank, m.hitCount(it),
+					plain.filtered[i].rank, plain.hitCount(plain.filtered[i]))
+			}
+		}
+		if !slices.Equal(m.previewLines(), plain.previewLines()) {
+			t.Errorf("%q: the preview differs from the unpadded search", q)
+		}
+		// The live tick re-matches a changed session by the same rule: the
+		// same update keeps the same sessions, padded or not.
+		p := spacedModel(t)
+		p.textInput.SetValue("deploy")
+		p.updateFilter()
+		c := m.filtered[0].conv
+		c.Messages = append(c.Messages, transcript.Message{Role: "assistant", Text: "deployed"})
+		c.SearchText = ""
+		m.applyLive([]transcript.Conversation{c})
+		p.applyLive([]transcript.Conversation{c})
+		if got, want := startOrder(m), startOrder(p); got != want || len(m.filtered) != 3 {
+			t.Errorf("%q: after a live update: %s, want %s", q, got, want)
+		}
+	}
+}

@@ -123,6 +123,24 @@ func TestMCPNameMatchIgnoresDashes(t *testing.T) {
 	}
 }
 
+// search_sessions reads a query as the list does: only spaces is as empty
+// as no query, and spaces around the words change nothing.
+func TestMCPSearchTrimsSpaces(t *testing.T) {
+	convs := []transcript.Conversation{
+		{SessionID: "s", Title: "deploy fix", LastTimestamp: "2026-10-09T00:00:00Z", Messages: []transcript.Message{{Role: "user", Text: "deploy it"}}},
+	}
+	_, emptyErr := mcpSearch(convs, "", 5)
+	for _, q := range []string{" ", "  ", "\t"} {
+		if _, err := mcpSearch(convs, q, 5); err == nil || emptyErr == nil || err.Error() != emptyErr.Error() {
+			t.Errorf("%q: %v, want %v as for no query", q, err, emptyErr)
+		}
+	}
+	want, _ := mcpSearch(convs, "deploy", 5)
+	if got, err := mcpSearch(convs, "  deploy ", 5); err != nil || got != want {
+		t.Errorf("padded query:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // search_sessions leaves reorg planning runs out (their prompt holds every
 // session's first message) unless the search names one.
 func TestMCPSearchSkipsReorgRuns(t *testing.T) {

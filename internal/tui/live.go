@@ -214,12 +214,12 @@ func (m *model) applyLive(updated []transcript.Conversation) {
 	for _, item := range m.filtered {
 		shown[item.conv.SessionID] = true
 	}
-	query := strings.ToLower(m.textInput.Value())
+	terms := strings.Fields(strings.ToLower(m.searchQuery()))
 	filtered := make([]listItem, 0, len(m.filtered)+len(updated))
 	for _, item := range items {
 		match := shown[item.conv.SessionID]
 		if _, changed := byID[item.conv.SessionID]; changed {
-			match = query == "" || strings.Contains(item.searchLower, query)
+			match = len(terms) == 0 || transcript.QueryMatches(item.searchLower, item.conv.Title, terms) // updateFilter's rule
 			// Most appends are tool calls: HITS only moves with new messages.
 			if m.hits != nil && newMessages[item.conv.SessionID] {
 				delete(m.hits.byID, item.conv.SessionID)

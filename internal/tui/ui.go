@@ -334,7 +334,7 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 // or while ^X L hides it. A search filters the list, so it shows while one is
 // typed and hides again once the search is cleared, ^X L staying as it was.
 func (m model) sidebarWidth() int {
-	if m.table || m.hideSidebar && m.textInput.Value() == "" {
+	if m.table || m.hideSidebar && !m.searching() {
 		return 0
 	}
 	return min(max(m.width/4, 30), 48)
@@ -524,7 +524,7 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 
 func (m *model) updateFilter() {
 	m.foldedAway = nil // rebuilt from m.items, folded sessions included
-	queryLower := strings.ToLower(m.textInput.Value())
+	queryLower := strings.ToLower(m.searchQuery())
 	if queryLower == "" {
 		// Make a copy to avoid sharing backing array with m.items
 		m.filtered = make([]listItem, len(m.items))
@@ -591,7 +591,7 @@ func (m *model) hideReorgRuns() {
 	if !m.searching() {
 		return
 	}
-	q := m.textInput.Value()
+	q := m.searchQuery()
 	m.filtered = slices.DeleteFunc(m.filtered, func(it listItem) bool {
 		return transcript.HideFromSearch(it.conv, q) && !m.revealed[it.conv.SessionID]
 	})
@@ -2311,7 +2311,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// ? opens help when it can't be meant as text: the box being typed
 		// into (the message box when focused, else the search) is empty, as
 		// on Claude Code's prompt. After text it's a ?.
-		box := m.textInput.Value()
+		box := m.searchQuery() // spaces alone are no search, so ? is still help
 		if m.chatFocus {
 			box = m.chatInput.Value()
 		}
@@ -2941,7 +2941,7 @@ func (m model) shortcuts() [][2]string {
 	group("moving around")
 	add(len(m.filtered) > 1, "↑↓ ^P/N", "move through the list")
 	add(sel, "pgup/dn", "scroll the conversation (the mouse wheel too)")
-	add(sel && m.textInput.Value() != "" && len(m.hitLines()) > 0, "^] ^\\", "jump to the next / previous search hit")
+	add(sel && m.searching() && len(m.hitLines()) > 0, "^] ^\\", "jump to the next / previous search hit")
 	switch nested := sel && m.parentRow(m.cursor) >= 0; {
 	case !m.chatFocus && nested:
 		add(true, keyEsc, "select the session this one is nested under (again: its parent, then the search)")
@@ -3468,7 +3468,12 @@ const (
 )
 
 // searching: a search is typed, so HITS has something to count.
-func (m model) searching() bool { return strings.TrimSpace(m.textInput.Value()) != "" }
+// searchQuery is the search as typed with the spaces around it trimmed: the
+// one place the list, HITS, the preview and its hit jumps read the search
+// from, so a query of only spaces is no search at all and "  foo " is "foo".
+func (m model) searchQuery() string { return strings.TrimSpace(m.textInput.Value()) }
+
+func (m model) searching() bool { return m.searchQuery() != "" }
 
 // topicColWidth flexes the TOPIC column to fill the terminal width.
 func (m model) topicColWidth() int {

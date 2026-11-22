@@ -239,12 +239,24 @@ func OpenResumeTab(conv transcript.Conversation, claudeFlags []string) (bool, er
 			return false, nil
 		}
 		args = append([]string{claudePath, "--resume", conv.SessionID}, claudeFlags...)
+		args = append(args, ResumeRemoteControlArgs(conv, claudeFlags)...)
 	}
 	// tmux first: inside tmux the iTerm tab would land outside the session.
 	if handled, err := ResumeInTmuxWindow(cwd, args); handled {
 		return true, err
 	}
 	return ResumeInITermTab(cwd, args)
+}
+
+// ResumeRemoteControlArgs are the Remote Control flags for resuming conv
+// with ^X V on: its user-set name, so the phone shows that and not a
+// hostname. Nothing for a fork (a new conversation under the old name) or a
+// session with no name of its own.
+func ResumeRemoteControlArgs(conv transcript.Conversation, claudeFlags []string) []string {
+	if !conv.IsCustomTitle || slices.Contains(claudeFlags, "--fork-session") {
+		return nil
+	}
+	return state.RemoteControlArgs(conv.Title, false)
 }
 
 // ResumeInTmuxWindow opens args in a new background tmux window. handled is
@@ -997,6 +1009,10 @@ type LaunchOpts struct {
 	NoPreamble               bool             // the brief as given, without PreamblePath's text before it
 	OnTab                    func(tty string) // called once the tab is open, before the wait for the session
 	RecordParent             bool             // note the calling session as its parent (launch_session, ccs launch; never a restart)
+	// RemoteControl starts a Claude Code session with Remote Control on
+	// under its name (state.RemoteControlArgs), whatever ^X V says: a
+	// restart of a session that had it on.
+	RemoteControl bool
 }
 
 // PreamblePath is the text every new session's brief starts with, when the
@@ -1126,7 +1142,11 @@ func launchScript(o LaunchOpts, bin, dir string) string {
 	if o.Brief != "" {
 		args = append(args, brief)
 	}
-	args = append(args, "--name", proc.ShellQuote(o.Name), "${=CCS_CLAUDE_ARGS}")
+	args = append(args, "--name", proc.ShellQuote(o.Name))
+	for _, a := range state.RemoteControlArgs(o.Name, o.RemoteControl) {
+		args = append(args, proc.ShellQuote(a))
+	}
+	args = append(args, "${=CCS_CLAUDE_ARGS}")
 	b.WriteString("exec " + strings.Join(args, " ") + "\n")
 	return b.String()
 }
@@ -1763,6 +1783,9 @@ type SessionFile struct {
 	WaitingFor      string `json:"waitingFor"`
 	Socket          string `json:"messagingSocketPath"`
 	Cwd             string `json:"cwd"`
+	// BridgeSessionID is set while Remote Control is on: claude.ai's id for
+	// the session.
+	BridgeSessionID string `json:"bridgeSessionId"`
 }
 
 // cleaned is f with the text another program wrote cleaned as it enters

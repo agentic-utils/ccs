@@ -2446,8 +2446,30 @@ func CodexStat(path string) SessionStat {
 	return st
 }
 
-// DeliverCodex sends the message box's text to a live Codex session: Codex
-// queues it and hands it over at the session's next turn, as the user's.
+// DeliverCodexMessage sends the message box's text to a live Codex session:
+// typed into its terminal (iTerm tab / tmux pane) first when safe, falling
+// back to codex queue when it has no terminal (e.g. VS Code / desktop app),
+// its pid isn't verified, or the text has control characters.
+func DeliverCodexMessage(pid int, id, name, text string, verified bool) (string, error) {
+	if verified && pid > 0 && !hasControlRune(text) {
+		where, err := TypeKeys(pid, text, true)
+		switch {
+		case where != "" && err == nil:
+			return "✓ Typed into " + name + "'s " + where + " (as you)", nil
+		case where != "" && errors.Is(err, proc.ErrTimedOut):
+			return "⚠ Typing into " + name + "'s " + where + " timed out; it may have been typed", err
+		case where != "":
+			return "✗ Couldn't type into " + name + "'s " + where + ": " + err.Error(), err
+		}
+	}
+	return DeliverCodex(id, name, text)
+}
+
+func hasControlRune(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f })
+}
+
+// DeliverCodex sends text to a live Codex session via codex queue.
 func DeliverCodex(id, name, text string) (string, error) {
 	if err := CodexQueue(id, text); err != nil {
 		return "✗ Couldn't queue it for " + name + ": " + err.Error(), fmt.Errorf("%w: %v", ErrUnsent, err)

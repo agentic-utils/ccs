@@ -578,9 +578,7 @@ func (m *model) sendLine(conv transcript.Conversation, draft, payload string) te
 		deliver := deliverMessage
 		switch kind {
 		case transcript.KindCodex:
-			deliver = func(_ int, id, name, text string, _ bool) (string, error) {
-				return sessions.DeliverCodex(id, name, text)
-			}
+			deliver = sessions.DeliverCodexMessage
 		case transcript.KindAgy:
 			deliver = sessions.DeliverAgy
 		}
@@ -589,9 +587,11 @@ func (m *model) sendLine(conv transcript.Conversation, draft, payload string) te
 	}
 }
 
-// deliverMessage sends text to a live session: through its message socket
-// if it can be reached, else typed into its terminal. Never both: once the
-// socket accepted a connection, a later error isn't retried another way.
+// deliverMessage sends text to a live Claude Code session: typed into its
+// terminal (iTerm tab / tmux pane) first when safe, else through its message
+// socket as a fallback (for apps without a terminal, menus, slash/shell
+// commands, or multi-line/control text). Never both: once typing or the socket
+// attempted delivery, a later error isn't retried the other way.
 // Typing needs a verified pid: keys typed into a recycled one reach a stranger.
 func deliverMessage(pid int, id, name, text string, verified bool) (string, error) {
 	changed := func(err error) (string, error) {
@@ -600,6 +600,19 @@ func deliverMessage(pid int, id, name, text string, verified bool) (string, erro
 	f, err := sessions.ReadSessionFile(pid)
 	if err != nil || f.SessionID != id {
 		return changed(err)
+	}
+	t := strings.TrimSpace(text)
+	isCmd := strings.HasPrefix(t, "/") || strings.HasPrefix(t, "!")
+	if verified && f.Status != "waiting" && !isCmd && !hasControl(text) {
+		where, err := typeIntoSession(pid, text)
+		switch {
+		case where != "" && err == nil:
+			return "✓ Typed into " + name + "'s " + where + " (as you)", nil
+		case where != "" && errors.Is(err, proc.ErrTimedOut):
+			return "⚠ Typing into " + name + "'s " + where + " timed out; it may have been typed", err
+		case where != "":
+			return "✗ Couldn't type into " + name + "'s " + where + ": " + err.Error(), err
+		}
 	}
 	if f.Socket != "" {
 		msgID, err := sendViaSocket(f.Socket, sessions.PeerToken(pid, f.Socket), text)
@@ -613,31 +626,17 @@ func deliverMessage(pid int, id, name, text string, verified bool) (string, erro
 			return "✗ Sending to " + name + " may have failed: " + err.Error(), err
 		}
 	}
-	// Read again: the socket attempt can take seconds and a menu may have come
-	// up since. Typed keys would land in it and could pick an option.
-	if f, err := sessions.ReadSessionFile(pid); err != nil || f.SessionID != id {
-		return changed(err)
-	} else if f.Status == "waiting" {
-		return "✗ Not typed into " + name + ": it's showing a menu, answer it in its tab", fmt.Errorf("%w: on a menu", sessions.ErrUnsent)
-	}
-	if !verified {
-		return "✗ Not typed into " + name + ": its process couldn't be checked against its session file", fmt.Errorf("%w: unverified pid", sessions.ErrUnsent)
-	}
-	if t := strings.TrimSpace(text); strings.HasPrefix(t, "/") || strings.HasPrefix(t, "!") {
-		// Typed, Claude Code would run it as a slash or shell command:
-		// a message that starts so goes only through the socket.
-		return "✗ Not typed into " + name + ": its message socket isn't reachable, and typed, a line starting " + t[:1] + " would run as a command", fmt.Errorf("%w: a command if typed", sessions.ErrUnsent)
-	}
-	where, err := typeIntoSession(pid, text)
 	switch {
-	case where == "":
-		return "✗ Couldn't reach " + name + ": its message socket isn't reachable and it isn't in iTerm or tmux", fmt.Errorf("%w: unreachable", sessions.ErrUnsent)
-	case errors.Is(err, proc.ErrTimedOut):
-		return "⚠ Typing into " + name + "'s " + where + " timed out; it may have been typed", err
-	case err != nil:
-		return "✗ Couldn't type into " + name + "'s " + where + ": " + err.Error(), err
+	case f.Status == "waiting":
+		return "✗ Not typed into " + name + ": it's showing a menu, answer it in its tab", fmt.Errorf("%w: on a menu", sessions.ErrUnsent)
+	case !verified:
+		return "✗ Not typed into " + name + ": its process couldn't be checked against its session file", fmt.Errorf("%w: unverified pid", sessions.ErrUnsent)
+	case isCmd:
+		return "✗ Not typed into " + name + ": its message socket isn't reachable, and typed, a line starting " + t[:1] + " would run as a command", fmt.Errorf("%w: a command if typed", sessions.ErrUnsent)
+	case hasControl(text):
+		return "✗ Couldn't type into " + name + "'s terminal: the message contains control characters", fmt.Errorf("%w: control characters", sessions.ErrUnsent)
 	}
-	return "✓ Typed into " + name + "'s " + where + " (as you)", nil
+	return "✗ Couldn't reach " + name + ": it isn't in iTerm or tmux and its message socket isn't reachable", fmt.Errorf("%w: unreachable", sessions.ErrUnsent)
 }
 
 // sendViaSocket writes one message to a Claude Code session's message

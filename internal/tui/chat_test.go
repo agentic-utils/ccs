@@ -310,18 +310,58 @@ func TestSendFallsBackToTypingOnlyWhenSocketUnreachable(t *testing.T) {
 	}
 }
 
-func TestSocketSuccessNeverAlsoTypes(t *testing.T) {
+func TestTypingSuccessNeverAlsoUsesSocket(t *testing.T) {
 	chatModel(t)
 	sock, got := fakeSocket(t)
 	pid := os.Getpid()
 	os.WriteFile(filepath.Join(sessions.GetSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","messagingSocketPath":%q}`, sock)), 0o600)
 	log := fakeTerminal(t)
-	if _, err := deliverMessage(pid, "live", "busy", "once", true); err != nil {
-		t.Fatal(err)
+	note, err := deliverMessage(pid, "live", "busy", "once", true)
+	if err != nil || note != "✓ Typed into busy's tmux pane (as you)" {
+		t.Fatalf("expected typing first: note=%q err=%v", note, err)
+	}
+	if data, _ := os.ReadFile(log); !strings.Contains(string(data), "once") {
+		t.Errorf("expected terminal send-keys, got: %s", data)
+	}
+	select {
+	case msg := <-got:
+		t.Errorf("typed into terminal, must not also send over socket: %q", msg)
+	default:
+	}
+
+	// Waiting on a menu falls back to the socket instead of typing into the menu.
+	os.WriteFile(filepath.Join(sessions.GetSessionsDir(), fmt.Sprintf("%d.json", pid)), []byte(fmt.Sprintf(`{"sessionId":"live","status":"waiting","messagingSocketPath":%q}`, sock)), 0o600)
+	note, err = deliverMessage(pid, "live", "busy", "on menu", true)
+	if err != nil || !strings.Contains(note, "via its message socket") {
+		t.Fatalf("waiting session should fall back to socket: note=%q err=%v", note, err)
 	}
 	<-got
-	if data, _ := os.ReadFile(log); len(data) != 0 {
-		t.Errorf("sent via socket, must not also type it: %s", data)
+}
+
+func TestCodexTypesFirstAndFallsBackToQueue(t *testing.T) {
+	pid := os.Getpid()
+	queued := ""
+	old := sessions.CodexQueue
+	sessions.CodexQueue = func(_, text string) error { queued = text; return nil }
+	t.Cleanup(func() { sessions.CodexQueue = old })
+
+	// With a terminal: types directly, never queues.
+	log := fakeTerminal(t)
+	note, err := sessions.DeliverCodexMessage(pid, "cx-1", "flux", "hello codex", true)
+	if err != nil || note != "✓ Typed into flux's tmux pane (as you)" {
+		t.Fatalf("expected typing first for codex: note=%q err=%v", note, err)
+	}
+	if queued != "" {
+		t.Errorf("typed into terminal, must not also queue: %q", queued)
+	}
+	if data, _ := os.ReadFile(log); !strings.Contains(string(data), "hello codex") {
+		t.Errorf("expected tmux send-keys, got: %s", data)
+	}
+
+	// Without a terminal (unverified or no tty): falls back to codex queue.
+	note, err = sessions.DeliverCodexMessage(pid, "cx-1", "flux", "via queue", false)
+	if err != nil || !strings.Contains(note, "codex queue") || queued != "via queue" {
+		t.Fatalf("fallback to codex queue: note=%q err=%v queued=%q", note, err, queued)
 	}
 }
 

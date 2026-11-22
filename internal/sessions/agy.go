@@ -319,16 +319,14 @@ func DeliverAgy(pid int, id, name, text string, verified bool) (string, error) {
 	if AgyStat(id, transcript.AgyTranscript(id)).Status == "waiting" {
 		return "✗ Not typed into " + name + ": it's waiting on a prompt, answer it in its tab", fmt.Errorf("%w: waiting", ErrUnsent)
 	}
-	term := FindTerminal(pid)
-	if term.Kind == "" {
-		return "✗ Couldn't reach " + name + ": it isn't in iTerm or tmux", fmt.Errorf("%w: unreachable", ErrUnsent)
-	}
-	err := SendKeys(term, text, true)
+	where, err := TypeKeys(pid, text, true)
 	switch {
+	case where == "":
+		return "✗ Couldn't reach " + name + ": it isn't in iTerm or tmux", fmt.Errorf("%w: unreachable", ErrUnsent)
 	case errors.Is(err, proc.ErrTimedOut):
-		return "⚠ Typing into " + name + "'s " + term.Kind + " timed out; it may have been typed", err
+		return "⚠ Typing into " + name + "'s " + where + " timed out; it may have been typed", err
 	case err != nil:
-		return "✗ Couldn't type into " + name + "'s " + term.Kind + ": " + err.Error(), err
+		return "✗ Couldn't type into " + name + "'s " + where + ": " + err.Error(), err
 	}
-	return "✓ Typed into " + name + "'s " + term.Kind + " (as you)", nil
+	return "✓ Typed into " + name + "'s " + where + " (as you)", nil
 }

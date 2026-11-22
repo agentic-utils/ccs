@@ -1087,6 +1087,9 @@ func sessionStats(conv transcript.Conversation) []string {
 		}
 		lines = append(lines, fmt.Sprintf("\033[1;33mTokens:\033[0m  in %s · out %s · cache read %s · cache write %s%s",
 			tok(u.Input), out, tok(u.CacheRead), tok(u.Cache5m), cost))
+	} else if u != (transcript.TokenUsage{}) && conv.Kind == transcript.KindAgy {
+		lines = append(lines, fmt.Sprintf("\033[1;33mTokens:\033[0m  in %s · out %s · cache read %s",
+			tok(u.Input), tok(u.Output), tok(u.CacheRead)))
 	} else if u != (transcript.TokenUsage{}) {
 		eff := u.Effective()
 		lines = append(lines, fmt.Sprintf("\033[1;33mTokens:\033[0m  in %s · out %s · cache read %s · cache write %s · effective %s (~$%.2f at API prices)",

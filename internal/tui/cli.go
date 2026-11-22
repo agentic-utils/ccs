@@ -45,7 +45,7 @@ func startProfile(path string) (func(), error) {
 func printHelp() {
 	fmt.Printf(`ccs v%s - Coding CLI Sessions
 
-Search and resume Claude Code conversations, and Codex sessions beside them.
+Search and resume Claude Code conversations, with Codex and agy sessions beside them.
 
 Usage: ccs [filter] [-- claude-flags...]
        ccs prune [flags]    Shrink large conversations (see ccs prune --help)
@@ -53,8 +53,8 @@ Usage: ccs [filter] [-- claude-flags...]
                             Open the session that runs your other sessions: its tab, resumed
                             if it isn't running, set up (with the ccs MCP server) if there is none;
                             ccs coordinator, its old name, still works
-       ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>] [--no-preamble]
-                            Start a named claude (or codex) session in a new iTerm tab or tmux window;
+       ccs launch --name <name> (--brief <file> | --resume <id>) [--codex | --agy] [--cwd <dir>] [--no-preamble]
+                            Start a named claude (or codex / agy) session in a new iTerm tab or tmux window;
                             a new session's brief starts with launch-preamble.md beside ccs's settings, if you keep one;
                             the session that ran it becomes its parent, and the list draws it under that one
        ccs adopt <name> [--to <parent> | --to none]
@@ -82,8 +82,8 @@ Usage: ccs [filter] [-- claude-flags...]
                             that claimed them what's failing (see ccs watch --help)
        ccs claim <PR URL>   Record that the session running it owns the PR (--release drops it);
                             ccs watch does it for the session that opened a PR
-                            (a Claude Code or Codex session)
-       ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline, --claude-session-id / --codex-session-id <id>);
+                            (a Claude Code, Codex or agy session)
+       ccs prs [flags]      Your open PRs with their owning sessions (--json, --statusline, --claude-session-id / --codex-session-id / --agy-session-id <id>);
                             --merged lists what merged and which session merged it
        ccs depends <PR> --after <PR>   Record that a PR must not merge before another has; ccs watch
                             and ccs prs then show it blocked and say if it merges early
@@ -535,6 +535,16 @@ func Main(v string) {
 		}
 		args := transcript.CodexResumeArgs("codex", *conv, final.fork)
 		syscall.Exec(codexPath, args, os.Environ())
+		return
+	}
+	if conv.Kind == transcript.KindAgy {
+		agyPath, err := exec.LookPath("agy")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "agy not found in PATH\n")
+			os.Exit(1)
+		}
+		args := transcript.AgyResumeArgs("agy", *conv)
+		syscall.Exec(agyPath, args, os.Environ())
 		return
 	}
 

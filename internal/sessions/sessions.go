@@ -86,6 +86,7 @@ type LiveSession struct {
 	Unverified bool   // the pid's start time couldn't be checked against the file's: maybe a recycled pid
 	misses     int    // ticks in a row it was kept without a readable file
 	Codex      bool   // a Codex session (codexLiveSessions), never kept from an earlier scan
+	Agy        bool   // an agy session (AgyLiveSessions), never kept from an earlier scan
 }
 
 // KeepTicks is how long a session without a readable file is kept when its
@@ -142,8 +143,13 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 			live[id] = c
 		}
 	}
+	for id, a := range LiveAgySessions() { // no session file: worked out afresh each time
+		if _, ok := live[id]; !ok {
+			live[id] = a
+		}
+	}
 	for id, p := range prev {
-		if _, ok := live[id]; ok || p.Codex || len(byPid[p.PID]) > 0 || !proc.PIDAlive(p.PID) {
+		if _, ok := live[id]; ok || p.Codex || p.Agy || len(byPid[p.PID]) > 0 || !proc.PIDAlive(p.PID) {
 			continue
 		}
 		if match, checked := sameStart(p.Start, actual[p.PID]); match && (checked || p.misses < KeepTicks) {
@@ -214,13 +220,20 @@ func OpenResumeTab(conv transcript.Conversation, claudeFlags []string) (bool, er
 		cwd = "."
 	}
 	var args []string
-	if conv.Kind == transcript.KindCodex { // claude's flags don't apply; a fork asks for one
+	switch conv.Kind {
+	case transcript.KindCodex: // claude's flags don't apply; a fork asks for one
 		codexPath, err := exec.LookPath("codex")
 		if err != nil {
 			return false, nil
 		}
 		args = transcript.CodexResumeArgs(codexPath, conv, slices.Contains(claudeFlags, "--fork-session"))
-	} else {
+	case transcript.KindAgy:
+		agyPath, err := exec.LookPath("agy")
+		if err != nil {
+			return false, nil
+		}
+		args = transcript.AgyResumeArgs(agyPath, conv)
+	default:
 		claudePath, err := exec.LookPath("claude")
 		if err != nil {
 			return false, nil
@@ -976,7 +989,7 @@ func LinkStatus(stdout io.Writer) int {
 // resume, under a name, in a folder.
 type LaunchOpts struct {
 	Name, Brief, Resume, Cwd string
-	Codex                    bool
+	Codex, Agy               bool
 	SessionID                string           // claude's id for a new session, known before it starts
 	Focus                    bool             // bring its tab to the front: it needs an answer there
 	Wait                     time.Duration    // how long it may take to start; launchWait if zero
@@ -1087,6 +1100,21 @@ func launchScript(o LaunchOpts, bin, dir string) string {
 		b.WriteString("exec " + strings.Join(args, " ") + "\n")
 		return b.String()
 	}
+	if o.Agy {
+		args := []string{proc.ShellQuote(bin)}
+		if o.Resume != "" {
+			args = append(args, "--conversation", proc.ShellQuote(o.Resume))
+		}
+		// Its launch folder first among the added dirs: Named and
+		// AgyLaunchName find it by that.
+		args = append(args, "--add-dir", proc.ShellQuote(dir), "--add-dir", proc.ShellQuote(filepath.Dir(state.SettingsPath)))
+		if o.Brief != "" {
+			args = append(args, "--prompt-interactive", brief)
+		}
+		args = append(args, "${=CCS_AGY_ARGS}")
+		b.WriteString("exec " + strings.Join(args, " ") + "\n")
+		return b.String()
+	}
 	b.WriteString("[ -f ~/.claude.secret ] && source ~/.claude.secret\n")
 	args := []string{proc.ShellQuote(bin)}
 	if o.Resume != "" {
@@ -1109,6 +1137,7 @@ type Launched struct {
 	PID    int
 	TTY    string
 	thread string
+	agy    bool
 	// Starting: the wait ran out with its tab still running the launcher and
 	// no session registered, as when claude asks whether to trust the folder.
 	// Not a failure: the session shows up once that's answered.
@@ -1122,22 +1151,35 @@ func (l Launched) Text(name string) string {
 	switch {
 	case l.Starting:
 		return fmt.Sprintf("%s is still starting on %s (launcher %s): no session has registered yet, so a folder-trust question may be waiting in that tab. Don't launch it again; it is running once ccs sessions lists it", name, l.TTY, l.Script)
+	case l.thread != "" && l.agy:
+		return fmt.Sprintf("launched %s: pid %d, %s, agy conversation %s", name, l.PID, l.TTY, l.thread)
 	case l.thread != "":
 		return fmt.Sprintf("launched %s: pid %d, %s, codex thread %s", name, l.PID, l.TTY, l.thread)
 	}
 	return fmt.Sprintf("launched %s: pid %d, %s", name, l.PID, l.TTY)
 }
 
-// Resumable: id has a transcript to resume, a Claude Code session under
-// the projects folder or, with codex, a Codex thread's rollout.
-func Resumable(id string, codex bool) bool {
-	if codex {
+// ResumableKind reports whether id has a transcript to resume for kind.
+func ResumableKind(id, kind string) bool {
+	switch kind {
+	case transcript.KindCodex:
 		return transcript.CodexRollout(id) != ""
+	case transcript.KindAgy:
+		return transcript.AgyTranscript(id) != ""
 	}
 	if strings.ContainsAny(id, `/\*?[`) {
 		return false
 	}
 	return transcript.TranscriptPath(id) != ""
+}
+
+// Resumable: id has a transcript to resume, a Claude Code session under
+// the projects folder or, with codex, a Codex thread's rollout.
+func Resumable(id string, codex bool) bool {
+	if codex {
+		return ResumableKind(id, transcript.KindCodex)
+	}
+	return ResumableKind(id, "")
 }
 
 // LaunchSession starts o in a new iTerm tab and waits until it's running.
@@ -1152,6 +1194,9 @@ func LaunchSession(o LaunchOpts) (Launched, error) {
 }
 
 func launchSession(o LaunchOpts) (Launched, error) {
+	if o.Codex && o.Agy {
+		return Launched{}, errors.New("pick one of --codex or --agy, not both")
+	}
 	if !state.SessionName.MatchString(o.Name) {
 		return Launched{}, fmt.Errorf("name %q: use letters, digits, '.', '_' and '-' (at most 64)", o.Name)
 	}
@@ -1161,10 +1206,18 @@ func launchSession(o LaunchOpts) (Launched, error) {
 	if o.Resume != "" && !proc.ShellSafe(o.Resume) {
 		return Launched{}, fmt.Errorf("bad session id %q", o.Resume)
 	}
-	if o.Resume != "" && !Resumable(o.Resume, o.Codex) {
+	resumeKind := ""
+	if o.Codex {
+		resumeKind = transcript.KindCodex
+	} else if o.Agy {
+		resumeKind = transcript.KindAgy
+	}
+	if o.Resume != "" && !ResumableKind(o.Resume, resumeKind) {
 		kind := "Claude Code session"
 		if o.Codex {
 			kind = "Codex thread"
+		} else if o.Agy {
+			kind = "agy conversation"
 		}
 		return Launched{}, fmt.Errorf("no %s %q to resume", kind, o.Resume)
 	}
@@ -1197,6 +1250,8 @@ func launchSession(o LaunchOpts) (Launched, error) {
 	binName := "claude"
 	if o.Codex {
 		binName = "codex"
+	} else if o.Agy {
+		binName = "agy"
 	}
 	bin, err := LookBin(binName)
 	if err != nil {
@@ -1264,10 +1319,12 @@ func launchSession(o LaunchOpts) (Launched, error) {
 		thread := ""
 		if o.Codex {
 			thread = CodexThreadFor(o.Name) // queue and claim need it
+		} else if o.Agy {
+			thread = AgyConvFor(o.Name)
 		}
 		if len(pids) > 0 && (!o.Codex || thread != "" || o.Resume != "") {
 			os.Remove(starting)
-			return Launched{PID: pids[0], TTY: tty, thread: thread}, nil
+			return Launched{PID: pids[0], TTY: tty, thread: thread, agy: o.Agy}, nil
 		}
 		if time.Now().After(deadline) {
 			if len(pids) > 0 {
@@ -1305,7 +1362,7 @@ var LauncherRunning = func(tty, script string) bool {
 			continue
 		}
 		cmd := strings.Join(f[2:], " ")
-		if strings.Contains(cmd, script) || strings.Contains(f[2], "claude") || strings.Contains(f[2], "codex") {
+		if strings.Contains(cmd, script) || strings.Contains(f[2], "claude") || strings.Contains(f[2], "codex") || strings.Contains(f[2], "agy") {
 			return true
 		}
 	}
@@ -1428,7 +1485,7 @@ func Named(name string) ([]int, error) {
 			continue
 		}
 		cmd := strings.Join(f[2:], " ") + " "
-		if !strings.Contains(cmd, "codex") || !strings.Contains(cmd, marker) {
+		if (!strings.Contains(cmd, "codex") && !strings.Contains(cmd, "agy")) || !strings.Contains(cmd, marker) {
 			continue
 		}
 		if pid, err := strconv.Atoi(f[0]); err == nil && !containsInt(pids, pid) {
@@ -1484,6 +1541,14 @@ func IdentityOf(pid int) (string, error) {
 		CodexLiveCache.Out = nil
 		CodexLiveCache.Unlock()
 		for id, ls := range LiveCodexSessions() {
+			if ls.PID == pid {
+				return id, nil
+			}
+		}
+		AgyLiveCache.Lock()
+		AgyLiveCache.Out = nil
+		AgyLiveCache.Unlock()
+		for id, ls := range LiveAgySessions() {
 			if ls.PID == pid {
 				return id, nil
 			}
@@ -1630,9 +1695,10 @@ func RunLaunch(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.Resume, "resume", "", "a session id to resume instead (or as well)")
 	fs.StringVar(&o.Cwd, "cwd", "", "the folder to start in (default: this one)")
 	fs.BoolVar(&o.Codex, "codex", false, "start codex instead of claude")
+	fs.BoolVar(&o.Agy, "agy", false, "start agy instead of claude")
 	fs.BoolVar(&o.NoPreamble, "no-preamble", false, "don't start the brief with the text of "+TildePath(PreamblePath()))
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: ccs launch --name <name> (--brief <file> | --resume <id>) [--codex] [--cwd <dir>] [--no-preamble]")
+		fmt.Fprintln(stderr, "usage: ccs launch --name <name> (--brief <file> | --resume <id>) [--codex | --agy] [--cwd <dir>] [--no-preamble]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

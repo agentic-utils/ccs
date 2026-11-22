@@ -2673,6 +2673,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.filtered) == 0 {
 				return m, nil
 			}
+			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindAgy {
+				m.note("An agy session: agy doesn't support forking conversations")
+				return m, nil
+			}
 			stats.Record("tui.fork", stats.Key)
 			return m, m.resumeCmd(m.filtered[m.cursor].conv, true)
 
@@ -2682,6 +2686,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindCodex {
 				m.note("A Codex session: ccs leaves Codex's files alone (codex delete removes one)")
+				return m, nil
+			}
+			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindAgy {
+				m.note("An agy session: ccs leaves agy's files alone")
 				return m, nil
 			}
 			if len(m.filtered) > 0 {
@@ -2703,6 +2711,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				conv := m.filtered[m.cursor].conv
 				if conv.Kind == transcript.KindCodex {
 					m.note("A Codex session: rename it in Codex")
+					return m, nil
+				}
+				if conv.Kind == transcript.KindAgy {
+					m.note("An agy session: rename it in agy")
 					return m, nil
 				}
 				// A running claude re-appends its own title and would undo ours.
@@ -2729,6 +2741,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindCodex {
 				m.note("A Codex session: ccs only prunes Claude's transcripts")
+				return m, nil
+			}
+			if len(m.filtered) > 0 && m.filtered[m.cursor].conv.Kind == transcript.KindAgy {
+				m.note("An agy session: ccs only prunes Claude's transcripts")
 				return m, nil
 			}
 			if len(m.filtered) > 0 {

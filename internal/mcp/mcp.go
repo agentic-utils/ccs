@@ -172,7 +172,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "launch_session",
-		"description": "Start a new named Claude Code (or codex) session in a new iTerm tab or tmux window, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty, or says it is still starting (its tab is up but no session has registered, as while a folder-trust question waits there): that is not a failure, and the name is refused if launched again meanwhile. A new session's brief starts with the user's launch-preamble.md, when they keep one beside ccs's settings.",
+		"description": "Start a new named Claude Code (or codex / agy) session in a new iTerm tab or tmux window, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty, or says it is still starting (its tab is up but no session has registered, as while a folder-trust question waits there): that is not a failure, and the name is refused if launched again meanwhile. A new session's brief starts with the user's launch-preamble.md, when they keep one beside ccs's settings.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -181,6 +181,7 @@ var mcpTools = []map[string]any{
 				"resume":   map[string]any{"type": "string", "description": "a session id to resume instead (or as well)"},
 				"cwd":      map[string]any{"type": "string", "description": "absolute path of the folder to start in"},
 				"codex":    map[string]any{"type": "boolean", "description": "start codex instead of claude"},
+				"agy":      map[string]any{"type": "boolean", "description": "start agy instead of claude"},
 				"preamble": map[string]any{"type": "boolean", "description": "false to give the brief as it is, without the user's launch preamble; default true"},
 			},
 			"required": []string{"name", "cwd"},
@@ -393,7 +394,7 @@ func prCall(name string, raw json.RawMessage) (string, error) {
 func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	var a struct {
 		Name, Brief, Resume, Cwd, Parent string
-		Codex                            bool
+		Codex, Agy                       bool
 		Preamble                         *bool
 	}
 	if len(raw) > 0 {
@@ -414,7 +415,7 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("cwd must be an absolute path")
 	}
 	return capped("launch_session", a.Name, a.Name+" is still starting: check with list_sessions in a minute (its parent is recorded already; the outcome goes to ccs's activity log)", func() (string, error) {
-		l, err := launchFn(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex, NoPreamble: a.Preamble != nil && !*a.Preamble, RecordParent: true})
+		l, err := launchFn(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex, Agy: a.Agy, NoPreamble: a.Preamble != nil && !*a.Preamble, RecordParent: true})
 		if err != nil {
 			return "", err
 		}
@@ -715,8 +716,11 @@ func clampInt(v, def, hi int) int {
 // Header is one session's summary line for search and list results.
 func Header(c transcript.Conversation) string {
 	kind, resume := "claude", "claude --resume "
-	if c.Kind == transcript.KindCodex {
+	switch c.Kind {
+	case transcript.KindCodex:
 		kind, resume = transcript.KindCodex, "codex resume "
+	case transcript.KindAgy:
+		kind, resume = transcript.KindAgy, "agy --conversation "
 	}
 	return fmt.Sprintf("%s · %s\n  kind %s · session %s · project %s · last active %s (%s) · %d messages\n  resume: cd %s && %s%s",
 		transcript.GetTopic(c), transcript.ShortModel(c), kind, c.SessionID, c.Cwd, transcript.FormatTimestamp(c.LastTimestamp), transcript.FormatAgo(c.LastTimestamp, time.Now()),
@@ -870,6 +874,9 @@ func mcpRead(convs []transcript.Conversation, id, query string, offset, limit in
 		}
 		m := c.Messages[e.msg]
 		who, text := "Claude", transcript.CleanText(m.Text)
+		if c.Kind == transcript.KindAgy {
+			who = "Agy"
+		}
 		if m.Role == "sent" {
 			who = "Claude, to " + transcript.ShortAddr(m.To)
 		}

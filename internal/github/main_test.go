@@ -21,7 +21,10 @@ func TestMain(m *testing.M) {
 	state.MarksPath = filepath.Join(dir, "sessions.json")
 	Login = func() (string, error) { return "", errors.New("tests ask gh nothing") }
 	// No test reads the machine's own transcripts for who opened or merged a PR.
+	os.Unsetenv("ANTIGRAVITY_CONVERSATION_ID")
+	os.Unsetenv("ANTIGRAVITY_APP_DATA_DIR")
 	transcript.GetProjectsDir = func() string { return filepath.Join(dir, "projects") }
+	transcript.AgyHome = func() string { return filepath.Join(dir, "agy") }
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

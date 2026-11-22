@@ -30,7 +30,7 @@ var (
 // stubbed, and logs, settings and Codex's folder go to a temp folder.
 func TestMain(m *testing.M) {
 	os.Setenv("CCS_NO_STATS", "1") // feature stats are tested in internal/stats; nothing else writes them
-	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID"} {
+	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"} {
 		os.Unsetenv(k)
 	}
 	dir, _ := os.MkdirTemp("", "ccs-test-mcp")
@@ -51,6 +51,10 @@ func TestMain(m *testing.M) {
 	sessions.SendKeys = func(sessions.Terminal, string, bool) error { return errors.New("tests type into no terminals") }
 	sessions.CodexQueue = func(string, string) error { return errors.New("tests queue nothing") }
 	sessions.LiveCodexSessions = func() map[string]sessions.LiveSession { return nil }
+	transcript.AgyHome = func() string { return filepath.Join(dir, "agy") }
+	sessions.AgyDeliver = func(string, string) error { return errors.New("tests deliver nothing to agy") }
+	sessions.LiveAgySessions = func() map[string]sessions.LiveSession { return nil }
+	sessions.AgyPresenceLocks = func() map[int]string { return nil }
 	liveSessions = func() map[string]sessions.LiveSession { return nil }
 	procStart = func(int) (time.Time, bool) { return time.Time{}, false } // never a real ps
 	// A hook's own wait reads as over (another session), so a hook its test

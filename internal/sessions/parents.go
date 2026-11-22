@@ -245,9 +245,12 @@ var CallingSession = func() (Caller, bool) {
 		}
 		return Caller{ID: t, Name: name, Kind: transcript.KindCodex}, true
 	}
+	if id := os.Getenv("ANTIGRAVITY_CONVERSATION_ID"); transcript.AgyConvID.MatchString(id) {
+		return Caller{ID: id, Name: AgyName(id), Kind: transcript.KindAgy}, true
+	}
 	byPID := map[int]Caller{}
 	for id, s := range ScanSessions(nil) {
-		if !s.Codex {
+		if !s.Codex && !s.Agy {
 			byPID[s.PID] = Caller{ID: id, Name: s.Stat.Name}
 		}
 	}

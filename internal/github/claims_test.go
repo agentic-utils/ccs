@@ -75,7 +75,7 @@ func TestClaimRefusals(t *testing.T) {
 		t.Error("a non-GitHub address is refused")
 	}
 	delete(live, os.Getppid())
-	if _, err := Claim(claimA, false, time.Now()); err == nil || !strings.Contains(err.Error(), "not run from a Claude Code or Codex session") {
+	if _, err := Claim(claimA, false, time.Now()); err == nil || !strings.Contains(err.Error(), "not run from a Claude Code, Codex or agy session") {
 		t.Errorf("outside a session: %v", err)
 	}
 	if _, err := os.Stat(ClaimsPath()); err == nil {

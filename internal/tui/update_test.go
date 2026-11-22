@@ -483,6 +483,27 @@ func TestAutoUpdateToggle(t *testing.T) {
 	}
 }
 
+func TestRemoteControlToggle(t *testing.T) {
+	t.Cleanup(func() { os.Remove(state.SettingsPath) })
+	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
+	m.width, m.height = 200, 30
+	m, _ = chord(m, "v")
+	if !m.remoteControl || !state.RemoteControl() {
+		t.Error("^X V turns it on, and that's saved")
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "^X V remote control on") {
+		t.Errorf("the header says it's on:\n%s", v)
+	}
+	saveSettings(m.settings()) // another toggle's save keeps it
+	if !state.RemoteControl() {
+		t.Error("a save of the list's own settings keeps remote_control")
+	}
+	m, _ = chord(m, "v")
+	if m.remoteControl || state.RemoteControl() {
+		t.Error("again turns it off")
+	}
+}
+
 func TestHeaderShowsAutoUpdate(t *testing.T) {
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 200, 30

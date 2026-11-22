@@ -220,6 +220,7 @@ type model struct {
 	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
 	autoUpdate        bool   // ^X I: install a new version once you're away (the default)
+	remoteControl     bool   // ^X V: Claude sessions ccs starts or resumes get Remote Control, named (state.RemoteControl)
 	profileStop       func() // ^X Q: a CPU profile is being recorded to profilePath; this stops it
 	profilePath       string
 	autoFailed        string    // the version an automatic install failed for: offered, not retried
@@ -2237,6 +2238,21 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if k == "^x v" && !m.prompting() && !m.acctOpen {
+			stats.Record("tui.remote_control", stats.Key)
+			m.helpOpen = false
+			if err := state.SetRemoteControl(!m.remoteControl); err != nil {
+				m.errorMsg = "Couldn't save the Remote Control setting: " + err.Error()
+				return m, nil
+			}
+			m.remoteControl = !m.remoteControl
+			if m.remoteControl {
+				m.note("Remote Control on: Claude sessions ccs launches, resumes or restarts show on your phone under their ccs name")
+			} else {
+				m.note("Remote Control off for new launches and resumes; a restart keeps it on for a session that had it")
+			}
+			return m, nil
+		}
 		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.pin", stats.Key)
 			m.helpOpen = false
@@ -3050,6 +3066,8 @@ func (m model) shortcuts() [][2]string {
 	add(m.serve.Running, "^X B", "ccs serve's address and QR code; s stops it (asks first), e edits its setup")
 	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
 	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
+	add(!m.remoteControl, "^X V", "Remote Control on, under their names, for sessions ccs starts")
+	add(m.remoteControl, "^X V", "stop turning Remote Control on for sessions ccs starts")
 	add(m.profileStop == nil, "^X Q", "record a CPU profile, for when ccs feels slow")
 	add(m.profileStop != nil, "^X Q", "stop recording and save the CPU profile")
 	add(hasCswap, "^X U", "switch Claude account (cswap)")
@@ -3117,7 +3135,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // and what it does, never a mode's on/off (that shows when no chord is
 // pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
 // which is left unadvertised (headless runs stay out of the header).
-var chordPairs = []string{"A", "auto-focus", "B", "browser (ccs serve)", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "W", "hand over", "X", "prune", "Y", "usage", keyEsc, "cancel"}
+var chordPairs = []string{"A", "auto-focus", "B", "browser (ccs serve)", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "V", "remote control", "W", "hand over", "X", "prune", "Y", "usage", keyEsc, "cancel"}
 
 func toggleHint(key, label string, on bool) string {
 	state := "off"
@@ -3281,6 +3299,9 @@ func (m model) viewScreen() string {
 		}
 		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
 			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
+		}
+		if m.remoteControl { // on: say so, since it changes what every launch does
+			toggles = append(toggles, toggleHint("^X V", "remote control", true))
 		}
 		if m.checkLatest != nil { // a release build: one that updates
 			toggles = append(toggles, toggleHint("^X I", "auto-update", m.autoUpdate))
@@ -4043,9 +4064,10 @@ func loadSettings() (s settings) {
 }
 
 // foreignSettings are the keys of settings.json something other than the
-// list writes (feature_stats, from ccs stats --off): a save carries them
+// list writes (feature_stats, from ccs stats --off; remote_control, from
+// state.SetRemoteControl): a save carries them
 // over. Every other key is the list's, so one it no longer has (hide_*) goes.
-var foreignSettings = []string{"feature_stats"}
+var foreignSettings = []string{"feature_stats", state.RemoteControlKey}
 
 // mergeSettings is s as JSON, with the file's foreign keys kept.
 func mergeSettings(s settings) []byte {

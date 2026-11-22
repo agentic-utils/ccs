@@ -108,6 +108,7 @@ var Registry = []Info{
 	{"tui.auto_focus", "^X A toggle auto-focus"},
 	{"tui.auto_focus_switch", "auto-focus switched to a waiting session's tab"},
 	{"tui.auto_update", "^X I toggle automatic updates"},
+	{"tui.remote_control", "^X V toggle Remote Control for sessions ccs starts"},
 	{"tui.update_install", "install an offered update"},
 	{"tui.update_auto", "an update installed itself while away"},
 	{"tui.reopen", "reopen sessions after a restart"},

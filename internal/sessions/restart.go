@@ -57,6 +57,7 @@ type restartTarget struct {
 	tty      string
 	status   string
 	statusAt int64
+	remote   bool // Remote Control was on: the resumed session turns it on again, named
 }
 
 // findRestartTarget is the one running Claude Code session called name, with
@@ -105,7 +106,7 @@ func findRestartTarget(name, id string) (restartTarget, error) {
 	if !Resumable(f.SessionID, false) {
 		return restartTarget{}, fmt.Errorf("%s (pid %d) has no transcript to resume yet, so a restart would lose it", name, pid)
 	}
-	return restartTarget{pid: pid, id: f.SessionID, cwd: cwd, tty: tty, status: f.Status, statusAt: f.StatusUpdatedAt}, nil
+	return restartTarget{pid: pid, id: f.SessionID, cwd: cwd, tty: tty, status: f.Status, statusAt: f.StatusUpdatedAt, remote: f.BridgeSessionID != ""}, nil
 }
 
 // midTurn: the session is working, or waiting on a menu or prompt mid-turn.
@@ -302,7 +303,7 @@ func stopAndResume(o RestartOpts, t restartTarget, exited bool) (string, error) 
 	} else if err != nil {
 		state.LogActivity("restart %s: stopped, but %v", o.Name, err) // its tab, most likely: the resume goes on
 	}
-	lo := LaunchOpts{Name: o.Name, Resume: t.id, Cwd: t.cwd, Brief: RestartNote + restartText, NoPreamble: true, OnTab: o.OnTab}
+	lo := LaunchOpts{Name: o.Name, Resume: t.id, Cwd: t.cwd, Brief: RestartNote + restartText, NoPreamble: true, OnTab: o.OnTab, RemoteControl: t.remote}
 	l, err := launch(lo)
 	if err != nil && l.TTY == "" {
 		// Nothing opened: a shell or iTerm hiccup. Once more.

@@ -12,8 +12,8 @@ Launch, watch, search and resume your coding CLI sessions across [Claude Code](h
 
 | CLI | Glyph | Data location | Resume | Launch | Messaging / Nudges | PR claims |
 |-----|-------|---------------|--------|--------|--------------------|-----------|
-| **Claude Code** (`claude`) | `✻` (orange) | `~/.claude/projects` & `~/.claude/sessions` | `claude --resume <id>` (and `Ctrl+F` fork) | `ccs launch` | Message socket (fallback: terminal typing) | Process ancestry |
-| **Codex** (`codex`) | `⬡` (grey) | `$CODEX_HOME/sessions` (default `~/.codex`) | `codex resume <id>` (and `Ctrl+F` fork) | `ccs launch --codex` | `codex queue --thread` | `CODEX_THREAD_ID` |
+| **Claude Code** (`claude`) | `✻` (orange) | `~/.claude/projects` & `~/.claude/sessions` | `claude --resume <id>` (and `Ctrl+F` fork) | `ccs launch` | Terminal typing (fallback: message socket) | Process ancestry |
+| **Codex** (`codex`) | `⬡` (grey) | `$CODEX_HOME/sessions` (default `~/.codex`) | `codex resume <id>` (and `Ctrl+F` fork) | `ccs launch --codex` | Terminal typing (fallback: `codex queue`) | `CODEX_THREAD_ID` |
 | **Antigravity CLI** (`agy`) | `✦` (blue) | `$ANTIGRAVITY_APP_DATA_DIR` (default `~/.gemini/antigravity-cli`) | `agy --conversation <id>` | `ccs launch --agy` | Terminal typing (iTerm / tmux) | `ANTIGRAVITY_CONVERSATION_ID` |
 
 ## Features

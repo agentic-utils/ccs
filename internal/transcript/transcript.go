@@ -85,7 +85,7 @@ type Conversation struct {
 	firstPrompt   string         // the first promptId seen
 	morePrompts   bool           // a second promptId: something talked to it after its first prompt
 	CodexExec     bool           // a Codex session started by codex exec
-	PeerQueued    []string       // recent messages from other sessions/ccs the session has queued, for delivery status
+	Queued        []string       // recent messages the session has queued (peers, ccs's socket, or typed while it's busy), for delivery status
 	lastUsageID   string         // one reply spans several lines with the same id and usage; count it once
 	TailApplied   bool           // an unterminated last line parsed as a record, so resuming at ParsedBytes would repeat it
 	Pending       *toolCall      // the last tool call still without a result: what a waiting session asks about
@@ -636,11 +636,11 @@ func parseLine(conv *Conversation, line []byte) bool {
 			noteReceived(conv, text)
 		}
 	case "queue-operation":
-		if text := extractText(raw.Content); raw.Operation == "enqueue" && PeerMessage.MatchString(text) {
-			if len(conv.PeerQueued) >= 20 {
-				conv.PeerQueued = conv.PeerQueued[1:]
+		if text := extractText(raw.Content); raw.Operation == "enqueue" && strings.TrimSpace(text) != "" {
+			if len(conv.Queued) >= 20 {
+				conv.Queued = conv.Queued[1:]
 			}
-			conv.PeerQueued = append(conv.PeerQueued, text)
+			conv.Queued = append(conv.Queued, text)
 		}
 	case "assistant":
 		conv.turnStirred = true

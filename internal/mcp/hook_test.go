@@ -276,7 +276,7 @@ func TestOneServeHoldsPrompts(t *testing.T) {
 func TestHookInstall(t *testing.T) {
 	path := claudeSettingsPath()
 	os.WriteFile(path, []byte(`{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"guard"}]}]}}`), 0o600)
-	t.Cleanup(func() { os.Remove(path); os.Remove(path + ".before-ccs-hook") })
+	t.Cleanup(func() { os.Remove(path); os.Remove(path + backupSuffix); os.Remove(path + removedSuffix) })
 	if msg, err := editHookSettings(path, true); err != nil || !strings.Contains(msg, "added") {
 		t.Fatalf("%q %v", msg, err)
 	}
@@ -454,7 +454,7 @@ func TestPreviewPromptsNeedItsLink(t *testing.T) {
 // Uninstall takes out ccs's hook alone, leaving others in its group.
 func TestHookUninstallKeepsOtherHooks(t *testing.T) {
 	path := claudeSettingsPath()
-	t.Cleanup(func() { os.Remove(path); os.Remove(path + ".before-ccs-hook") })
+	t.Cleanup(func() { os.Remove(path); os.Remove(path + backupSuffix); os.Remove(path + removedSuffix) })
 	os.WriteFile(path, []byte(`{"hooks":{"PermissionRequest":[{"matcher":"*","hooks":[{"type":"command","command":"policy-guard"},{"type":"command","command":"/opt/homebrew/bin/ccs hook permission","timeout":1860}]},{"matcher":"Bash","hooks":[{"type":"command","command":"/x/notccs hook permission"}]}]}}`), 0o600)
 	if msg, err := editHookSettings(path, false); err != nil || !strings.Contains(msg, "removed") {
 		t.Fatalf("%q %v", msg, err)

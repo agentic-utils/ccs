@@ -10,8 +10,10 @@ package transcript
 // Left raw on purpose, because code matches them rather than draws them:
 // SessionID, FilePath, PeerRef.Key and .Addr (the other end's copy and
 // socket path are compared byte for byte), Pending's raw tool input (decoded
-// where it is drawn, and cleaned after decoding: DecodeClean), and PRs
-// (validated as github.com addresses before use).
+// where it is drawn, and cleaned after decoding: DecodeClean), PRs
+// (validated as github.com addresses before use), and a queued message's key
+// and queueTaken (matched against the copy taken in; its Text is cleaned by
+// noteEnqueued, not cleanSince, since the capped queue can keep its length).
 
 // ingestMark is how far each record list had got before a line was applied:
 // everything at or past it is new and still raw.

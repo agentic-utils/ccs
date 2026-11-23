@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -1239,5 +1240,52 @@ func TestArtifactsInHeaderAndLinksPopup(t *testing.T) {
 	v := strip2(m.View())
 	if !strings.Contains(v, "› ◇ Shared Notes · opened") || !strings.Contains(v, "◇ Made-up Plan claude.ai/artifact/Older1") {
 		t.Errorf("^O lists them by title, with their address:\n%s", v)
+	}
+}
+
+// A busy session's queued messages show at the end of its preview as Claude
+// Code draws them, the text then a dim "⎿ Queued", and become an ordinary
+// message once taken in. An idle session shows none.
+func TestPreviewShowsQueuedMessages(t *testing.T) {
+	conv := transcript.Conversation{SessionID: "q1"}
+	for _, l := range []string{
+		`{"type":"user","timestamp":"2026-11-23T10:00:00Z","message":{"role":"user","content":"tidy the docs"}}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-23T10:00:05Z","content":"and the readme"}`,
+		`{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-23T10:00:06Z","content":"<cross-session-message from-name=\"planner\">\nhold the release\n</cross-session-message>"}`,
+	} {
+		transcript.ParseLine(&conv, []byte(l))
+	}
+	m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
+	m.width, m.height = 120, 40
+	draw := func() string { return strip2(strings.Join(m.previewLines(), "\n")) }
+
+	m.chatStatus = map[string]sessions.SessionStat{"q1": {Status: "busy"}}
+	got := draw()
+	if !strings.Contains(got, "❯ and the readme") || !strings.Contains(got, "From planner") || strings.Count(got, "⎿ Queued") != 2 {
+		t.Fatalf("busy: %q", got)
+	}
+	if strings.Index(got, "tidy the docs") > strings.Index(got, "and the readme") {
+		t.Errorf("queued messages come after the conversation: %q", got)
+	}
+	if m.items[0].conv.Queue == nil || len(m.items[0].conv.Messages) != 1 {
+		t.Errorf("the queue isn't a message: %+v", m.items[0].conv.Messages)
+	}
+
+	m.chatStatus["q1"] = sessions.SessionStat{Status: "idle"}
+	if got := draw(); strings.Contains(got, "Queued") {
+		t.Errorf("idle: %q", got)
+	}
+
+	m.chatStatus["q1"] = sessions.SessionStat{Status: "busy"}
+	for _, l := range []string{
+		`{"type":"queue-operation","operation":"remove","timestamp":"2026-11-23T10:00:09Z","content":"and the readme","reason":"absorbed_mid_turn"}`,
+		`{"type":"attachment","timestamp":"2026-11-23T10:00:05Z","attachment":{"type":"queued_command","prompt":"and the readme","commandMode":"prompt"}}`,
+	} {
+		transcript.ParseLine(&m.items[0].conv, []byte(l))
+	}
+	m.filtered[0].conv = m.items[0].conv
+	got = draw()
+	if strings.Count(got, "⎿ Queued") != 1 || !strings.Contains(got, "❯ and the readme") || strings.Index(got, "and the readme") > strings.Index(got, "From planner") {
+		t.Errorf("taken in, the readme is a message above the queue: %q", got)
 	}
 }

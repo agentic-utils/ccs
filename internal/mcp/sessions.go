@@ -90,6 +90,7 @@ type SessionRow struct {
 	WaitingFor  string   `json:"waiting_for,omitempty"` // with waiting: "permission prompt", "input needed"
 	Question    string   `json:"question,omitempty"`    // with waiting: the menu or the tool call it asks about
 	Asked       bool     `json:"asked,omitempty"`       // idle, and its last message ends in a question
+	Queued      []string `json:"queued,omitempty"`      // busy or waiting: messages it has queued and not taken in yet
 	LastError   string   `json:"last_error,omitempty"`  // the latest API error, until a later reply succeeds
 	LastErrorAt string   `json:"last_error_at,omitempty"`
 	PRs         []string `json:"prs,omitempty"`          // every PR it or its subagents opened, merged or touched
@@ -143,6 +144,11 @@ func sessionRow(conv transcript.Conversation, l sessions.LiveSession, ok bool, n
 		r.Question = conv.PendingAsk()
 	case "idle":
 		r.Asked = conv.AskedLast()
+	}
+	if st.Status == "busy" || st.Status == "waiting" { // an idle session takes a message in as it arrives
+		for _, q := range conv.QueuedNow() {
+			r.Queued = append(r.Queued, q.Plain())
+		}
 	}
 	since, _ := time.Parse(time.ANSIC, strings.Join(strings.Fields(l.Start), " "))
 	r.Tasks = len(transcript.RunningTasks(conv, since, now))
@@ -234,6 +240,9 @@ func (r SessionRow) details(now time.Time) []string {
 	}
 	if r.Asked {
 		out = append(out, "its last message asks something")
+	}
+	for _, q := range r.Queued {
+		out = append(out, "queued: "+strings.ReplaceAll(q, "\n", "\n  "))
 	}
 	if r.LastError != "" {
 		at := ""

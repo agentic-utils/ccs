@@ -79,34 +79,36 @@ type Conversation struct {
 	// and whether a user line was seen (it decides Spawned).
 	ParsedBytes   int64
 	sawUser       bool
-	firstCwd      string         // the folder its first user line was in
-	lastCwd       string         // the folder its latest user line was in; Cwd falls back to it when firstCwd is gone (resolveCwd)
-	sdkCLI        bool           // its first user line's entrypoint is sdk-cli (claude -p)
-	firstPrompt   string         // the first promptId seen
-	morePrompts   bool           // a second promptId: something talked to it after its first prompt
-	CodexExec     bool           // a Codex session started by codex exec
-	Queued        []string       // recent messages the session has queued (peers, ccs's socket, or typed while it's busy), for delivery status
-	lastUsageID   string         // one reply spans several lines with the same id and usage; count it once
-	TailApplied   bool           // an unterminated last line parsed as a record, so resuming at ParsedBytes would repeat it
-	Pending       *toolCall      // the last tool call still without a result: what a waiting session asks about
-	PRs           []string       // its PRs, first touched first: Claude Code's pr-link records, and those gh pr create/merge printed (ghPRCall)
-	GHCalls       []string       // gh pr create/merge calls awaiting their output
-	Artifacts     []Artifact     // claude.ai pages it published, opened or read with the Artifact tool, first touched first (artifacts.go)
-	artifactCalls []artifactCall // Artifact calls awaiting their result
-	Spawns        []SpawnCmd     // claude -p commands it ran, to find the sessions they started
-	Launches      []string       // names it started with launch_session or ccs launch, oldest first: evidence for ccs reorg
-	Peers         []PeerRef      // its messages to and from other sessions, to link the two ends
-	outputs       []replyOutput  // each reply's output tokens, for the working line's count this turn
-	turnEnd       time.Time      // the last turn end the transcript records (turn_duration, stop_hook_summary, Codex's task_complete)
-	turnBegan     time.Time      // the first user line after turnEnd: when the next turn began; zero until one
-	turnStirred   bool           // a user or assistant line (or a queued prompt) came after turnEnd, in file order
-	Tools         []ToolUse      // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
-	Asks          []Ask          // its AskUserQuestion menus and their answers (asks.go), for read_session; not messages either
-	PeerNotes     map[int]string // set on the copy the preview draws: each peer message's other end (peerLabels)
-	calls         []BgTask       // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
-	Tasks         []BgTask       // its background tasks (tasks.go)
-	Schedules     []Schedule     // its ScheduleWakeup and CronCreate wake-ups (schedules.go)
-	schedCalls    []schedCall    // ScheduleWakeup/CronCreate/CronDelete calls awaiting their result
+	firstCwd      string          // the folder its first user line was in
+	lastCwd       string          // the folder its latest user line was in; Cwd falls back to it when firstCwd is gone (resolveCwd)
+	sdkCLI        bool            // its first user line's entrypoint is sdk-cli (claude -p)
+	firstPrompt   string          // the first promptId seen
+	morePrompts   bool            // a second promptId: something talked to it after its first prompt
+	CodexExec     bool            // a Codex session started by codex exec
+	Queued        []string        // recent messages the session has queued (peers, ccs's socket, or typed while it's busy), for delivery status
+	Queue         []QueuedMessage // messages still in its queue, not taken in yet (queue.go); QueuedNow is what to show
+	queueTaken    []string        // keys of queued messages a remove took out, until the copy taken in is seen (queue.go)
+	lastUsageID   string          // one reply spans several lines with the same id and usage; count it once
+	TailApplied   bool            // an unterminated last line parsed as a record, so resuming at ParsedBytes would repeat it
+	Pending       *toolCall       // the last tool call still without a result: what a waiting session asks about
+	PRs           []string        // its PRs, first touched first: Claude Code's pr-link records, and those gh pr create/merge printed (ghPRCall)
+	GHCalls       []string        // gh pr create/merge calls awaiting their output
+	Artifacts     []Artifact      // claude.ai pages it published, opened or read with the Artifact tool, first touched first (artifacts.go)
+	artifactCalls []artifactCall  // Artifact calls awaiting their result
+	Spawns        []SpawnCmd      // claude -p commands it ran, to find the sessions they started
+	Launches      []string        // names it started with launch_session or ccs launch, oldest first: evidence for ccs reorg
+	Peers         []PeerRef       // its messages to and from other sessions, to link the two ends
+	outputs       []replyOutput   // each reply's output tokens, for the working line's count this turn
+	turnEnd       time.Time       // the last turn end the transcript records (turn_duration, stop_hook_summary, Codex's task_complete)
+	turnBegan     time.Time       // the first user line after turnEnd: when the next turn began; zero until one
+	turnStirred   bool            // a user or assistant line (or a queued prompt) came after turnEnd, in file order
+	Tools         []ToolUse       // its tool calls and turn ends, for the preview; not messages, so counts, times and search ignore them
+	Asks          []Ask           // its AskUserQuestion menus and their answers (asks.go), for read_session; not messages either
+	PeerNotes     map[int]string  // set on the copy the preview draws: each peer message's other end (peerLabels)
+	calls         []BgTask        // Bash/Agent/Monitor calls awaiting the result that says whether they went to the background
+	Tasks         []BgTask        // its background tasks (tasks.go)
+	Schedules     []Schedule      // its ScheduleWakeup and CronCreate wake-ups (schedules.go)
+	schedCalls    []schedCall     // ScheduleWakeup/CronCreate/CronDelete calls awaiting their result
 
 	// ReadAt is when this copy was read from disk (the stat before the read).
 	// Between a full scan and the live tick, the later read wins; file size
@@ -155,6 +157,7 @@ type RawMessage struct {
 	Attachment json.RawMessage `json:"attachment"`
 	Operation  string          `json:"operation"` // queue-operation: enqueue, dequeue, remove
 	Content    json.RawMessage `json:"content"`   // queue-operation: what was queued
+	Reason     string          `json:"reason"`    // queue-operation remove: why it left (absorbed_mid_turn: taken in mid-turn)
 }
 
 // queuedCommand is an attachment record for a message that arrived mid-turn.
@@ -601,6 +604,7 @@ func parseLine(conv *Conversation, line []byte) bool {
 		conv.turnStirred = true
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
 		text := extractText(raw.Message.Content)
+		noteUnqueued(conv, text) // a queued message taken in at a turn's start (queue.go)
 		// "/model" logs its result as command output; a switch after the last
 		// reply is the model the session will use next.
 		if m := modelSwitch.FindStringSubmatch(AnsiCodes.ReplaceAllString(text, "")); m != nil {
@@ -622,11 +626,15 @@ func parseLine(conv *Conversation, line []byte) bool {
 		}
 	case "attachment":
 		var a queuedCommand
-		if json.Unmarshal(raw.Attachment, &a) != nil || a.Type != "queued_command" || a.CommandMode != "prompt" {
+		if json.Unmarshal(raw.Attachment, &a) != nil || a.Type != "queued_command" {
+			break
+		}
+		text := extractText(a.Prompt)
+		noteUnqueued(conv, text) // taken in mid-turn (queue.go)
+		if a.CommandMode != "prompt" {
 			break
 		}
 		conv.turnStirred = true
-		text := extractText(a.Prompt)
 		if isChannelEvent(text) {
 			conv.Messages = append(conv.Messages, Message{Role: "channel", Text: text, Ts: raw.Timestamp})
 			break
@@ -636,11 +644,18 @@ func parseLine(conv *Conversation, line []byte) bool {
 			noteReceived(conv, text)
 		}
 	case "queue-operation":
-		if text := extractText(raw.Content); raw.Operation == "enqueue" && strings.TrimSpace(text) != "" {
-			if len(conv.Queued) >= 20 {
-				conv.Queued = conv.Queued[1:]
+		text := extractText(raw.Content)
+		switch raw.Operation {
+		case "enqueue":
+			if strings.TrimSpace(text) != "" {
+				if len(conv.Queued) >= 20 {
+					conv.Queued = conv.Queued[1:]
+				}
+				conv.Queued = append(conv.Queued, CleanText(text)) // compared with what ccs sent, which is clean
 			}
-			conv.Queued = append(conv.Queued, text)
+			noteEnqueued(conv, text, raw.Timestamp)
+		case "remove", "popAll", "popOne":
+			noteRemoved(conv, text, raw.Operation == "remove" && raw.Reason == "absorbed_mid_turn")
 		}
 	case "assistant":
 		conv.turnStirred = true

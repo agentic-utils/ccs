@@ -121,13 +121,8 @@ type model struct {
 	opened           map[string]time.Time // sessions ccs opened in a tab, until their session file appears
 	renameIndex      int                  // Index of item being renamed
 	renameInput      textinput.Model
-	launchStep       int // ^X N: 1 choosing the agent, 2 typing the new session's name, 3 its brief
-	launchInput      textinput.Model
-	launchName       string                        // the name typed at step 2
-	launchAgents     []launchAgent                 // ^X N's agents: those on PATH when it opened
-	launchAgentIdx   int                           // the one chosen, in launchAgents
+	launch           *launchForm                   // ^X N's popup while open
 	launchAgent      string                        // the agent ^X N last started (launch_agent), "" for Claude
-	launchCwd        string                        // where it starts: the selected session's folder
 	errorMsg         string                        // Show deletion/prune errors
 	noteMsg          string                        // errorMsg set by note(): information, not an error, so not red
 	preview          *previewCache                 // memoised preview lines for the selected conversation
@@ -469,7 +464,7 @@ func (m model) stoppable(id string) bool {
 
 // prompting reports an open rename, delete, prune or stop prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmHandover != "" || m.launchStep > 0
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmHandover != "" || m.launch != nil
 }
 
 // restartable reports whether ^X R can restart the session: a live Claude
@@ -1944,6 +1939,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.setup != nil { // owns the keyboard until closed
 			return m.serveSetupKey(msg)
 		}
+		if m.launch != nil { // owns the keyboard until closed
+			return m.launchKey(msg)
+		}
 		if m.serveQROpen { // owns the keyboard until closed
 			return m.serveQRKey(k)
 		}
@@ -2217,27 +2215,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^x n" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.new_session", stats.Key)
 			m.helpOpen = false
-			if !sessions.CanOpenTabs() {
-				m.errorMsg = "^X N opens the new session in an iTerm tab or tmux window, and this is neither"
-				return m, nil
-			}
-			m.launchCwd, _ = os.Getwd()
-			if len(m.filtered) > 0 {
-				if cwd := m.filtered[m.cursor].conv.Cwd; cwd != "" && cwd != "unknown" {
-					m.launchCwd = cwd
-				}
-			}
-			m.launchAgents = availableAgents()
-			if len(m.launchAgents) == 0 {
-				m.errorMsg = "^X N starts claude, codex or agy, and none is on PATH"
-				return m, nil
-			}
-			m.launchAgentIdx = agentIndex(m.launchAgents, m.launchAgent)
-			m.launchStep, m.errorMsg = 1, ""
-			if len(m.launchAgents) == 1 { // nothing to choose
-				m.launchStep = 2
-			}
-			m.launchInput = sessions.LaunchPrompt("New session name: ", "")
+			m.openLaunch()
 			return m, nil
 		}
 		if k == "^x q" && !m.prompting() && !m.acctOpen {
@@ -2407,58 +2385,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			return m, nil
-		}
-		if m.launchStep > 0 {
-			switch msg.String() {
-			case "tab":
-				m.cycleAgent(1)
-				return m, nil
-			case "shift+tab":
-				m.cycleAgent(-1)
-				return m, nil
-			case "right", "left":
-				if m.launchStep == 1 { // the text boxes keep their arrows
-					m.cycleAgent(map[string]int{"right": 1, "left": -1}[msg.String()])
-					return m, nil
-				}
-			case "enter":
-				v := strings.TrimSpace(m.launchInput.Value())
-				if m.launchStep == 1 {
-					m.launchStep = 2
-					return m, nil
-				}
-				if m.launchStep == 2 {
-					if !state.SessionName.MatchString(v) {
-						m.errorMsg = "A session name is letters, digits, '.', '_' and '-'"
-						return m, nil
-					}
-					m.launchName, m.launchStep = v, 3
-					m.launchInput = sessions.LaunchPrompt("Brief: ", "")
-					m.errorMsg = ""
-					return m, nil
-				}
-				if v == "" {
-					m.errorMsg = "Type its first prompt"
-					return m, nil
-				}
-				a := m.launchAgentNow()
-				m.launchStep, m.errorMsg = 0, ""
-				if a.id != m.launchAgent {
-					m.launchAgent = a.id
-					saveSettings(m.settings())
-				}
-				m.note("Starting " + m.launchName + " (" + a.label + ")…")
-				return m, launchCmd(launchOptsFor(a, m.launchName, v, m.launchCwd))
-			case "esc", "ctrl+c":
-				m.launchStep = 0
-				return m, nil
-			}
-			if m.launchStep == 1 {
-				return m, nil // the agent row takes no text
-			}
-			var cmd tea.Cmd
-			m.launchInput, cmd = editKey(m.launchInput, msg)
-			return m, cmd
 		}
 		if m.renaming {
 			switch msg.String() {
@@ -2876,9 +2802,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case m.renaming:
 			m.renameInput, cmd = editKey(m.renameInput, msg)
 			return m, cmd
-		case m.launchStep > 1:
-			m.launchInput, cmd = editKey(m.launchInput, msg)
-			return m, cmd
 		case m.chatFocus:
 			m.chatInput, cmd = editKey(m.chatInput, msg)
 			return m, cmd
@@ -2942,6 +2865,8 @@ func (m model) popupOpen() bool {
 // note box. Nil when none of those has it.
 func (m *model) keyboardBox() *textinput.Model {
 	switch {
+	case m.launch != nil:
+		return m.launch.box()
 	case m.setup != nil:
 		if m.setup.step == setupForm && m.setup.focus >= 0 && m.setup.focus < len(m.setup.fields) {
 			return &m.setup.fields[m.setup.focus]
@@ -2976,6 +2901,7 @@ func (m model) overPopups() []popup {
 		{m.rcOpen, model.rcPopup},
 		{m.serveQROpen, model.serveQRPopup},
 		{m.setup != nil, model.serveSetupPopup},
+		{m.launch != nil, model.launchPopup},
 		{len(m.reopen) > 0, model.reopenPopup},
 		{m.reorgPlan != nil, model.reorgPopup},
 		{m.offerShown(), model.orchestratorPopup},
@@ -3390,9 +3316,7 @@ func (m model) viewScreen() string {
 	// Search line or delete confirmation
 	var sections []string
 	var inputSection string
-	if m.launchStep > 0 {
-		sections = append(sections, m.launchLine())
-	} else if m.renaming {
+	if m.renaming {
 		sections = append(sections, "  "+m.renameInput.View()+"  \033[90m"+hints(keyEnter, "save", keyEsc, "cancel")+"\033[0m")
 	} else if m.confirmPrune {
 		conv := m.filtered[m.pruneIndex].conv

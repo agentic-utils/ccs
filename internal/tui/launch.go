@@ -1,11 +1,15 @@
 package tui
 
 import (
+	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/agentic-utils/ccs/internal/sessions"
+	"github.com/agentic-utils/ccs/internal/state"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -103,41 +107,10 @@ func agentIndex(agents []launchAgent, id string) int {
 	return 0
 }
 
-// launchAgentNow is the agent ^X N has chosen.
-func (m model) launchAgentNow() launchAgent {
-	if m.launchAgentIdx < 0 || m.launchAgentIdx >= len(m.launchAgents) {
-		return launchAgents[0]
-	}
-	return m.launchAgents[m.launchAgentIdx]
-}
-
-// cycleAgent moves ^X N's choice by d, wrapping.
-func (m *model) cycleAgent(d int) {
-	if n := len(m.launchAgents); n > 1 {
-		m.launchAgentIdx = ((m.launchAgentIdx+d)%n + n) % n
-	}
-}
-
 // agentGlyph is the agent's list glyph in its colour.
 func agentGlyph(id string) string {
 	g, c := transcript.AgentGlyph(transcript.Conversation{Kind: id})
 	return "\033[" + c + "m" + g + "\033[0m"
-}
-
-// agentRow is ^X N's agent choice as one row: every installed agent, the
-// chosen one bold and underlined.
-func (m model) agentRow() string {
-	parts := make([]string, len(m.launchAgents))
-	for i, a := range m.launchAgents {
-		label := a.label
-		if i == m.launchAgentIdx {
-			label = "\033[1;4m" + label + "\033[0m"
-		} else {
-			label = "\033[90m" + label + "\033[0m"
-		}
-		parts[i] = agentGlyph(a.id) + " " + label
-	}
-	return "Agent: " + strings.Join(parts, "   ")
 }
 
 // launchOptsFor is ^X N's launch with the chosen agent.
@@ -145,18 +118,208 @@ func launchOptsFor(a launchAgent, name, brief, cwd string) sessions.LaunchOpts {
 	return sessions.LaunchOpts{Name: name, Brief: brief, Cwd: cwd, Codex: a.id == transcript.KindCodex, Agy: a.id == transcript.KindAgy}
 }
 
-// launchLine is ^X N's row under the header: the agent choice at step 1,
-// then the name or brief box with the agent it will start.
-func (m model) launchLine() string {
-	where := "\033[90min " + sessions.TildePath(m.launchCwd) + "  "
-	if m.launchStep == 1 {
-		return "  " + m.agentRow() + "  " + where + hints("←/→", "agent", keyEnter, "next", keyEsc, "cancel") + "\033[0m"
+// The new-session popup's fields, top to bottom.
+const (
+	launchFieldAgent = iota
+	launchFieldName
+	launchFieldBrief
+	launchFields
+)
+
+// launchForm is ^X N's popup: every field on screen at once. It owns the
+// keyboard while open, like ^X B's setup form.
+type launchForm struct {
+	agents      []launchAgent // those on PATH when it opened
+	agent       int           // the one chosen, in agents
+	focus       int           // the field with the keyboard
+	name, brief textinput.Model
+	cwd         string // where it starts: the selected session's folder
+	err         string // why Enter didn't start it, shown in the popup
+}
+
+func newLaunchForm(agents []launchAgent, last, cwd string) *launchForm {
+	f := &launchForm{agents: agents, agent: agentIndex(agents, last), cwd: cwd}
+	f.name = sessions.LaunchPrompt("", "")
+	f.brief = sessions.LaunchPrompt("", "")
+	f.focusField(launchFieldAgent)
+	if len(agents) == 1 { // nothing to choose
+		f.focusField(launchFieldName)
 	}
-	a := m.launchAgentNow()
-	next := map[bool]string{true: "next", false: "start it"}[m.launchStep == 2]
-	keys := []string{keyEnter, next, keyEsc, "cancel"}
-	if len(m.launchAgents) > 1 {
-		keys = append([]string{keyTab, "agent"}, keys...)
+	return f
+}
+
+// focusField gives field i the keyboard, wrapping; the agent row is passed
+// over when there's only one agent.
+func (f *launchForm) focusField(i int) {
+	f.focus = (i + launchFields) % launchFields
+	f.name.Blur()
+	f.brief.Blur()
+	switch f.focus {
+	case launchFieldName:
+		f.name.Focus()
+	case launchFieldBrief:
+		f.brief.Focus()
 	}
-	return "  " + m.launchInput.View() + "  " + agentGlyph(a.id) + " \033[90m" + a.label + "  " + where + hints(keys...) + "\033[0m"
+}
+
+// move goes d fields along, skipping the agent row with one agent.
+func (f *launchForm) move(d int) {
+	f.focusField(f.focus + d)
+	if f.focus == launchFieldAgent && len(f.agents) < 2 {
+		f.focusField(f.focus + d)
+	}
+}
+
+// chosen is the agent the form will start.
+func (f *launchForm) chosen() launchAgent {
+	if f.agent < 0 || f.agent >= len(f.agents) {
+		return launchAgents[0]
+	}
+	return f.agents[f.agent]
+}
+
+// cycleAgent moves the choice by d, wrapping.
+func (f *launchForm) cycleAgent(d int) {
+	if n := len(f.agents); n > 1 {
+		f.agent = ((f.agent+d)%n + n) % n
+	}
+}
+
+// box is the focused text field, nil on the agent row.
+func (f *launchForm) box() *textinput.Model {
+	switch f.focus {
+	case launchFieldName:
+		return &f.name
+	case launchFieldBrief:
+		return &f.brief
+	}
+	return nil
+}
+
+// openLaunch is ^X N: the popup, starting in the selected session's folder
+// on the agent chosen last.
+func (m *model) openLaunch() {
+	if !sessions.CanOpenTabs() {
+		m.errorMsg = "^X N opens the new session in an iTerm tab or tmux window, and this is neither"
+		return
+	}
+	agents := availableAgents()
+	if len(agents) == 0 {
+		m.errorMsg = "^X N starts claude, codex or agy, and none is on PATH"
+		return
+	}
+	cwd, _ := os.Getwd()
+	if len(m.filtered) > 0 {
+		if c := m.filtered[m.cursor].conv.Cwd; c != "" && c != "unknown" {
+			cwd = c
+		}
+	}
+	m.launch, m.errorMsg = newLaunchForm(agents, m.launchAgent, cwd), ""
+}
+
+// launchKey handles a key while the popup is open. Tab and ↑/↓ move between
+// fields, ←/→ change the agent on its row (and the cursor in a text box),
+// Enter goes to the next field and starts it from the brief, Esc cancels.
+func (m model) launchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	f := m.launch
+	switch k := msg.String(); k {
+	case "esc", "ctrl+c":
+		m.launch = nil
+		return m, nil
+	case "tab", "down":
+		f.move(1)
+		return m, nil
+	case "shift+tab", "up":
+		f.move(-1)
+		return m, nil
+	case "left", "right":
+		if f.focus == launchFieldAgent {
+			f.cycleAgent(map[string]int{"right": 1, "left": -1}[k])
+			return m, nil
+		}
+	case "enter":
+		if f.focus != launchFieldBrief {
+			f.move(1)
+			return m, nil
+		}
+		return m.startLaunch()
+	}
+	if b := f.box(); b != nil {
+		var cmd tea.Cmd
+		*b, cmd = editKey(*b, msg)
+		f.err = ""
+		return m, cmd
+	}
+	return m, nil // the agent row takes no text
+}
+
+// startLaunch checks the form and starts the session; a bad field gets the
+// keyboard with the reason in the popup.
+func (m model) startLaunch() (tea.Model, tea.Cmd) {
+	f := m.launch
+	name, brief := strings.TrimSpace(f.name.Value()), strings.TrimSpace(f.brief.Value())
+	switch {
+	case !state.SessionName.MatchString(name):
+		f.err = "A session name is letters, digits, '.', '_' and '-'"
+		f.focusField(launchFieldName)
+		return m, nil
+	case brief == "":
+		f.err = "Type its first prompt"
+		return m, nil
+	}
+	a := f.chosen()
+	m.launch = nil
+	if a.id != m.launchAgent {
+		m.launchAgent = a.id
+		saveSettings(m.settings())
+	}
+	m.note("Starting " + name + " (" + a.label + ")…")
+	return m, launchCmd(launchOptsFor(a, name, brief, f.cwd))
+}
+
+// launchPopup draws the new-session form.
+func (m model) launchPopup() string {
+	f := m.launch
+	dim := func(s string) string { return "\033[90m" + s + "\033[0m" }
+	width := max(min(m.width-14, 80), 40)
+	name, brief := f.name, f.brief // drawn at this width; the form keeps its own
+	name.Width, brief.Width = width-10, width-10
+	var b strings.Builder
+	b.WriteString("\033[1mNew session\033[0m\n\n")
+	mark := func(i int) string {
+		if i == f.focus {
+			return "\033[1;36m❯\033[0m "
+		}
+		return "  "
+	}
+	parts := make([]string, len(f.agents))
+	for i, a := range f.agents {
+		label := dim(a.label)
+		if i == f.agent {
+			label = "\033[1;4m" + a.label + "\033[0m"
+		}
+		parts[i] = agentGlyph(a.id) + " " + label
+	}
+	b.WriteString(mark(launchFieldAgent) + "Agent  " + strings.Join(parts, "   ") + "\n")
+	b.WriteString(mark(launchFieldName) + "Name   " + name.View() + "\n")
+	b.WriteString(mark(launchFieldBrief) + "Brief  " + brief.View() + "\n")
+	b.WriteString("\n" + dim("in "+sessions.TildePath(f.cwd)) + "\n")
+	if f.err != "" {
+		b.WriteString("\n" + lipgloss.NewStyle().Width(width).Render("\033[31m"+f.err+"\033[0m") + "\n")
+	}
+	keys := []string{keyTab + " ↑↓", "field"}
+	if len(f.agents) > 1 {
+		keys = append(keys, "←/→", "agent")
+	}
+	enter := "next"
+	if f.focus == launchFieldBrief {
+		enter = "start it"
+	}
+	keys = append(keys, keyEnter, enter, keyEsc, "cancel")
+	b.WriteString("\n" + dim(hints(keys...)))
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 2).
+		Render(b.String())
 }

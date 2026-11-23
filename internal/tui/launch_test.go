@@ -52,29 +52,33 @@ func TestLaunchAndCloseFromTheList(t *testing.T) {
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
 	m.width, m.height = 120, 30
 	m, _ = chord(m, "n")
-	if m.launchStep != 1 || m.launchCwd != cwd || !strings.Contains(strip2(m.View()), "Agent:") {
-		t.Fatalf("^X N asks for the agent first, starting in the selected session's folder: step %d, cwd %q", m.launchStep, m.launchCwd)
+	if m.launch == nil || m.launch.cwd != cwd || !strings.Contains(strip2(m.View()), "New session") {
+		t.Fatalf("^X N opens the popup, starting in the selected session's folder: %+v", m.launch)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.launchStep != 2 || !strings.Contains(strip2(m.View()), "New session name:") {
-		t.Fatalf("then its name: step %d", m.launchStep)
+	if m.launch.focus != launchFieldName {
+		t.Fatalf("enter on the agent row goes to the name: %d", m.launch.focus)
 	}
 	for _, r := range "bad name" {
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.launchStep != 2 || m.errorMsg == "" {
-		t.Fatalf("a name with a space is refused: %d %q", m.launchStep, m.errorMsg)
-	}
-	m.launchInput.SetValue("helper")
+	m.launch.brief.SetValue("look into it")
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.launchStep != 3 || !strings.Contains(strip2(m.View()), "Brief:") {
-		t.Fatalf("then its brief: %d", m.launchStep)
+	if m.launch == nil || m.launch.focus != launchFieldName || !strings.Contains(m.launch.err, "session name") {
+		t.Fatalf("a name with a space is refused, the name field taking the keyboard back: %+v", m.launch)
 	}
-	m.launchInput.SetValue("look into it")
+	m.launch.name.SetValue("helper")
+	m.launch.brief.SetValue("")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyTab})
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil || m.launchStep != 0 {
-		t.Fatal("enter starts it")
+	if cmd != nil || m.launch == nil || m.launch.err != "Type its first prompt" {
+		t.Fatalf("an empty brief is refused: %+v", m.launch)
+	}
+	m.launch.brief.SetValue("look into it")
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || m.launch != nil {
+		t.Fatal("enter on the brief starts it and closes the popup")
 	}
 	res, _ := m.Update(cmd())
 	m = res.(model)
@@ -191,8 +195,9 @@ func TestRestartFromTheList(t *testing.T) {
 	}
 }
 
-// ^X N's agent row: only the agents on PATH, ←/→ and Tab move the choice,
-// the launch runs the chosen one and the choice is saved for next time.
+// ^X N's popup: only the agents on PATH, ←/→ on the agent row change it,
+// Tab and ↑/↓ move between fields, the launch runs the chosen agent and the
+// choice is saved for next time.
 func TestLaunchAgentChoice(t *testing.T) {
 	stubLaunch(t)
 	sessionsFixture(t)
@@ -207,45 +212,62 @@ func TestLaunchAgentChoice(t *testing.T) {
 		return "", errors.New("no tab in tests")
 	}
 	cwd := t.TempDir()
-	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
-	m.width, m.height = 160, 30
-
+	newModel := func() model {
+		m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
+		m.width, m.height = 160, 30
+		return m
+	}
+	m := newModel()
 	m, _ = chord(m, "n")
 	view := strip2(m.View())
-	if !strings.Contains(view, "Agent: ✻ Claude   ⬡ Codex   ✦ Gemini") || m.launchAgentNow().id != "claude" {
-		t.Fatalf("the first default is Claude, all three offered: %q", m.launchAgentNow().id)
+	for _, want := range []string{"Agent  ✻ Claude   ⬡ Codex   ✦ Gemini", "Name", "Brief", "tab ↑↓ field"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("the popup shows %q:\n%s", want, view)
+		}
+	}
+	if m.launch.chosen().id != "claude" || m.launch.focus != launchFieldAgent {
+		t.Fatalf("the first default is Claude, on the agent row: %q %d", m.launch.chosen().id, m.launch.focus)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRight})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRight})
-	if m.launchAgentNow().id != "agy" {
-		t.Fatalf("→ twice is Gemini: %q", m.launchAgentNow().id)
+	if m.launch.chosen().id != "agy" {
+		t.Fatalf("→ twice is Gemini: %q", m.launch.chosen().id)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyTab})
-	if m.launchAgentNow().id != "claude" {
-		t.Fatalf("tab wraps round to Claude: %q", m.launchAgentNow().id)
-	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRight})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyLeft})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyLeft})
-	if m.launchAgentNow().id != "codex" {
-		t.Fatalf("← twice from Claude is Codex: %q", m.launchAgentNow().id)
+	if m.launch.chosen().id != "codex" {
+		t.Fatalf("→ wraps to Claude, ← twice is Codex: %q", m.launch.chosen().id)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-	if m.launchInput.Value() != "" {
+	if m.launch.name.Value() != "" || m.launch.brief.Value() != "" {
 		t.Fatal("the agent row takes no text")
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if m.launch.focus != launchFieldBrief {
+		t.Fatalf("shift+tab from the agent row wraps to the brief: %d", m.launch.focus)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.launch.focus != launchFieldName {
+		t.Fatalf("↓ twice from the brief is the name: %d", m.launch.focus)
+	}
 	for _, r := range "helper" {
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyLeft}) // the name box keeps its arrows
-	if m.launchAgentNow().id != "codex" || !strings.Contains(strip2(m.View()), "⬡ Codex") {
-		t.Fatalf("← in the name box moves the cursor, not the agent: %q", m.launchAgentNow().id)
+	if m.launch.chosen().id != "codex" || m.launch.name.Value() != "helper" {
+		t.Fatalf("← in the name box moves the cursor, not the agent: %q %q", m.launch.chosen().id, m.launch.name.Value())
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m.launchInput.SetValue("look into it")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.launch.focus != launchFieldAgent {
+		t.Fatalf("↑ from the name is the agent row: %d", m.launch.focus)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyUp})
+	m.launch.brief.SetValue("look into it")
 	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("enter starts it")
+		t.Fatal("enter on the brief starts it")
 	}
 	cmd()
 	if !strings.Contains(script, "/bin/codex") || strings.Contains(script, "/bin/claude") {
@@ -255,41 +277,48 @@ func TestLaunchAgentChoice(t *testing.T) {
 		t.Errorf("the choice is saved: %q", s.LaunchAgent)
 	}
 
-	m2 := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
-	m2.width, m2.height = 160, 30
+	m2 := newModel()
 	m2.launchAgent = loadSettings().LaunchAgent
 	m2, _ = chord(m2, "n")
-	if m2.launchAgentNow().id != "codex" {
-		t.Errorf("the next ^X N starts on the last choice: %q", m2.launchAgentNow().id)
+	if m2.launch.chosen().id != "codex" {
+		t.Errorf("the next ^X N starts on the last choice: %q", m2.launch.chosen().id)
+	}
+	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyEsc})
+	if m2.launch != nil {
+		t.Fatal("esc closes it")
 	}
 
-	// Only the agents on PATH; with one, nothing to choose.
+	// Only the agents on PATH; with one, no row to stop on.
 	sessions.LookBin = func(name string) (string, error) {
 		if name == "agy" || name == "claude" {
 			return "/bin/" + name, nil
 		}
 		return "", errors.New("not found")
 	}
-	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyEsc})
 	m2, _ = chord(m2, "n")
-	if v := strip2(m2.View()); strings.Contains(v, "Codex") || !strings.Contains(v, "✦ Gemini") || m2.launchAgentNow().id != "claude" {
-		t.Errorf("codex isn't offered, and a saved codex falls back to the first: %q", m2.launchAgentNow().id)
+	if v := strip2(m2.View()); strings.Contains(v, "Codex") || !strings.Contains(v, "✦ Gemini") || m2.launch.chosen().id != "claude" {
+		t.Errorf("codex isn't offered, and a saved codex falls back to the first: %q", m2.launch.chosen().id)
 	}
+	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyEsc})
 	sessions.LookBin = func(name string) (string, error) {
 		if name == "agy" {
 			return "/bin/agy", nil
 		}
 		return "", errors.New("not found")
 	}
-	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyEsc})
 	m2, _ = chord(m2, "n")
-	if m2.launchStep != 2 || m2.launchAgentNow().id != "agy" {
-		t.Errorf("one agent on PATH skips the row: step %d, %q", m2.launchStep, m2.launchAgentNow().id)
+	if m2.launch.focus != launchFieldName || m2.launch.chosen().id != "agy" || strings.Contains(strip2(m2.View()), "←/→") {
+		t.Errorf("one agent on PATH starts on the name: %d, %q", m2.launch.focus, m2.launch.chosen().id)
 	}
-	sessions.LookBin = func(string) (string, error) { return "", errors.New("not found") }
+	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyTab})
+	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyTab})
+	if m2.launch.focus != launchFieldName {
+		t.Errorf("tab passes over the agent row with one agent: %d", m2.launch.focus)
+	}
 	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyEsc})
+	sessions.LookBin = func(string) (string, error) { return "", errors.New("not found") }
 	m2, _ = chord(m2, "n")
-	if m2.launchStep != 0 || !strings.Contains(m2.errorMsg, "none is on PATH") {
-		t.Errorf("none on PATH says so: %d %q", m2.launchStep, m2.errorMsg)
+	if m2.launch != nil || !strings.Contains(m2.errorMsg, "none is on PATH") {
+		t.Errorf("none on PATH says so: %v %q", m2.launch != nil, m2.errorMsg)
 	}
 }

@@ -1,9 +1,9 @@
 package tui
 
-// ^X B: start or stop ccs serve's launchd agent (`ccs serve install` writes
+// ^X V W: start or stop ccs serve's launchd agent (`ccs serve install` writes
 // it). The TUI never hosts ccs serve itself: it restarts on every
 // auto-update and stops when it quits, and remote access mustn't. The
-// header shows `^X B browser on` while launchd says the agent runs.
+// header shows `^X V W web on` while launchd says the agent runs.
 
 import (
 	"strconv"
@@ -49,7 +49,7 @@ func (m *model) serveCheckCmd() tea.Cmd {
 // serveURL is the agent's address (its --host); stubbed in tests.
 var serveURL = mcp.ServeURL
 
-// serveKey is ^X B: the setup popup when there's no agent (serve_setup.go),
+// serveKey is ^X V W: the setup popup when there's no agent (serve_setup.go),
 // the QR popup while it runs (S there asks y/n and stops it, E edits its
 // setup), else it starts it.
 func (m *model) serveKey() tea.Cmd {
@@ -94,7 +94,7 @@ func (m *model) applyServe(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// openServeQR opens the ^X B popup: the agent's address and its QR code.
+// openServeQR opens the ^X V W popup: the agent's address and its QR code.
 func (m *model) openServeQR() {
 	m.serveQROpen, m.serveQR, m.serveQRWidth, m.serveQRURL, m.serveQRErr = true, "", 0, "", ""
 	url, err := serveURL()
@@ -108,8 +108,8 @@ func (m *model) openServeQR() {
 	}
 }
 
-// serveQRKey handles a key while the ^X B popup is open: S stops ccs serve
-// (after the usual y/n), esc or ^X B closes it.
+// serveQRKey handles a key while the ^X V W popup is open: S stops ccs serve
+// (after the usual y/n), esc or ^X V closes it.
 func (m model) serveQRKey(k string) (tea.Model, tea.Cmd) {
 	switch k {
 	case "s", "S":
@@ -117,15 +117,15 @@ func (m model) serveQRKey(k string) (tea.Model, tea.Cmd) {
 	case "e", "E":
 		m.serveQROpen = false
 		m.editServeSetup()
-	case "esc", "^x b", "q":
+	case "esc", "^x v", "q":
 		m.serveQROpen = false
-	case "ctrl+x": // a chord can't start while a popup is open, so this one starts its own: ^X B closes it
+	case "ctrl+x": // a chord can't start while a popup is open, so this one starts its own: ^X V closes it
 		m.chordX = true
 	}
 	return m, nil
 }
 
-// serveQRPopup is the ^X B popup. The QR code is drawn only when it fits
+// serveQRPopup is the ^X V W popup. The QR code is drawn only when it fits
 // the window; otherwise the address alone, and a note saying so.
 func (m model) serveQRPopup() string {
 	var b strings.Builder
@@ -145,7 +145,7 @@ func (m model) serveQRPopup() string {
 	default:
 		b.WriteString("Open " + m.serveQRURL + "\n\n\033[90mthe window is too small for its QR code: make it bigger, or run ccs serve qr\033[0m\n")
 	}
-	b.WriteString("\n\033[90m" + hints("s", "stop it", "e", "edit setup", "^X B/"+keyEsc, "close") + "\033[0m")
+	b.WriteString("\n\033[90m" + hints("s", "stop it", "e", "edit setup", "^X V/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).

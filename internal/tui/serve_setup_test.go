@@ -60,9 +60,9 @@ func setupModel(t *testing.T) (model, *setupStubs) {
 	s := stubSetup(t)
 	m := initialModel(buildItems(nil), "", nil)
 	m.width, m.height = 160, 50
-	m, _ = chordB(m)
+	m, _ = serveW(m)
 	if m.setup == nil {
-		t.Fatal("^X B with no agent opens the setup popup")
+		t.Fatal("^X V W with no agent opens the setup popup")
 	}
 	return m, s
 }
@@ -90,7 +90,7 @@ func fillForm(m model, host, team, aud string) model {
 	return pressKey(m, tea.KeyTab) // past the email
 }
 
-// No agent: ^X B opens the setup popup, a popup that owns the keyboard, with
+// No agent: ^X V W opens the setup popup, a popup that owns the keyboard, with
 // its two choices, the phone caveat, and the email prefilled.
 func TestSetupPopupOpens(t *testing.T) {
 	m, _ := setupModel(t)
@@ -141,7 +141,7 @@ func TestSetupPreviewChild(t *testing.T) {
 		t.Errorf("its link shows:\n%s", v)
 	}
 	m = pressKey(m, tea.KeyEsc)
-	m, _ = chordB(m)
+	m, _ = serveW(m)
 	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter}) // the first choice: shows the link again
 	m = run(m, cmd)
 	if len(runs) != 1 || !strings.Contains(strip2(m.View()), "/p/secret/") {
@@ -188,7 +188,7 @@ func TestSetupFormValidation(t *testing.T) {
 	}
 }
 
-// The default form installs read-only and starts it, then shows the ^X B
+// The default form installs read-only and starts it, then shows the ^X V W
 // popup with its address, QR code and status; ticking the box adds
 // --allow-write.
 func TestSetupInstallsReadOnlyByDefault(t *testing.T) {
@@ -204,7 +204,7 @@ func TestSetupInstallsReadOnlyByDefault(t *testing.T) {
 	}
 	v := strip2(m.View())
 	if m.setup != nil || !m.serveQROpen || !strings.Contains(v, "https://ccs.example.com/") || !strings.Contains(v, "running (pid 4321)") {
-		t.Errorf("the ^X B popup with its status:\n%s", v)
+		t.Errorf("the ^X V W popup with its status:\n%s", v)
 	}
 
 	m, s = setupModel(t)
@@ -242,7 +242,7 @@ func TestSetupTunnelWarning(t *testing.T) {
 	}
 }
 
-// e in the ^X B popup opens the form prefilled from the plist; saving
+// e in the ^X V W popup opens the form prefilled from the plist; saving
 // reinstalls and restarts the running agent.
 func TestSetupEditFromThePlist(t *testing.T) {
 	s := stubSetup(t)
@@ -261,9 +261,9 @@ func TestSetupEditFromThePlist(t *testing.T) {
 	m := initialModel(buildItems(nil), "", nil)
 	m.width, m.height = 160, 50
 	m = run(m, m.serveCheckCmd())
-	m, _ = chordB(m)
+	m, _ = serveW(m)
 	if !m.serveQROpen || !strings.Contains(strip2(m.View()), "e edit setup") {
-		t.Fatalf("the ^X B popup offers e:\n%s", strip2(m.View()))
+		t.Fatalf("the ^X V W popup offers e:\n%s", strip2(m.View()))
 	}
 	m = typeText(m, "e")
 	if m.serveQROpen || m.setup == nil || !m.setup.editing {

@@ -138,7 +138,7 @@ type model struct {
 	agentsAt         time.Time                     // when claude agents was last asked
 	confirmStop      string                        // ^X K asked whether to stop this session: y stops it
 	orderingTabs     bool                          // ^X J is putting the terminal tabs in list order
-	confirmServeStop bool                          // ^X B asked whether to stop ccs serve's agent: y stops it
+	confirmServeStop bool                          // ^X V W asked whether to stop ccs serve's agent: y stops it
 	heldPrompt       map[string]mcp.HeldPrompt     // prompts held by ccs serve or this ccs, by session (held.go)
 	heldAt           time.Time
 	heldBusy         bool
@@ -157,17 +157,18 @@ type model struct {
 	autoSelectAt     time.Time               // the last auto-select: the next waits autoFocusIdle after it, as after a key
 	chatAfter        string                  // answered from ccs: this session's message box takes the keys once its menu has gone
 	chatAfterID      string                  // the held prompt that answer was for
-	serveQROpen      bool                    // ^X B's popup while the agent runs: its address and QR code
+	serveQROpen      bool                    // ^X V W's popup while the agent runs: its address and QR code
 	serveQR          string                  // the QR code, drawn
 	serveQRWidth     int                     // its width in cells
 	serveQRURL       string                  // the address it encodes
 	serveQRErr       string                  // why there's no address, if not
 	serve            mcp.ServiceStatus       // ccs serve's launchd agent, as last read (serveCheckCmd)
-	setup            *serveSetup             // ^X B's setup popup (serve_setup.go), nil when closed
+	setup            *serveSetup             // ^X V W's setup popup (serve_setup.go), nil when closed
 	servePreview     previewState            // the preview child started from it, as shown
 	serveCheckedAt   time.Time
 	serveChecking    bool
 	confirmRestart   string         // ^X R asked whether to restart this session: y restarts it
+	confirmInterrupt string         // ^X Esc asked whether to interrupt this session's turn: y presses Esc (turn.go)
 	confirmHandover  string         // ^X W asked whether to hand this session over to its parent and close it: y does
 	handoverTo       string         // with confirmHandover: the parent it goes to
 	reorgPlan        *reorgProposal // ^X M's plan, shown in its popup until enter applies it or esc drops it
@@ -466,7 +467,7 @@ func (m model) stoppable(id string) bool {
 
 // prompting reports an open rename, delete, prune or stop prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmHandover != "" || m.launchStep > 0
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmInterrupt != "" || m.confirmHandover != "" || m.launchStep > 0
 }
 
 // restartable reports whether ^X R can restart the session: a live Claude
@@ -1865,6 +1866,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyRC(msg)
 		return m, nil
 
+	case turnDoneMsg:
+		m.applyTurnDone(msg)
+		return m, nil
+
 	case sendDoneMsg:
 		m.sending = false
 		if !errors.Is(msg.err, sessions.ErrUnsent) {
@@ -2109,10 +2114,16 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^x y" && !m.prompting() && !m.acctOpen { // your usage, and back: the only key for the usage screen
 			return m, m.toggleUsage()
 		}
-		if k == "^x b" && !m.prompting() && !m.acctOpen && !m.showUsage {
-			stats.Record("tui.serve", stats.Key)
-			m.helpOpen = false
-			return m, m.serveKey()
+		// The turn keys (turn.go): Claude Code's own keys for a running turn.
+		// ^X Esc on anything but a live session stays what it always was, a
+		// chord cancelled; either way it ends here, never reaching plain Esc.
+		if (k == "^x esc" || k == "^x enter" || k == "^x b") && !m.prompting() && !m.acctOpen && !m.showUsage {
+			act := map[string]turnAct{"^x esc": turnInterrupt, "^x enter": turnSendNow, "^x b": turnBackground}[k]
+			if k == "^x esc" && (len(m.filtered) == 0 || !m.live[m.filtered[m.cursor].conv.SessionID]) {
+				return m, nil
+			}
+			stats.Record(act.stat, stats.Key)
+			return m, m.turnKey(act)
 		}
 		if k == "^x a" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.auto_focus", stats.Key)
@@ -2495,6 +2506,28 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, handoverCmd(name, id)
 			case "n", "N", "esc":
 				m.confirmHandover = ""
+				return m, nil
+			}
+			return m, nil // Ignore all other keys
+		}
+
+		// ^X Esc's y/n: y checks everything again, then presses Esc
+		if id := m.confirmInterrupt; id != "" {
+			switch msg.String() {
+			case "y", "Y":
+				m.confirmInterrupt = ""
+				i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
+				if i < 0 {
+					m.note("^X Esc: that session isn't listed any more; nothing pressed")
+					return m, nil
+				}
+				if why := m.turnRefusal(m.filtered[i].conv, turnInterrupt); why != "" {
+					m.note(why)
+					return m, nil
+				}
+				return m, m.turnCmd(m.filtered[i].conv, turnInterrupt)
+			case "n", "N", "esc":
+				m.confirmInterrupt = ""
 				return m, nil
 			}
 			return m, nil // Ignore all other keys
@@ -3042,6 +3075,11 @@ func (m model) shortcuts() [][2]string {
 		} else if m.stoppable(id) {
 			add(true, "^X K", "stop this session and close its tab; asks first")
 		}
+		// The turn keys, each only while it works now (turnRefusal).
+		conv := m.filtered[m.cursor].conv
+		add(m.turnRefusal(conv, turnInterrupt) == "", "^X Esc", "interrupt its turn: Esc in its tab, as Claude Code's own; asks first")
+		add(m.turnRefusal(conv, turnSendNow) == "", "^X Enter", "send its queued message now: Claude Code's ctrl+enter, pressed in its tab")
+		add(m.turnRefusal(conv, turnBackground) == "", "^X B", "move the command it's running to the background: Ctrl+B in its tab")
 		add(m.restartable(id), "^X R", "restart it: stop, then resume this conversation in a new tab with the same flags; asks first")
 		add(m.restartable(id), "^X W", "hand its leftovers to its parent, then close it; its PRs and children move to the parent; asks first")
 	}
@@ -3067,9 +3105,9 @@ func (m model) shortcuts() [][2]string {
 	add(showHeadless, "^X H", "hide headless runs")
 	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
 	add(m.autoFocus, "^X A", "stop switching to sessions that wait on you")
-	add(!m.serve.Installed, "^X B", "set up ccs serve: try it on this Mac now, or set it up for your phone")
-	add(m.serve.Installed && !m.serve.Running, "^X B", "start ccs serve, the sessions in a browser (its launchd agent)")
-	add(m.serve.Running, "^X B", "ccs serve's address and QR code; s stops it (asks first), e edits its setup")
+	add(!m.serve.Installed, "^X V W", "set up ccs serve: try it on this Mac now, or set it up for your phone")
+	add(m.serve.Installed && !m.serve.Running, "^X V W", "start ccs serve, the sessions in a browser (its launchd agent)")
+	add(m.serve.Running, "^X V W", "ccs serve's address and QR code; s stops it (asks first), e edits its setup")
 	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
 	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
 	add(true, "^X V", "Remote Control: on now in this or every running session, or at launch")
@@ -3140,7 +3178,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // and what it does, never a mode's on/off (that shows when no chord is
 // pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
 // which is left unadvertised (headless runs stay out of the header).
-var chordPairs = []string{"A", "auto-focus", "B", "browser (ccs serve)", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "V", "remote control", "W", "hand over", "X", "prune", "Y", "usage", keyEsc, "cancel"}
+var chordPairs = []string{"A", "auto-focus", "B", "background", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "V", "remote control, web", "W", "hand over", "X", "prune", "Y", "usage", keyEnter, "send now", keyEsc, "interrupt or cancel"}
 
 func toggleHint(key, label string, on bool) string {
 	state := "off"
@@ -3300,7 +3338,7 @@ func (m model) viewScreen() string {
 	if !m.showUsage && !m.chordX {
 		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
 		if m.serve.Installed { // set up for remote use: say whether it's reachable
-			toggles = append(toggles, toggleHint("^X B", "browser", m.serve.Running))
+			toggles = append(toggles, toggleHint("^X V W", "web", m.serve.Running))
 		}
 		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
 			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
@@ -3354,7 +3392,7 @@ func (m model) viewScreen() string {
 	} else if m.confirmServeStop {
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")). // Red
-			Render("Stop ccs serve? Remote access ends until ^X B starts it again.") +
+			Render("Stop ccs serve? Remote access ends until ^X V W starts it again.") +
 			"  \033[90m" + hints("y", "stop", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmStop != "" && it.conv.SessionID == m.confirmStop }); i >= 0 {
@@ -3374,6 +3412,13 @@ func (m model) viewScreen() string {
 			Foreground(lipgloss.Color("214")). // Amber
 			Render(fmt.Sprintf("Hand %q over to %s and close it? It sends %s its leftovers first.", name, transcript.Truncate(m.handoverTo, 40), transcript.Truncate(m.handoverTo, 40))) +
 			"  \033[90m" + hints("y", "hand over", "n/"+keyEsc, "cancel") + "\033[0m"
+		sections = append(sections, "  "+inputSection)
+	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmInterrupt != "" && it.conv.SessionID == m.confirmInterrupt }); i >= 0 {
+		name := transcript.Truncate(m.sessionName(m.filtered[i].conv), 50)
+		inputSection = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")). // Red: it can't be undone
+			Render(fmt.Sprintf("Interrupt %q's turn? ccs presses Esc in its tab, stopping what it's doing.", name)) +
+			"  \033[90m" + hints("y", "interrupt", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmRestart != "" && it.conv.SessionID == m.confirmRestart }); i >= 0 {
 		name := transcript.Truncate(m.sessionName(m.filtered[i].conv), 50)

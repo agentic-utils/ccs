@@ -171,6 +171,12 @@ Key bindings:
                   rewind history
   Ctrl+X K        Stop it and close its tab, or stop a background session;
                   asks first
+  Ctrl+X Esc      Interrupt its turn: ccs presses Esc in its tab; asks first
+  Ctrl+X Enter    Send its queued message now, as ctrl+enter in its tab
+                  (while it writes a reply, not during a tool call)
+  Ctrl+X B        Move the command it's running to the background (Ctrl+B
+                  in its tab). These three use Claude Code's own keys, only
+                  in a busy Claude Code session in iTerm or tmux
   Ctrl+X W        Hand it over: it sends its parent its leftovers, then it's
                   closed and its PRs and child sessions move to the parent
   Ctrl+X D        Delete its transcript file; asks first, can't be undone
@@ -191,7 +197,6 @@ Key bindings:
                   starts shown
   Ctrl+X A        When a session starts waiting on you, select it in ccs (and focus a prompt ccs
                   serve holds, to answer it in the bottom pane) and switch to its tab
-  Ctrl+X B        Set up ccs serve (try it on this Mac, or a form for your phone), start its launchd agent, or show its address and QR code (s stops it, asking y/n; e edits its setup)
   Ctrl+X I        Install ccs updates on their own once you're away (off by
                   default)
   Ctrl+X V        Remote Control: t turns it on now in the selected session,
@@ -199,7 +204,11 @@ Key bindings:
                   sessions in a terminal, with it off: ccs types
                   /remote-control <name>), v makes sessions ccs launches or
                   resumes start with it on, under their ccs name (off by
-                  default; a restart keeps it on for a session that had it)
+                  default; a restart keeps it on for a session that had it);
+                  w is ccs serve, the web page: set it up (try it on this
+                  Mac, or a form for your phone), start its launchd agent,
+                  or show its address and QR code (s stops it, asking y/n;
+                  e edits its setup)
   Ctrl+X R        Record a CPU profile, for when ccs feels slow; again to stop
                   (or set CCS_CPUPROFILE=path)
   Ctrl+X U        Switch Claude account (needs cswap)
@@ -491,7 +500,7 @@ func Main(v string) {
 	sessions.CloseInboxes()
 	releaseHold("ccs quit")        // prompts it held are handed back: their hooks dial the next ccs
 	stopActiveRun(3 * time.Second) // a ! command never outlives this ccs (quit, error or an update's restart)
-	stopPreview()                  // a preview started from ^X B lives only as long as this ccs
+	stopPreview()                  // a preview started from ^X V W lives only as long as this ccs
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

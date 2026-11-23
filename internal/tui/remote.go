@@ -143,7 +143,16 @@ func (m model) rcPopup() string {
 	}
 	b.WriteString("\033[1mv\033[0m  for sessions ccs starts or resumes: " + launch + "\n")
 	b.WriteString("\n\033[90monly idle Claude Code sessions in a terminal, with it off\033[0m\n")
-	b.WriteString("\n\033[90m" + hints("t", "this one", "a", "all", "v", "setting", "^X V/"+keyEsc, "close") + "\033[0m")
+	b.WriteString("\n\033[1mccs serve\033[0m, the sessions as a web page for your phone\n")
+	switch {
+	case !m.serve.Installed:
+		b.WriteString("\033[1mw\033[0m  set it up: try it on this Mac now, or set it up for your phone\n")
+	case m.serve.Running:
+		b.WriteString("\033[1mw\033[0m  its address and QR code; s there stops it, e edits its setup\n")
+	default:
+		b.WriteString("\033[1mw\033[0m  start it (its launchd agent)\n")
+	}
+	b.WriteString("\n\033[90m" + hints("t", "this one", "a", "all", "v", "setting", "w", "web page", "^X V/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
@@ -162,6 +171,10 @@ func (m model) rcKey(k string) (tea.Model, tea.Cmd) {
 	case "v":
 		m.rcOpen = false
 		m.toggleRemoteControl()
+	case "w":
+		m.rcOpen = false
+		stats.Record("tui.serve", stats.Key)
+		return m, m.serveKey()
 	case "t":
 		m.rcOpen = false
 		stats.Record("tui.remote_control_now", stats.Key)

@@ -240,3 +240,24 @@ func TestSessionRowStaleBusyIsIdle(t *testing.T) {
 		t.Errorf("got %s since %s, want idle since the turn's end", r.Status, r.Since)
 	}
 }
+
+// A busy session lists the messages it has queued and not taken in; an idle
+// one has none, whatever an old enqueue says.
+func TestSessionRowQueued(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 40, 0, 0, time.UTC)
+	conv := transcript.Conversation{SessionID: "a"}
+	transcript.ParseLine(&conv, []byte(`{"type":"user","timestamp":"`+now.Add(-2*time.Minute).Format(time.RFC3339Nano)+`","message":{"role":"user","content":"go"}}`))
+	transcript.ParseLine(&conv, []byte(`{"type":"queue-operation","operation":"enqueue","timestamp":"`+now.Add(-time.Minute).Format(time.RFC3339Nano)+`","content":"and the tests"}`))
+	busy := sessions.LiveSession{PID: 1, Stat: sessions.SessionStat{Status: "busy", Since: now.Add(-2 * time.Minute)}}
+	r := sessionRow(conv, busy, true, now)
+	if len(r.Queued) != 1 || r.Queued[0] != "and the tests" {
+		t.Fatalf("queued: %q", r.Queued)
+	}
+	if d := strings.Join(r.details(now), "\n"); !strings.Contains(d, "queued: and the tests") {
+		t.Errorf("details: %q", d)
+	}
+	idle := sessions.LiveSession{PID: 1, Stat: sessions.SessionStat{Status: "idle", Since: now}}
+	if r := sessionRow(conv, idle, true, now); r.Queued != nil {
+		t.Errorf("idle: %q", r.Queued)
+	}
+}

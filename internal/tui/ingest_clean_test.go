@@ -90,7 +90,8 @@ var rawOnPurpose = map[string]bool{".SessionID": true, ".FilePath": true}
 func assertCleanConv(t *testing.T, conv transcript.Conversation) {
 	t.Helper()
 	walkStrings(reflect.ValueOf(conv), "", func(path, s string) {
-		if rawOnPurpose[path] || strings.HasPrefix(path, ".Peers[") && (strings.HasSuffix(path, ".Key") || strings.HasSuffix(path, ".Addr")) {
+		if rawOnPurpose[path] || strings.HasPrefix(path, ".Peers[") && (strings.HasSuffix(path, ".Key") || strings.HasSuffix(path, ".Addr")) ||
+			strings.HasPrefix(path, ".Queue[") && strings.HasSuffix(path, ".key") || strings.HasPrefix(path, ".queueTaken[") { // queue keys: matched, never drawn
 			return
 		}
 		if path == ".SearchText" || path == ".SearchLower" {
@@ -127,7 +128,11 @@ func claudeTranscript(t *testing.T) transcript.Conversation {
 			map[string]any{"type": "tool_result", "tool_use_id": "q1", "content": "answered" + poison}}},
 			"toolUseResult": map[string]any{"answers": map[string]any{"pick" + poison: "a" + poison}, "annotations": map[string]any{"pick" + poison: map[string]any{"notes": "n" + poison}}}}) +
 		jsonLine(t, map[string]any{"type": "user", "timestamp": ts, "message": map[string]any{"role": "user", "content": teammate}}) +
-		jsonLine(t, map[string]any{"type": "user", "timestamp": "bad" + poison, "message": map[string]any{"role": "user", "content": "late"}})
+		jsonLine(t, map[string]any{"type": "user", "timestamp": "bad" + poison, "message": map[string]any{"role": "user", "content": "late"}}) +
+		// Messages still in its queue: one typed in its tab, one from another session.
+		jsonLine(t, map[string]any{"type": "queue-operation", "operation": "enqueue", "timestamp": ts, "content": "queued" + poison}) +
+		jsonLine(t, map[string]any{"type": "queue-operation", "operation": "enqueue", "timestamp": ts,
+			"content": `<cross-session-message from-name="peer` + poison + `">` + "\nwait" + poison + "\n</cross-session-message>"})
 	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +239,27 @@ func TestUntrustedTextIsCleanedWhereItEnters(t *testing.T) {
 		}
 		if !strings.Contains(drawn["screen"], "title") {
 			t.Errorf("the title went missing from the screen")
+		}
+	})
+
+	t.Run("queued messages", func(t *testing.T) {
+		if len(conv.QueuedNow()) != 2 {
+			t.Fatalf("the fixture's queue: %+v", conv.Queue)
+		}
+		m := initialModel(buildItems([]transcript.Conversation{conv}), "", nil)
+		m.width, m.height = 140, 60
+		m.chatStatus = map[string]sessions.SessionStat{conv.SessionID: (sessions.SessionFile{Status: "busy"}).Stat()}
+		preview := strings.Join(m.previewLines(), "\n")
+		if !strings.Contains(preview, "⎿ Queued") || !strings.Contains(preview, "From peer") || !strings.Contains(preview, "wait") {
+			t.Fatalf("the queue isn't drawn: %q", preview)
+		}
+		if poisoned(preview) {
+			t.Errorf("a queued message draws the poison: %q", preview)
+		}
+		for _, q := range conv.QueuedNow() {
+			if poisoned(q.Plain()) {
+				t.Errorf("ccs sessions' queued text keeps the poison: %q", q.Plain())
+			}
 		}
 	})
 

@@ -149,7 +149,18 @@ func (m model) previewLines() []string {
 	}
 	conv := m.filtered[m.cursor].conv
 	conv.PeerNotes = m.cachedPeerLabels(conv)                               // the other ends, which other sessions' transcripts show
+	conv.Queue = m.queuedShown(conv)                                        // what its queue holds now, drawn at the end
 	return cachedPreview(m.preview, conv, m.searchQuery(), m.paneWidth()-1) // the last column is the scrollbar
+}
+
+// queuedShown is what conv's queue holds now: only while it runs mid-turn
+// (busy, or waiting on a prompt in a turn), since an idle session takes a
+// message in as it arrives and an exited one has no queue.
+func (m model) queuedShown(conv transcript.Conversation) []transcript.QueuedMessage {
+	if st := m.chatStatus[conv.SessionID].Status; st != "busy" && st != "waiting" {
+		return nil
+	}
+	return conv.QueuedNow()
 }
 
 // previewDebounce is how long the selection must rest before its
@@ -188,7 +199,7 @@ func cachedPreview(c *previewCache, conv transcript.Conversation, query string, 
 	}
 	// Preview lines depend only on the messages and tool calls, and on the
 	// width they're wrapped to.
-	key := fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%s\x00%v", conv.SessionID, len(conv.Messages), len(conv.Tools), width, query, conv.PeerNotes) // %v sorts map keys
+	key := fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%s\x00%v\x00%v", conv.SessionID, len(conv.Messages), len(conv.Tools), width, query, conv.PeerNotes, conv.Queue) // %v sorts map keys
 	if c.key != key {
 		c.key = key
 		c.lines, c.stamps = buildPreview(conv, query, width)
@@ -439,8 +450,32 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 		remaining := len(conv.Messages) - lastShown - 1
 		msgLines = append(msgLines, fmt.Sprintf("\033[90m  ... %d more messages\033[0m", remaining))
 	}
+	if query == "" { // a search is the matches and their context, as for tools
+		msgLines = append(msgLines, queuedLines(conv.Queue, width)...)
+	}
 
 	return msgLines, stamps
+}
+
+// queuedLines draws the messages a busy session has queued and not taken in
+// yet, as Claude Code's terminal does under its prompt: each message, then a
+// dim "⎿ Queued". Claude Code adds "ctrl+enter to send now", a key only its
+// own tab has. Once taken in, a message is an ordinary one above.
+func queuedLines(queue []transcript.QueuedMessage, width int) []string {
+	var out []string
+	for _, q := range queue {
+		if from, body, ok := transcript.PeerParts(q.Text); ok && from != ccsSender {
+			out = append(out, "\033[36m  From "+from+"\033[0m")
+			out = append(out, renderBody(body, "", width)...)
+		} else {
+			if ok {
+				q.Text = body // typed in ccs: the user's own words
+			}
+			out = append(out, userRows(markFirst(renderBody(transcript.StripImageNote(q.Text), "", width), "❯"), width)...)
+		}
+		out = append(out, "\033[90m  ⎿ Queued\033[0m", "")
+	}
+	return out
 }
 
 // carryStyles makes each wrapped line self-contained: styles and a link still

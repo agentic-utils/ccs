@@ -213,8 +213,9 @@ var PsAll = func() (string, error) {
 }
 
 // ListingShare is how long one full process listing answers every PsAll and
-// PsTree: a full `ps -axww` costs most of a second of CPU with a thousand
-// processes, and one live tick asks for it up to three times (Codex's TUIs,
+// PsTree: even in-process it is a syscall per process, and a full `ps -axww`
+// (elsewhere) costs a fifth of a second of CPU with a thousand processes, and
+// one live tick asks for it up to three times (Codex's TUIs,
 // agy's, Codex execs' parents). It's shorter than a tick, so each tick still
 // sees the processes as they are then.
 var ListingShare = time.Second
@@ -235,20 +236,24 @@ func Fresh() {
 	shared.Unlock()
 }
 
-// listing is every process's pid, parent, tty and command line, from one ps
-// call shared for ListingShare. A failed call isn't kept.
+// listing is every process's pid, parent, tty and command line, shared for
+// ListingShare: read in-process where sysListing can (macOS), else from one
+// ps call. A failed call isn't kept.
 func listing() ([]psRow, error) {
 	shared.Lock()
 	defer shared.Unlock()
 	if shared.rows != nil && time.Since(shared.at) < ListingShare {
 		return shared.rows, nil
 	}
-	out, err := RunBounded(3*time.Second, nil, "ps", "-axww", "-o", "pid=,ppid=,tty=,command=")
-	if err != nil {
-		shared.rows = nil
-		return nil, err
+	rows, err := sysListing() // in-process on macOS, a fraction of ps's cost
+	if err != nil || len(rows) == 0 {
+		out, err := RunBounded(3*time.Second, nil, "ps", "-axww", "-o", "pid=,ppid=,tty=,command=")
+		if err != nil {
+			shared.rows = nil
+			return nil, err
+		}
+		rows = parseListing(string(out))
 	}
-	rows := parseListing(string(out))
 	shared.at, shared.rows = time.Now(), rows
 	return rows, nil
 }

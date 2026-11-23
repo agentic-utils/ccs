@@ -168,7 +168,6 @@ type model struct {
 	serveCheckedAt   time.Time
 	serveChecking    bool
 	confirmRestart   string         // ^X R asked whether to restart this session: y restarts it
-	confirmInterrupt string         // ^X Esc asked whether to interrupt this session's turn: y presses Esc (turn.go)
 	confirmHandover  string         // ^X W asked whether to hand this session over to its parent and close it: y does
 	handoverTo       string         // with confirmHandover: the parent it goes to
 	reorgPlan        *reorgProposal // ^X M's plan, shown in its popup until enter applies it or esc drops it
@@ -467,7 +466,7 @@ func (m model) stoppable(id string) bool {
 
 // prompting reports an open rename, delete, prune or stop prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmInterrupt != "" || m.confirmHandover != "" || m.launchStep > 0
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmHandover != "" || m.launchStep > 0
 }
 
 // restartable reports whether ^X R can restart the session: a live Claude
@@ -2511,28 +2510,6 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // Ignore all other keys
 		}
 
-		// ^X Esc's y/n: y checks everything again, then presses Esc
-		if id := m.confirmInterrupt; id != "" {
-			switch msg.String() {
-			case "y", "Y":
-				m.confirmInterrupt = ""
-				i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id })
-				if i < 0 {
-					m.note("^X Esc: that session isn't listed any more; nothing pressed")
-					return m, nil
-				}
-				if why := m.turnRefusal(m.filtered[i].conv, turnInterrupt); why != "" {
-					m.note(why)
-					return m, nil
-				}
-				return m, m.turnCmd(m.filtered[i].conv, turnInterrupt)
-			case "n", "N", "esc":
-				m.confirmInterrupt = ""
-				return m, nil
-			}
-			return m, nil // Ignore all other keys
-		}
-
 		// Handle restart confirmation mode
 		if id := m.confirmRestart; id != "" {
 			switch msg.String() {
@@ -2976,7 +2953,8 @@ func (m model) overPopups() []popup {
 var keyRule = []string{
 	"single keys act now and leave nothing behind; ^X then a letter changes",
 	"something that stays (a mark, a setting, a file, whether it runs), and",
-	"the ones that can't be undone ask first",
+	"the ones that can't be undone ask first (not ^X Esc, ^X Enter and ^X B,",
+	"Claude Code's own keys for a running turn, which don't ask there either)",
 }
 
 // Compact key labels, shared by every hint so they stay consistent.
@@ -3077,7 +3055,7 @@ func (m model) shortcuts() [][2]string {
 		}
 		// The turn keys, each only while it works now (turnRefusal).
 		conv := m.filtered[m.cursor].conv
-		add(m.turnRefusal(conv, turnInterrupt) == "", "^X Esc", "interrupt its turn: Esc in its tab, as Claude Code's own; asks first")
+		add(m.turnRefusal(conv, turnInterrupt) == "", "^X Esc", "interrupt its turn now: Esc in its tab, as Claude Code's own, which doesn't ask")
 		add(m.turnRefusal(conv, turnSendNow) == "", "^X Enter", "send its queued message now: Claude Code's ctrl+enter, pressed in its tab")
 		add(m.turnRefusal(conv, turnBackground) == "", "^X B", "move the command it's running to the background: Ctrl+B in its tab")
 		add(m.restartable(id), "^X R", "restart it: stop, then resume this conversation in a new tab with the same flags; asks first")
@@ -3412,13 +3390,6 @@ func (m model) viewScreen() string {
 			Foreground(lipgloss.Color("214")). // Amber
 			Render(fmt.Sprintf("Hand %q over to %s and close it? It sends %s its leftovers first.", name, transcript.Truncate(m.handoverTo, 40), transcript.Truncate(m.handoverTo, 40))) +
 			"  \033[90m" + hints("y", "hand over", "n/"+keyEsc, "cancel") + "\033[0m"
-		sections = append(sections, "  "+inputSection)
-	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmInterrupt != "" && it.conv.SessionID == m.confirmInterrupt }); i >= 0 {
-		name := transcript.Truncate(m.sessionName(m.filtered[i].conv), 50)
-		inputSection = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")). // Red: it can't be undone
-			Render(fmt.Sprintf("Interrupt %q's turn? ccs presses Esc in its tab, stopping what it's doing.", name)) +
-			"  \033[90m" + hints("y", "interrupt", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmRestart != "" && it.conv.SessionID == m.confirmRestart }); i >= 0 {
 		name := transcript.Truncate(m.sessionName(m.filtered[i].conv), 50)

@@ -134,7 +134,9 @@ Examples:
 Key bindings:
   Single keys act now and leave nothing behind; Ctrl+X then a letter changes
   something that stays (a mark, a setting, a file, whether it runs), and the
-  ones that can't be undone ask first.
+  ones that can't be undone ask first. Ctrl+X Esc, Ctrl+X Enter and Ctrl+X B
+  don't: they are Claude Code's own keys for a running turn, which don't ask
+  there either.
 
  Moving around
   ↑/↓, Ctrl+P/N   Move through the list
@@ -171,7 +173,7 @@ Key bindings:
                   rewind history
   Ctrl+X K        Stop it and close its tab, or stop a background session;
                   asks first
-  Ctrl+X Esc      Interrupt its turn: ccs presses Esc in its tab; asks first
+  Ctrl+X Esc      Interrupt its turn now: ccs presses Esc in its tab
   Ctrl+X Enter    Send its queued message now, as ctrl+enter in its tab
                   (while it writes a reply, not during a tool call)
   Ctrl+X B        Move the command it's running to the background (Ctrl+B

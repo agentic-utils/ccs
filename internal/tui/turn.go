@@ -20,7 +20,7 @@ import (
 // has no control action that interrupts, a socket message with priority
 // "now" waits for the running tool call, and SIGINT quits the session).
 //
-//	^X Esc    interrupt the turn (Esc, chat:cancel), after y/n
+//	^X Esc    interrupt the turn (Esc, chat:cancel)
 //	^X Enter  send the queued message now (Ctrl+X Ctrl+S, chat:sendNow)
 //	^X B      move the running command to the background (Ctrl+B, task:background)
 //
@@ -107,8 +107,9 @@ func (m model) turnRefusal(conv transcript.Conversation, act turnAct) string {
 	return ""
 }
 
-// turnKey answers a turn chord: a grey note when it doesn't apply, the y/n
-// for interrupt, or the key pressed now.
+// turnKey answers a turn chord: a grey note when it doesn't apply, else the
+// key pressed now. None asks first, interrupt included: Claude Code's own
+// Esc doesn't, and turnKeyNow checks everything again before the key.
 func (m *model) turnKey(act turnAct) tea.Cmd {
 	m.helpOpen = false
 	if len(m.filtered) == 0 {
@@ -117,10 +118,6 @@ func (m *model) turnKey(act turnAct) tea.Cmd {
 	conv := m.filtered[m.cursor].conv
 	if why := m.turnRefusal(conv, act); why != "" {
 		m.note(why)
-		return nil
-	}
-	if act.stat == turnInterrupt.stat {
-		m.confirmInterrupt = conv.SessionID
 		return nil
 	}
 	return m.turnCmd(conv, act)

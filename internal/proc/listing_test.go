@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,9 @@ func fakePS(t *testing.T) (calls func() int) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldSys := sysListing
+	sysListing = func() ([]psRow, error) { return nil, errors.New("off") }
+	t.Cleanup(func() { sysListing = oldSys })
 	Fresh()
 	t.Cleanup(Fresh)
 	return func() int {

@@ -229,10 +229,11 @@ type model struct {
 	remoteControl     bool   // ^X V: Claude sessions ccs starts or resumes get Remote Control, named (state.RemoteControl)
 	profileStop       func() // ^X Q: a CPU profile is being recorded to profilePath; this stops it
 	profilePath       string
-	autoFailed        string    // the version an automatic install failed for: offered, not retried
-	autoInstalling    bool      // this install started on its own: the new ccs says so
-	lastKeyAt         time.Time // the last key press, for "away"
-	updatedFrom       string    // started after updating itself from this version: the popup says so
+	hdr               headerCounts // the header's counts as of the last Update (noteHeader)
+	autoFailed        string       // the version an automatic install failed for: offered, not retried
+	autoInstalling    bool         // this install started on its own: the new ccs says so
+	lastKeyAt         time.Time    // the last key press, for "away"
+	updatedFrom       string       // started after updating itself from this version: the popup says so
 	updatedOpen       bool
 	updateErr         string // last install failure, shown in the popup with a retry
 	updateCheckFailed bool
@@ -1248,10 +1249,11 @@ func (m model) Init() tea.Cmd {
 // selected session is live, and the fast refresh runs only while a live
 // session is selected.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	quiet := m.quietTick(msg)
 	res, cmd := m.update(msg)
 	n := res.(model)
 	n.openReadyReorg()
-	if !movesOnly(msg) {
+	if !movesOnly(msg) && !quiet {
 		n.sortList()
 	}
 	if settle := n.noteSelection(); settle != nil {
@@ -1280,6 +1282,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	n.showMenu(n.heldShown())
 	n.noteReview()
 	n.paneAt = heldNow() // the pane's clock for this frame (paneNow)
+	if !quiet || !n.hdr.valid {
+		n.noteHeader()
+	}
 	if pr := n.prCmd(); pr != nil {
 		cmd = tea.Batch(cmd, pr)
 	}
@@ -1287,6 +1292,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return n, tea.Batch(cmd, tick)
 	}
 	return n, cmd
+}
+
+// quietTick reports a fast-tick message that changes nothing: the tick
+// itself, which only starts the read, and a read that found no new lines and
+// the same status. Eight of them a second arrive while a live session is
+// selected, so Update skips the sort and the header's counts for them.
+func (m model) quietTick(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case chatTickMsg:
+		return true
+	case chatTickResult:
+		if msg.conv != nil {
+			return false
+		}
+		if msg.stat.Status == "" {
+			return true // setStat ignores it
+		}
+		prev, ok := m.chatStatus[msg.id]
+		return ok && sameStat(prev, msg.stat)
+	}
+	return false
+}
+
+// sameStat: a and b say the same about a session.
+func sameStat(a, b sessions.SessionStat) bool {
+	return a.Status == b.Status && a.WaitingFor == b.WaitingFor && a.Since.Equal(b.Since) &&
+		a.Name == b.Name && a.Cwd == b.Cwd && a.Remote == b.Remote
 }
 
 // movesOnly reports a message that can only move the selection or scroll:
@@ -3336,7 +3368,7 @@ func (m model) viewScreen() string {
 	}
 	// Each state with its key in front, in bold, as the hints read.
 	key := func(k string) string { return "\033[1m" + k + "\033[22m " }
-	if n := m.waitingCount(); n > 0 && !m.showUsage { // they sort first in the list, held ones selected for you
+	if n := m.headerWaiting(); n > 0 && !m.showUsage { // they sort first in the list, held ones selected for you
 		status += fmt.Sprintf(" · %d waiting", n)
 	}
 	if m.reorgBusy != "" {
@@ -3368,7 +3400,7 @@ func (m model) viewScreen() string {
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", state.Version, note, status)
 	pairs, keep := []string{"^X Y", "usage", "?", "help", "^C", "quit"}, 2 // the rest are in ? help
-	if h := m.tabHint(); h != "" {                                         // Tab is only for the sessions that need you, then PRs
+	if h := m.headerHint(); h != "" {                                      // Tab is only for the sessions that need you, then PRs
 		pairs = append([]string{keyTab, h}, pairs...)
 	}
 	if m.showUsage { // only these keys do anything there

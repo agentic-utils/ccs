@@ -213,7 +213,7 @@ Key bindings:
                   Mac, or a form for your phone), start its launchd agent,
                   or show its address and QR code (s stops it, asking y/n;
                   e edits its setup)
-  Ctrl+X R        Record a CPU profile, for when ccs feels slow; again to stop
+  Ctrl+X Q        Record a CPU profile, for when ccs feels slow; again to stop
                   (or set CCS_CPUPROFILE=path)
   Ctrl+X U        Switch Claude account (needs cswap)
 
@@ -484,8 +484,9 @@ func Main(v string) {
 		}
 		return buildItems(convs), nil
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithOutput(eraseSavedLines{os.Stdout}))
-
+	// Before NewProgram, which takes its own copy of m: set after, the
+	// program never sees the stop, so the profile is never written and ^X Q
+	// can't start one.
 	if path := os.Getenv("CCS_CPUPROFILE"); path != "" {
 		stop, err := startProfile(path)
 		if err != nil {
@@ -494,6 +495,7 @@ func Main(v string) {
 		}
 		m.profileStop, m.profilePath = stop, path
 	}
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithOutput(eraseSavedLines{os.Stdout}))
 	finalModel, err := p.Run()
 	stats.Flush() // before any exec or exit below, which skip the background flush
 	// After a panic bubbletea hands back no model, only the error.

@@ -1371,6 +1371,7 @@ var LaunchRetype = 4 * time.Second
 // LauncherRunning: a process on tty runs the launcher, or the claude or
 // codex it execs.
 var LauncherRunning = func(tty, script string) bool {
+	proc.Fresh() // it was typed moments ago: a listing from before can't say
 	out, err := proc.PsAll()
 	if err != nil {
 		return true // can't tell: never type into what may be running
@@ -1652,6 +1653,7 @@ func TTYEmptied(tty string) bool {
 	short := strings.TrimPrefix(tty, "/dev/")
 	deadline := time.Now().Add(TabGoneWait)
 	for {
+		proc.Fresh() // waiting for the login to go: each look is a new listing
 		out, err := proc.PsAll()
 		if err != nil {
 			return false

@@ -376,6 +376,46 @@ func TestMovedTranscript(t *testing.T) {
 	}
 }
 
+// After its first look a session looks only in project folders changed
+// since: a copy that appears in a new folder is still noticed.
+func TestMovedTranscriptLaterCopy(t *testing.T) {
+	root := t.TempDir()
+	old := transcript.GetProjectsDir
+	transcript.GetProjectsDir = func() string { return root }
+	t.Cleanup(func() { transcript.GetProjectsDir = old })
+	projectMods.Lock()
+	projectMods.mods = nil
+	projectMods.Unlock()
+	id := "moved-later"
+	movedChecks.Delete(id)
+	t.Cleanup(func() { movedChecks.Delete(id) })
+	write := func(p string, mod time.Time) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	oldPath := filepath.Join(root, "-old", id+".jsonl")
+	write(oldPath, now.Add(-time.Hour))
+	// Checked in the past, so the folders' real times read as changed since.
+	if movedTranscript(id, oldPath, now.Add(-2*movedCheckEvery)) {
+		t.Fatal("one copy: want not moved")
+	}
+	if movedTranscript(id, oldPath, now.Add(-movedCheckEvery)) {
+		t.Error("only its own folder changed: want not moved")
+	}
+	write(filepath.Join(root, "-new", id+".jsonl"), time.Now())
+	if !movedTranscript(id, oldPath, now) {
+		t.Error("a newer copy in a new folder: want moved")
+	}
+}
+
 // TestOrderTabsChord: ^X J hands OrderTabs the ttys of the live sessions in
 // terminals, in list order; a background session and one in an app have no
 // tab of their own, and an exited one has no tty.

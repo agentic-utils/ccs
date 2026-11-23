@@ -853,3 +853,28 @@ func TestWorkingLineIgnoresAStaleStatusTime(t *testing.T) {
 		t.Errorf("got %q, want this turn's 1m 30s and its tokens only", got)
 	}
 }
+
+// A fast tick that found nothing new is quiet: Update skips the sort and
+// the header's counts for it. One with new lines or a changed status isn't.
+func TestQuietTick(t *testing.T) {
+	since := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	st := sessions.SessionStat{Status: "idle", Since: since}
+	m := model{chatStatus: map[string]sessions.SessionStat{"a": st}}
+	conv := transcript.Conversation{SessionID: "a"}
+	for name, c := range map[string]struct {
+		msg  tea.Msg
+		want bool
+	}{
+		"the tick":        {chatTickMsg{}, true},
+		"same status":     {chatTickResult{id: "a", stat: st}, true},
+		"no status":       {chatTickResult{id: "a"}, true},
+		"new lines":       {chatTickResult{id: "a", stat: st, conv: &conv}, false},
+		"status changed":  {chatTickResult{id: "a", stat: sessions.SessionStat{Status: "busy", Since: since}}, false},
+		"first status":    {chatTickResult{id: "b", stat: st}, false},
+		"another message": {liveTickMsg{}, false},
+	} {
+		if got := m.quietTick(c.msg); got != c.want {
+			t.Errorf("%s: quietTick = %v, want %v", name, got, c.want)
+		}
+	}
+}

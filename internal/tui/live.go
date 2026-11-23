@@ -637,21 +637,88 @@ func stopCmd(name string, b sessions.BgSession) tea.Cmd {
 }
 
 // movedChecks: when each live session's transcript was last looked for in
-// other project folders (movedTranscript), so an idle one costs a glob at
+// other project folders (movedTranscript), so an idle one is looked for at
 // most every movedCheckEvery.
 var movedChecks sync.Map
 
 const movedCheckEvery = 15 * time.Second
 
+// projectMods is every project folder's modification time, listed at most
+// every movedCheckEvery and shared by every session's check: a transcript
+// that moves is a new file in another folder, which changes that folder's
+// time, so after its first look a session only looks in folders changed
+// since its last, not in every one (hundreds, for each live session).
+var projectMods struct {
+	sync.Mutex
+	at   time.Time
+	mods map[string]time.Time
+}
+
+// movedSlack allows for a folder time coarser than the clock.
+const movedSlack = 2 * time.Second
+
+// changedProjects is the project folders modified since since.
+func changedProjects(since, now time.Time) []string {
+	projectMods.Lock()
+	defer projectMods.Unlock()
+	if projectMods.mods == nil || now.Sub(projectMods.at) >= movedCheckEvery || now.Before(projectMods.at) {
+		root := transcript.GetProjectsDir()
+		entries, _ := os.ReadDir(root)
+		mods := make(map[string]time.Time, len(entries))
+		for _, e := range entries {
+			if !e.IsDir() || transcript.HiddenProjectDir(e.Name()) {
+				continue
+			}
+			if info, err := e.Info(); err == nil {
+				mods[filepath.Join(root, e.Name())] = info.ModTime()
+			}
+		}
+		projectMods.at, projectMods.mods = now, mods
+		movedChecks.Range(func(id, last any) bool { // sessions long gone
+			if now.Sub(last.(time.Time)) > time.Hour {
+				movedChecks.Delete(id)
+			}
+			return true
+		})
+	}
+	var dirs []string
+	for d, mod := range projectMods.mods {
+		if !mod.Before(since.Add(-movedSlack)) {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs
+}
+
 // movedTranscript: live session id writes a transcript other than path, the
-// one its row came from, as when it was resumed from its folder's new place
-// while a copy stays in the old folder's project dir. Its row would otherwise
-// stay frozen until the next full scan. Checked only when path didn't grow.
+// one it's listed from (its folder moved, say), so a full scan should pick
+// the newest copy up. At most every movedCheckEvery per session; its first
+// look is in every project folder, later ones only in folders changed since.
 func movedTranscript(id, path string, now time.Time) bool {
-	if last, ok := movedChecks.Load(id); ok && now.Sub(last.(time.Time)) < movedCheckEvery {
+	last, seen := movedChecks.Load(id)
+	if seen && now.Sub(last.(time.Time)) < movedCheckEvery {
 		return false
 	}
 	movedChecks.Store(id, now)
-	newest := transcript.TranscriptPath(id)
-	return newest != "" && newest != path
+	if !seen {
+		newest := transcript.TranscriptPath(id)
+		return newest != "" && newest != path
+	}
+	if strings.ContainsAny(id, `/\*?[`) {
+		return false
+	}
+	var pathMod time.Time
+	if info, err := os.Stat(path); err == nil {
+		pathMod = info.ModTime()
+	}
+	for _, d := range changedProjects(last.(time.Time), now) {
+		p := filepath.Join(d, id+".jsonl")
+		if p == path {
+			continue
+		}
+		if info, err := os.Stat(p); err == nil && (pathMod.IsZero() || info.ModTime().After(pathMod)) {
+			return true
+		}
+	}
+	return false
 }

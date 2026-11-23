@@ -225,6 +225,37 @@ func (m model) tabHint() string {
 	return "needs you"
 }
 
+// headerCounts is what the header says about sessions needing you, worked
+// out once per Update that can change it (noteHeader) rather than on every
+// frame: each is a pass over every listed session, and tabHint reads each
+// one's PRs.
+type headerCounts struct {
+	valid   bool
+	hint    string // tabHint
+	waiting int    // waitingCount
+}
+
+// noteHeader works out the header's counts for the model as it is now.
+func (m *model) noteHeader() {
+	m.hdr = headerCounts{valid: true, hint: m.tabHint(), waiting: m.waitingCount()}
+}
+
+// headerHint is tabHint as of the last Update, or now before any.
+func (m model) headerHint() string {
+	if m.hdr.valid {
+		return m.hdr.hint
+	}
+	return m.tabHint()
+}
+
+// headerWaiting is waitingCount as of the last Update, or now before any.
+func (m model) headerWaiting() int {
+	if m.hdr.valid {
+		return m.hdr.waiting
+	}
+	return m.waitingCount()
+}
+
 // anyWaiting: something needs the user (the first three tiers, not the PR
 // ones), as the header's "needs you" says.
 func (m model) anyWaiting() bool {

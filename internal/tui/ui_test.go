@@ -1737,7 +1737,12 @@ func TestScrollingDoesntSort(t *testing.T) {
 			t.Fatalf("%T sorted the list", msg)
 		}
 	}
+	// A fast tick that found nothing new doesn't sort either (quietTick).
 	res, _ := m.Update(chatTickResult{id: "b"})
+	if m = res.(model); m.filtered[0].conv.SessionID != "a" {
+		t.Fatal("a quiet fast tick sorted the list")
+	}
+	res, _ = m.Update(chatTickResult{id: "b", stat: sessions.SessionStat{Status: "idle"}}) // a status it didn't have
 	if m = res.(model); m.filtered[0].conv.SessionID != "b" {
 		t.Error("any other message should sort it")
 	}

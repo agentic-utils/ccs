@@ -2241,14 +2241,18 @@ func agySession() (PRClaim, bool) {
 // PRsOf is conv's PRs and then its subagents' not among them.
 func PRsOf(conv transcript.Conversation) []string {
 	sub := subagentPRs(conv)
-	if len(sub) == 0 {
-		return conv.PRs
-	}
-	urls := slices.Clone(conv.PRs)
+	var urls []string // allocated only for a subagent PR conv doesn't list: the list asks on every pass
 	for _, u := range sub {
-		if !slices.Contains(urls, u) {
-			urls = append(urls, u)
+		if slices.Contains(conv.PRs, u) || slices.Contains(urls, u) {
+			continue
 		}
+		if urls == nil {
+			urls = slices.Clip(conv.PRs) // appending can't write into conv's array
+		}
+		urls = append(urls, u)
+	}
+	if urls == nil {
+		return conv.PRs
 	}
 	return urls
 }

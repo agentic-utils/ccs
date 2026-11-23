@@ -193,10 +193,92 @@ func ShellSafe(s string) bool {
 	return !strings.ContainsFunc(s, func(r rune) bool { return r == '\\' || r < 0x20 || r == 0x7f || r == utf8.RuneError })
 }
 
-// PsAll is every process's pid, tty and command line. Stubbed in tests.
+// PsAll is every process's pid, tty and command line, from the shared
+// listing. Stubbed in tests.
 var PsAll = func() (string, error) {
-	out, err := RunBounded(3*time.Second, nil, "ps", "-axww", "-o", "pid=,tty=,command=")
-	return string(out), err
+	rows, err := listing()
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, r := range rows {
+		b.WriteString(r.pid)
+		b.WriteByte(' ')
+		b.WriteString(r.tty)
+		b.WriteByte(' ')
+		b.WriteString(r.cmd)
+		b.WriteByte('\n')
+	}
+	return b.String(), nil
+}
+
+// ListingShare is how long one full process listing answers every PsAll and
+// PsTree: a full `ps -axww` costs most of a second of CPU with a thousand
+// processes, and one live tick asks for it up to three times (Codex's TUIs,
+// agy's, Codex execs' parents). It's shorter than a tick, so each tick still
+// sees the processes as they are then.
+var ListingShare = time.Second
+
+type psRow struct{ pid, ppid, tty, cmd string }
+
+var shared struct {
+	sync.Mutex
+	at   time.Time
+	rows []psRow
+}
+
+// Fresh makes the next PsAll or PsTree list the processes again, for a
+// caller that waits on a change and must not read a listing from before it.
+func Fresh() {
+	shared.Lock()
+	shared.rows = nil
+	shared.Unlock()
+}
+
+// listing is every process's pid, parent, tty and command line, from one ps
+// call shared for ListingShare. A failed call isn't kept.
+func listing() ([]psRow, error) {
+	shared.Lock()
+	defer shared.Unlock()
+	if shared.rows != nil && time.Since(shared.at) < ListingShare {
+		return shared.rows, nil
+	}
+	out, err := RunBounded(3*time.Second, nil, "ps", "-axww", "-o", "pid=,ppid=,tty=,command=")
+	if err != nil {
+		shared.rows = nil
+		return nil, err
+	}
+	rows := parseListing(string(out))
+	shared.at, shared.rows = time.Now(), rows
+	return rows, nil
+}
+
+// parseListing reads `ps -o pid=,ppid=,tty=,command=` output. The command
+// keeps its own spacing.
+func parseListing(out string) []psRow {
+	var rows []psRow
+	for _, line := range strings.Split(out, "\n") {
+		var f [3]string
+		rest := line
+		ok := true
+		for i := range f {
+			rest = strings.TrimLeft(rest, " ")
+			var cut bool
+			f[i], rest, cut = strings.Cut(rest, " ")
+			if f[i] == "" {
+				ok = false
+				break
+			}
+			if !cut {
+				rest = ""
+			}
+		}
+		if !ok {
+			continue
+		}
+		rows = append(rows, psRow{f[0], f[1], f[2], strings.TrimLeft(rest, " ")})
+	}
+	return rows
 }
 
 // TTYOf is pid's terminal, "" when it has none. Stubbed in tests.
@@ -212,8 +294,21 @@ var TTYOf = func(pid int) string {
 // SignalPID is syscall.Kill, stubbed in tests.
 var SignalPID = syscall.Kill
 
-// PsTree is every process's pid, parent pid and command line. Stubbed in tests.
+// PsTree is every process's pid, parent pid and command line, from the
+// shared listing. Stubbed in tests.
 var PsTree = func() (string, error) {
-	out, err := RunBounded(3*time.Second, nil, "ps", "-axww", "-o", "pid=,ppid=,command=")
-	return string(out), err
+	rows, err := listing()
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, r := range rows {
+		b.WriteString(r.pid)
+		b.WriteByte(' ')
+		b.WriteString(r.ppid)
+		b.WriteByte(' ')
+		b.WriteString(r.cmd)
+		b.WriteByte('\n')
+	}
+	return b.String(), nil
 }

@@ -10,9 +10,10 @@ import (
 	"github.com/agentic-utils/ccs/internal/mcp"
 )
 
-func chordB(m model) (model, tea.Cmd) {
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	return key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+// serveW opens ccs serve from ^X V's popup: ^X V, then w.
+func serveW(m model) (model, tea.Cmd) {
+	m, _ = chord(m, "v")
+	return key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
 }
 
 // run applies cmd's message to m, as the program would.
@@ -43,7 +44,7 @@ func TestServeChord(t *testing.T) {
 	m = run(m, m.serveCheckCmd())
 
 	// Not installed: the setup popup, nothing started, no header toggle.
-	m, cmd := chordB(m)
+	m, cmd := serveW(m)
 	if cmd != nil || started != 0 || m.setup == nil || !strings.Contains(strip2(m.View()), "ccs serve isn't set up yet") {
 		t.Errorf("no agent: the setup popup and nothing run: %v %v", m.setup, cmd)
 	}
@@ -51,29 +52,29 @@ func TestServeChord(t *testing.T) {
 	if m.setup != nil {
 		t.Error("esc closes the setup popup")
 	}
-	if strings.Contains(strings.Split(strip2(m.View()), "\n")[0], "browser") {
-		t.Error("the header shows ^X B only once it's set up")
+	if strings.Contains(strings.Split(strip2(m.View()), "\n")[0], "^X V W") {
+		t.Error("the header shows ^X V W only once it's set up")
 	}
 
-	// Installed, not running: ^X B starts it, and the header says it's on.
+	// Installed, not running: ^X V W starts it, and the header says it's on.
 	st.Installed = true
 	m.serveCheckedAt = m.serveCheckedAt.AddDate(0, 0, -1)
 	m = run(m, m.serveCheckCmd())
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X B browser off") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X V W web off") {
 		t.Errorf("installed but stopped: %q", head)
 	}
-	m, cmd = chordB(m)
+	m, cmd = serveW(m)
 	m = run(m, cmd) // serveDoneMsg, which reads the state again at once
 	m = run(m, func() tea.Msg { return serveStatusMsg{serveStatus()} })
 	if started != 1 || !m.serve.Running {
 		t.Fatalf("started %d, running %v", started, m.serve.Running)
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X B browser on") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X V W web on") {
 		t.Errorf("running: %q", head)
 	}
 
-	// Running: ^X B shows its address and QR code; esc closes it.
-	m, cmd = chordB(m)
+	// Running: ^X V W shows its address and QR code; esc closes it.
+	m, cmd = serveW(m)
 	view := strip2(m.View())
 	if cmd != nil || !m.serveQROpen || !strings.Contains(view, "https://ccs.example.com/") || !strings.Contains(view, "▀") {
 		t.Fatalf("running: the QR popup: open %v\n%s", m.serveQROpen, view)
@@ -84,17 +85,17 @@ func TestServeChord(t *testing.T) {
 	}
 	// A window too small for the code shows the address alone.
 	m.width, m.height = 60, 20
-	m, _ = chordB(m)
+	m, _ = serveW(m)
 	if v := strip2(m.View()); strings.Contains(v, "▀") || !strings.Contains(v, "too small for its QR code") || !strings.Contains(v, "https://ccs.example.com/") {
 		t.Errorf("a small window:\n%s", v)
 	}
-	m, _ = chordB(m) // ^X B closes it too
+	m, _ = chord(m, "v") // ^X V closes it too
 	if m.serveQROpen {
-		t.Error("^X B closes the popup")
+		t.Error("^X V closes the popup")
 	}
 	m.width, m.height = 160, 30
 	// s in the popup asks first; n keeps it, y stops it.
-	m, _ = chordB(m)
+	m, _ = serveW(m)
 	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	if cmd != nil || m.serveQROpen || !m.confirmServeStop || !strings.Contains(strip2(m.View()), "Stop ccs serve?") {
 		t.Fatalf("stopping asks first")
@@ -103,7 +104,7 @@ func TestServeChord(t *testing.T) {
 	if m.confirmServeStop || stopped != 0 {
 		t.Errorf("n keeps it running")
 	}
-	m, _ = chordB(m)
+	m, _ = serveW(m)
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = run(m, cmd)
@@ -115,7 +116,7 @@ func TestServeChord(t *testing.T) {
 	startServe = func() (string, error) { return "", errors.New("launchctl bootstrap: boom") }
 	st.Running = false
 	m.serve.Running = false
-	m, cmd = chordB(m)
+	m, cmd = serveW(m)
 	m = run(m, cmd)
 	if !strings.Contains(m.errorMsg, "boom") || m.errorMsg == m.noteMsg {
 		t.Errorf("a failed start is an error: %q", m.errorMsg)

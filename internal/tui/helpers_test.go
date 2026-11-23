@@ -82,6 +82,7 @@ func TestMain(m *testing.M) {
 	state.LaunchDir = func() string { return filepath.Join(dir, "launch") }
 	sessions.OpenLaunchTab = func(string) (string, error) { return "", errors.New("tests open no tabs") }
 	sessions.RetypeLauncher = func(string, string) error { return errors.New("tests type into no tabs") }
+	sessions.SendKey = func(sessions.Terminal, sessions.Key) error { return errors.New("tests press no keys") }
 	sessions.CheckLaunchShell = func() error { return nil }
 	sessions.CloseTab = func(string) bool { return false }
 	sessions.FocusTTY = func(string, bool) bool { return false }

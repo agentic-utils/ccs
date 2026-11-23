@@ -76,6 +76,16 @@ func (c Conversation) AskedLast() bool {
 	return n >= 0 && c.Messages[n].Role == "assistant" && Asks(c.Messages[n].Text)
 }
 
+// RunningTool is the name of the last tool call still without a result, ""
+// with none: while the session is busy, the call it's running; with none,
+// it is writing a reply.
+func (c Conversation) RunningTool() string {
+	if c.Pending == nil {
+		return ""
+	}
+	return c.Pending.Name
+}
+
 // PendingAsk is what a session waiting on the user asks, as plain text: its
 // AskUserQuestion menu, options numbered as claude shows them, else the tool
 // call a permission prompt is about. "" with no call pending. A busy

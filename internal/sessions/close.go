@@ -77,6 +77,10 @@ func appendedHas(path string, offset int64, want string) bool {
 	return err == nil && bytes.Contains(data, []byte(want))
 }
 
+// AppendedHas: the file at path has gained want past offset (all of it
+// when it shrank). The TUI's turn keys confirm their effect with it.
+func AppendedHas(path string, offset int64, want string) bool { return appendedHas(path, offset, want) }
+
 // lastSaidBy is the session's last message of its own in the transcript at
 // path, cut to a few lines' worth, "" if none.
 func lastSaidBy(path string) string {

@@ -128,6 +128,61 @@ var SendKeys = func(t Terminal, text string, enter bool) error {
 	return nil
 }
 
+// Key is a key press Claude Code reads from its terminal, as tmux names it
+// for send-keys (several for a chord) and as the bytes iTerm writes. Esc is
+// written alone: Claude Code reads an escape followed by more bytes in the
+// same read as Alt and a key.
+type Key struct {
+	Name  string   // how ccs names it in notes and logs
+	Tmux  []string // send-keys key names, never -l
+	Bytes []byte
+}
+
+// The keys of Claude Code's own bindings that ccs presses for the user:
+// chat:cancel, chat:sendNow (its other binding beside ctrl+enter, which a
+// terminal can't tell from enter) and task:background.
+var (
+	KeyInterrupt  = Key{"Esc", []string{"Escape"}, []byte{0x1b}}
+	KeySendNow    = Key{"Ctrl+X Ctrl+S", []string{"C-x", "C-s"}, []byte{0x18, 0x13}}
+	KeyBackground = Key{"Ctrl+B", []string{"C-b"}, []byte{0x02}}
+)
+
+// SendKey presses k in t. A timeout may still have pressed it, so it's
+// never retried. A var, as SendKeys, so tests never reach a real terminal.
+var SendKey = func(t Terminal, k Key) error {
+	switch t.Kind {
+	case "tmux pane":
+		_, err := proc.RunBounded(5*time.Second, nil, "tmux", append([]string{"send-keys", "-t", t.Target}, k.Tmux...)...)
+		return err
+	case "iTerm tab":
+		chars := make([]string, len(k.Bytes))
+		for i, b := range k.Bytes {
+			chars[i] = fmt.Sprintf("(ASCII character %d)", b)
+		}
+		script := fmt.Sprintf(`tell application "iTerm2"
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				if tty of s is %q then
+					tell s to write text (%s) newline NO
+					return "typed"
+				end if
+			end repeat
+		end repeat
+	end repeat
+end tell`, t.Target, strings.Join(chars, " & "))
+		out, err := proc.RunBounded(5*time.Second, nil, "osascript", "-e", script)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(out)) != "typed" {
+			return ErrNoTerminal
+		}
+		return nil
+	}
+	return ErrNoTerminal
+}
+
 // TypeKeys types text into the terminal running pid (FindTerminal, then
 // SendKeys), pressing Enter after it when enter is set (a digit alone picks
 // a question menu's option). where names what it used ("" if nothing found

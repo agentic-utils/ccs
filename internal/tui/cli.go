@@ -184,7 +184,9 @@ Key bindings:
   Ctrl+X D        Delete its transcript file; asks first, can't be undone
 
  Ctrl+X then a letter: view and tools
-  Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder
+  Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder:
+                  pick Claude, Codex or Gemini (agy) with ←/→ or Tab (the ones on PATH; the last choice
+                  is remembered), Enter, then its name and brief
   Ctrl+X O        Open the orchestrator, setting one up if there is none
   Ctrl+X J        Put the tabs of live sessions in list order: tmux windows in each
                   tmux session, iTerm tabs in each window (needs iTerm's Python
@@ -428,7 +430,7 @@ func Main(v string) {
 	go sessions.RefreshLinkApp()
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
-	m.table, m.grouped, m.autoFocus, m.hideSidebar = s.Table, s.Grouped, s.AutoFocus, s.HideSidebar
+	m.table, m.grouped, m.autoFocus, m.hideSidebar, m.launchAgent = s.Table, s.Grouped, s.AutoFocus, s.HideSidebar, s.LaunchAgent
 	m.openClosed = map[string]bool{}
 	for _, id := range s.OpenClosed {
 		m.openClosed[id] = true

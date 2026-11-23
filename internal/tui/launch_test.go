@@ -52,19 +52,23 @@ func TestLaunchAndCloseFromTheList(t *testing.T) {
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
 	m.width, m.height = 120, 30
 	m, _ = chord(m, "n")
-	if m.launchStep != 1 || m.launchCwd != cwd || !strings.Contains(strip2(m.View()), "New session name:") {
-		t.Fatalf("^X N asks for a name, starting in the selected session's folder: step %d, cwd %q", m.launchStep, m.launchCwd)
+	if m.launchStep != 1 || m.launchCwd != cwd || !strings.Contains(strip2(m.View()), "Agent:") {
+		t.Fatalf("^X N asks for the agent first, starting in the selected session's folder: step %d, cwd %q", m.launchStep, m.launchCwd)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.launchStep != 2 || !strings.Contains(strip2(m.View()), "New session name:") {
+		t.Fatalf("then its name: step %d", m.launchStep)
 	}
 	for _, r := range "bad name" {
 		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.launchStep != 1 || m.errorMsg == "" {
+	if m.launchStep != 2 || m.errorMsg == "" {
 		t.Fatalf("a name with a space is refused: %d %q", m.launchStep, m.errorMsg)
 	}
 	m.launchInput.SetValue("helper")
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.launchStep != 2 || !strings.Contains(strip2(m.View()), "Brief:") {
+	if m.launchStep != 3 || !strings.Contains(strip2(m.View()), "Brief:") {
 		t.Fatalf("then its brief: %d", m.launchStep)
 	}
 	m.launchInput.SetValue("look into it")
@@ -184,5 +188,108 @@ func TestRestartFromTheList(t *testing.T) {
 	cmd()
 	if len(got) != 2 || !got[1].Force {
 		t.Errorf("y forces it: %+v", got)
+	}
+}
+
+// ^X N's agent row: only the agents on PATH, ←/→ and Tab move the choice,
+// the launch runs the chosen one and the choice is saved for next time.
+func TestLaunchAgentChoice(t *testing.T) {
+	stubLaunch(t)
+	sessionsFixture(t)
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	oldSettings := state.SettingsPath
+	state.SettingsPath = settingsPath
+	t.Cleanup(func() { state.SettingsPath = oldSettings })
+	var script string
+	sessions.OpenLaunchTab = func(s string) (string, error) {
+		b, _ := os.ReadFile(s)
+		script = string(b)
+		return "", errors.New("no tab in tests")
+	}
+	cwd := t.TempDir()
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
+	m.width, m.height = 160, 30
+
+	m, _ = chord(m, "n")
+	view := strip2(m.View())
+	if !strings.Contains(view, "Agent: ✻ Claude   ⬡ Codex   ✦ Gemini") || m.launchAgentNow().id != "claude" {
+		t.Fatalf("the first default is Claude, all three offered: %q", m.launchAgentNow().id)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRight})
+	if m.launchAgentNow().id != "agy" {
+		t.Fatalf("→ twice is Gemini: %q", m.launchAgentNow().id)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.launchAgentNow().id != "claude" {
+		t.Fatalf("tab wraps round to Claude: %q", m.launchAgentNow().id)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyLeft})
+	if m.launchAgentNow().id != "codex" {
+		t.Fatalf("← twice from Claude is Codex: %q", m.launchAgentNow().id)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.launchInput.Value() != "" {
+		t.Fatal("the agent row takes no text")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	for _, r := range "helper" {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyLeft}) // the name box keeps its arrows
+	if m.launchAgentNow().id != "codex" || !strings.Contains(strip2(m.View()), "⬡ Codex") {
+		t.Fatalf("← in the name box moves the cursor, not the agent: %q", m.launchAgentNow().id)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m.launchInput.SetValue("look into it")
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter starts it")
+	}
+	cmd()
+	if !strings.Contains(script, "/bin/codex") || strings.Contains(script, "/bin/claude") {
+		t.Errorf("the launcher runs codex: %q", script)
+	}
+	if s := loadSettings(); s.LaunchAgent != "codex" {
+		t.Errorf("the choice is saved: %q", s.LaunchAgent)
+	}
+
+	m2 := initialModel(buildItems([]transcript.Conversation{{SessionID: "s1", Cwd: cwd, Title: "one", LastTimestamp: "2026-11-03T10:00:00Z"}}), "", nil)
+	m2.width, m2.height = 160, 30
+	m2.launchAgent = loadSettings().LaunchAgent
+	m2, _ = chord(m2, "n")
+	if m2.launchAgentNow().id != "codex" {
+		t.Errorf("the next ^X N starts on the last choice: %q", m2.launchAgentNow().id)
+	}
+
+	// Only the agents on PATH; with one, nothing to choose.
+	sessions.LookBin = func(name string) (string, error) {
+		if name == "agy" || name == "claude" {
+			return "/bin/" + name, nil
+		}
+		return "", errors.New("not found")
+	}
+	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyEsc})
+	m2, _ = chord(m2, "n")
+	if v := strip2(m2.View()); strings.Contains(v, "Codex") || !strings.Contains(v, "✦ Gemini") || m2.launchAgentNow().id != "claude" {
+		t.Errorf("codex isn't offered, and a saved codex falls back to the first: %q", m2.launchAgentNow().id)
+	}
+	sessions.LookBin = func(name string) (string, error) {
+		if name == "agy" {
+			return "/bin/agy", nil
+		}
+		return "", errors.New("not found")
+	}
+	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyEsc})
+	m2, _ = chord(m2, "n")
+	if m2.launchStep != 2 || m2.launchAgentNow().id != "agy" {
+		t.Errorf("one agent on PATH skips the row: step %d, %q", m2.launchStep, m2.launchAgentNow().id)
+	}
+	sessions.LookBin = func(string) (string, error) { return "", errors.New("not found") }
+	m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyEsc})
+	m2, _ = chord(m2, "n")
+	if m2.launchStep != 0 || !strings.Contains(m2.errorMsg, "none is on PATH") {
+		t.Errorf("none on PATH says so: %d %q", m2.launchStep, m2.errorMsg)
 	}
 }

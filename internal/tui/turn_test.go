@@ -115,29 +115,28 @@ func TestTurnSendNowWhileReplying(t *testing.T) {
 	}
 }
 
-// ^X Esc asks first; n presses nothing, y presses Esc once checked again.
-func TestTurnInterruptAsksFirst(t *testing.T) {
+// ^X Esc presses Esc at once, as Claude Code's own Esc does: no y/n, but
+// everything is checked again just before the key.
+func TestTurnInterruptPressesAtOnce(t *testing.T) {
 	m, pressed := turnModel(t, turnConv(t, turnUser, turnWriting), "busy")
+	for _, s := range m.shortcuts() {
+		if slices.Contains([]string{"^X Esc", "^X Enter", "^X B"}, s[0]) && strings.Contains(s[1], "asks first") {
+			t.Errorf("%s mirrors Claude Code's key, which doesn't ask: %q", s[0], s[1])
+		}
+	}
 	m, cmd := chordKey(m, tea.KeyEsc)
-	if cmd != nil || m.confirmInterrupt != "live" || !strings.Contains(strip2(m.View()), "Interrupt \"Busy one\"'s turn?") {
-		t.Fatalf("^X Esc asks: %q %v", m.confirmInterrupt, cmd)
+	if cmd == nil || m.prompting() || strings.Contains(strip2(m.View()), "Interrupt \"Busy one\"'s turn?") {
+		t.Fatalf("^X Esc doesn't ask: prompting %v, cmd %v", m.prompting(), cmd)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	if m.confirmInterrupt != "" || len(*pressed) != 0 {
-		t.Errorf("n cancels: %v", *pressed)
-	}
-	m, _ = chordKey(m, tea.KeyEsc)
-	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = run(m, cmd)
 	if len(*pressed) != 1 || (*pressed)[0] != "Esc" || !strings.Contains(m.noteMsg, "✓ Interrupt") {
-		t.Errorf("y presses Esc: %v %q", *pressed, m.noteMsg)
+		t.Errorf("^X Esc presses Esc: %v %q", *pressed, m.noteMsg)
 	}
 	// Idle by the time the key would go (the session file read just
 	// before it): nothing pressed.
 	*pressed = nil
 	writeTurnFile(t, "idle")
-	m, _ = chordKey(m, tea.KeyEsc)
-	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m, cmd = chordKey(m, tea.KeyEsc)
 	m = run(m, cmd)
 	if len(*pressed) != 0 || !strings.Contains(m.noteMsg, "Esc not pressed") {
 		t.Errorf("rechecked before the key: %v %q", *pressed, m.noteMsg)
@@ -163,8 +162,8 @@ func TestTurnKeysRefused(t *testing.T) {
 				m, _ = chordKey(m, k)
 			}
 			m, cmd := chord(m, "b")
-			if cmd != nil || m.confirmInterrupt != "" || len(*pressed) != 0 || !strings.Contains(m.noteMsg, c.want) {
-				t.Errorf("%s: %v %q %q", c.name, *pressed, m.confirmInterrupt, m.noteMsg)
+			if cmd != nil || len(*pressed) != 0 || !strings.Contains(m.noteMsg, c.want) {
+				t.Errorf("%s: %v %q", c.name, *pressed, m.noteMsg)
 			}
 			if offered(m, "^X Esc") || offered(m, "^X Enter") || offered(m, "^X B") {
 				t.Errorf("%s: no turn key offered", c.name)
@@ -179,7 +178,7 @@ func TestChordEscOnNothingLiveCancels(t *testing.T) {
 	i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "idle" })
 	m.cursor = i
 	m, cmd := chordKey(m, tea.KeyEsc)
-	if cmd != nil || m.confirmInterrupt != "" || m.noteMsg != "" || m.chordX {
-		t.Errorf("a cancelled chord: %q %q %v", m.confirmInterrupt, m.noteMsg, m.chordX)
+	if cmd != nil || m.noteMsg != "" || m.chordX {
+		t.Errorf("a cancelled chord: %q %v", m.noteMsg, m.chordX)
 	}
 }

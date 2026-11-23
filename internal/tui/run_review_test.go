@@ -100,12 +100,7 @@ func TestQuitStopsARunningCommand(t *testing.T) {
 	m, cmd := enter(m, "!sleep 30 & echo $! > child; wait")
 	done := make(chan tea.Msg, 1)
 	go func() { done <- work(t, cmd) }()
-	for range 100 {
-		if _, err := os.Stat(filepath.Join(dir, "child")); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitPID(t, filepath.Join(dir, "child"))
 	if !runActive() || m.awayForUpdate() {
 		t.Fatal("a running command keeps automatic updates waiting")
 	}

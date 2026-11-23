@@ -7,7 +7,8 @@ import (
 )
 
 // Out-of-date hooks: Claude Code's settings run some of ccs's hooks but not
-// all, because they were installed by a ccs that had fewer. The header says
+// all, because they were installed by a ccs that had fewer, or none though
+// ccs installed them once (mcp.HooksOutOfDate says how it tells). The header says
 // so, dim and static, until `ccs hook install` adds the rest. ccs only ever
 // reads the settings here: installing is the user's to do.
 
@@ -15,7 +16,7 @@ import (
 var hooksOutOfDate = mcp.HooksOutOfDate
 
 // hooksMsg is the hooks missing from the settings, nil when none are (or
-// none of ccs's are there at all).
+// none of ccs's are there and that was the user's choice).
 type hooksMsg struct{ missing []string }
 
 // checkHooksCmd reads the settings off the UI goroutine: from each refresh

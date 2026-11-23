@@ -631,6 +631,9 @@ func editHookSettings(path string, install bool) (string, error) {
 	case install && len(changed) == 0:
 		return "ccs's hooks are already in " + path, nil
 	case !install && len(changed) == 0:
+		if _, err := os.Stat(path + backupSuffix); err == nil {
+			os.WriteFile(path+removedSuffix, nil, 0o600)
+		}
 		return "ccs's hooks aren't in " + path, nil
 	}
 	if len(hooks) == 0 {
@@ -643,25 +646,74 @@ func editHookSettings(path string, install bool) (string, error) {
 		return "", err
 	}
 	if len(raw) > 0 {
-		if err := os.WriteFile(path+".before-ccs-hook", raw, 0o600); err != nil {
+		if err := os.WriteFile(path+backupSuffix, raw, 0o600); err != nil {
 			return "", err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := writeThrough(path, append(out, '\n')); err != nil {
 		return "", err
 	}
-	tmp := fmt.Sprintf("%s.tmp-%s", path, newPromptID())
-	if err := os.WriteFile(tmp, append(out, '\n'), 0o600); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return "", err
+	if install {
+		os.Remove(path + removedSuffix)
+	} else {
+		os.WriteFile(path+removedSuffix, nil, 0o600)
 	}
 	if install {
 		return "added ccs's " + hookList(changed) + " to " + path + " (the old file is beside it, .before-ccs-hook). Sessions started from now on use it; restart running ones to pick it up.", nil
 	}
 	return "removed ccs's " + hookList(changed) + " from " + path, nil
+}
+
+// The files `ccs hook install` and `uninstall` leave beside Claude Code's
+// settings (beside the path as given, a symlink included, never in the
+// folder the link points into): backupSuffix the settings as they were
+// before the last edit, removedSuffix a mark that the last edit was an
+// uninstall, so HooksOutOfDate can tell hooks removed on purpose from hooks
+// lost when something replaced the file.
+const (
+	backupSuffix  = ".before-ccs-hook"
+	removedSuffix = ".ccs-hooks-removed"
+)
+
+// writeThrough replaces the file at path with data atomically. When path is
+// a symlink (settings kept in a dotfiles repo), the link stays and its
+// target is replaced: the temp file goes beside the target, so the rename
+// stays on one file system, and keeps the target's mode. A path that
+// doesn't exist yet is created 0600, its folder too.
+func writeThrough(path string, data []byte) error {
+	target, mode := path, os.FileMode(0o600)
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		target = real
+		if fi, err := os.Stat(real); err == nil {
+			mode = fi.Mode().Perm()
+		}
+	} else if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+		// A dangling link: write where it points rather than replace it.
+		dest, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		if !filepath.IsAbs(dest) {
+			dest = filepath.Join(filepath.Dir(path), dest)
+		}
+		target = dest
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return err
+	}
+	tmp := fmt.Sprintf("%s.tmp-%s", target, newPromptID())
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, mode); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // HookState is one of ccs's hooks (ourHooks) by its Claude Code event, and
@@ -696,11 +748,15 @@ func hookStatusIn(path string) ([]HookState, error) {
 }
 
 // HooksOutOfDate is the events of ccs's hooks missing from the settings
-// when at least one is there: installed by a ccs that had fewer, so
-// `ccs hook install` adds the rest. None installed is a choice, not out of
-// date, and an unreadable file says nothing.
+// when they ought to be there: at least one is (installed by a ccs that had
+// fewer), or none is but `ccs hook install` has edited this file before
+// (its backup is beside it) and `ccs hook uninstall` wasn't the last edit,
+// so the hooks were lost, as when the file is replaced by a copy without
+// them. Never installed, or uninstalled, is a choice, not out of date, and
+// an unreadable file says nothing.
 func HooksOutOfDate() []string {
-	st, err := HookStatus()
+	path := claudeSettingsPath()
+	st, err := hookStatusIn(path)
 	if err != nil {
 		return nil
 	}
@@ -713,10 +769,20 @@ func HooksOutOfDate() []string {
 			missing = append(missing, s.Event)
 		}
 	}
-	if !some {
+	if !some && !hooksLost(path) {
 		return nil
 	}
 	return missing
+}
+
+// hooksLost says `ccs hook install` edited the settings at path before (its
+// backup exists) and no uninstall came after it.
+func hooksLost(path string) bool {
+	if _, err := os.Stat(path + backupSuffix); err != nil {
+		return false
+	}
+	_, err := os.Stat(path + removedSuffix)
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // runHookStatus is `ccs hook status`: each hook installed or missing, exit

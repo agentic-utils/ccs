@@ -43,7 +43,7 @@ It's built for a phone and has no scripts at all.
 
 `ccs serve` never types into a terminal to answer anything: whatever is on screen by the time the key lands (a permission prompt, say) would get it. It answers through Claude Code's own PermissionRequest hook instead, which Claude Code runs for each permission prompt and AskUserQuestion menu before showing it, and which can settle it with a decision.
 
-Turn it on once with `ccs hook install`. It adds `ccs hook permission` under `hooks.PermissionRequest` in `~/.claude/settings.json`, keeping the old file beside it as `settings.json.before-ccs-hook`. `ccs hook install --print` shows the entry without writing it, and `ccs hook uninstall` takes it out. Sessions started from then on use it; restart running ones to pick it up.
+Turn it on once with `ccs hook install`. It adds `ccs hook permission` under `hooks.PermissionRequest` in `~/.claude/settings.json`, keeping the old file beside it as `settings.json.before-ccs-hook`. A symlinked `settings.json` stays a link: the file it points to is edited. `ccs hook install --print` shows the entry without writing it, and `ccs hook uninstall` takes it out. Sessions started from then on use it; restart running ones to pick it up.
 
 What happens to each prompt:
 

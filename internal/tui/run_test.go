@@ -213,13 +213,34 @@ func TestBangNonZeroExitIsRed(t *testing.T) {
 }
 
 // pidIn reads the pid a command wrote, and whether it still runs.
-func pidAlive(t *testing.T, file string) bool {
-	t.Helper()
+// readPID is the pid a shell wrote to file with `echo $! > file`, or 0 while
+// it hasn't finished writing it (`>` creates the file before echo writes).
+func readPID(file string) int {
 	b, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !strings.HasSuffix(string(b), "\n") {
+		return 0
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return max(pid, 0)
+}
+
+// waitPID waits until the shell has written its child's pid to file. A login
+// shell under -race on a busy runner can take seconds to get there.
+func waitPID(t *testing.T, file string) {
+	t.Helper()
+	for deadline := time.Now().Add(15 * time.Second); readPID(file) == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the shell never wrote its child's pid to %s", file)
+		}
+	}
+}
+
+func pidAlive(t *testing.T, file string) bool {
+	t.Helper()
+	pid := readPID(file)
+	if pid == 0 { // kill(0, 0) would ask about this test's own process group
+		t.Fatalf("no pid in %s", file)
+	}
 	for range 50 {
 		if syscall.Kill(pid, 0) != nil {
 			return false
@@ -244,7 +265,11 @@ func TestBangTimeoutKillsIt(t *testing.T) {
 	if !strings.Contains(strip2(m.chatView()), "timed out after") {
 		t.Errorf("view:\n%s", strip2(m.chatView()))
 	}
-	if pidAlive(t, filepath.Join(dir, "child")) {
+	// A slow shell can hit the 300ms deadline before it starts anything: then
+	// nothing was left to outlive it.
+	if readPID(filepath.Join(dir, "child")) == 0 {
+		t.Log("timed out before the shell started its child")
+	} else if pidAlive(t, filepath.Join(dir, "child")) {
 		t.Error("what it started is killed with it")
 	}
 }
@@ -255,12 +280,7 @@ func TestBangEscStopsIt(t *testing.T) {
 	m, cmd := enter(m, "!sleep 30 & echo $! > child; wait")
 	done := make(chan tea.Msg, 1)
 	go func() { done <- work(t, cmd) }()
-	for range 100 { // until it has started its child
-		if _, err := os.Stat(filepath.Join(dir, "child")); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitPID(t, filepath.Join(dir, "child")) // until it has started its child
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlC})
 	if m.quitting {
 		t.Fatal("ctrl+c stops the command, not ccs")

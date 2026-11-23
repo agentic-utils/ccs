@@ -438,6 +438,9 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 		left = "\033[90m  sending: " + chatSnippet(m.pending[id], width-40) + "\033[0m"
 	case m.pending[id] != "" && m.held[id]:
 		left = "\033[33m  ⏸ held: approve it in " + name + " · " + chatSnippet(m.pending[id], width-50-len(name)) + "\033[0m"
+	case m.pending[id] != "" && m.typed[id] && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
+		why := " · typed, but not in its conversation: it may be sitting unsent in its prompt, press Enter in its tab"
+		left = "\033[31m  ✗ not arrived: " + chatSnippet(m.pending[id], width-20-len(why)) + why + "\033[0m"
 	case m.pending[id] != "" && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
 		why := " · if it runs with bypass permissions, approve it in that session"
 		if m.chatStatus[id].Status == "waiting" {
@@ -651,11 +654,17 @@ func sendViaSocket(path, token, text string) (string, error) {
 func waitReceipt() tea.Msg { return <-sessions.ReceiptsCh }
 
 // typeIntoSession types text into the terminal running pid and presses
-// Enter: its tmux pane, else its iTerm tab. where names what it used ("" if
-// neither found it). A timeout may still have typed it, so it's not retried.
+// Enter on its own a moment later (sessions.SubmitDelay): its tmux pane, else
+// its iTerm tab. where names what it used ("" if neither found it). A timeout
+// may still have typed it, so it's not retried. Typing gives no receipt, so
+// checkDelivered watches the transcript and the status line says when a typed
+// message hasn't arrived.
 func typeIntoSession(pid int, text string) (where string, err error) {
 	return typeKeys(pid, text, true)
 }
+
+// typedNote: a send's note says the message was typed into its terminal.
+func typedNote(note string) bool { return strings.HasPrefix(note, "✓ Typed into ") }
 
 // typeKeys is typeIntoSession with Enter optional: a digit alone picks a
 // question menu's option.
@@ -684,16 +693,25 @@ func (m *model) checkDelivered(id string) {
 				delete(m.pending, id)
 				delete(m.sentAt, id)
 				delete(m.held, id)
-				if strings.Contains(m.sendNote[id], "socket") {
+				switch {
+				case m.typed[id]:
+					m.sendNote[id] = "✓ Delivered to " + m.sessionName(item.conv) + " (typed, as you)"
+				case strings.Contains(m.sendNote[id], "socket"):
 					m.sendNote[id] = "✓ Delivered to " + m.sessionName(item.conv) + " (as a message from ccs)"
 				}
+				delete(m.typed, id)
 				return
 			}
 		}
-		// Claude Code logs a socket message as queued the moment it arrives,
-		// then hands it to Claude at the next step (or at once when idle).
-		for _, q := range item.conv.PeerQueued {
-			if _, b, ok := transcript.PeerParts(q); ok && strings.TrimSpace(b) == text {
+		// Claude Code logs a message as queued the moment it arrives while
+		// it's busy (over the socket, or typed and submitted), then hands it
+		// to Claude at the next step.
+		for _, q := range item.conv.Queued {
+			body := q
+			if _, b, ok := transcript.PeerParts(q); ok {
+				body = b
+			}
+			if strings.TrimSpace(transcript.StripImageNote(body)) == text {
 				delete(m.sentAt, id)
 			}
 		}

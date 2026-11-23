@@ -46,18 +46,26 @@ var FindTerminal = func(pid int) Terminal {
 	return Terminal{}
 }
 
-// SendKeys types text into t, pressing Enter after it when enter is set. A
-// timeout may still have typed it, so it's never retried.
-var SendKeys = func(t Terminal, text string, enter bool) error {
-	switch t.Kind {
-	case "tmux pane":
-		if _, err := proc.RunBounded(5*time.Second, nil, "tmux", "send-keys", "-t", t.Target, "-l", "--", text); err != nil || !enter {
-			return err
-		}
-		_, err := proc.RunBounded(5*time.Second, nil, "tmux", "send-keys", "-t", t.Target, "Enter")
-		return err
-	case "iTerm tab":
-		script := fmt.Sprintf(`tell application "iTerm2"
+// SubmitDelay is how long SendKeys waits between the text and its Enter.
+// Claude Code reads a burst of 64 bytes or more as a paste, and a paste's
+// Enter is a newline: typed with the text in one write, a message of 63
+// characters or more sat in the prompt unsent (iTerm's write text sends the
+// text and its \r in one write). Codex's paste-burst detection does the same.
+// Sent apart, the Enter arrives as a key of its own and submits. A var for
+// tests.
+var SubmitDelay = 300 * time.Millisecond
+
+// runKeys runs one terminal command for SendKeys; a var so tests see the
+// sequence without a terminal.
+var runKeys = func(name string, args ...string) ([]byte, error) {
+	return proc.RunBounded(5*time.Second, nil, name, args...)
+}
+
+// itermWrite is the AppleScript that writes text to the iTerm session on tty,
+// with a newline after it when newline is set; it returns "typed" if it found
+// the session.
+func itermWrite(tty, text string, newline bool) string {
+	return fmt.Sprintf(`tell application "iTerm2"
 	repeat with w in windows
 		repeat with t in tabs of w
 			repeat with s in sessions of t
@@ -68,17 +76,56 @@ var SendKeys = func(t Terminal, text string, enter bool) error {
 			end repeat
 		end repeat
 	end repeat
-end tell`, t.Target, text, enter)
-		out, err := proc.RunBounded(5*time.Second, nil, "osascript", "-e", script)
-		if err != nil {
+end tell`, tty, text, newline)
+}
+
+// ErrEnterNotSent: the text was typed but its Enter wasn't, so it may sit in
+// the prompt. Not ErrNoTerminal: the text went in, so nothing may send it
+// another way.
+var ErrEnterNotSent = errors.New("typed, but Enter couldn't be pressed: it may be waiting in the prompt")
+
+// SendKeys types text into t, then, when enter is set, waits SubmitDelay and
+// presses Enter on its own (see SubmitDelay). A timeout may still have typed
+// it, so it's never retried.
+var SendKeys = func(t Terminal, text string, enter bool) error {
+	var typeText, pressEnter func() error
+	switch t.Kind {
+	case "tmux pane":
+		typeText = func() error {
+			_, err := runKeys("tmux", "send-keys", "-t", t.Target, "-l", "--", text)
 			return err
 		}
-		if strings.TrimSpace(string(out)) != "typed" {
-			return ErrNoTerminal
+		pressEnter = func() error {
+			_, err := runKeys("tmux", "send-keys", "-t", t.Target, "Enter")
+			return err
 		}
-		return nil
+	case "iTerm tab":
+		write := func(s string, newline bool) error {
+			out, err := runKeys("osascript", "-e", itermWrite(t.Target, s, newline))
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(string(out)) != "typed" {
+				return ErrNoTerminal
+			}
+			return nil
+		}
+		typeText = func() error { return write(text, false) }
+		pressEnter = func() error { return write("", true) } // write text "" sends \r alone
+	default:
+		return ErrNoTerminal
 	}
-	return ErrNoTerminal
+	if err := typeText(); err != nil || !enter {
+		return err
+	}
+	time.Sleep(SubmitDelay)
+	if err := pressEnter(); err != nil {
+		if errors.Is(err, proc.ErrTimedOut) {
+			return err
+		}
+		return fmt.Errorf("%w (%v)", ErrEnterNotSent, err)
+	}
+	return nil
 }
 
 // TypeKeys types text into the terminal running pid (FindTerminal, then

@@ -786,7 +786,8 @@ func TestMidTurnAndPrefixedPeerMessagesParsed(t *testing.T) {
 		// busy: queued, then attached mid-turn
 		`{"type":"queue-operation","operation":"enqueue","content":` + j(strings.Replace(wrap, "check CI", "and the logs", 1)) + `,"timestamp":"2026-09-30T10:02:00Z"}`,
 		`{"type":"attachment","attachment":{"type":"queued_command","prompt":` + j(strings.Replace(wrap, "check CI", "and the logs", 1)) + `,"commandMode":"prompt","isMeta":true},"timestamp":"2026-09-30T10:02:05Z"}`,
-		// the user typing mid-turn
+		// the user typing mid-turn: queued at once as plain text, attached later
+		`{"type":"queue-operation","operation":"enqueue","content":"also bump node","timestamp":"2026-09-30T10:02:03Z"}`,
 		`{"type":"attachment","attachment":{"type":"queued_command","prompt":"also bump node","commandMode":"prompt"},"timestamp":"2026-09-30T10:02:06Z"}`,
 		// other attachments are ignored
 		`{"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>x</task-notification>","commandMode":"task-notification"},"timestamp":"2026-09-30T10:02:07Z"}`,
@@ -805,8 +806,8 @@ func TestMidTurnAndPrefixedPeerMessagesParsed(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("messages = %q, want %q", got, want)
 	}
-	if len(c.PeerQueued) != 1 {
-		t.Errorf("the enqueue should be recorded, got %d", len(c.PeerQueued))
+	if len(c.Queued) != 2 || c.Queued[1] != "also bump node" {
+		t.Errorf("both enqueues (a peer's and one typed) should be recorded, got %q", c.Queued)
 	}
 }
 

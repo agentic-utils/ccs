@@ -544,13 +544,56 @@ func TestChatPendingLine(t *testing.T) {
 	}
 	for i := range m.items {
 		if m.items[i].conv.SessionID == id {
-			m.items[i].conv.PeerQueued = []string{"<cross-session-message from-name=\"x\">\n" + transcript.CcsNote + "please check the logs.\nthen fix it.\n</cross-session-message>"}
+			m.items[i].conv.Queued = []string{"<cross-session-message from-name=\"x\">\n" + transcript.CcsNote + "please check the logs.\nthen fix it.\n</cross-session-message>"}
 		}
 	}
 	m.pending[id] = "please check the logs.\nthen fix it."
 	m.checkDelivered(id)
 	if v := strip2(m.View()); strings.Contains(v, "not picked up yet") {
 		t.Errorf("once the session has queued it, there's nothing to warn about:\n%s", v)
+	}
+}
+
+// A typed message gives no receipt: ccs watches the transcript, says plainly
+// when it hasn't arrived (sitting unsent in the prompt), and counts a plain
+// enqueue (typed while busy) or a user line as arrival.
+func TestTypedMessageDelivery(t *testing.T) {
+	m := chatModel(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	id := m.filtered[m.cursor].conv.SessionID
+	text := "a message long enough that one burst with its Enter reads as a paste"
+	m.pending = map[string]string{id: text}
+	mm, _ := m.Update(sendDoneMsg{id: id, note: "✓ Typed into x's iTerm tab (as you)"})
+	m = mm.(model)
+	if !m.typed[id] || m.sentAt[id].IsZero() {
+		t.Fatalf("a typed send should be tracked until it shows up: typed=%v sentAt=%v", m.typed[id], m.sentAt[id])
+	}
+	m.sentAt[id] = time.Now().Add(-2 * heldTimeout)
+	if v := strip2(m.View()); !strings.Contains(v, "not arrived") || strings.Contains(v, "not picked up yet") {
+		t.Errorf("a typed message missing from the transcript should say it may sit in the prompt:\n%s", v)
+	}
+	idx := -1
+	for i := range m.items {
+		if m.items[i].conv.SessionID == id {
+			idx = i
+		}
+	}
+	m.items[idx].conv.Queued = []string{text}
+	m.checkDelivered(id)
+	if v := strip2(m.View()); strings.Contains(v, "not arrived") {
+		t.Errorf("queued while busy is arrived:\n%s", v)
+	}
+	m.items[idx].conv.Messages = append(m.items[idx].conv.Messages, transcript.Message{Role: "user", Text: text})
+	m.checkDelivered(id)
+	if m.pending[id] != "" || m.typed[id] || !strings.Contains(m.sendNote[id], "Delivered") {
+		t.Errorf("a user line should settle it as delivered: pending=%q note=%q", m.pending[id], m.sendNote[id])
+	}
+	// A socket send keeps its own wording.
+	m.pending[id] = "other"
+	mm, _ = m.Update(sendDoneMsg{id: id, note: "✓ Sent to x via its message socket (as a message from ccs)"})
+	m = mm.(model)
+	if m.typed[id] {
+		t.Error("a socket send isn't typed")
 	}
 }
 

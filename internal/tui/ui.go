@@ -187,7 +187,8 @@ type model struct {
 	chatStatus map[string]sessions.SessionStat // every live session's last known status (set only by setStat; applyStats drops sessions that are gone)
 	pending    map[string]string               // text sent but not yet seen in the transcript, by SessionID
 	sendNote   map[string]string               // outcome of the last send, by SessionID
-	sentAt     map[string]time.Time            // when a socket send finished, by SessionID, until the session queues it
+	sentAt     map[string]time.Time            // when a socket or typed send finished, by SessionID, until the session queues it
+	typed      map[string]bool                 // the pending message was typed into its terminal, not sent over the socket
 	held       map[string]bool                 // a receipt said the session is holding the message for approval
 	sending    bool
 	run        *shellRun // the last ! command run from the message box (run.go)
@@ -1878,11 +1879,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if errors.Is(msg.err, sessions.ErrUnsent) && !msg.keepDraft {
 				m.sendNote[msg.id] += " · " + m.giveBack(msg.id, msg.text)
 			}
-		} else if strings.Contains(msg.note, "socket") {
+		} else if typed := typedNote(msg.note); typed || strings.Contains(msg.note, "socket") {
 			if m.sentAt == nil {
 				m.sentAt = make(map[string]time.Time)
 			}
+			if m.typed == nil {
+				m.typed = make(map[string]bool)
+			}
 			m.sentAt[msg.id] = time.Now()
+			m.typed[msg.id] = typed
 		}
 		m.checkDelivered(msg.id)
 		return m, nil

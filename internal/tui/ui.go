@@ -97,6 +97,8 @@ type model struct {
 	menuLeft         string               // the held prompt left with Esc: its keys go to the list until it's selected again (or →, Enter)
 	viewing          string               // the done session selected and seen: marked seen when the selection leaves it
 	snoozeOpen       bool                 // the ^X S picker
+	rcOpen           bool                 // ^X V's Remote Control popup (remote.go)
+	rcRunning        bool                 // ^X V is typing /remote-control somewhere
 	snoozeCursor     int
 	autoFocus        bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)
 	focusBusy        bool                 // an auto-focus attempt is in flight
@@ -353,7 +355,7 @@ func (m model) paneWidth() int {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 || m.reorgPlan != nil || m.offerShown() {
+	if m.linksOpen || m.snoozeOpen || m.rcOpen || len(m.reopen) > 0 || m.reorgPlan != nil || m.offerShown() {
 		return m // keyboard only while it's open
 	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
@@ -1858,6 +1860,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runDoneMsg, runTickMsg:
 		return m, m.applyRun(msg)
 
+	case rcDoneMsg:
+		m.applyRC(msg)
+		return m, nil
+
 	case sendDoneMsg:
 		m.sending = false
 		if !errors.Is(msg.err, sessions.ErrUnsent) {
@@ -1919,6 +1925,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.snoozeOpen { // owns the keyboard until closed
 			return m.snoozeKey(k)
+		}
+		if m.rcOpen { // owns the keyboard until closed
+			return m.rcKey(k)
 		}
 		if m.setup != nil { // owns the keyboard until closed
 			return m.serveSetupKey(msg)
@@ -2239,18 +2248,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if k == "^x v" && !m.prompting() && !m.acctOpen {
-			stats.Record("tui.remote_control", stats.Key)
+			stats.Record("tui.remote_control_popup", stats.Key)
 			m.helpOpen = false
-			if err := state.SetRemoteControl(!m.remoteControl); err != nil {
-				m.errorMsg = "Couldn't save the Remote Control setting: " + err.Error()
-				return m, nil
-			}
-			m.remoteControl = !m.remoteControl
-			if m.remoteControl {
-				m.note("Remote Control on: Claude sessions ccs launches, resumes or restarts show on your phone under their ccs name")
-			} else {
-				m.note("Remote Control off for new launches and resumes; a restart keeps it on for a session that had it")
-			}
+			m.rcOpen = true
 			return m, nil
 		}
 		if k == "^x p" && !m.prompting() && !m.acctOpen && !m.showUsage {
@@ -2923,6 +2923,7 @@ func (m model) overPopups() []popup {
 		{m.notesOpen, model.notesPopup},
 		{m.linksOpen, model.linksPopup},
 		{m.snoozeOpen, model.snoozePopup},
+		{m.rcOpen, model.rcPopup},
 		{m.serveQROpen, model.serveQRPopup},
 		{m.setup != nil, model.serveSetupPopup},
 		{len(m.reopen) > 0, model.reopenPopup},
@@ -3066,8 +3067,7 @@ func (m model) shortcuts() [][2]string {
 	add(m.serve.Running, "^X B", "ccs serve's address and QR code; s stops it (asks first), e edits its setup")
 	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
 	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
-	add(!m.remoteControl, "^X V", "Remote Control on, under their names, for sessions ccs starts")
-	add(m.remoteControl, "^X V", "stop turning Remote Control on for sessions ccs starts")
+	add(true, "^X V", "Remote Control: on now in this or every running session, or at launch")
 	add(m.profileStop == nil, "^X Q", "record a CPU profile, for when ccs feels slow")
 	add(m.profileStop != nil, "^X Q", "stop recording and save the CPU profile")
 	add(hasCswap, "^X U", "switch Claude account (cswap)")

@@ -488,8 +488,12 @@ func TestRemoteControlToggle(t *testing.T) {
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 200, 30
 	m, _ = chord(m, "v")
-	if !m.remoteControl || !state.RemoteControl() {
-		t.Error("^X V turns it on, and that's saved")
+	if !m.rcOpen || m.remoteControl {
+		t.Fatal("^X V opens its popup and changes nothing yet")
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if m.rcOpen || !m.remoteControl || !state.RemoteControl() {
+		t.Error("v in it turns the setting on, and that's saved")
 	}
 	if v := strip2(m.View()); !strings.Contains(v, "^X V remote control on") {
 		t.Errorf("the header says it's on:\n%s", v)
@@ -499,6 +503,7 @@ func TestRemoteControlToggle(t *testing.T) {
 		t.Error("a save of the list's own settings keeps remote_control")
 	}
 	m, _ = chord(m, "v")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if m.remoteControl || state.RemoteControl() {
 		t.Error("again turns it off")
 	}

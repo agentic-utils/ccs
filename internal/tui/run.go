@@ -348,68 +348,99 @@ var heldFor = func(id string) bool {
 // as an answer or a message.
 func (m *model) typeSlash(conv transcript.Conversation, text string) tea.Cmd {
 	id, name, pid := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID]
-	word, _, _ := strings.Cut(text, " ")
-	refuse := func(why string) tea.Cmd {
+	if why := m.slashRefusal(conv, text); why != "" {
 		m.boxNote(id, grey(why))
 		return nil
-	}
-	switch st := m.chatStatus[id].Status; {
-	case hasControl(text):
-		return refuse(word + " not typed: it has control characters")
-	case conv.Kind == transcript.KindCodex:
-		return refuse(word + " not typed: " + name + " is a Codex session; slash commands go to Claude Code sessions only")
-	case conv.Kind == transcript.KindAgy:
-		return refuse(word + " not typed: " + name + " is an agy session; slash commands go to Claude Code sessions only")
-	case m.hostedApp(id) != "":
-		return refuse(word + " not typed: " + name + " runs in " + m.hostedApp(id) + ", which ccs can't type into")
-	case m.heldPrompt[id].ID != "":
-		return refuse(word + " needs " + name + " idle; ccs holds a question for it, answer that first")
-	case st == "busy":
-		return refuse(word + " needs " + name + " idle; it's busy")
-	case st == "waiting":
-		return refuse(word + " needs " + name + " idle; it's waiting on a menu")
-	case m.unverified[id] || pid == 0:
-		return refuse(word + " not typed: " + name + "'s process couldn't be checked against its session file")
-	case m.sending:
-		return refuse(word + " not typed: still sending the last message")
 	}
 	m.sending = true
 	m.chatInput.SetValue("")
 	delete(m.sendNote, id)
 	unverified := m.unverified[id]
 	return func() tea.Msg {
-		unsent := func(note string) tea.Msg {
-			return sendDoneMsg{id: id, note: grey(word + " not typed: " + note), err: fmt.Errorf("%w: %s", sessions.ErrUnsent, note), text: text}
+		note, err := typeSlashNow(pid, id, name, text, unverified, nil)
+		if errors.Is(err, sessions.ErrUnsent) {
+			return sendDoneMsg{id: id, note: note, err: err, text: text}
 		}
-		// Find the terminal first (ps, tmux list-panes: it can take seconds),
-		// then check everything again immediately before the keys: the same
-		// session in the same process, idle, with no prompt ccs holds. That
-		// narrows the race to the moment between this check and the keys
-		// landing; only an atomic operation on the session's side could
-		// rule it out, and Claude Code has none.
-		t := sessions.FindTerminal(pid)
-		if t.Kind == "" {
-			return unsent(name + " isn't in iTerm or tmux")
-		}
-		f, same, checked := sessions.StillTheSession(pid, id)
-		switch {
-		case !same || (!checked && unverified):
-			return unsent(name + "'s session has changed")
-		case f.Status != "idle":
-			return unsent(word + " needs " + name + " idle; it's " + cmpOr(f.Status, "not idle"))
-		case heldFor(id):
-			return unsent(word + " needs " + name + " idle; ccs holds a question for it")
-		}
-		where := t.Kind
-		err := sessions.SendKeys(t, text, true)
-		switch {
-		case errors.Is(err, sessions.ErrNoTerminal):
-			return unsent(name + " isn't in iTerm or tmux")
-		case errors.Is(err, proc.ErrTimedOut):
-			return sendDoneMsg{id: id, note: "⚠ Typing " + word + " into " + name + "'s " + where + " timed out; it may have been typed", err: err}
-		case err != nil:
-			return sendDoneMsg{id: id, note: "✗ Couldn't type " + word + " into " + name + "'s " + where + ": " + err.Error(), err: err}
-		}
-		return sendDoneMsg{id: id, note: "✓ Typed " + word + " into " + name + "'s " + where + " (as you)"}
+		return sendDoneMsg{id: id, note: note, err: err}
 	}
+}
+
+// slashRefusal says why text can't be typed into conv's terminal now, or ""
+// when it can: the checks made on the key, before anything is looked up.
+// typeSlashNow checks again immediately before typing.
+func (m model) slashRefusal(conv transcript.Conversation, text string) string {
+	id, name, pid := conv.SessionID, m.sessionName(conv), m.livePIDs[conv.SessionID]
+	word, _, _ := strings.Cut(text, " ")
+	_, bg := m.bg[id]
+	switch st := m.chatStatus[id].Status; {
+	case hasControl(text):
+		return word + " not typed: it has control characters"
+	case conv.Kind == transcript.KindCodex:
+		return word + " not typed: " + name + " is a Codex session; slash commands go to Claude Code sessions only"
+	case conv.Kind == transcript.KindAgy:
+		return word + " not typed: " + name + " is an agy session; slash commands go to Claude Code sessions only"
+	case conv.Kind == transcript.KindSubagent:
+		return word + " not typed: " + name + " is a subagent; slash commands go to its session"
+	case bg:
+		return word + " not typed: " + name + " runs in the background, with no terminal ccs can type into"
+	case m.hostedApp(id) != "":
+		return word + " not typed: " + name + " runs in " + m.hostedApp(id) + ", which ccs can't type into"
+	case m.heldPrompt[id].ID != "":
+		return word + " needs " + name + " idle; ccs holds a question for it, answer that first"
+	case st == "busy":
+		return word + " needs " + name + " idle; it's busy"
+	case st == "waiting":
+		return word + " needs " + name + " idle; it's waiting on a menu"
+	case m.unverified[id] || pid == 0:
+		return word + " not typed: " + name + "'s process couldn't be checked against its session file"
+	case m.sending:
+		return word + " not typed: still sending the last message"
+	}
+	return ""
+}
+
+// typeSlashNow finds pid's terminal and types text with Enter, after
+// checking everything again immediately before the keys: the same session
+// in the same process, idle, with no prompt ccs holds, and whatever recheck
+// says about its session file as read then (a reason not to type, or "").
+// A refusal's error wraps sessions.ErrUnsent: nothing was typed.
+func typeSlashNow(pid int, id, name, text string, unverified bool, recheck func(sessions.SessionFile) string) (string, error) {
+	word, _, _ := strings.Cut(text, " ")
+	unsent := func(note string) (string, error) {
+		return grey(word + " not typed: " + note), fmt.Errorf("%w: %s", sessions.ErrUnsent, note)
+	}
+	// Find the terminal first (ps, tmux list-panes: it can take seconds),
+	// then check everything again immediately before the keys. That
+	// narrows the race to the moment between this check and the keys
+	// landing; only an atomic operation on the session's side could
+	// rule it out, and Claude Code has none.
+	t := sessions.FindTerminal(pid)
+	if t.Kind == "" {
+		return unsent(name + " isn't in iTerm or tmux")
+	}
+	f, same, checked := sessions.StillTheSession(pid, id)
+	switch {
+	case !same || (!checked && unverified):
+		return unsent(name + "'s session has changed")
+	case f.Status != "idle":
+		return unsent(word + " needs " + name + " idle; it's " + cmpOr(f.Status, "not idle"))
+	case heldFor(id):
+		return unsent(word + " needs " + name + " idle; ccs holds a question for it")
+	}
+	if recheck != nil {
+		if why := recheck(f); why != "" {
+			return unsent(why)
+		}
+	}
+	where := t.Kind
+	err := sessions.SendKeys(t, text, true)
+	switch {
+	case errors.Is(err, sessions.ErrNoTerminal):
+		return unsent(name + " isn't in iTerm or tmux")
+	case errors.Is(err, proc.ErrTimedOut):
+		return "⚠ Typing " + word + " into " + name + "'s " + where + " timed out; it may have been typed", err
+	case err != nil:
+		return "✗ Couldn't type " + word + " into " + name + "'s " + where + ": " + err.Error(), err
+	}
+	return "✓ Typed " + word + " into " + name + "'s " + where + " (as you)", nil
 }

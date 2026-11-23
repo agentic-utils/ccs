@@ -1772,6 +1772,7 @@ type SessionStat struct {
 	Since      time.Time // statusUpdatedAt; zero when the file has none
 	Name       string
 	Cwd        string // the folder the process runs in, from its session file
+	Remote     bool   // Remote Control is on: the file has a bridgeSessionId
 }
 
 // SessionFile is the part of ~/.claude/sessions/<pid>.json ccs uses.
@@ -1798,7 +1799,7 @@ func (f SessionFile) cleaned() SessionFile {
 
 func (f SessionFile) Stat() SessionStat {
 	f = f.cleaned()
-	st := SessionStat{Status: f.Status, WaitingFor: f.WaitingFor, Name: f.Name, Cwd: f.Cwd}
+	st := SessionStat{Status: f.Status, WaitingFor: f.WaitingFor, Name: f.Name, Cwd: f.Cwd, Remote: f.BridgeSessionID != ""}
 	if f.StatusUpdatedAt > 0 {
 		st.Since = time.UnixMilli(f.StatusUpdatedAt)
 	}

@@ -194,9 +194,12 @@ Key bindings:
   Ctrl+X B        Set up ccs serve (try it on this Mac, or a form for your phone), start its launchd agent, or show its address and QR code (s stops it, asking y/n; e edits its setup)
   Ctrl+X I        Install ccs updates on their own once you're away (off by
                   default)
-  Ctrl+X V        Remote Control: Claude sessions ccs launches or resumes
-                  start with it on, under their ccs name (off by default; a
-                  restart keeps it on for a session that had it)
+  Ctrl+X V        Remote Control: t turns it on now in the selected session,
+                  a in every running one that can take it (idle Claude Code
+                  sessions in a terminal, with it off: ccs types
+                  /remote-control <name>), v makes sessions ccs launches or
+                  resumes start with it on, under their ccs name (off by
+                  default; a restart keeps it on for a session that had it)
   Ctrl+X R        Record a CPU profile, for when ccs feels slow; again to stop
                   (or set CCS_CPUPROFILE=path)
   Ctrl+X U        Switch Claude account (needs cswap)

@@ -150,6 +150,8 @@ type RawMessage struct {
 	CustomTitle    string `json:"customTitle"`
 	PRURL          string `json:"prUrl"` // pr-link: a PR a gh command in the session touched
 	AiTitle        string `json:"aiTitle"`
+
+	IsCompactSummary bool `json:"isCompactSummary"` // a compaction's summary of the conversation before it
 	// A message that arrived mid-turn (typed by the user, or from another
 	// session or ccs) is logged as an attachment, not a user line.
 	// Raw, and decoded only for those record types, so an unexpected shape
@@ -600,10 +602,12 @@ func parseLine(conv *Conversation, line []byte) bool {
 			conv.lastCwd = raw.Cwd
 		}
 		trackTools(conv, raw.Message.Content, raw.Timestamp, line)
-		noteTurnBegan(conv, raw.Timestamp)
-		conv.turnStirred = true
 		// isMeta lines are harness-injected (e.g. the local-command caveat).
 		text := extractText(raw.Message.Content)
+		if !startsNoTurn(raw.IsCompactSummary, text) {
+			noteTurnBegan(conv, raw.Timestamp)
+			conv.turnStirred = true
+		}
 		noteUnqueued(conv, text) // a queued message taken in at a turn's start (queue.go)
 		// "/model" logs its result as command output; a switch after the last
 		// reply is the model the session will use next.
@@ -833,11 +837,37 @@ func noteTurnEnd(conv *Conversation, ms int64, ts string) {
 	}
 }
 
+// localTags open the user lines a local command writes: a slash command's
+// caveat, name and output (/compact, /model), and a ! command's input and
+// output. Claude Code runs these outside any turn.
+var localTags = []string{"<local-command-caveat>", "<command-name>", "<local-command-stdout>", "<local-command-stderr>", "<bash-input>", "<bash-stdout>", "<bash-stderr>"}
+
+// startsNoTurn: a user line Claude Code writes without starting a turn, so
+// it neither begins one nor stirs a finished one. A compaction's summary is
+// one: an idle compaction ("Compacted while idle") writes it long after the
+// last turn ended, with nothing following, and mid-turn the turn's own prompt
+// came before it anyway. A local command's lines are the others. A prompt
+// command (a skill) still starts its turn with the prompt it expands to.
+func startsNoTurn(compactSummary bool, text string) bool {
+	if compactSummary {
+		return true
+	}
+	text = strings.TrimSpace(text)
+	for _, tag := range localTags {
+		if strings.HasPrefix(text, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 // TurnOver: a session whose file says busy since since has in fact finished
 // its turn. Claude Code can leave a session's status on busy after the turn
 // ends, so a turn end the transcript records after since, with no user or
 // assistant line written after it, means idle since that end. A user line
-// after it is a real new turn, even with since still stale. Zero since (a
+// after it is a real new turn, even with since still stale, unless it is
+// one that starts no turn (startsNoTurn: a compaction's summary, a local
+// command). Zero since (a
 // file with no status time) can't be judged and is never over.
 func (c Conversation) TurnOver(since time.Time) (time.Time, bool) {
 	if since.IsZero() || c.turnStirred || !c.turnEnd.After(since) {

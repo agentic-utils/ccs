@@ -181,6 +181,12 @@ func chord(m model, letter string) (model, tea.Cmd) {
 	return key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(letter)})
 }
 
+// chordT presses ^T then letter: a view or tool.
+func chordT(m model, letter string) (model, tea.Cmd) {
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	return key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(letter)})
+}
+
 // fakeSocket listens on a unix socket in a temp dir and returns what one
 // connection sent.
 func fakeSocket(t *testing.T) (path string, got chan string) {

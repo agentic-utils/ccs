@@ -10,9 +10,9 @@ import (
 	"github.com/agentic-utils/ccs/internal/mcp"
 )
 
-// serveW opens ccs serve from ^X V's popup: ^X V, then w.
+// serveW opens ccs serve from ^T V's popup: ^T V, then w.
 func serveW(m model) (model, tea.Cmd) {
-	m, _ = chord(m, "v")
+	m, _ = chordT(m, "v")
 	return key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
 }
 
@@ -52,15 +52,15 @@ func TestServeChord(t *testing.T) {
 	if m.setup != nil {
 		t.Error("esc closes the setup popup")
 	}
-	if strings.Contains(strings.Split(strip2(m.View()), "\n")[0], "^X V W") {
-		t.Error("the header shows ^X V W only once it's set up")
+	if strings.Contains(strings.Split(strip2(m.View()), "\n")[0], "^T V W") {
+		t.Error("the header shows ^T V W only once it's set up")
 	}
 
-	// Installed, not running: ^X V W starts it, and the header says it's on.
+	// Installed, not running: ^T V W starts it, and the header says it's on.
 	st.Installed = true
 	m.serveCheckedAt = m.serveCheckedAt.AddDate(0, 0, -1)
 	m = run(m, m.serveCheckCmd())
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X V W web off") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^T V W web off") {
 		t.Errorf("installed but stopped: %q", head)
 	}
 	m, cmd = serveW(m)
@@ -69,11 +69,11 @@ func TestServeChord(t *testing.T) {
 	if started != 1 || !m.serve.Running {
 		t.Fatalf("started %d, running %v", started, m.serve.Running)
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X V W web on") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^T V W web on") {
 		t.Errorf("running: %q", head)
 	}
 
-	// Running: ^X V W shows its address and QR code; esc closes it.
+	// Running: ^T V W shows its address and QR code; esc closes it.
 	m, cmd = serveW(m)
 	view := strip2(m.View())
 	if cmd != nil || !m.serveQROpen || !strings.Contains(view, "https://ccs.example.com/") || !strings.Contains(view, "▀") {
@@ -89,9 +89,9 @@ func TestServeChord(t *testing.T) {
 	if v := strip2(m.View()); strings.Contains(v, "▀") || !strings.Contains(v, "too small for its QR code") || !strings.Contains(v, "https://ccs.example.com/") {
 		t.Errorf("a small window:\n%s", v)
 	}
-	m, _ = chord(m, "v") // ^X V closes it too
+	m, _ = chordT(m, "v") // ^T V closes it too
 	if m.serveQROpen {
-		t.Error("^X V closes the popup")
+		t.Error("^T V closes the popup")
 	}
 	m.width, m.height = 160, 30
 	// s in the popup asks first; n keeps it, y stops it.

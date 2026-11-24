@@ -134,9 +134,9 @@ func TestSnoozeAndSettle(t *testing.T) {
 	m.marks = loadMarks()
 	m.sortList()
 	m.cursor = 0
-	m, _ = chord(m, "s")
+	m, _ = chord(m, "z")
 	if !m.snoozeOpen || !strings.Contains(strip2(m.View()), "until it does something (settle)") {
-		t.Fatalf("^X S opens the picker:\n%s", strip2(m.View()))
+		t.Fatalf("^X Z opens the picker:\n%s", strip2(m.View()))
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
 	v := listView(m)
@@ -151,7 +151,7 @@ func TestSnoozeAndSettle(t *testing.T) {
 	if strings.Contains(strip2(m.View()), "settled 1") {
 		t.Error("a new message wakes a settled session")
 	}
-	m, _ = chord(m, "s")
+	m, _ = chord(m, "z")
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if !strings.Contains(strip2(m.View()), "snoozed 1") {
@@ -165,9 +165,9 @@ func TestSnoozeAndSettle(t *testing.T) {
 	}
 	m.chatStatus = map[string]sessions.SessionStat{"s": {Status: "idle"}}
 	m.sortList()
-	m, _ = chord(m, "s")
+	m, _ = chord(m, "z")
 	if m.snoozeOpen || strings.Contains(strip2(m.View()), "snoozed") {
-		t.Error("^X S on a put-away session brings it back")
+		t.Error("^X Z on a put-away session brings it back")
 	}
 	if got := loadMarks(); len(got.Snoozed)+len(got.Settled) != 0 {
 		t.Errorf("woken state saved: %+v", got)

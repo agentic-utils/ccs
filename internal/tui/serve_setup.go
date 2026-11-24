@@ -1,11 +1,11 @@
 package tui
 
-// ^X V W with no agent installed: a setup popup instead of a note. It offers
+// ^T V W with no agent installed: a setup popup instead of a note. It offers
 // a read-only preview on this Mac now (`ccs serve --preview` as a child of
 // this ccs, stopped when ccs quits, never a launchd agent), or a form for
 // the phone that writes and starts the agent with the same checks as
 // `ccs serve install` (mcp.ServeSetup). The form also edits an installed
-// agent's setup (e in the ^X V W popup). Write access is off unless ticked.
+// agent's setup (e in the ^T V W popup). Write access is off unless ticked.
 
 import (
 	"bufio"
@@ -153,7 +153,7 @@ func setupInstallCmd(s mcp.ServeSetup, editing, wasRunning bool) tea.Cmd {
 	}
 }
 
-// applySetupDone: the agent is written (and started): the ^X V W popup shows
+// applySetupDone: the agent is written (and started): the ^T V W popup shows
 // its address, QR code and status. A failure goes back to the form.
 func (m *model) applySetupDone(msg setupDoneMsg) tea.Cmd {
 	m.serve, m.serveCheckedAt = msg.st, time.Now()

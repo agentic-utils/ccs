@@ -92,36 +92,36 @@ func TestTabClearsASearchHidingTheTarget(t *testing.T) {
 	}
 }
 
-// The header says what Tab does, and ^X Y opens the usage screen while
+// The header says what Tab does, and ^T Y opens the usage screen while
 // sessions wait.
 func TestTabHintAndUsageChord(t *testing.T) {
 	m := waitModel(t)
 	m.width, m.height = 160, 40
 	m.sortList()
-	if head := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(head, "tab ") || !strings.Contains(head, "^X Y usage") {
-		t.Errorf("nothing waits: no Tab hint, ^X Y usage: %q", head)
+	if head := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(head, "tab ") || !strings.Contains(head, "^T Y usage") {
+		t.Errorf("nothing waits: no Tab hint, ^T Y usage: %q", head)
 	}
 	m = tabModel(t)
 	m.width = 160
 	head := strip2(strings.Split(m.View(), "\n")[0])
-	if !strings.Contains(head, "tab needs you") || !strings.Contains(head, "^X Y usage") {
+	if !strings.Contains(head, "tab needs you") || !strings.Contains(head, "^T Y usage") {
 		t.Errorf("something waits: %q", head)
 	}
 	if m = usageChord(m); !m.showUsage {
-		t.Fatal("^X Y opens the usage screen while sessions wait")
+		t.Fatal("^T Y opens the usage screen while sessions wait")
 	}
 	if m = usageChord(m); m.showUsage {
-		t.Fatal("^X Y again goes back")
+		t.Fatal("^T Y again goes back")
 	}
 }
 
-// The usage screen is ^X Y's alone: Esc and ^X Y go back, and Tab there goes
+// The usage screen is ^T Y's alone: Esc and ^T Y go back, and Tab there goes
 // back to the list and on to the next waiting session.
 func TestUsageScreenOnlyByChord(t *testing.T) {
 	m := tabModel(t)
 	m.width, m.height = 160, 40
 	if m = usageChord(m); !m.showUsage {
-		t.Fatal("^X Y opens the usage screen")
+		t.Fatal("^T Y opens the usage screen")
 	}
 	if v := strip2(m.View()); !strings.Contains(v, "esc back") || strings.Contains(v, "tab back") {
 		t.Errorf("the usage screen's hints say esc goes back: %q", strings.Split(v, "\n")[0])
@@ -130,7 +130,7 @@ func TestUsageScreenOnlyByChord(t *testing.T) {
 		t.Fatal("Esc goes back from the usage screen")
 	}
 	if m = usageChord(usageChord(m)); m.showUsage {
-		t.Fatal("^X Y again goes back")
+		t.Fatal("^T Y again goes back")
 	}
 	m = usageChord(m)
 	if m = tab(m); m.showUsage || !m.needsYou(m.filtered[m.cursor].conv) {

@@ -265,7 +265,7 @@ def main():
         (0.6, ""),
         *[(0.12, c) for c in "flaky"],
         (2.0, ESC),            # clear the search
-        (1.0, "\x18y"),        # ^X Y: usage screen
+        (1.0, "\x14y"),        # ^T Y: usage screen
         (3.0, ESC),            # back
         (1.5, "\x03"),         # quit
     ]

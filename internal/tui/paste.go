@@ -286,7 +286,7 @@ func (m *model) imageBox() (in *textinput.Model, id, why string) {
 
 // takesImages: no prompt or popup has the keyboard, so a paste can be an image.
 func (m model) takesImages() bool {
-	return !m.chordX && !m.prompting() && !m.showUsage && !slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open })
+	return !m.chording() && !m.prompting() && !m.showUsage && !slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open })
 }
 
 // attachImage puts an image already in pastedDir into its box as a placeholder.

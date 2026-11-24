@@ -28,7 +28,18 @@ func TestHelpTextListsEveryKey(t *testing.T) {
 	w.Close()
 	os.Stdout = old
 	buf.ReadFrom(r)
-	for _, k := range []string{"Ctrl+X U", "Ctrl+L", "?", "Tab", "Ctrl+X", "Ctrl+R", "Ctrl+X E", "Ctrl+F", "Ctrl+X D", "Ctrl+X F", "Single keys act now and leave nothing behind"} {
+	keys := []string{"Ctrl+L", "?", "Tab", "Ctrl+R", "Ctrl+F", "Single keys act now and leave nothing behind"}
+	// Every chord of both prefixes, as ccs's hint rows list them.
+	for prefix, pairs := range map[string][]string{"Ctrl+X ": chordXPairs, "Ctrl+T ": chordTPairs} {
+		for i := 0; i < len(pairs); i += 2 {
+			k := pairs[i]
+			if k == keyEsc {
+				k = "Esc"
+			}
+			keys = append(keys, prefix+k)
+		}
+	}
+	for _, k := range keys {
 		if !strings.Contains(buf.String(), k) {
 			t.Errorf("--help should list %s", k)
 		}
@@ -65,17 +76,17 @@ func TestEraseSavedLinesAfterClear(t *testing.T) {
 func TestProfileChord(t *testing.T) {
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 200, 30
-	m, _ = chord(m, "q")
+	m, _ = chordT(m, "q")
 	if m.profileStop == nil || !strings.Contains(m.View(), "recording profile") {
-		t.Fatalf("^X Q starts recording and says so in the header: %q", m.errorMsg)
+		t.Fatalf("^T Q starts recording and says so in the header: %q", m.errorMsg)
 	}
 	path := m.profilePath
 	if filepath.Dir(path) != filepath.Dir(state.UpdateLogPath) {
 		t.Errorf("the profile goes beside the logs: %s", path)
 	}
-	m, _ = chord(m, "q")
+	m, _ = chordT(m, "q")
 	if m.profileStop != nil || strings.Contains(m.View(), "recording profile") || !strings.Contains(m.errorMsg, path) {
-		t.Errorf("^X Q again stops it and says where it is: %q", m.errorMsg)
+		t.Errorf("^T Q again stops it and says where it is: %q", m.errorMsg)
 	}
 	if fi, err := os.Stat(path); err != nil || fi.Size() == 0 {
 		t.Errorf("profile not written: %v", err)

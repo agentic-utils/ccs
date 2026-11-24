@@ -163,7 +163,7 @@ func TestHeldPaneAnswersAPermission(t *testing.T) {
 
 // A session whose prompt ccs holds is selected once you've stopped typing
 // in ccs, its held prompt focused behind the typing guard, whether or not
-// ^X A is on; never while typing, with text in the search, or with a popup
+// ^T A is on; never while typing, with text in the search, or with a popup
 // open.
 func TestHeldAutoSelect(t *testing.T) {
 	offset := time.Duration(0)
@@ -182,7 +182,7 @@ func TestHeldAutoSelect(t *testing.T) {
 	m := fresh()
 	m.autoFocus = false
 	if m.autoSelect(); !selected(m) {
-		t.Error("^X A off: a held prompt is still selected")
+		t.Error("^T A off: a held prompt is still selected")
 	}
 	m = fresh()
 	m.lastKeyAt = time.Now()
@@ -202,7 +202,7 @@ func TestHeldAutoSelect(t *testing.T) {
 
 	m = fresh()
 	if m.autoSelect(); !selected(m) || !m.heldFocus {
-		t.Fatalf("idle with ^X A on: selected %v, pane focused %v", selected(m), m.heldFocus)
+		t.Fatalf("idle with ^T A on: selected %v, pane focused %v", selected(m), m.heldFocus)
 	}
 	// The guard: keys still being typed when it came up are dropped.
 	_, calls, _ := paneModel(t, mcp.HeldPrompt{ID: "p8", Session: "live", Tool: "Bash", Summary: "ls"})
@@ -244,7 +244,7 @@ func TestTUIHoldsWhateverTheFocus(t *testing.T) {
 	}
 }
 
-// Held prompts are selected whether or not ^X A is on, the oldest first,
+// Held prompts are selected whether or not ^T A is on, the oldest first,
 // one at a time: never off a held prompt still waiting, the next once it's
 // settled.
 func TestHeldAutoSelectOldestOneAtATime(t *testing.T) {
@@ -261,7 +261,7 @@ func TestHeldAutoSelectOldestOneAtATime(t *testing.T) {
 	on := func() string { return m.filtered[m.cursor].conv.SessionID }
 	m.autoSelect()
 	if on() != "asks" || !m.heldFocus {
-		t.Fatalf("the oldest held first, ^X A off: on %s, pane %v", on(), m.heldFocus)
+		t.Fatalf("the oldest held first, ^T A off: on %s, pane %v", on(), m.heldFocus)
 	}
 	m.heldFocus = false // Esc out of the pane, still on it
 	m.autoSelect()
@@ -290,7 +290,7 @@ func TestHeldAutoSelectOldestOneAtATime(t *testing.T) {
 	}
 }
 
-// ^X A never switches to a held prompt's tab: it shows no menu there.
+// ^T A never switches to a held prompt's tab: it shows no menu there.
 func TestAutoFocusSkipsHeldPrompts(t *testing.T) {
 	m := waitModel(t)
 	m.autoFocus = true

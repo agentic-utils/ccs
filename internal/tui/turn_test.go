@@ -75,16 +75,16 @@ func offered(m model, k string) bool {
 	return slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == k })
 }
 
-// ^X B backgrounds a running Bash call, and only then; ^X Enter needs a
+// ^X B backgrounds a running Bash call, and only then; ^X S needs a
 // reply being written, so it's refused during the call with a grey note.
 func TestTurnBackgroundWhileBashRuns(t *testing.T) {
 	m, pressed := turnModel(t, turnConv(t, turnUser, turnBash, turnQueued), "busy")
-	if !offered(m, "^X B") || offered(m, "^X Enter") || !offered(m, "^X Esc") {
-		t.Errorf("a Bash call running: ^X B and ^X Esc offered, not ^X Enter: %v", m.shortcuts())
+	if !offered(m, "^X B") || offered(m, "^X S") || !offered(m, "^X Esc") {
+		t.Errorf("a Bash call running: ^X B and ^X Esc offered, not ^X S: %v", m.shortcuts())
 	}
-	m, cmd := chordKey(m, tea.KeyEnter)
+	m, cmd := chord(m, "s")
 	if cmd != nil || !strings.Contains(m.noteMsg, "works while "+turnLiveName+" writes a reply; it's running Bash") {
-		t.Errorf("^X Enter during a tool call is a note: %q", m.noteMsg)
+		t.Errorf("^X S during a tool call is a note: %q", m.noteMsg)
 	}
 	m, cmd = chord(m, "b")
 	if cmd == nil {
@@ -96,20 +96,20 @@ func TestTurnBackgroundWhileBashRuns(t *testing.T) {
 	}
 }
 
-// ^X Enter sends the queued message while a reply is being written.
+// ^X S sends the queued message while a reply is being written.
 func TestTurnSendNowWhileReplying(t *testing.T) {
 	m, pressed := turnModel(t, turnConv(t, turnUser, turnQueued, turnWriting), "busy")
-	if !offered(m, "^X Enter") || offered(m, "^X B") {
-		t.Errorf("writing a reply with one queued: ^X Enter, not ^X B: %v", m.shortcuts())
+	if !offered(m, "^X S") || offered(m, "^X B") {
+		t.Errorf("writing a reply with one queued: ^X S, not ^X B: %v", m.shortcuts())
 	}
-	m, cmd := chordKey(m, tea.KeyEnter)
+	m, cmd := chord(m, "s")
 	m = run(m, cmd)
 	if len(*pressed) != 1 || (*pressed)[0] != "Ctrl+X Ctrl+S" {
 		t.Errorf("pressed %v, note %q", *pressed, m.noteMsg)
 	}
 	// Nothing queued: a note, nothing pressed.
 	m, pressed = turnModel(t, turnConv(t, turnUser, turnWriting), "busy")
-	m, cmd = chordKey(m, tea.KeyEnter)
+	m, cmd = chord(m, "s")
 	if cmd != nil || len(*pressed) != 0 || !strings.Contains(m.noteMsg, "needs a queued message") {
 		t.Errorf("nothing queued: %v %q", *pressed, m.noteMsg)
 	}
@@ -120,7 +120,7 @@ func TestTurnSendNowWhileReplying(t *testing.T) {
 func TestTurnInterruptPressesAtOnce(t *testing.T) {
 	m, pressed := turnModel(t, turnConv(t, turnUser, turnWriting), "busy")
 	for _, s := range m.shortcuts() {
-		if slices.Contains([]string{"^X Esc", "^X Enter", "^X B"}, s[0]) && strings.Contains(s[1], "asks first") {
+		if slices.Contains([]string{"^X Esc", "^X S", "^X B"}, s[0]) && strings.Contains(s[1], "asks first") {
 			t.Errorf("%s mirrors Claude Code's key, which doesn't ask: %q", s[0], s[1])
 		}
 	}
@@ -165,7 +165,7 @@ func TestTurnKeysRefused(t *testing.T) {
 			if cmd != nil || len(*pressed) != 0 || !strings.Contains(m.noteMsg, c.want) {
 				t.Errorf("%s: %v %q", c.name, *pressed, m.noteMsg)
 			}
-			if offered(m, "^X Esc") || offered(m, "^X Enter") || offered(m, "^X B") {
+			if offered(m, "^X Esc") || offered(m, "^X S") || offered(m, "^X B") {
 				t.Errorf("%s: no turn key offered", c.name)
 			}
 		})

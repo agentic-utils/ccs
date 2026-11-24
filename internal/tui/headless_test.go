@@ -135,16 +135,16 @@ func TestHeadlessToggleKey(t *testing.T) {
 	m.width, m.height = 170, 30
 	m.textInput.SetValue("word") // narrowing from the shown list would miss the hidden run
 	m.updateFilter()
-	m, _ = chord(m, "h")
+	m, _ = chordT(m, "h")
 	if got := ids(m); !showHeadless || !slices.Equal(got, []string{"kept", "run"}) {
-		t.Errorf("^X H shows headless runs, search kept: %v", got)
+		t.Errorf("^T H shows headless runs, search kept: %v", got)
 	}
 	if head := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(head, "headless") {
 		t.Errorf("the header doesn't mention headless runs: %q", head)
 	}
-	m, _ = chord(m, "h")
+	m, _ = chordT(m, "h")
 	if got := ids(m); showHeadless || !slices.Equal(got, []string{"kept"}) {
-		t.Errorf("^X H again hides them: %v", got)
+		t.Errorf("^T H again hides them: %v", got)
 	}
 	if head := strip2(strings.Split(m.View(), "\n")[0]); strings.Contains(head, "headless") {
 		t.Errorf("the header doesn't mention headless runs: %q", head)
@@ -166,7 +166,7 @@ func TestHeadlessToggleSurvivesRestart(t *testing.T) {
 		t.Error("an update restart keeps headless runs shown")
 	}
 	showHeadless = true
-	m.restore(uiState{}) // from a ccs before ^X H: --all's choice stands
+	m.restore(uiState{}) // from a ccs before ^T H: --all's choice stands
 	if !showHeadless {
 		t.Error("state without the field leaves the flag's choice")
 	}

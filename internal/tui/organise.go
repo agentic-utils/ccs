@@ -185,14 +185,14 @@ func (m model) putAway(c transcript.Conversation) int {
 	return awake
 }
 
-// snoozeChoice is one line of the ^X S picker: a time to snooze until, or
+// snoozeChoice is one line of the ^X Z picker: a time to snooze until, or
 // settle (zero until).
 type snoozeChoice struct {
 	label string
 	until time.Time
 }
 
-// snoozeChoices are the ^X S picker's lines, from now.
+// snoozeChoices are the ^X Z picker's lines, from now.
 func snoozeChoices(now time.Time) []snoozeChoice {
 	morning := time.Date(now.Year(), now.Month(), now.Day()+1, 9, 0, 0, 0, now.Location())
 	return []snoozeChoice{
@@ -235,7 +235,7 @@ func (m *model) wake(id string) {
 	m.sortList()
 }
 
-// snoozePopup is the ^X S picker.
+// snoozePopup is the ^X Z picker.
 func (m model) snoozePopup() string {
 	var b strings.Builder
 	b.WriteString("\033[1mPut it away\033[0m\n\n")
@@ -249,7 +249,7 @@ func (m model) snoozePopup() string {
 		b.WriteString(row + "\n")
 	}
 	b.WriteString("\n\033[90mback early if it waits on you\033[0m\n")
-	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "put away", "1-4", "pick", "^X S/"+keyEsc, "close") + "\033[0m")
+	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "put away", "1-4", "pick", "^X Z/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
@@ -257,11 +257,11 @@ func (m model) snoozePopup() string {
 		Render(b.String())
 }
 
-// snoozeKey handles a key while the ^X S picker is open.
+// snoozeKey handles a key while the ^X Z picker is open.
 func (m model) snoozeKey(k string) (tea.Model, tea.Cmd) {
 	choices := snoozeChoices(time.Now())
 	switch k {
-	case "esc", "^x s":
+	case "esc", "^x z":
 		m.snoozeOpen = false
 	case "ctrl+c":
 		m.quitting = true

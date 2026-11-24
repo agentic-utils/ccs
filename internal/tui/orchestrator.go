@@ -32,7 +32,7 @@ import (
 )
 
 // The orchestrator: one Claude Code session, in its own section atop the list, that starts a named session
-// per ask, tracks their PRs and closes them. `ccs orchestrator` and ^X O open
+// per ask, tracks their PRs and closes them. `ccs orchestrator` and ^T O open
 // it, resume it, or set it up, and never make a second one.
 
 // orchestratorBrief is the role, written once as the folder's CLAUDE.md.
@@ -629,7 +629,7 @@ func releaseOrchestrator() (string, error) {
 	if err := rec.save(); err != nil {
 		return "", err
 	}
-	msg := fmt.Sprintf("%s (%s) is an ordinary session now.\n^X O or ccs orchestrator sets one up again.", s.rec.name(), s.rec.SessionID)
+	msg := fmt.Sprintf("%s (%s) is an ordinary session now.\n^T O or ccs orchestrator sets one up again.", s.rec.name(), s.rec.SessionID)
 	if s.kind == orchLive || s.kind == orchStarting {
 		msg += fmt.Sprintf("\nIt's still running: ccs close %s stops it.", s.rec.name())
 	}
@@ -738,7 +738,7 @@ func isTerminal(f *os.File) bool { return term.IsTerminal(f.Fd()) }
 
 type orchestratorOfferMsg struct {
 	plan   orchestratorPlan
-	opened bool // asked for with ^X O, so it opens whatever was answered before and at once
+	opened bool // asked for with ^T O, so it opens whatever was answered before and at once
 }
 
 // offerShown: the offer is on screen and takes keys. One nobody asked for waits
@@ -780,7 +780,7 @@ func orchestratorOfferable() bool {
 	return err == nil
 }
 
-// orchestratorKeyCmd is ^X O, off the UI goroutine: open it, or offer to set
+// orchestratorKeyCmd is ^T O, off the UI goroutine: open it, or offer to set
 // one up.
 func orchestratorKeyCmd() tea.Msg {
 	release, s, err := orchestratorTurn()
@@ -877,7 +877,7 @@ func (m model) orchestratorPopup() string {
 	if !compact {
 		b.WriteString("\n")
 	}
-	b.WriteString("\033[90m" + wrap(hints(keyEnter, "set up", keyEsc, "not now, ^X O later")) + "\033[0m")
+	b.WriteString("\033[90m" + wrap(hints(keyEnter, "set up", keyEsc, "not now, ^T O later")) + "\033[0m")
 	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("39")).Padding(1, 3)
 	if compact {
 		style = style.Padding(0, 3)

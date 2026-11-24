@@ -17,7 +17,7 @@ import (
 // tui.Main: --version, the update checks and every log line read it.
 var Version = "dev"
 
-// SettingsPath keeps the view ccs reopens in (^X T layout, ^X G grouping)
+// SettingsPath keeps the view ccs reopens in (^T T layout, ^T G grouping)
 // across restarts.
 var SettingsPath = func() string {
 	dir, err := os.UserConfigDir()

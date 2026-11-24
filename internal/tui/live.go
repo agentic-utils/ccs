@@ -523,7 +523,7 @@ func (m model) hostedApp(id string) string {
 
 // tabPIDs is the pid of each live session in a terminal, in list order as
 // shown (pinned first, put-away last, children after their parent; with a
-// search typed, the matches only), for ^X J. Background sessions and those in
+// search typed, the matches only), for ^T J. Background sessions and those in
 // an app have no tab of their own to move.
 func (m model) tabPIDs() []int {
 	var pids []int
@@ -537,7 +537,7 @@ func (m model) tabPIDs() []int {
 	return pids
 }
 
-// tabsOrderedMsg is ^X J's result: how many tabs moved, or why it failed.
+// tabsOrderedMsg is ^T J's result: how many tabs moved, or why it failed.
 type tabsOrderedMsg struct {
 	moved int
 	err   error

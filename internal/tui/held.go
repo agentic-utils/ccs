@@ -491,7 +491,7 @@ func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 func (m model) heldKeysActive() bool {
 	// Only while it's drawn (heldDrawn: the same rule chatAsk draws by), and
 	// never with a pending chord or a prompt open, focused or not.
-	if m.chordX || m.prompting() {
+	if m.chording() || m.prompting() {
 		return false
 	}
 	h, _, ok := m.heldDrawn()
@@ -587,8 +587,8 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 
 // autoSelect: once you've stopped typing in ccs for autoFocusIdle, select
 // a session whose prompt ccs holds, the oldest first, and focus its answer
-// pane behind the guard, whether or not ^X A is on: the hold is how ccs
-// answers, so its question is put in front of you. With ^X A on it also
+// pane behind the guard, whether or not ^T A is on: the hold is how ccs
+// answers, so its question is put in front of you. With ^T A on it also
 // selects a session waiting in its tab. One at a time: never off a held
 // prompt that's still waiting (the next comes once it's answered or sent
 // back). Never while a popup or prompt is open, the search holds text or

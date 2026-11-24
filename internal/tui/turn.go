@@ -21,7 +21,7 @@ import (
 // "now" waits for the running tool call, and SIGINT quits the session).
 //
 //	^X Esc    interrupt the turn (Esc, chat:cancel)
-//	^X Enter  send the queued message now (Ctrl+X Ctrl+S, chat:sendNow)
+//	^X S  send the queued message now (Ctrl+X Ctrl+S, chat:sendNow)
 //	^X B      move the running command to the background (Ctrl+B, task:background)
 //
 // Each is offered only when it works now: the session busy, and for
@@ -43,7 +43,7 @@ type turnAct struct {
 
 var (
 	turnInterrupt  = turnAct{"tui.turn_interrupt", "interrupt", sessions.KeyInterrupt, "^X Esc", "[Request interrupted by user"}
-	turnSendNow    = turnAct{"tui.turn_send_now", "send the queued message now", sessions.KeySendNow, "^X Enter", `"operation":"dequeue"`}
+	turnSendNow    = turnAct{"tui.turn_send_now", "send the queued message now", sessions.KeySendNow, "^X S", `"operation":"dequeue"`}
 	turnBackground = turnAct{"tui.turn_background", "move the running command to the background", sessions.KeyBackground, "^X B", "manually backgrounded by user"}
 )
 

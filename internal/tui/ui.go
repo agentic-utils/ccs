@@ -36,7 +36,7 @@ type listItem struct {
 	searchLower string // searchText lowercased once, for case-insensitive filtering
 	rank        int    // matchRank for the current search, 0 without one
 	depth       int    // nested under the session that started it (sortList)
-	familyCwd   string // its top-level session's cwd, which ^X G groups the family by
+	familyCwd   string // its top-level session's cwd, which ^T G groups the family by
 	state       int    // its putAway as of the last sortList: awake, settled or snoozed
 	started     int64  // when it started (startedAt), Unix nanoseconds, as of the last sortList
 	familyState int    // the section its family is listed in: the least put away of its sessions' states, or a pin or orchestrator place (nestFamilies)
@@ -79,11 +79,12 @@ type model struct {
 	cursor           int
 	previewScroll    int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width            int
-	table            bool                 // ^X T: the full-width table instead of the sidebar
+	table            bool                 // ^T T: the full-width table instead of the sidebar
 	parents          map[string]string    // spawned SessionID -> the session whose claude -p started it
 	noParent         map[string]int       // spawned SessionID -> len(items) when no parent was found
-	grouped          bool                 // ^X X G: sessions grouped by folder
-	chordX           bool                 // ^X pressed: the next key picks a ccs action
+	grouped          bool                 // ^T G: sessions grouped by folder
+	chordX           bool                 // ^X pressed: the next key picks an action on the selected session
+	chordT           bool                 // ^T pressed: the next key picks a view or tool
 	byID             map[string]int       // m.items by session id, for shownAncestor; rebuilt when an entry is stale
 	openClosed       map[string]bool      // ^X C: parents (by session id) whose closed sessions are shown (saved)
 	headerCollapsed  bool                 // ^X F or a click on the summary line: the details under it are hidden
@@ -96,11 +97,11 @@ type model struct {
 	menuShown        string               // the held prompt whose menu is on screen: menuFresh starts when it changes
 	menuLeft         string               // the held prompt left with Esc: its keys go to the list until it's selected again (or →, Enter)
 	viewing          string               // the done session selected and seen: marked seen when the selection leaves it
-	snoozeOpen       bool                 // the ^X S picker
-	rcOpen           bool                 // ^X V's Remote Control popup (remote.go)
-	rcRunning        bool                 // ^X V is typing /remote-control somewhere
+	snoozeOpen       bool                 // the ^X Z picker
+	rcOpen           bool                 // ^T V's Remote Control popup (remote.go)
+	rcRunning        bool                 // ^T V is typing /remote-control somewhere
 	snoozeCursor     int
-	autoFocus        bool                 // ^X A: switch to a session that starts waiting on you (autoFocusCmd)
+	autoFocus        bool                 // ^T A: switch to a session that starts waiting on you (autoFocusCmd)
 	focusBusy        bool                 // an auto-focus attempt is in flight
 	focusHeld        string               // the session auto-focus switched to; none other until it's answered
 	focusHandled     map[string]time.Time // SessionID -> the wait (statusUpdatedAt) auto-focus has dealt with
@@ -140,8 +141,8 @@ type model struct {
 	bg               map[string]sessions.BgSession // background sessions (claude --bg), opened with claude attach
 	agentsAt         time.Time                     // when claude agents was last asked
 	confirmStop      string                        // ^X K asked whether to stop this session: y stops it
-	orderingTabs     bool                          // ^X J is putting the terminal tabs in list order
-	confirmServeStop bool                          // ^X V W asked whether to stop ccs serve's agent: y stops it
+	orderingTabs     bool                          // ^T J is putting the terminal tabs in list order
+	confirmServeStop bool                          // ^T V W asked whether to stop ccs serve's agent: y stops it
 	heldPrompt       map[string]mcp.HeldPrompt     // prompts held by ccs serve or this ccs, by session (held.go)
 	heldAt           time.Time
 	heldBusy         bool
@@ -160,13 +161,13 @@ type model struct {
 	autoSelectAt     time.Time               // the last auto-select: the next waits autoFocusIdle after it, as after a key
 	chatAfter        string                  // answered from ccs: this session's message box takes the keys once its menu has gone
 	chatAfterID      string                  // the held prompt that answer was for
-	serveQROpen      bool                    // ^X V W's popup while the agent runs: its address and QR code
+	serveQROpen      bool                    // ^T V W's popup while the agent runs: its address and QR code
 	serveQR          string                  // the QR code, drawn
 	serveQRWidth     int                     // its width in cells
 	serveQRURL       string                  // the address it encodes
 	serveQRErr       string                  // why there's no address, if not
 	serve            mcp.ServiceStatus       // ccs serve's launchd agent, as last read (serveCheckCmd)
-	setup            *serveSetup             // ^X V W's setup popup (serve_setup.go), nil when closed
+	setup            *serveSetup             // ^T V W's setup popup (serve_setup.go), nil when closed
 	servePreview     previewState            // the preview child started from it, as shown
 	serveCheckedAt   time.Time
 	serveChecking    bool
@@ -174,11 +175,11 @@ type model struct {
 	confirmHandover  string         // ^X W asked whether to hand this session over to its parent and close it: y does
 	confirmSwitch    *switchPrompt  // ^X Z asked which agent to switch this session to: y does
 	handoverTo       string         // with confirmHandover: the parent it goes to
-	reorgPlan        *reorgProposal // ^X M's plan, shown in its popup until enter applies it or esc drops it
+	reorgPlan        *reorgProposal // ^T M's plan, shown in its popup until enter applies it or esc drops it
 	reorgShownAt     time.Time      // when it came on screen: enter waits updateKeyGrace
 	reorgReady       *reorgProposal // a plan that came back while the user was typing: it opens once they pause
 	reorgScroll      int            // the popup's first line in view
-	reorgBusy        string         // what ^X M is doing: "planning", "reorganising", or ""
+	reorgBusy        string         // what ^T M is doing: "planning", "reorganising", or ""
 	restartForce     bool           // with confirmRestart: it was mid-turn when asked, so y forces it
 
 	// transcript.Message box for the selected live session (see chat*).
@@ -226,9 +227,9 @@ type model struct {
 	notesFetching     bool      // a fetch is in flight (started at launch or by Ctrl+L)
 	updateShownAt     time.Time // popup ignores keys for a moment so in-flight typing can't answer it
 	updateOpen        bool
-	autoUpdate        bool   // ^X I: install a new version once you're away (the default)
-	remoteControl     bool   // ^X V: Claude sessions ccs starts or resumes get Remote Control, named (state.RemoteControl)
-	profileStop       func() // ^X Q: a CPU profile is being recorded to profilePath; this stops it
+	autoUpdate        bool   // ^T I: install a new version once you're away (the default)
+	remoteControl     bool   // ^T V: Claude sessions ccs starts or resumes get Remote Control, named (state.RemoteControl)
+	profileStop       func() // ^T Q: a CPU profile is being recorded to profilePath; this stops it
 	profilePath       string
 	hdr               headerCounts // the header's counts as of the last Update (noteHeader)
 	autoFailed        string       // the version an automatic install failed for: offered, not retried
@@ -245,7 +246,7 @@ type model struct {
 	dismissed         string // tag the user said "later" to
 	restart           string // after an upgrade: binary to exec once the TUI exits
 
-	// Usage screen (^X Y).
+	// Usage screen (^T Y).
 	showUsage        bool
 	usage            usageData
 	usageLoading     bool
@@ -267,7 +268,7 @@ type model struct {
 
 	orchOffer *orchestratorPlan // the set-up popup is open, with what it will change
 	orchBusy  bool              // opening or setting it up: never twice at once
-	orchAsked bool              // the open offer came from ^X O
+	orchAsked bool              // the open offer came from ^T O
 	orchSince time.Time         // when the offer last came on screen: keys wait for its grace
 	orchID    string            // the orchestrator session, listed in its own section
 	// Orchestrator trees (tree.go): launch-parents.json as last read, each
@@ -279,7 +280,7 @@ type model struct {
 	launchRes    map[string]string
 	launchResN   int
 	foldedAway   []string
-	// hideSidebar (^X L): the sidebar layout shows only the preview, full width (saved).
+	// hideSidebar (^T L): the sidebar layout shows only the preview, full width (saved).
 	hideSidebar bool
 	// Each session's PRs (prs.go): what GitHub said, by address.
 	prs        map[string]github.PRInfo
@@ -340,8 +341,8 @@ func (m model) listLayout() (listTop, listHeight, previewTop int) {
 }
 
 // sidebarWidth is the session list's width beside the preview, 0 in the table
-// or while ^X L hides it. A search filters the list, so it shows while one is
-// typed and hides again once the search is cleared, ^X L staying as it was.
+// or while ^T L hides it. A search filters the list, so it shows while one is
+// typed and hides again once the search is cleared, ^T L staying as it was.
 func (m model) sidebarWidth() int {
 	if m.table || m.hideSidebar && !m.searching() {
 		return 0
@@ -470,6 +471,9 @@ func (m model) stoppable(id string) bool {
 }
 
 // prompting reports an open rename, delete, prune or stop prompt.
+// chording is whether a chord's first key (^X or ^T) waits for its second.
+func (m model) chording() bool { return m.chordX || m.chordT }
+
 func (m model) prompting() bool {
 	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmHandover != "" || m.confirmSwitch != nil || m.launchStep > 0
 }
@@ -670,7 +674,7 @@ func (m *model) sortList() {
 	})
 	m.nestFamilies()
 	// Sections (orchestrator, pinned, the rest, settled, snoozed), a family in
-	// its least put-away session's; with ^X G, folders within each, a group
+	// its least put-away session's; with ^T G, folders within each, a group
 	// where its first session lands, so groups go by their newest-started
 	// session. Families stay together under their top session's folder.
 	first := map[group]int{}
@@ -944,7 +948,7 @@ func (m model) familyPin(family []listItem) int {
 	return pin
 }
 
-// groupOf is the ^X G group a session is listed under: its family's folder,
+// groupOf is the ^T G group a session is listed under: its family's folder,
 // within its section. Pinned families keep their own order, ungrouped.
 func groupOf(it *listItem) group {
 	if it.familyState < 0 {
@@ -1457,7 +1461,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case orchestratorOfferMsg:
 		if !msg.opened && (m.orchBusy || m.orchOffer != nil || loadOrchestrator().Offered) {
-			return m, nil // answered, or ^X O got there, while the check ran
+			return m, nil // answered, or ^T O got there, while the check ran
 		}
 		m.orchBusy = false
 		m.orchOffer, m.orchAsked, m.orchSince = &msg.plan, msg.opened, time.Now()
@@ -1467,7 +1471,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.orderingTabs = false
 		switch {
 		case msg.err != nil:
-			m.errorMsg = "^X J: " + msg.err.Error()
+			m.errorMsg = "^T J: " + msg.err.Error()
 		case msg.moved == 0:
 			m.note("Tabs are already in list order")
 		default:
@@ -1956,16 +1960,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, clipImageCmd
 			}
 		}
-		// ccs's own actions are ^X then a letter (^X ^A works as ^X A), Claude
-		// Code's pattern, so every other Ctrl letter edits text as in its
-		// prompt. k is the key, or "^x <letter>" for a chord.
+		// ccs's own actions are chords, Claude Code's pattern, so every other
+		// Ctrl letter edits text as in its prompt: ^X then a key acts on the
+		// selected session, ^T then a letter is a view or tool. The second key
+		// may be held with Ctrl (^X ^S is ^X S, as in Claude Code). k is the
+		// key, or "^x <key>" / "^t <key>" for a chord.
 		k := msg.String()
-		chord := m.chordX
-		if chord {
+		chord := m.chording()
+		switch {
+		case m.chordX:
 			m.chordX = false
 			k = "^x " + strings.TrimPrefix(k, "ctrl+")
-		} else if k == "ctrl+x" && !m.prompting() && !slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
-			m.chordX = true
+		case m.chordT:
+			m.chordT = false
+			k = "^t " + strings.TrimPrefix(k, "ctrl+")
+		case (k == "ctrl+x" || k == "ctrl+t") && !m.prompting() && !slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }):
+			m.chordX, m.chordT = k == "ctrl+x", k == "ctrl+t"
 			return m, nil
 		}
 		if m.snoozeOpen { // owns the keyboard until closed
@@ -1980,7 +1990,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.serveQROpen { // owns the keyboard until closed
 			return m.serveQRKey(k)
 		}
-		if k == "^x s" && len(m.filtered) > 0 && m.marks != nil && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^x z" && len(m.filtered) > 0 && m.marks != nil && !m.prompting() && !m.acctOpen && !m.showUsage {
 			m.helpOpen = false
 			if m.refuseSubagent() {
 				return m, nil
@@ -2126,14 +2136,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x t" && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^t t" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.table", stats.Key)
 			m.helpOpen, m.table = false, !m.table
 			saveSettings(m.settings())
 			m.chatInput.Width = chatInputWidth(m.paneWidth())
 			return m, nil
 		}
-		if k == "^x l" && !m.table && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^t l" && !m.table && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.hide_list", stats.Key)
 			m.helpOpen, m.hideSidebar = false, !m.hideSidebar
 			saveSettings(m.settings())
@@ -2146,28 +2156,28 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleHeader()
 			return m, nil
 		}
-		if k == "^x y" && !m.prompting() && !m.acctOpen { // your usage, and back: the only key for the usage screen
+		if k == "^t y" && !m.prompting() && !m.acctOpen { // your usage, and back: the only key for the usage screen
 			return m, m.toggleUsage()
 		}
 		// The turn keys (turn.go): Claude Code's own keys for a running turn.
 		// ^X Esc on anything but a live session stays what it always was, a
 		// chord cancelled; either way it ends here, never reaching plain Esc.
-		if (k == "^x esc" || k == "^x enter" || k == "^x b") && !m.prompting() && !m.acctOpen && !m.showUsage {
-			act := map[string]turnAct{"^x esc": turnInterrupt, "^x enter": turnSendNow, "^x b": turnBackground}[k]
+		if (k == "^x esc" || k == "^x s" || k == "^x b") && !m.prompting() && !m.acctOpen && !m.showUsage {
+			act := map[string]turnAct{"^x esc": turnInterrupt, "^x s": turnSendNow, "^x b": turnBackground}[k]
 			if k == "^x esc" && (len(m.filtered) == 0 || !m.live[m.filtered[m.cursor].conv.SessionID]) {
 				return m, nil
 			}
 			stats.Record(act.stat, stats.Key)
 			return m, m.turnKey(act)
 		}
-		if k == "^x a" && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^t a" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.auto_focus", stats.Key)
 			m.helpOpen, m.autoFocus = false, !m.autoFocus
 			m.focusHeld = ""
 			saveSettings(m.settings())
 			return m, nil
 		}
-		if k == "^x h" && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^t h" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.headless", stats.Key)
 			m.helpOpen, showHeadless = false, !showHeadless
 			sel := ""
@@ -2222,28 +2232,28 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x o" && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^t o" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.orchestrator", stats.Key)
 			m.helpOpen = false
 			switch {
 			case m.orchBusy || m.resuming:
 				m.errorMsg = "Still opening the orchestrator..."
 			case !sessions.CanOpenTabs():
-				m.errorMsg = "^X O opens a tab in iTerm or tmux, and this is neither: run ccs orchestrator instead"
+				m.errorMsg = "^T O opens a tab in iTerm or tmux, and this is neither: run ccs orchestrator instead"
 			default:
 				m.orchBusy, m.errorMsg = true, ""
 				return m, orchestratorKeyCmd
 			}
 			return m, nil
 		}
-		if k == "^x j" && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^t j" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.order_tabs", stats.Key)
 			m.helpOpen = false
 			switch {
 			case m.orderingTabs:
 				m.errorMsg = "Still ordering tabs..."
 			case !sessions.CanOpenTabs():
-				m.errorMsg = "^X J orders tabs in iTerm or tmux, and this is neither"
+				m.errorMsg = "^T J orders tabs in iTerm or tmux, and this is neither"
 			default:
 				m.orderingTabs, m.errorMsg = true, ""
 				return m, orderTabsCmd(m.tabPIDs())
@@ -2276,7 +2286,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.launchInput = sessions.LaunchPrompt("New session name: ", "")
 			return m, nil
 		}
-		if k == "^x q" && !m.prompting() && !m.acctOpen {
+		if k == "^t q" && !m.prompting() && !m.acctOpen {
 			stats.Record("tui.profile", stats.Key)
 			m.helpOpen = false
 			if m.profileStop != nil {
@@ -2292,15 +2302,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.profileStop, m.profilePath = stop, path
-			m.note("Recording a CPU profile: do what's slow, then ^X Q again")
+			m.note("Recording a CPU profile: do what's slow, then ^T Q again")
 			return m, nil
 		}
-		if k == "^x i" && !m.prompting() && !m.acctOpen {
+		if k == "^t i" && !m.prompting() && !m.acctOpen {
 			stats.Record("tui.auto_update", stats.Key)
 			m.helpOpen, m.autoUpdate = false, !m.autoUpdate
 			saveSettings(m.settings())
 			if !m.autoUpdate {
-				m.note("Automatic updates off: new versions are offered instead (^X I turns them back on)")
+				m.note("Automatic updates off: new versions are offered instead (^T I turns them back on)")
 				return m, nil
 			}
 			m.note("Automatic updates on: a new version installs once you're away")
@@ -2310,7 +2320,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if k == "^x v" && !m.prompting() && !m.acctOpen {
+		if k == "^t v" && !m.prompting() && !m.acctOpen {
 			stats.Record("tui.remote_control_popup", stats.Key)
 			m.helpOpen = false
 			m.rcOpen = true
@@ -2325,7 +2335,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.togglePin()
 			return m, nil
 		}
-		if k == "^x m" && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^t m" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.reorg", stats.Key)
 			m.helpOpen = false
 			if m.reorgBusy != "" {
@@ -2347,7 +2357,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.movePin(map[string]int{"alt+up": -1, "alt+down": 1}[k])
 			return m, nil
 		}
-		if k == "^x g" && !m.prompting() && !m.acctOpen && !m.showUsage {
+		if k == "^t g" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.group", stats.Key)
 			m.helpOpen, m.grouped = false, !m.grouped
 			saveSettings(m.settings())
@@ -2399,7 +2409,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpOpen = true
 			return m, nil
 		}
-		if k == "^x u" && !m.prompting() {
+		if k == "^t u" && !m.prompting() {
 			stats.Record("tui.account", stats.Key)
 			return m.openAccounts()
 		}
@@ -2634,7 +2644,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// with a PR ready to merge, then any other open PR: the next one
 			// after the selection, wrapping. On the usage screen it goes back
 			// to the list first. With none it says so and does nothing
-			// else; ^X Y is the usage screen.
+			// else; ^T Y is the usage screen.
 			m.showUsage = false
 			if id, tier, ok := m.nextWaiting(); ok {
 				if tier >= attentionReady {
@@ -2940,6 +2950,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // here, not by each screen, so every screen (and any added later) shows them.
 func (m model) View() string {
 	screen := m.viewScreen()
+	if rows := m.chordHint(m.width); m.chording() && len(rows) > 2 { // the rows the title and search rows had no room for
+		lines := strings.Split(screen, "\n")
+		for i := 2; i < len(rows) && i < len(lines); i++ {
+			lines[i] = rows[i]
+		}
+		screen = strings.Join(lines, "\n")
+	}
 	for _, p := range m.overPopups() {
 		if p.open {
 			screen = overlayCentre(screen, p.draw(m), m.width, m.height)
@@ -3027,10 +3044,10 @@ func (m model) overPopups() []popup {
 // top of the ? popup and --help: a single key does something now and leaves
 // nothing behind; a chord changes something that stays. AGENTS.md says why.
 var keyRule = []string{
-	"single keys act now and leave nothing behind; ^X then a letter changes",
-	"something that stays (a mark, a setting, a file, whether it runs), and",
-	"the ones that can't be undone ask first (not ^X Esc, ^X Enter and ^X B,",
-	"Claude Code's own keys for a running turn, which don't ask there either)",
+	"single keys act now and leave nothing behind; a chord changes something",
+	"that stays: ^X then a key for the selected session, ^T then a letter for",
+	"views and tools. The ones that can't be undone ask first (not ^X Esc,",
+	"^X S and ^X B, Claude Code's own keys for a running turn, which don't ask)",
 }
 
 // Compact key labels, shared by every hint so they stay consistent.
@@ -3107,15 +3124,19 @@ func (m model) shortcuts() [][2]string {
 	add(sel, "^F", "fork it: a new session with the same history, in a new tab")
 	add(sel && len(m.linksWithPRs()) > 0, "^O", "open a link in view, one of its PRs or artifacts")
 
-	group("^X then a letter: this session")
+	group("^X then a key: this session")
+	if id, name, ok := m.foldOwner(m.cursor); sel && ok {
+		add(!m.showingClosed(id), "^X C", "show the closed sessions under "+name)
+		add(m.showingClosed(id), "^X C", "hide the closed sessions under "+name)
+	}
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top of the list")
 	add(pinned, "^X P", "unpin it")
 	add(pinned && len(m.marks.Pinned) > 1, "Alt+↑↓", "move it among the pinned sessions")
 	if sel && m.marks != nil {
 		if m.putAway(m.filtered[m.cursor].conv) != awake {
-			add(true, "^X S", "bring it back from settled or snoozed")
+			add(true, "^X Z", "bring it back from settled or snoozed")
 		} else {
-			add(true, "^X S", "put it away: settle until its next message, or snooze it")
+			add(true, "^X Z", "put it away: settle until its next message, or snooze it")
 		}
 	}
 	add(sel && !live, "^X E", "edit its name, as /rename does")
@@ -3132,45 +3153,40 @@ func (m model) shortcuts() [][2]string {
 		// The turn keys, each only while it works now (turnRefusal).
 		conv := m.filtered[m.cursor].conv
 		add(m.turnRefusal(conv, turnInterrupt) == "", "^X Esc", "interrupt its turn now: Esc in its tab, as Claude Code's own, which doesn't ask")
-		add(m.turnRefusal(conv, turnSendNow) == "", "^X Enter", "send its queued message now: Claude Code's ctrl+enter, pressed in its tab")
+		add(m.turnRefusal(conv, turnSendNow) == "", "^X S", "send its queued message now: Claude Code's ^X ^S (or ctrl+enter), pressed in its tab")
 		add(m.turnRefusal(conv, turnBackground) == "", "^X B", "move the command it's running to the background: Ctrl+B in its tab")
 		add(m.restartable(id), "^X R", "restart it: stop, then resume this conversation in a new tab with the same flags; asks first")
 		add(m.restartable(id), "^X W", "hand its leftovers to its parent, then close it; its PRs and children move to the parent; asks first")
 		add(m.switchRefusal(conv) == "", switchHint, "carry it on in another agent (Claude, Codex or Gemini): closes it, then starts that agent with the same name and folder, briefed with a handover; the new one gets the brief, not its memory, and takes its place, children and PRs; asks first")
 	}
 	add(sel, "^X D", "delete its transcript file; asks first, can't be undone")
-
-	group("^X then a letter: view and tools")
 	add(sessions.CanOpenTabs(), "^X N", "start a new session in an iTerm tab or tmux window, in this one's folder: pick Claude, Codex or Gemini (agy) with ←/→ or tab, then its name and brief")
-	add(sessions.CanOpenTabs(), "^X O", "open the orchestrator, setting one up if there is none")
-	add(sessions.CanOpenTabs(), "^X J", "put the tabs of live sessions in list order (iTerm needs its Python API on)")
-	add(sessions.CanOpenTabs(), "^X J", "put the tabs of live sessions in list order (iTerm needs its Python API on)")
-	add(!m.grouped, "^X G", "group the list by folder")
-	add(m.grouped, "^X G", "stop grouping by folder")
-	add(m.reorgBusy == "", "^X M", "move sessions into topics: Sonnet plans, you accept or drop it")
-	if id, name, ok := m.foldOwner(m.cursor); sel && ok {
-		add(!m.showingClosed(id), "^X C", "show the closed sessions under "+name)
-		add(m.showingClosed(id), "^X C", "hide the closed sessions under "+name)
-	}
-	add(!m.table, "^X T", "the full table, every column")
-	add(m.table, "^X T", "back to the sidebar")
-	add(!m.table && !m.hideSidebar, "^X L", "hide the list, the preview taking the whole width (↑↓ still move)")
-	add(!m.table && m.hideSidebar, "^X L", "show the list beside the preview again")
-	add(!showHeadless, "^X H", "show headless runs (claude -p, codex exec)")
-	add(showHeadless, "^X H", "hide headless runs")
-	add(!m.autoFocus, "^X A", "switch to a session's tab when it starts waiting on you")
-	add(m.autoFocus, "^X A", "stop switching to sessions that wait on you")
-	add(!m.serve.Installed, "^X V W", "set up ccs serve: try it on this Mac now, or set it up for your phone")
-	add(m.serve.Installed && !m.serve.Running, "^X V W", "start ccs serve, the sessions in a browser (its launchd agent)")
-	add(m.serve.Running, "^X V W", "ccs serve's address and QR code; s stops it (asks first), e edits its setup")
-	add(!m.autoUpdate, "^X I", "install ccs updates on their own once you're away")
-	add(m.autoUpdate, "^X I", "stop installing ccs updates on their own")
-	add(true, "^X V", "Remote Control: on now in this or every running session, or at launch")
-	add(m.profileStop == nil, "^X Q", "record a CPU profile, for when ccs feels slow")
-	add(m.profileStop != nil, "^X Q", "stop recording and save the CPU profile")
-	add(hasCswap, "^X U", "switch Claude account (cswap)")
-	add(!m.showUsage, "^X Y", "your usage: 12h of token use, and your allowance")
-	add(m.showUsage, "^X Y/"+keyEsc, "back to the list")
+
+	group("^T then a letter: view and tools")
+	add(sessions.CanOpenTabs(), "^T O", "open the orchestrator, setting one up if there is none")
+	add(sessions.CanOpenTabs(), "^T J", "put the tabs of live sessions in list order (iTerm needs its Python API on)")
+	add(!m.grouped, "^T G", "group the list by folder")
+	add(m.grouped, "^T G", "stop grouping by folder")
+	add(m.reorgBusy == "", "^T M", "move sessions into topics: Sonnet plans, you accept or drop it")
+	add(!m.table, "^T T", "the full table, every column")
+	add(m.table, "^T T", "back to the sidebar")
+	add(!m.table && !m.hideSidebar, "^T L", "hide the list, the preview taking the whole width (↑↓ still move)")
+	add(!m.table && m.hideSidebar, "^T L", "show the list beside the preview again")
+	add(!showHeadless, "^T H", "show headless runs (claude -p, codex exec)")
+	add(showHeadless, "^T H", "hide headless runs")
+	add(!m.autoFocus, "^T A", "switch to a session's tab when it starts waiting on you")
+	add(m.autoFocus, "^T A", "stop switching to sessions that wait on you")
+	add(!m.serve.Installed, "^T V W", "set up ccs serve: try it on this Mac now, or set it up for your phone")
+	add(m.serve.Installed && !m.serve.Running, "^T V W", "start ccs serve, the sessions in a browser (its launchd agent)")
+	add(m.serve.Running, "^T V W", "ccs serve's address and QR code; s stops it (asks first), e edits its setup")
+	add(!m.autoUpdate, "^T I", "install ccs updates on their own once you're away")
+	add(m.autoUpdate, "^T I", "stop installing ccs updates on their own")
+	add(true, "^T V", "Remote Control: on now in this or every running session, or at launch")
+	add(m.profileStop == nil, "^T Q", "record a CPU profile, for when ccs feels slow")
+	add(m.profileStop != nil, "^T Q", "stop recording and save the CPU profile")
+	add(hasCswap, "^T U", "switch Claude account (cswap)")
+	add(!m.showUsage, "^T Y", "your usage: 12h of token use, and your allowance")
+	add(m.showUsage, "^T Y/"+keyEsc, "back to the list")
 
 	group("ccs")
 	add(true, "^R", "refresh sessions, PRs and allowance now; check for an update")
@@ -3181,7 +3197,7 @@ func (m model) shortcuts() [][2]string {
 	return out
 }
 
-// toggleUsage opens the usage screen (^X Y), or goes back from it (^X Y or
+// toggleUsage opens the usage screen (^T Y), or goes back from it (^T Y or
 // Esc; Tab goes back too, to the next session that needs you).
 func (m *model) toggleUsage() tea.Cmd {
 	m.showUsage = !m.showUsage
@@ -3229,11 +3245,43 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 
 // toggleHint is a mode's key, name and state for the header: grey, with
 // only "on" in green, so the modes that are on stand out.
-// chordPairs is the hint row while ^X waits for its second key: each letter
-// and what it does, never a mode's on/off (that shows when no chord is
-// pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
-// which is left unadvertised (headless runs stay out of the header).
-var chordPairs = []string{"A", "auto-focus", "B", "background", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "V", "remote control, web", "W", "hand over", "X", "prune", "Y", "usage", switchLetter, "switch agent", keyEnter, "send now", keyEsc, "interrupt or cancel"}
+// chordXPairs and chordTPairs are the hints while ^X or ^T waits for its
+// second key: each key and what it does, never a mode's on/off (that shows
+// when no chord is pending). Every "^x <key>" and "^t <letter>" Update
+// handles is in its list, in order; TestEveryChordHasAHint checks it.
+var (
+	chordXPairs = []string{switchLetter, "another agent", "B", "background", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "K", "stop", "N", "new", "P", "pin", "R", "restart", "S", "send now", "W", "hand over", "X", "prune", "Z", "snooze", keyEsc, "interrupt"}
+	chordTPairs = []string{"A", "auto-focus", "G", "group", "H", "headless", "I", "auto-update", "J", "tab order", "L", "list", "M", "topics", "O", "orchestrator", "Q", "profile", "T", "table", "U", "account", "V", "remote, web", "Y", "usage"}
+)
+
+// chordHint is the hint for a pending chord: its prefix, then what each
+// second key does, wrapped to width, never dropping a key. The first two
+// rows take the title and search rows' places, so the layout keeps its
+// height; View draws any more over the top of the list until the chord ends.
+func (m model) chordHint(width int) []string {
+	prefix, what, pairs := "^X", "session", chordXPairs
+	if m.chordT {
+		prefix, what, pairs = "^T", "view, tools", chordTPairs
+	}
+	rows := []string{"  \033[1;36m" + prefix + "\033[0m \033[90m" + what + ":"}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		h := hints(pairs[i], pairs[i+1])
+		if last := rows[len(rows)-1]; ansi.StringWidth(last)+2+ansi.StringWidth(h) > width && ansi.StringWidth(last) > 2 {
+			rows = append(rows, "\033[90m ")
+		}
+		rows[len(rows)-1] += " " + h + " "
+	}
+	for i := range rows {
+		if ansi.StringWidth(rows[i]) > width { // one pair wider than the terminal
+			rows[i] = ansi.Truncate(rows[i], max(width-1, 1), "…")
+		}
+		rows[i] += "\033[0m"
+	}
+	if len(rows) == 1 {
+		rows = append(rows, "")
+	}
+	return rows
+}
 
 func toggleHint(key, label string, on bool) string {
 	state := "off"
@@ -3385,39 +3433,37 @@ func (m model) viewScreen() string {
 		status += " · reorg " + m.reorgBusy + "…"
 	}
 	if m.profileStop != nil { // a reminder: it records until stopped
-		status += " · " + key("^X Q") + "\033[31mrecording profile\033[33m"
+		status += " · " + key("^T Q") + "\033[31mrecording profile\033[33m"
 	}
 	// The modes ^X toggles, on the right beside the key hints. Not while a
 	// chord is pending: then the row lists only what the next key does.
 	var toggles []string
-	if !m.showUsage && !m.chordX {
-		toggles = append(toggles, toggleHint("^X A", "auto-focus", m.autoFocus))
+	if !m.showUsage && !m.chording() {
+		toggles = append(toggles, toggleHint("^T A", "auto-focus", m.autoFocus))
 		if m.serve.Installed { // set up for remote use: say whether it's reachable
-			toggles = append(toggles, toggleHint("^X V W", "web", m.serve.Running))
+			toggles = append(toggles, toggleHint("^T V W", "web", m.serve.Running))
 		}
 		if !m.table && m.hideSidebar { // the way back; a shown list speaks for itself
-			toggles = append(toggles, toggleHint("^X L", "list", !m.hideSidebar))
+			toggles = append(toggles, toggleHint("^T L", "list", !m.hideSidebar))
 		}
 		if m.remoteControl { // on: say so, since it changes what every launch does
-			toggles = append(toggles, toggleHint("^X V", "remote control", true))
+			toggles = append(toggles, toggleHint("^T V", "remote control", true))
 		}
 		if m.checkLatest != nil { // a release build: one that updates
-			toggles = append(toggles, toggleHint("^X I", "auto-update", m.autoUpdate))
+			toggles = append(toggles, toggleHint("^T I", "auto-update", m.autoUpdate))
 		}
 		if n := m.hooksNote(); n != "" {
 			toggles = append(toggles, n)
 		}
 	}
 	title := fmt.Sprintf("\033[1;36mccs\033[0m \033[90m· coding cli sessions · %s%s\033[0m\033[33m%s\033[0m", state.Version, note, status)
-	pairs, keep := []string{"^X Y", "usage", "?", "help", "^C", "quit"}, 2 // the rest are in ? help
+	pairs, keep := []string{"^T Y", "usage", "?", "help", "^C", "quit"}, 2 // the rest are in ? help
 	if h := m.headerHint(); h != "" {                                      // Tab is only for the sessions that need you, then PRs
 		pairs = append([]string{keyTab, h}, pairs...)
 	}
 	if m.showUsage { // only these keys do anything there
-		pairs, keep = []string{keyEsc, "back", "^X U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
+		pairs, keep = []string{keyEsc, "back", "^T U", "account", "^L", "changelog"}, 1 // every key it has, so no ? help
 		pairs = append(pairs, "^C", "quit")
-	} else if m.chordX { // ^X pressed: what the next key does
-		pairs, keep = chordPairs, 1
 	} else if m.heldKeysActive() {
 		pairs, keep = []string{keyEsc, "back to the list", "keys:", "menu", "?", "help"}, 2 // Esc's hint goes first when it's narrow
 	} else if m.chatFocus {
@@ -3427,12 +3473,20 @@ func (m model) viewScreen() string {
 		}
 		pairs, keep = []string{keyEnter, send, keyEsc, "search", "pgup/dn", "scroll", "?", "help"}, 1 // ? opens help on an empty box, as on the search
 	}
-	b.WriteString(headerLine(tableWidth, title, strings.Join(toggles, "  "), pairs, keep) + "\n")
+	var chordRows []string
+	if m.chording() { // what the next key does, over the title and search rows
+		chordRows = m.chordHint(tableWidth)
+		b.WriteString(chordRows[0] + "\n")
+	} else {
+		b.WriteString(headerLine(tableWidth, title, strings.Join(toggles, "  "), pairs, keep) + "\n")
+	}
 
 	// Search line or delete confirmation
 	var sections []string
 	var inputSection string
-	if m.launchStep > 0 {
+	if m.chording() { // a chord can't start while any of these prompts is open
+		sections = append(sections, chordRows[1])
+	} else if m.launchStep > 0 {
 		sections = append(sections, m.launchLine())
 	} else if m.renaming {
 		sections = append(sections, "  "+m.renameInput.View()+"  \033[90m"+hints(keyEnter, "save", keyEsc, "cancel")+"\033[0m")
@@ -3447,7 +3501,7 @@ func (m model) viewScreen() string {
 	} else if m.confirmServeStop {
 		inputSection = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")). // Red
-			Render("Stop ccs serve? Remote access ends until ^X V W starts it again.") +
+			Render("Stop ccs serve? Remote access ends until ^T V W starts it again.") +
 			"  \033[90m" + hints("y", "stop", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
 	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmStop != "" && it.conv.SessionID == m.confirmStop }); i >= 0 {
@@ -3514,7 +3568,7 @@ func (m model) viewScreen() string {
 	b.WriteString(strings.Join(sections, "\n") + "\n")
 	if sw := m.sidebarWidth(); sw > 0 && !m.showUsage { // a rule over the list and preview, joining the divider
 		b.WriteString("\033[90m" + strings.Repeat("─", sw) + "┬" + strings.Repeat("─", max(m.width-sw-1, 0)) + "\033[0m")
-	} else if !m.table && !m.showUsage { // ^X L hid the list: the rule over the preview alone
+	} else if !m.table && !m.showUsage { // ^T L hid the list: the rule over the preview alone
 		b.WriteString("\033[90m" + strings.Repeat("─", m.width) + "\033[0m")
 	}
 	b.WriteString("\n")
@@ -3628,7 +3682,7 @@ func (m model) formatListItem(item listItem, selected bool) string {
 	project := transcript.Truncate(projectName(item.conv.Cwd), colProject)
 
 	marks, colouredMarks := m.listMarks(item)
-	mw := colMarks // the marks' width, and with ^X G an indent under the folder's header
+	mw := colMarks // the marks' width, and with ^T G an indent under the folder's header
 	if m.grouped {
 		marks, colouredMarks, mw = "  "+marks, "  "+colouredMarks, colMarks+2
 	}
@@ -3757,7 +3811,7 @@ func (m model) sidebarView() string {
 			pane = append(pane[:h-rows], strings.Split(m.chatView(), "\n")...)
 		}
 	}
-	if sw == 0 { // ^X L hid the list: the preview alone
+	if sw == 0 { // ^T L hid the list: the preview alone
 		for len(pane) < h { // the full height, as with the list
 			pane = append(pane, "")
 		}
@@ -3806,7 +3860,7 @@ type listRow struct {
 
 // listRows lays the list out in screen rows: a header before each section
 // (after a blank row, except the first; none over the awake sessions, the
-// list itself, or a lone session named as the section, namesSection), and with ^X G before each folder within it (sortList keeps a
+// list itself, or a lone session named as the section, namesSection), and with ^T G before each folder within it (sortList keeps a
 // section's and a group's sessions together).
 func (m model) listRows() []listRow {
 	counts := map[group]int{}
@@ -3899,7 +3953,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 		hits, colouredHits = strings.TrimSpace(tasks+" "+hits), strings.TrimSpace(m.taskCell(conv, true)+" "+colouredHits)
 	}
 	// One space before the marks, so their glyphs sit under the search's >;
-	// with ^X G two more, so sessions sit in from their folder's header.
+	// with ^T G two more, so sessions sit in from their folder's header.
 	lead := " "
 	if m.grouped {
 		lead = "   "
@@ -3967,7 +4021,7 @@ func (m model) sidebarRow(item listItem, selected bool, w int) [2]string {
 }
 
 // headedBy: the header above item already names its folder, so its grey row
-// needn't: with ^X G, a session in its folder's group (a worktree's own name
+// needn't: with ^T G, a session in its folder's group (a worktree's own name
 // still differs, and stays), and the orchestrator under its own section, whose
 // folder is named after it.
 func (m model) headedBy(item listItem) bool {
@@ -4123,7 +4177,7 @@ type settings struct {
 	Table     bool `json:"table,omitempty"`
 	Grouped   bool `json:"grouped,omitempty"`
 	AutoFocus bool `json:"auto_focus,omitempty"`
-	// HideSidebar (^X L): the sidebar layout shows the preview alone.
+	// HideSidebar (^T L): the sidebar layout shows the preview alone.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
 	// OpenClosed (^X C): the parents, by session id, whose closed sessions
 	// are shown; every other fold is closed. An older ccs's tree_view, one
@@ -4131,17 +4185,39 @@ type settings struct {
 	OpenClosed []string `json:"open_closed,omitempty"`
 	// HeaderOpen (^X F): the preview's full details, one line unless chosen.
 	HeaderOpen bool `json:"header_open,omitempty"`
-	// AutoUpdate (^X I) installs new versions once you're away instead of
+	// AutoUpdate (^T I) installs new versions once you're away instead of
 	// offering them. Off unless chosen; always written once known.
 	AutoUpdate *bool `json:"auto_update,omitempty"`
 	// ManualUpdate is the old setting, read only to carry a choice forward.
 	ManualUpdate bool `json:"manual_update,omitempty"`
 	// LaunchAgent (^X N) is the agent it last started: claude, codex or agy.
 	LaunchAgent string `json:"launch_agent,omitempty"`
-	found       bool   // the file existed
+	// KeyLayout is the newest key layout this user has been told about
+	// (keyLayout): an older one gets keysMovedNote once.
+	KeyLayout int  `json:"key_layout,omitempty"`
+	found     bool // the file existed
 }
 
-// autoUpdateOn is the remembered ^X I choice. An install from before updates
+// keyLayout numbers the chord layout. Moving keys again bumps it and
+// rewrites keysMovedNote, so everyone who had the old keys hears once.
+// 2: views and tools moved from ^X to ^T, snooze to ^X Z, send now to ^X S,
+// switching agent (^X Z for a day) to ^X A.
+const keyLayout = 2
+
+// keysMovedNote is the grey note an existing install sees once, at its
+// first start with keyLayout: where the keys it knew went.
+const keysMovedNote = "Keys moved: views and tools are ^T now (^T T table, ^T Y usage, ^T V remote, ^T A auto-focus…); ^X A another agent, ^X Z snooze, ^X S send now. ? lists them"
+
+// noteMovedKeys shows keysMovedNote once to an install from before
+// keyLayout, and records that it has (a new install starts on it).
+func (m *model) noteMovedKeys(s settings) {
+	if s.found && s.KeyLayout < keyLayout {
+		m.note(keysMovedNote)
+		saveSettings(m.settings())
+	}
+}
+
+// autoUpdateOn is the remembered ^T I choice. An install from before updates
 // were opt-in keeps what it had (on unless manual_update), so upgrading
 // changes nobody's behaviour; a new install starts off.
 func (s settings) autoUpdateOn() bool {
@@ -4153,7 +4229,7 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideSidebar: m.hideSidebar, OpenClosed: m.openFolds(), HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto, LaunchAgent: m.launchAgent}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideSidebar: m.hideSidebar, OpenClosed: m.openFolds(), HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto, LaunchAgent: m.launchAgent, KeyLayout: keyLayout}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.

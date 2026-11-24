@@ -856,7 +856,7 @@ func TestOrchestratorOfferNeedsADeliberateAnswer(t *testing.T) {
 		}
 		m.orchOffer = nil
 		if m = offer(m, true); !m.offerShown() {
-			t.Error("^X O shows it")
+			t.Error("^T O shows it")
 		}
 	})
 	t.Run("a late check doesn't reopen what's answered", func(t *testing.T) {
@@ -944,17 +944,17 @@ func TestOrchestratorPopupAndKey(t *testing.T) {
 		t.Error("esc answers it for good")
 	}
 
-	m, cmd := chord(m, "o")
+	m, cmd := chordT(m, "o")
 	if !m.orchBusy || cmd == nil {
-		t.Fatalf("^X O starts the look: busy=%v", m.orchBusy)
+		t.Fatalf("^T O starts the look: busy=%v", m.orchBusy)
 	}
-	if m2, cmd2 := chord(m, "o"); cmd2 != nil || !strings.Contains(m2.errorMsg, "Still") {
+	if m2, cmd2 := chordT(m, "o"); cmd2 != nil || !strings.Contains(m2.errorMsg, "Still") {
 		t.Errorf("never twice at once: %q", m2.errorMsg)
 	}
 	res, _ = m.Update(cmd())
 	m = res.(model)
 	if m.orchOffer == nil {
-		t.Fatal("^X O with none offers, whatever was answered before")
+		t.Fatal("^T O with none offers, whatever was answered before")
 	}
 	m.orchSince = time.Now().Add(-updateKeyGrace)
 	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})

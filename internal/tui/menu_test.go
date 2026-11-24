@@ -143,7 +143,7 @@ func TestMenuEscAndTheList(t *testing.T) {
 	}
 	m = keyType(m, tea.KeyEsc)
 	if m = usageChord(m); !m.showUsage {
-		t.Errorf("^X Y opens the usage screen, even after Esc: usage %v", m.showUsage)
+		t.Errorf("^T Y opens the usage screen, even after Esc: usage %v", m.showUsage)
 	}
 }
 
@@ -166,7 +166,7 @@ func TestMenuFirstAppearanceGuard(t *testing.T) {
 	}
 }
 
-// The usage screen (^X Y) hides the menu: no key reaches it there, even
+// The usage screen (^T Y) hides the menu: no key reaches it there, even
 // when it had focus from an auto-select, and coming back re-arms the
 // first-appearance guard.
 func TestMenuNotBehindTheUsageScreen(t *testing.T) {

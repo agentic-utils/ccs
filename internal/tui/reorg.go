@@ -35,7 +35,7 @@ import (
 // live orchestrator what it gained or lost and each live member that moved
 // who it reports to now, in ccs reorg's own envelope. Closed sessions are only
 // regrouped in the tree, never resumed or told. It runs only when the user
-// asks, ^X M or `ccs reorg`, and shows the plan first: nothing launches or
+// asks, ^T M or `ccs reorg`, and shows the plan first: nothing launches or
 // moves until they accept it. Each run is logged to the activity log.
 // See docs/design/relay.md for why that's the line.
 

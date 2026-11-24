@@ -11,7 +11,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-// ^X Z offers the installed agents other than the session's own, asks
+// ^X A offers the installed agents other than the session's own, asks
 // first, and y switches it by name and id to the one chosen.
 func TestSwitchFromTheList(t *testing.T) {
 	oldSwitch, oldLook := switchSession, sessions.LookBin
@@ -32,7 +32,7 @@ func TestSwitchFromTheList(t *testing.T) {
 	m.width, m.height = 160, 30
 	m, cmd := chord(m, strings.ToLower(switchLetter))
 	if cmd != nil || m.confirmSwitch == nil {
-		t.Fatalf("^X Z asks first: %q", m.errorMsg)
+		t.Fatalf("^X A asks first: %q", m.errorMsg)
 	}
 	if p := m.confirmSwitch; len(p.agents) != 1 || p.agents[0].ID != transcript.KindCodex || p.name != "one" {
 		t.Fatalf("only Codex: not its own agent, nor agy, which isn't installed: %+v", p)

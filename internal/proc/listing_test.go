@@ -76,3 +76,18 @@ func TestFreshListsAgain(t *testing.T) {
 		t.Errorf("ps ran %d times, want 2 after Fresh", n)
 	}
 }
+
+func TestProcessStartTimesMatchPS(t *testing.T) {
+	pid := os.Getpid()
+	got := ProcessStartTimes(map[string]int{"me": pid, "gone": 1 << 30})
+	if _, ok := got[1<<30]; ok {
+		t.Error("a pid that doesn't exist has no start time")
+	}
+	start, ok := got[pid]
+	if !ok || time.Since(start) < 0 || time.Since(start) > time.Hour {
+		t.Fatalf("this process's start time: %v %v", start, ok)
+	}
+	if start.Location() != time.UTC || start.Nanosecond() != 0 {
+		t.Errorf("to the second in UTC, as ps's lstart is: %v", start)
+	}
+}

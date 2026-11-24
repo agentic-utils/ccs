@@ -1357,6 +1357,31 @@ var LiveByPID = func() map[int]PRClaim {
 	return out
 }
 
+// LiveAmong is LiveByPID for the given pids only (sessions.LiveAmong): what
+// checking claims needs, without listing every process, since each
+// session's status line runs ccs prs. Tests point it at their LiveByPID stub.
+var LiveAmong = func(pids []int) map[int]PRClaim {
+	out := map[int]PRClaim{}
+	for id, s := range sessions.LiveAmong(pids) {
+		out[s.PID] = PRClaim{Session: id, Name: s.Stat.Name, PID: s.PID, ProcStart: s.Start}
+	}
+	return out
+}
+
+// claimPIDs is the pids of the Claude Code sessions holding claims: the only
+// ones claimLive, ownerName and OwnerOf look up.
+func claimPIDs(c ClaimsFile) []int {
+	var pids []int
+	for _, cs := range c.Claims {
+		for _, x := range cs {
+			if x.Kind != transcript.KindCodex && x.Kind != transcript.KindAgy && x.PID > 0 {
+				pids = append(pids, x.PID)
+			}
+		}
+	}
+	return pids
+}
+
 // callingSession is the claude session this process runs under: the first
 // ancestor that is a live session's claude process.
 func callingSession() (PRClaim, error) {
@@ -1901,8 +1926,8 @@ func PRsList(author, owner string, offline bool, now time.Time) (PRsReport, erro
 		}
 	}
 
-	live := LiveByPID()
 	claims := LoadClaims()
+	live := LiveAmong(claimPIDs(claims))
 	// A claimed PR not open in the list has ended, or isn't the author's:
 	// ask, at most every endCheckEvery (online only), so ended ones are dropped.
 	if !offline {

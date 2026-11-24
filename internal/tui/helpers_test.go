@@ -52,7 +52,9 @@ func appendTo(t *testing.T, path, s string) {
 
 func TestMain(m *testing.M) {
 	os.Setenv("CCS_NO_STATS", "1") // feature stats are tested in internal/stats; nothing else writes them
-	claimHold = func() {}          // a test never takes the real hold lock or sockets
+	// ccs prs checks only the claims' pids (github.LiveAmong): through each test's LiveByPID stub.
+	github.LiveAmong = func([]int) map[int]github.PRClaim { return github.LiveByPID() }
+	claimHold = func() {} // a test never takes the real hold lock or sockets
 	// Not in iTerm unless a test says so: inITerm also reads these, and a
 	// test must never drive the real iTerm (open tabs, type into sessions).
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"} {

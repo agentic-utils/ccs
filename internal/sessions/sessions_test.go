@@ -1103,3 +1103,31 @@ func TestFocusLinkITermNoSuchTab(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestLiveAmongReadsOnlyTheGivenPIDs(t *testing.T) {
+	dir := t.TempDir()
+	old := GetSessionsDir
+	GetSessionsDir = func() string { return dir }
+	defer func() { GetSessionsDir = old }()
+	me := os.Getpid()
+	start := time.Now().UTC().Format(time.ANSIC)
+	if ts := proc.ProcessStartTimes(map[string]int{"me": me})[me]; !ts.IsZero() {
+		start = ts.Format(time.ANSIC)
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(fmt.Sprintf("%d.json", me), fmt.Sprintf(`{"pid":%d,"sessionId":"mine","procStart":%q,"name":"n"}`, me, start))
+	write("1.json", `{"pid":1,"sessionId":"launchd"}`) // alive, but not asked about
+	write("999999999.json", `{"pid":999999999,"sessionId":"dead"}`)
+	live := LiveAmong([]int{me, me, 999999999, 0})
+	if s, ok := live["mine"]; !ok || s.PID != me || s.Stat.Name != "n" || len(live) != 1 {
+		t.Fatalf("want only this process's session: %+v", live)
+	}
+	write(fmt.Sprintf("%d.json", me), fmt.Sprintf(`{"pid":%d,"sessionId":"mine","procStart":"Wed Sep 23 10:00:00 2020"}`, me))
+	if live := LiveAmong([]int{me}); len(live) != 0 {
+		t.Fatalf("a file from a recycled pid isn't live: %+v", live)
+	}
+}

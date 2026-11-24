@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -148,4 +149,19 @@ func devNames() map[int32]string {
 		}
 	}
 	return names
+}
+
+// sysStartTimes is each pid's start time from kern.proc.pid, in this
+// process: no ps started. To the second, as ps's lstart prints it. Pids it
+// can't read (gone, or not allowed) are left out.
+var sysStartTimes = func(pids []int) (map[int]time.Time, error) {
+	out := make(map[int]time.Time, len(pids))
+	for _, pid := range pids {
+		k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+		if err != nil || k == nil || int(k.Proc.P_pid) != pid {
+			continue
+		}
+		out[pid] = time.Unix(k.Proc.P_starttime.Sec, 0).UTC()
+	}
+	return out, nil
 }

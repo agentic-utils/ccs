@@ -542,6 +542,7 @@ func TestHeaderCollapses(t *testing.T) {
 	_, _, top := m.listLayout()
 	click := func(x, y int) {
 		m = m.handleMouse(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		m = m.handleMouse(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
 	}
 	paneX := m.width - m.paneWidth()
 	click(paneX, top) // the glyph
@@ -868,7 +869,14 @@ func TestClickOpensLink(t *testing.T) {
 	for row, l := range lines {
 		plain := ansiSeq.ReplaceAllString(l, "")
 		if x := strings.Index(plain, "example.com"); x >= 0 {
-			nm, cmd := m.Update(tea.MouseMsg{X: m.sidebarWidth() + 1 + ansi.StringWidth(plain[:x]) + 2, Y: previewTop + row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+			at := tea.MouseMsg{X: m.sidebarWidth() + 1 + ansi.StringWidth(plain[:x]) + 2, Y: previewTop + row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+			nm, cmd := m.Update(at)
+			m = nm.(model)
+			if cmd != nil {
+				t.Fatal("a link opens when the button comes up, not on the press")
+			}
+			at.Action = tea.MouseActionRelease
+			nm, cmd = m.Update(at)
 			m = nm.(model)
 			if cmd == nil {
 				t.Fatal("clicking a link should open it")
@@ -1403,7 +1411,7 @@ func TestPreviewDrawsAskUserQuestion(t *testing.T) {
 	if strings.Contains(got, "Too cramped, No previews  (other)") {
 		t.Errorf("options picked together aren't your own text:\n%s", got)
 	}
-	if !slices.Equal(answered, buildPreviewLines(conv, "", width)) {
+	if !slices.Equal(unmarkAll(slices.Clone(answered)), buildPreviewLines(conv, "", width)) {
 		t.Error("carrying on should draw what a fresh build draws")
 	}
 	for i, l := range answered {

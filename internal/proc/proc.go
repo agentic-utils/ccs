@@ -69,6 +69,21 @@ func RunCommandIn(dir string, timeout time.Duration, env []string, detach bool, 
 	return out, err
 }
 
+// RunInput runs name with input on its stdin and a deadline, for a command
+// that reads what to do from stdin (pbcopy).
+func RunInput(timeout time.Duration, input, name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(input)
+	cmd.WaitDelay = time.Second
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		err = fmt.Errorf("%s: %w after %s", name, ErrTimedOut, timeout)
+	}
+	return err
+}
+
 // ShellResult is what RunShell saw: the output (stdout and stderr together,
 // at most the limit, Cut when there was more), the exit code (-1 when it
 // didn't exit by itself) and how long it ran.

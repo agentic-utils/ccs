@@ -73,6 +73,8 @@ var Registry = []Info{
 	{"tui.links", "^O the links popup"},
 	{"tui.link_open", "open a link (from ^O or a click)"},
 	{"tui.details", "^X F or click the summary line: preview details"},
+	{"tui.copy_selection", "drag in the preview: copy the selected text"},
+	{"tui.copy_reply", "^T C: copy the selected session's last reply"},
 	{"tui.refresh", "^R refresh now"},
 	{"tui.usage_screen", "^T Y: token use and allowance"},
 	{"tui.next_waiting", "Tab while something waits: select the next session waiting on you"},

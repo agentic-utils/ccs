@@ -17,6 +17,7 @@ import (
 // processes, Codex or link handler, as in tui's TestMain. A test that needs
 // one of these stubs it itself.
 func TestMain(m *testing.M) {
+	proc.MayRun = func(string) bool { return true } // never the machine's own processes
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"} {
 		os.Unsetenv(k)
 	}

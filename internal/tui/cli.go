@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"syscall"
@@ -558,7 +559,10 @@ func Main(v string) {
 		}
 		m.profileStop, m.profilePath = stop, path
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithOutput(eraseSavedLines{os.Stdout}))
+	setTUIMemoryLimit()
+	// 30 frames a second, not bubbletea's 60: nothing ccs draws moves faster
+	// than its 250ms fast tick, and each frame is a full View.
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithFPS(tuiFPS), tea.WithOutput(eraseSavedLines{os.Stdout}))
 	// The header says when ccs profile records this ccs. Never blocking:
 	// ^T Q starts and stops from Update, which a blocking Send would wait on.
 	profiling.SetOnChange(func() { go p.Send(profileChangedMsg{}) })
@@ -734,3 +738,19 @@ func recordCLI(args []string) {
 // profileChangedMsg says ccs profile started or stopped recording this ccs:
 // a redraw shows it in the header.
 type profileChangedMsg struct{}
+
+// tuiFPS is the TUI's frame rate cap.
+const tuiFPS = 30
+
+// tuiMemoryLimit is the soft memory limit the TUI runs under (GOGC is left
+// as it is): below it the collector runs as usual, near it the collector runs
+// more often rather than let the heap double after a big scan, so the
+// resident size stays near what the list really holds. Soft: a heap that
+// needs more gets more. GOMEMLIMIT, when set, wins.
+const tuiMemoryLimit = 800 << 20
+
+func setTUIMemoryLimit() {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(tuiMemoryLimit)
+	}
+}

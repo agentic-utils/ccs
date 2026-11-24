@@ -52,6 +52,9 @@ func RunCommandIn(dir string, timeout time.Duration, env []string, detach bool, 
 	var err error
 	start := time.Now()
 	if detach {
+		// Logged as it starts too: a command that hangs (a pull on a stalled
+		// network) otherwise leaves no line until its deadline.
+		state.LogUpdate("$ %s %s\n  -> started, up to %s", name, strings.Join(args, " "), timeout)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		out, err = cmd.CombinedOutput()
 	} else {

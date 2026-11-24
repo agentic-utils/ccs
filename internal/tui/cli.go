@@ -429,6 +429,9 @@ func Main(v string) {
 			fmt.Fprintf(os.Stderr, "\rError loading conversations: %v\n", err)
 			os.Exit(1)
 		}
+		// Several sessions at once, before the first frame: its Tab hint asks
+		// every session's PRs, and would read their subagents one by one.
+		github.WarmPRs(conversations)
 		fmt.Fprint(os.Stderr, "\r                         \r")
 	}
 
@@ -499,6 +502,7 @@ func Main(v string) {
 		if err != nil {
 			return nil, err
 		}
+		github.WarmPRs(convs) // here, off the UI goroutine, not on the first frame's Tab hint
 		return buildItems(convs), nil
 	}
 	// Before NewProgram, which takes its own copy of m: set after, the

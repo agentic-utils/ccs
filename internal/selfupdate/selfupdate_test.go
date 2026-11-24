@@ -97,6 +97,30 @@ func TestUpgraderInstallWaitsForPrepare(t *testing.T) {
 	}
 }
 
+func TestInstallLogsEachStepAsItStarts(t *testing.T) {
+	old := state.UpdateLogPath
+	state.UpdateLogPath = filepath.Join(t.TempDir(), "update.log")
+	defer func() { state.UpdateLogPath = old }()
+	var shown []string
+	u := &Upgrader{InstallFunc: func(_ string, step func(string)) (string, error) {
+		step("refreshing tap")
+		step("brew upgrade")
+		return "", nil
+	}}
+	if _, err := u.Install("v9.9.9", func(s string) { shown = append(shown, s) }); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(shown, ",") != "refreshing tap,brew upgrade" {
+		t.Errorf("the screen must still see every step: %v", shown)
+	}
+	got, _ := os.ReadFile(state.UpdateLogPath)
+	for _, want := range []string{"install v9.9.9: refreshing tap", "install v9.9.9: brew upgrade"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("log missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestDownloadFallsBackPastStalledAddress(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "payload") }))
 	defer srv.Close()

@@ -51,4 +51,8 @@ func TestDetachedCommandIsLogged(t *testing.T) {
 			t.Errorf("log missing %q:\n%s", want, got)
 		}
 	}
+	// The start comes first, so a command that hangs still leaves a line.
+	if s, e := strings.Index(string(got), "-> started, up to 5s"), strings.Index(string(got), "exit status 3"); s < 0 || s > e {
+		t.Errorf("want the start logged before the outcome:\n%s", got)
+	}
 }

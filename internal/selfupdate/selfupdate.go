@@ -76,6 +76,11 @@ func (u *Upgrader) Prepare(tag string) {
 }
 
 func (u *Upgrader) Install(tag string, step func(string)) (string, error) {
+	shown := step
+	step = func(s string) { // each step goes to the log as it starts, not only on screen
+		state.LogUpdate("install %s: %s", tag, s)
+		shown(s)
+	}
 	u.Mu.Lock()
 	done := u.Pending[tag]
 	u.Mu.Unlock()

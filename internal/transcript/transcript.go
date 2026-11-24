@@ -1215,12 +1215,18 @@ func TranscriptPath(id string) string {
 	if id == "" || strings.ContainsAny(id, `/\*?[`) {
 		return ""
 	}
-	paths, _ := filepath.Glob(filepath.Join(GetProjectsDir(), "*", id+".jsonl"))
+	// One listing of the projects folder and a stat a folder: a glob of
+	// */<id>.jsonl reads every project folder's whole listing (thousands of
+	// transcripts and session folders), and the live tick asks this for each
+	// live session.
+	root := GetProjectsDir()
+	entries, _ := os.ReadDir(root)
 	best, bestMod := "", time.Time{}
-	for _, p := range paths {
-		if HiddenProjectDir(filepath.Base(filepath.Dir(p))) {
+	for _, e := range entries {
+		if HiddenProjectDir(e.Name()) {
 			continue
 		}
+		p := filepath.Join(root, e.Name(), id+".jsonl")
 		info, err := os.Stat(p)
 		if err != nil {
 			continue

@@ -2299,6 +2299,7 @@ func subagentFolders(dir string) (mods [2]time.Time) {
 // subPRFile is how far one subagent transcript has been read: its complete
 // lines up to off, the gh calls still awaiting output, and the PRs found.
 type subPRFile struct {
+	mu      sync.Mutex // held while it is read; SubPRCache's lock guards only the maps
 	off     int64
 	pending []string
 	prs     []string
@@ -2315,16 +2316,20 @@ func subagentPRs(conv transcript.Conversation) []string {
 		return nil
 	}
 	SubPRCache.Lock()
-	defer SubPRCache.Unlock()
 	r, ok := SubPRCache.Dirs[conv.FilePath]
+	SubPRCache.Unlock()
 	if ok && time.Since(r.at) < subagentPRsTTL {
 		return r.prs
 	}
+	// The stats, globs and reads run without SubPRCache's lock (each file has
+	// its own), so WarmPRs can read many sessions' subagents at once.
 	dir := filepath.Join(strings.TrimSuffix(conv.FilePath, ".jsonl"), "subagents")
 	folders := subagentFolders(dir)
 	if ok && r.quiet && r.size == conv.Size && r.folders == folders {
 		r.at = time.Now()
+		SubPRCache.Lock()
 		SubPRCache.Dirs[conv.FilePath] = r
+		SubPRCache.Unlock()
 		return r.prs
 	}
 	var paths []string
@@ -2338,11 +2343,14 @@ func subagentPRs(conv transcript.Conversation) []string {
 	var prs []string
 	quiet := true
 	for _, path := range paths {
+		SubPRCache.Lock()
 		f := SubPRCache.files[path]
 		if f == nil {
 			f = &subPRFile{}
 			SubPRCache.files[path] = f
 		}
+		SubPRCache.Unlock()
+		f.mu.Lock()
 		if mod := f.read(path); time.Since(mod) < transcript.SubagentIdle {
 			quiet = false
 		}
@@ -2351,9 +2359,39 @@ func subagentPRs(conv transcript.Conversation) []string {
 				prs = append(prs, u)
 			}
 		}
+		f.mu.Unlock()
 	}
+	SubPRCache.Lock()
 	SubPRCache.Dirs[conv.FilePath] = subPRsRead{time.Now(), prs, conv.Size, folders, quiet}
+	SubPRCache.Unlock()
 	return prs
+}
+
+// warmWorkers is how many sessions WarmPRs reads at once.
+const warmWorkers = 8
+
+// WarmPRs reads every conv's subagents into SubPRCache, several sessions at
+// once. The list's first frame asks PRsOf of every session (the Tab hint), so
+// without this the first read of thousands of subagent transcripts runs on
+// the UI goroutine; the background load calls it instead. It changes no
+// answer, only when the reading happens.
+func WarmPRs(convs []transcript.Conversation) {
+	work := make(chan transcript.Conversation)
+	var wg sync.WaitGroup
+	for range min(warmWorkers, len(convs)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for c := range work { // a panic loses one session's warm-up, never the loop
+				func() { defer transcript.RecoverWorker(); subagentPRs(c) }()
+			}
+		}()
+	}
+	for _, c := range convs {
+		work <- c
+	}
+	close(work)
+	wg.Wait()
 }
 
 // read takes in what path appended since the last read; a file that shrank

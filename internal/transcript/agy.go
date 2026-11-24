@@ -244,20 +244,38 @@ func AgyLaunchName(paths []string) string {
 
 // AgyPrimaryCwd returns the first workspace path that isn't a ccs launch or
 // settings directory.
+//
+// agy lists only the --add-dir folders as a conversation's workspaces, so a
+// session ccs launched (both its folders ccs's own) is in the folder its
+// launch recorded in LaunchCwdFile; with neither, "" (the caller then tries
+// agy's history).
 func AgyPrimaryCwd(paths []string) string {
 	lBase := state.LaunchDir() + string(filepath.Separator)
 	sDir := filepath.Dir(state.SettingsPath)
+	launch := ""
 	for _, p := range paths {
-		if strings.HasPrefix(p, lBase) || p == sDir {
+		if strings.HasPrefix(p, lBase) {
+			launch = p
+			continue
+		}
+		if p == sDir {
 			continue
 		}
 		return p
 	}
-	if len(paths) > 0 {
-		return paths[0]
+	if launch != "" {
+		if b, err := os.ReadFile(filepath.Join(launch, LaunchCwdFile)); err == nil {
+			if cwd := strings.TrimSpace(string(b)); filepath.IsAbs(cwd) {
+				return cwd
+			}
+		}
 	}
 	return ""
 }
+
+// LaunchCwdFile, in a ccs launch folder, holds the folder the session was
+// started in.
+const LaunchCwdFile = "cwd"
 
 // AgyRecordBusy reports whether the last transcript record indicates an
 // active/unfinished turn.

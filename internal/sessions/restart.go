@@ -80,7 +80,7 @@ func findRestartTarget(name, id string) (restartTarget, error) {
 	pid := pids[0]
 	f, err := ReadSessionFile(pid)
 	if err != nil || f.SessionID == "" {
-		return restartTarget{}, fmt.Errorf("%s (pid %d) isn't a Claude Code session (a Codex one, perhaps): ccs restart resumes Claude Code sessions only", name, pid)
+		return restartTarget{}, fmt.Errorf("%s (pid %d) isn't a Claude Code session (%s): ccs restart resumes Claude Code sessions only, since only they have a session file that tells busy from idle; close it and launch it again resuming its id", name, pid, notClaude(pid))
 	}
 	if f.Name != name {
 		return restartTarget{}, fmt.Errorf("pid %d is now another session (%s)", pid, f.Name)

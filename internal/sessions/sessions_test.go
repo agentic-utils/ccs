@@ -16,6 +16,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func TestCodexExecArgs(t *testing.T) {
@@ -509,6 +510,9 @@ func TestLaunchWaitsForTheSession(t *testing.T) {
 	body, _ := os.ReadFile(script)
 	if string(brief) != "fix the `thing` $NOW" || !strings.Contains(string(body), "cd '"+cwd+"'") {
 		t.Errorf("brief kept as written, launcher starts in cwd: %q\n%s", brief, body)
+	}
+	if got, _ := os.ReadFile(filepath.Join(state.LaunchDir(), "worker", transcript.LaunchCwdFile)); string(got) != cwd {
+		t.Errorf("the launch folder records its cwd for agy: %q", got)
 	}
 
 	if _, err := LaunchSession(LaunchOpts{Name: "worker", Brief: "again", Cwd: cwd}); err == nil || !strings.Contains(err.Error(), "already running") {

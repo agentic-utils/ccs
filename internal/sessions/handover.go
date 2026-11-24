@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 // A handover close: a graceful close whose notice asks the session to hand
@@ -25,6 +26,31 @@ type HandoverParent struct {
 	Name, ID string
 	PID      int
 	File     SessionFile
+}
+
+// agentArticle names a non-Claude agent kind with its article: "a Codex",
+// "an agy".
+func agentArticle(kind string) string {
+	if kind == transcript.KindAgy {
+		return "an agy"
+	}
+	return "a Codex"
+}
+
+// notClaude says what a running session with no Claude Code session file is:
+// an agy or a Codex session when either's scan has its pid, else a guess.
+func notClaude(pid int) string {
+	for _, s := range LiveAgySessions() {
+		if s.PID == pid {
+			return "an agy session"
+		}
+	}
+	for _, s := range LiveCodexSessions() {
+		if s.PID == pid {
+			return "a Codex session"
+		}
+	}
+	return "a Codex or agy session, perhaps"
 }
 
 // MoveClaims moves the live PR claims of the session with id from to the
@@ -41,12 +67,12 @@ func parentOf(child string) (HandoverParent, error) {
 	if !ok || rec.Parent == "" {
 		return HandoverParent{}, none
 	}
-	if rec.ParentKind == "codex" {
-		return HandoverParent{}, fmt.Errorf("%s's parent %s is a Codex session, which can't be sent a handover: use ^X K to close it, or adopt it to a Claude Code session first", child, rec.Parent)
+	if rec.ParentKind == transcript.KindCodex || rec.ParentKind == transcript.KindAgy {
+		return HandoverParent{}, fmt.Errorf("%s's parent %s is %s session, which can't be sent a handover: use ^X K to close it, or adopt it to a Claude Code session first", child, rec.Parent, agentArticle(rec.ParentKind))
 	}
 	var pids []int
 	for id, s := range ScanSessions(nil) {
-		if s.Codex {
+		if s.Codex || s.Agy {
 			continue
 		}
 		if rec.ParentID != "" && id == rec.ParentID || rec.ParentID == "" && s.Stat.Name == rec.Parent {

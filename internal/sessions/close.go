@@ -157,8 +157,9 @@ func closeGraceful(name, id string, timeout time.Duration, onSent func(pid int),
 	plain := fmt.Sprintf("nothing was stopped; ccs close %s stops it at once", name)
 	f, err := ReadSessionFile(pid)
 	if err != nil || f.SessionID == "" {
-		// Codex has no session file and no socket: nothing can ask it to wrap up.
-		return "", g, fmt.Errorf("%s (pid %d) isn't a Claude Code session ccs can send a notice to (a Codex session, perhaps), so it can't be closed gracefully: %s", name, pid, plain)
+		// Codex and agy have no session file and no socket: nothing can ask
+		// them to wrap up.
+		return "", g, fmt.Errorf("%s (pid %d) isn't a Claude Code session ccs can send a notice to (%s), so it can't be closed gracefully: %s", name, pid, notClaude(pid), plain)
 	}
 	if f.Name != name {
 		return "", g, fmt.Errorf("pid %d is now another session (%s): %s", pid, f.Name, plain)

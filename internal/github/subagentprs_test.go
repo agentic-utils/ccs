@@ -1,10 +1,12 @@
 package github
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,4 +77,42 @@ func TestSubagentPRsQuietSessionsCostOnlyStats(t *testing.T) {
 	if got := subagentPRs(conv); globs == 0 || len(got) != 2 {
 		t.Errorf("a subagent written within SubagentIdle is read every TTL: %d globs, %v", globs, got)
 	}
+}
+
+// WarmPRs reads many sessions' subagents at once and leaves the same answers
+// a read one by one would, so the list's first frame finds them cached.
+func TestWarmPRsFillsTheCacheConcurrently(t *testing.T) {
+	globs := 0
+	var mu sync.Mutex
+	subagentGlob = func(p string) ([]string, error) { mu.Lock(); globs++; mu.Unlock(); return filepath.Glob(p) }
+	t.Cleanup(func() { subagentGlob = filepath.Glob })
+
+	dir := t.TempDir()
+	var convs []transcript.Conversation
+	for i := range 20 {
+		name := fmt.Sprintf("s%d", i)
+		conv := transcript.Conversation{FilePath: filepath.Join(dir, name+".jsonl"), Size: 1}
+		sub := filepath.Join(dir, name, "subagents")
+		os.MkdirAll(sub, 0o755)
+		line := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr create --fill"}}]}}`+"\n"+
+			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"https://github.com/o/r/pull/%d"}]}}`+"\n", i)
+		os.WriteFile(filepath.Join(sub, "agent-a.jsonl"), []byte(line), 0o644)
+		convs = append(convs, conv)
+	}
+	convs = append(convs, convs[3]) // the same session twice reads safely
+	WarmPRs(convs)
+	if globs == 0 {
+		t.Fatal("WarmPRs read nothing")
+	}
+	globs = 0
+	for i, conv := range convs[:20] {
+		want := fmt.Sprintf("https://github.com/o/r/pull/%d", i)
+		if got := PRsOf(conv); !slices.Equal(got, []string{want}) {
+			t.Errorf("session %d: PRsOf = %v, want [%s]", i, got, want)
+		}
+	}
+	if globs != 0 {
+		t.Errorf("after WarmPRs, PRsOf within the TTL must come from the cache: %d globs", globs)
+	}
+	WarmPRs(nil) // nothing to read: returns at once
 }

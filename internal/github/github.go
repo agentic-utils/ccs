@@ -2420,15 +2420,26 @@ func (f *subPRFile) read(path string) (mod time.Time) {
 		return
 	}
 	r := bufio.NewReaderSize(file, 1<<16)
+	var long []byte // a line longer than r's buffer, gathered; reused, as line keeps nothing of it
 	for {
-		line, err := r.ReadBytes('\n')
+		chunk, err := r.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			long = append(long, chunk...)
+			continue
+		}
 		if err != nil { // an unfinished line waits for the next read
 			return
+		}
+		line := chunk // valid until the next read, and used before it
+		if len(long) > 0 {
+			long = append(long, chunk...)
+			line = long
 		}
 		f.off += int64(len(line))
 		if bytes.Contains(line, []byte("gh pr ")) || len(f.pending) > 0 && bytes.Contains(line, []byte(`"tool_result"`)) {
 			f.line(line)
 		}
+		long = long[:0]
 	}
 }
 

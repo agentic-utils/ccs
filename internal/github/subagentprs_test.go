@@ -94,9 +94,13 @@ func TestWarmPRsFillsTheCacheConcurrently(t *testing.T) {
 		conv := transcript.Conversation{FilePath: filepath.Join(dir, name+".jsonl"), Size: 1}
 		sub := filepath.Join(dir, name, "subagents")
 		os.MkdirAll(sub, 0o755)
+		pad := ""
+		if i%2 == 0 { // a line past the reader's 64KB buffer before the gh call
+			pad = `{"type":"user","message":{"content":"` + strings.Repeat("z", 200<<10) + `"}}` + "\n"
+		}
 		line := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr create --fill"}}]}}`+"\n"+
 			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"https://github.com/o/r/pull/%d"}]}}`+"\n", i)
-		os.WriteFile(filepath.Join(sub, "agent-a.jsonl"), []byte(line), 0o644)
+		os.WriteFile(filepath.Join(sub, "agent-a.jsonl"), []byte(pad+line), 0o644)
 		convs = append(convs, conv)
 	}
 	convs = append(convs, convs[3]) // the same session twice reads safely

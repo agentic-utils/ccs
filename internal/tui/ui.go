@@ -204,6 +204,10 @@ type model struct {
 	reload         func() ([]listItem, error)      // re-scans conversations; nil disables auto-refresh
 	gen            int                             // bumped by delete/prune/rename so an older in-flight refresh can't undo them
 	refreshStarted time.Time                       // when the in-flight scan began; zero when none
+	restPending    int                             // transcripts the first load left for the background scan (loadRestMsg); 0 once it lands
+	restoreSel     string                          // restore's session, among those still to load
+	restoreFrom    string                          // what restore selected meanwhile: restoreSel is taken only if nothing moved it
+	reopenWait     []string                        // the reopen offer's sessions, matched once the rest has loaded
 	lastRefresh    time.Time                       // when the list last matched disk (startup or a completed scan)
 	lastKick       time.Time                       // last full scan started early because an unknown session went live
 	kicked         map[string]bool                 // unknown live sessions an early scan was already started for
@@ -1223,6 +1227,9 @@ func (m model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.reload != nil {
 		cmds = append(cmds, transcript.RefreshTick(), liveTick(), waitReceipt, reopenCheckCmd, orchestratorProbe)
+		if m.restPending > 0 {
+			cmds = append(cmds, loadRestCmd(0))
+		}
 	}
 	if m.checkLatest != nil {
 		cmds = append(cmds, m.checkUpdateCmd())
@@ -1496,6 +1503,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reopenMsg:
 		m.reopenChecked = true
+		if m.restPending > 0 { // a session open before the restart may be among those still to load
+			m.reopenWait = msg.ids
+			return m, nil
+		}
 		for _, id := range msg.ids {
 			for _, item := range m.items {
 				if item.conv.SessionID == id {
@@ -1657,13 +1668,17 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Delete/prune/rename prompts hold an index into m.filtered, so don't
 		// reshuffle it under them; and a scan that started before a delete,
 		// prune or rename would undo it. The next tick catches up.
+		var retry tea.Cmd
 		if msg.gen == m.gen && !m.prompting() && msg.err == nil {
 			m.applyRefresh(refreshMsg{items: keepNewer(m.items, msg.items), live: msg.live})
 			m.lastRefresh = time.Now()
+			m.restLoaded()
+		} else if m.restPending > 0 {
+			retry = loadRestCmd(restRetry) // the rest is still to come: not a minute from now
 		}
 		// The allowance (shown in the search row) refreshes with the list;
 		// the usage charts only while their screen is open.
-		var usageCmds []tea.Cmd
+		usageCmds := []tea.Cmd{retry}
 		if m.allowanceEnabled || m.showUsage {
 			usageCmds = append(usageCmds, m.allowanceCmd())
 		}
@@ -1675,6 +1690,12 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Claude Code's settings are read once a minute, with the scheduled scan.
 		return m, tea.Batch(append(usageCmds, checkHooksCmd, transcript.RefreshTick())...)
+
+	case loadRestMsg:
+		if m.restPending == 0 || !m.refreshStarted.IsZero() { // loaded, or a scan running will bring them
+			return m, nil
+		}
+		return m, m.startRefresh(true)
 
 	case usageMsg:
 		m.usageLoading = false

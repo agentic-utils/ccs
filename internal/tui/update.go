@@ -135,10 +135,17 @@ func (m *model) restore(s uiState) {
 		showHeadless = *s.Headless
 	}
 	m.updateFilter()
+	found := false
 	for i, item := range m.filtered {
 		if item.conv.SessionID == s.Selected {
-			m.cursor = i
+			m.cursor, found = i, true
 			break
+		}
+	}
+	if !found && s.Selected != "" && m.restPending > 0 { // perhaps among those the first load left
+		m.restoreSel = s.Selected
+		if len(m.filtered) > 0 {
+			m.restoreFrom = m.filtered[m.cursor].conv.SessionID
 		}
 	}
 	// Not clamped here: the window size isn't known yet at startup; the

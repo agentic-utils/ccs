@@ -421,18 +421,36 @@ func Main(v string) {
 
 	projectsDir := transcript.GetProjectsDir()
 	var conversations []transcript.Conversation
+	rest := 0 // transcripts left for the background scan
+	// The full look at what runs (Codex and agy too, by lsof) takes most of a
+	// second: alongside the load, not before it.
+	livePIDsCh := make(chan map[string]int, 1)
+	go func() {
+		var pids map[string]int
+		defer func() { livePIDsCh <- pids }() // always sent, after RecoverWorker below, so Main never waits for good
+		defer transcript.RecoverWorker()
+		pids = sessions.LiveSessionPIDs()
+	}()
 	if _, err := os.Stat(projectsDir); !os.IsNotExist(err) {
 		fmt.Fprint(os.Stderr, "Loading conversations...")
-		// The subagents' PRs are read alongside the parse, not after it: the
-		// first frame's Tab hint asks every session's.
-		warmed := make(chan struct{})
-		go func() {
-			defer close(warmed)
-			defer transcript.RecoverWorker()
-			github.WarmPRs(transcript.ScanTargets(cutoff, maxSize, excludeDirs))
-		}()
-		conversations, err = transcript.GetConversations(cutoff, maxSize, excludeDirs)
-		<-warmed
+		// Running sessions and the last firstLoadDays first, so the list
+		// draws in a second or two; the rest of the window follows in the
+		// background (loadRestMsg).
+		recent := time.Now().AddDate(0, 0, -firstLoadDays)
+		var plan transcript.FirstLoad
+		if plan, err = transcript.PlanFirstLoad(cutoff, recent, maxSize, excludeDirs, sessions.ClaudeRunning()); err == nil {
+			rest = plan.Rest
+			// The subagents' PRs are read alongside the parse, not after it:
+			// the first frame's Tab hint asks every session's.
+			warmed := make(chan struct{})
+			go func() {
+				defer close(warmed)
+				defer transcript.RecoverWorker()
+				github.WarmPRs(plan.Warm)
+			}()
+			conversations, err = transcript.ScanFiles(plan.Files, cutoff, maxSize)
+			<-warmed
+		}
 		transcript.ReleaseScanSlot() // the list keeps its cache for good: it never holds a slot for good
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\rError loading conversations: %v\n", err)
@@ -443,7 +461,7 @@ func Main(v string) {
 
 	items := buildItems(conversations)
 	// Nothing to list: open only if there's an orchestrator to offer.
-	if len(items) == 0 && !orchestratorOfferable() {
+	if len(items) == 0 && rest == 0 && !orchestratorOfferable() {
 		fmt.Fprintf(os.Stderr, "No conversations found in %s\n", projectsDir)
 		fmt.Fprintf(os.Stderr, "Start one with claude, or set up an orchestrator with ccs orchestrator.\n")
 		os.Exit(1)
@@ -477,6 +495,7 @@ func Main(v string) {
 		m.focusHandled, m.focusNoted = handled, map[string]bool{}
 	}
 	m.sortList()
+	m.restPending = rest // before restore, which waits for them when its session is among them
 	if saved := os.Getenv(restoreEnv); saved != "" {
 		os.Unsetenv(restoreEnv) // once only: not inherited by claude or a later ccs
 		var state uiState
@@ -484,7 +503,10 @@ func Main(v string) {
 			m.restore(state)
 		}
 	}
-	m.livePIDs = sessions.LiveSessionPIDs()
+	m.livePIDs = <-livePIDsCh
+	if m.livePIDs == nil { // its lookup panicked
+		m.livePIDs = map[string]int{}
+	}
 	m.live = make(map[string]bool, len(m.livePIDs))
 	for id := range m.livePIDs {
 		m.live[id] = true

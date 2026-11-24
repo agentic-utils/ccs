@@ -2296,20 +2296,60 @@ func agySession() (PRClaim, bool) {
 // PRsOf is conv's PRs and then its subagents' not among them.
 func PRsOf(conv transcript.Conversation) []string {
 	sub := subagentPRs(conv)
-	var urls []string // allocated only for a subagent PR conv doesn't list: the list asks on every pass
+	if len(sub) == 0 {
+		return conv.PRs
+	}
+	// The list asks for every session on every pass: a session whose
+	// subagents printed a PR it doesn't list gets the merged list built once
+	// and kept until its own or its subagents' list changes.
+	mergedPRs.Lock()
+	mm, ok := mergedPRs.by[conv.FilePath]
+	mergedPRs.Unlock()
+	if ok && sameArray(mm.sub, sub) && slices.Equal(mm.own, conv.PRs) {
+		return mm.out
+	}
+	out := mergePRs(conv.PRs, sub)
+	if conv.FilePath != "" {
+		mergedPRs.Lock()
+		mergedPRs.by[conv.FilePath] = mergedList{own: slices.Clone(conv.PRs), sub: sub, out: out}
+		mergedPRs.Unlock()
+	}
+	return out
+}
+
+// mergedPRs is PRsOf's last answer for each session (by transcript path)
+// whose subagents printed PRs: its own list, its subagents' (the slice
+// subagentPRs keeps and hands out again while nothing changed), and the
+// two merged. Read only, so callers never write into it.
+var mergedPRs = struct {
+	sync.Mutex
+	by map[string]mergedList
+}{by: map[string]mergedList{}}
+
+type mergedList struct{ own, sub, out []string }
+
+// sameArray: a and b are the same slice of the same array, not just equal.
+func sameArray(a, b []string) bool {
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
+}
+
+// mergePRs is own with the subagents' PRs it lacks added after it; own
+// itself when there are none.
+func mergePRs(own, sub []string) []string {
+	var urls []string
 	for _, u := range sub {
-		if slices.Contains(conv.PRs, u) || slices.Contains(urls, u) {
+		if slices.Contains(own, u) || slices.Contains(urls, u) {
 			continue
 		}
 		if urls == nil {
-			urls = slices.Clip(conv.PRs) // appending can't write into conv's array
+			urls = slices.Clip(own) // appending can't write into conv's array
 		}
 		urls = append(urls, u)
 	}
 	if urls == nil {
-		return conv.PRs
+		return own
 	}
-	return urls
+	return slices.Clip(urls)
 }
 
 // subagentPRsTTL is how long subagentPRs trusts what it last read.

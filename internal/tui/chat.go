@@ -437,7 +437,7 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 	id, name := conv.SessionID, m.sessionName(conv)
 	working := ""
 	if st := m.chatStatus[id]; st.Status == "busy" {
-		working = workingLine(conv, st, time.Now())
+		working = workingLine(conv, st, frameNow()) // the clock frames are keyed by (frame.go)
 	}
 	full := width
 	width = max(width-lipgloss.Width(working), 0) // what's left for a note beside it

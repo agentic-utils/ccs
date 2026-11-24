@@ -174,6 +174,7 @@ func (m *model) applyRefresh(msg refreshMsg) {
 		}
 	}
 	m.items = msg.items
+	m.listGen++
 	m.lastFilterQuery = "" // force a full rescan, not incremental narrowing
 	m.hits = &hitCounter{byID: make(map[string]int)}
 	if !m.preview.keepsFor(selectedID, msg.items) {

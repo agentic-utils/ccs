@@ -120,3 +120,31 @@ func TestWarmPRsFillsTheCacheConcurrently(t *testing.T) {
 	}
 	WarmPRs(nil) // nothing to read: returns at once
 }
+
+// A session whose subagents printed a PR it doesn't list gets the merged list
+// built once: asking again allocates nothing until either list changes.
+func TestPRsOfKeepsTheMergedList(t *testing.T) {
+	dir := t.TempDir()
+	conv := transcript.Conversation{FilePath: filepath.Join(dir, "m.jsonl"), Size: 1, PRs: []string{"https://github.com/o/r/pull/9"}}
+	sub := filepath.Join(dir, "m", "subagents")
+	os.MkdirAll(sub, 0o755)
+	line := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"gh pr create --fill"}}]}}` + "\n" +
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"https://github.com/o/r/pull/1"}]}}` + "\n"
+	os.WriteFile(filepath.Join(sub, "agent-a.jsonl"), []byte(line), 0o644)
+
+	want := []string{"https://github.com/o/r/pull/9", "https://github.com/o/r/pull/1"}
+	if got := PRsOf(conv); !slices.Equal(got, want) {
+		t.Fatalf("PRsOf = %v, want %v", got, want)
+	}
+	if n := testing.AllocsPerRun(50, func() { PRsOf(conv) }); n != 0 {
+		t.Errorf("asking again allocated %v times", n)
+	}
+	conv.PRs = append(slices.Clone(conv.PRs), "https://github.com/o/r/pull/1")
+	if got := PRsOf(conv); !slices.Equal(got, []string{"https://github.com/o/r/pull/9", "https://github.com/o/r/pull/1"}) {
+		t.Fatalf("after its own list changed: %v", got)
+	}
+	conv.PRs = []string{"https://github.com/o/r/pull/7"}
+	if got := PRsOf(conv); !slices.Equal(got, []string{"https://github.com/o/r/pull/7", "https://github.com/o/r/pull/1"}) {
+		t.Fatalf("after its own list changed again: %v", got)
+	}
+}

@@ -560,6 +560,7 @@ func Main(v string) {
 		m.profileStop, m.profilePath = stop, path
 	}
 	setTUIMemoryLimit()
+	m.frame = &frameCache{} // View hands the last frame back while nothing on it changed (frame.go)
 	// 30 frames a second, not bubbletea's 60: nothing ccs draws moves faster
 	// than its 250ms fast tick, and each frame is a full View.
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithFPS(tuiFPS), tea.WithOutput(eraseSavedLines{os.Stdout}))

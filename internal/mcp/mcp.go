@@ -229,6 +229,21 @@ var mcpTools = []map[string]any{
 		},
 	},
 	{
+		"name":        "switch_session",
+		"description": "Carry a session on in another agent (claude, codex or agy, which is Gemini): ccs closes it, then starts a new session in that agent with the same name and folder, briefed with a handover built from its transcript (its first prompt, the git branch and worktree, its PRs and their status, background tasks that were running, its last messages within a size cap), and the new session takes its place under its parent, over its children, and takes its PR claims. A running Claude Code session is first asked to write a handover note, which the brief carries, and is closed once it goes idle (or after timeout_seconds); a running Codex or agy session is closed as it is, refused mid-turn unless force. A session that isn't running is left alone. The new agent gets only the brief, never the old session's memory. Returns once the old session is closed and the new tab is open (or says it is still going: the outcome goes to ccs's activity log). A session can't switch itself.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":            map[string]any{"type": "string", "description": "the session's name"},
+				"to":              map[string]any{"type": "string", "enum": []string{"claude", "codex", "agy"}, "description": "the agent to carry on in"},
+				"session_id":      map[string]any{"type": "string", "description": "optional: the session it should be; refused if the running one with this name is another. Needed for a session that isn't running and that no launch recorded under the name"},
+				"force":           map[string]any{"type": "boolean", "description": "a running Codex or agy session mid-turn: stop it where it is; default false"},
+				"timeout_seconds": map[string]any{"type": "integer", "description": "a running Claude Code session: how long to wait for its handover note before closing it anyway; default 120, at most 900"},
+			},
+			"required": []string{"name", "to"},
+		},
+	},
+	{
 		"name":        "list_prs",
 		"description": "The user's open PRs (as ccs prs --json): each with the live sessions that own it (ccs claim, or ccs watch for the session that opened it), the session that opened it or that none here did (opened_by, origin), the PRs it must merge after that haven't merged (blocked_by, from ccs depends), its group (ready, needs_you, waiting) and status, and flags for PRs nobody owns and PRs two sessions claim. With merged, the PRs ccs watch saw merge in the last week instead (as ccs prs --merged --json), newest first, each with how it merged (merge: local, auto_merge or not_local; empty when ccs watch couldn't tell) and the session that merged it or turned on auto-merge (merged_by: name and session id).",
 		"inputSchema": map[string]any{
@@ -407,6 +422,9 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	}
 	if name == "restart_session" {
 		return restartCall(a.Name, raw)
+	}
+	if name == "switch_session" {
+		return switchCall(a.Name, raw)
 	}
 	if name == "adopt_session" {
 		return sessions.Adopt(a.Name, a.Parent)
@@ -591,8 +609,67 @@ func restartCall(name string, raw json.RawMessage) (string, error) {
 	}
 }
 
+// switchSession is sessions.SwitchSession, stubbed in tests.
+var switchSession = sessions.SwitchSession
+
+// switchCall is switch_session. Waiting for a Claude Code session's
+// handover note takes minutes and a tool call has far less, so it answers
+// once the new tab is open, or within sessionCallCap saying it's still
+// going; the rest goes on here in the background (this server lives as long
+// as the session that called it), the outcome to the activity log.
+func switchCall(name string, raw json.RawMessage) (string, error) {
+	var a struct {
+		To      string `json:"to"`
+		Force   bool   `json:"force"`
+		Timeout int    `json:"timeout_seconds"`
+		ID      string `json:"session_id"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return "", fmt.Errorf("bad arguments: %v", err)
+		}
+	}
+	if strings.TrimSpace(a.To) == "" {
+		return "", errors.New("to (claude, codex or agy) is required")
+	}
+	type result struct {
+		text string
+		err  error
+	}
+	tab := make(chan string, 1)
+	done := make(chan result, 1)
+	go func() {
+		text, err := switchSession(sessions.SwitchOpts{
+			Name: name, ID: a.ID, To: a.To, Force: a.Force,
+			Timeout: time.Duration(clampInt(a.Timeout, 120, 900)) * time.Second,
+			OnTab:   func(tty string) { tab <- tty },
+		})
+		done <- result{text, err}
+	}()
+	logLater := func() {
+		go func() {
+			if r := <-done; r.err != nil {
+				state.LogActivity("switch_session %s: %v", name, r.err)
+			} else {
+				first, _, _ := strings.Cut(r.text, "\n")
+				state.LogActivity("switch_session %s: %s", name, first)
+			}
+		}()
+	}
+	select {
+	case r := <-done:
+		return r.text, r.err
+	case tty := <-tab:
+		logLater()
+		return fmt.Sprintf("closed %s and opened its new %s tab on %s with the handover brief: list_sessions shows it once it's up, with its parent, children and PR claims moved to it (the outcome goes to ccs's activity log)", name, a.To, tty), nil
+	case <-time.After(sessionCallCap):
+		logLater()
+		return name + " is still switching (a running Claude Code session is writing its handover note first): check with list_sessions in a few minutes (the outcome goes to ccs's activity log)", nil
+	}
+}
+
 func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
-	if name == "launch_session" || name == "close_session" || name == "restart_session" || name == "adopt_session" {
+	if name == "launch_session" || name == "close_session" || name == "restart_session" || name == "switch_session" || name == "adopt_session" {
 		return mcpSessionCall(name, raw)
 	}
 	if name == "list_prs" || name == "claim_pr" || name == "depends" {

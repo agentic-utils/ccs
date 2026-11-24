@@ -71,6 +71,12 @@ Usage: ccs [filter] [-- claude-flags...]
                             Stop the named session and resume the same conversation in a new tab, with
                             the same name, folder and flags; refused mid-turn unless --force. A session
                             restarting itself restarts once its turn ends
+       ccs switch <name> --to claude|codex|agy [--id <session id>] [--force]
+                            Carry a session on in another agent: close it (a running Claude Code session
+                            first writes a handover note), then start the new agent with the same name and
+                            folder, briefed with its first prompt, the note, its PRs, git state and last
+                            messages; it takes the old one's parent, children and PR claims. The new agent
+                            gets only the brief, not the old session's memory
        ccs sessions [--json] [--all] [--triage [--stall-after 15m]]
                             The sessions running now and what each is doing: busy, idle or waiting on you
                             and since when, its question, last API error, PRs, background tasks and subagents
@@ -273,6 +279,9 @@ func Main(v string) {
 	}
 	if len(args) > 0 && args[0] == "restart" {
 		os.Exit(sessions.RunRestart(args[1:], os.Stdout, os.Stderr))
+	}
+	if len(args) > 0 && args[0] == "switch" {
+		os.Exit(sessions.RunSwitch(args[1:], os.Stdout, os.Stderr))
 	}
 	if len(args) > 0 && args[0] == "link" {
 		os.Exit(sessions.RunLink(args[1:], os.Stdout, os.Stderr))
@@ -615,7 +624,7 @@ func (e eraseSavedLines) WriteString(s string) (int, error) { return e.Write([]b
 var cliCommands = map[string]stats.Feature{
 	"prune": "cli.prune", "launch": "cli.launch", orchestratorName: "cli.orchestrator",
 	state.LegacyOrchestratorName: "cli.orchestrator", "reorg": "cli.reorg", "adopt": "cli.adopt",
-	"close": "cli.close", "restart": "cli.restart", "link": "cli.link", "watch": "cli.watch",
+	"close": "cli.close", "restart": "cli.restart", "switch": "cli.switch", "link": "cli.link", "watch": "cli.watch",
 	"claim": "cli.claim", "review": "cli.review", "prs": "cli.prs",
 	"orchestrator-report": "cli.orchestrator_report", "depends": "cli.depends",
 	"sessions": "cli.sessions", "mcp": "cli.mcp", "stats": "cli.stats",

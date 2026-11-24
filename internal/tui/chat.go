@@ -326,10 +326,13 @@ func (m *model) ensureChatTick() tea.Cmd {
 // off the UI goroutine.
 func (m model) chatTickCmd() tea.Cmd {
 	conv, ok := m.chatTarget()
-	if !ok {
-		return func() tea.Msg { return chatTickResult{} }
-	}
 	gen, tickGen := m.gen, m.chatGen
+	if !ok {
+		// Still this chain's result: without its tickGen, Update would never
+		// clear chatTickOn once a wake had moved chatGen past 0, and the fast
+		// tick would stay stopped for good.
+		return func() tea.Msg { return chatTickResult{tickGen: tickGen} }
+	}
 	pid := m.livePIDs[conv.SessionID]
 	return func() (msg tea.Msg) {
 		res := chatTickResult{id: conv.SessionID, gen: gen, tickGen: tickGen}

@@ -1635,6 +1635,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyLive(msg.updated)
 		}
 		m.applyStats(msg.stats)
+		// The fast tick checks only the selected session; a message sent to
+		// one it isn't following (or while it's stopped) arrives through here.
+		for id := range m.pending {
+			m.checkDelivered(id)
+		}
 		cmds := []tea.Cmd{m.autoFocusCmd(), m.heldCmd()}
 		if msg.tickGen == m.liveGen { // else a wake has started the chain afresh
 			cmds = append(cmds, m.nextLiveTick())

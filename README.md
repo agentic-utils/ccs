@@ -466,6 +466,8 @@ ccs prs --merged         # what merged in the last week, and which session merge
 
 `--statusline` never asks GitHub, so it is quick enough for Claude Code's status line; it prints nothing when there is nothing to count, and adds `(stale)` when `ccs watch` hasn't refreshed the state for 10 minutes.
 
+A status line can skip running ccs at all: after every pass `ccs watch` writes each Claude Code session's claimed open PRs to `${TMPDIR:-/tmp}/claude-statusline-prs-<session id>`, one line a PR, `<bucket> <url>`, sorted by bucket (0 ready to merge, 1 waiting for review or for another PR to merge first, 2 checks running, 3 needs you, 4 draft). It removes the file of a session with none, rewrites a file only when it changes, and writes the time of the pass (unix seconds) to `${TMPDIR:-/tmp}/claude-statusline-prs.ccs`. `ccs claim` and `ccs claim --release` rewrite their session's file at once. While that sentinel is a few minutes old at most, a script can `cat` its session's file (missing means no PRs).
+
 ## Feature stats
 
 ccs counts how often you use each of its features, so you can see which ones are hard to find or never used. `ccs stats` lists every feature used, with its count over 7 and 30 days, how often it was reached by key or by mouse, and its first and last use, then the features never used since the oldest record kept (`--json` for scripts).

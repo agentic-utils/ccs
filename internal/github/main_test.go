@@ -21,6 +21,8 @@ func TestMain(m *testing.M) {
 	state.MarksPath = filepath.Join(dir, "sessions.json")
 	// ccs prs checks only the claims' pids (github.LiveAmong): through each test's LiveByPID stub.
 	LiveAmong = func([]int) map[int]PRClaim { return LiveByPID() }
+	statusDir, _ := os.MkdirTemp("", "ccs-test-statusline")
+	StatusLineDir = func() string { return statusDir } // never the real TMPDIR the status line reads
 	Login = func() (string, error) { return "", errors.New("tests ask gh nothing") }
 	// No test reads the machine's own transcripts for who opened or merged a PR.
 	os.Unsetenv("ANTIGRAVITY_CONVERSATION_ID")

@@ -22,6 +22,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/mcp"
+	"github.com/agentic-utils/ccs/internal/profiling"
 	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -3484,6 +3485,8 @@ func (m model) viewScreen() string {
 	}
 	if m.profileStop != nil { // a reminder: it records until stopped
 		status += " · " + key("^T Q") + "\033[31mrecording profile\033[33m"
+	} else if r, ok := profiling.Current(); ok && r.By != profiling.ManualBy { // ccs profile, for an agent: it stops by itself
+		status += " · \033[31mrecording " + r.Kind + " profile until " + r.Until.Format("15:04:05") + "\033[33m"
 	}
 	// The modes ^X toggles, on the right beside the key hints. Not while a
 	// chord is pending: then the row lists only what the next key does.

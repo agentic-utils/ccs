@@ -23,7 +23,10 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-type liveTickMsg struct{}
+// liveTickMsg starts a live read. gen is the tick chain it belongs to: a
+// wake (idle.go) starts a new chain at once, and the old one stops at its
+// next step instead of running beside it.
+type liveTickMsg struct{ gen int }
 
 type focusDoneMsg struct {
 	pid   int
@@ -65,6 +68,7 @@ type liveMsg struct {
 	hosts      map[string]string               // live sessions run by an app, not in a terminal: the app's name
 	bg         map[string]sessions.BgSession   // background sessions (claude --bg); nil when not asked this tick
 	gen        int
+	tickGen    int // the tick chain that asked (liveTickMsg.gen)
 	// The live sessions' subagent rows (subagents.go) and their meta, when
 	// subsKnown: read in time this tick, so a missing row was dropped.
 	subRows   []transcript.Conversation
@@ -93,6 +97,16 @@ func liveTick() tea.Cmd {
 	return tea.Tick(sessions.LiveInterval, func(time.Time) tea.Msg { return liveTickMsg{} })
 }
 
+// nextLiveTick schedules the chain's next live read: every LiveInterval,
+// or liveIdleInterval while nobody is using ccs.
+func (m model) nextLiveTick() tea.Cmd {
+	every, gen := sessions.LiveInterval, m.liveGen
+	if m.idle() {
+		every = liveIdleInterval
+	}
+	return tea.Tick(every, func(time.Time) tea.Msg { return liveTickMsg{gen} })
+}
+
 // liveCmd refreshes liveness and the content of live sessions off the UI
 // goroutine. Sessions that were live last tick are checked too, so a
 // session's final lines land promptly after claude exits.
@@ -101,11 +115,11 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 	for _, item := range m.items {
 		byID[item.conv.SessionID] = item.conv
 	}
-	wasLive, prev, gen, record := maps.Clone(m.live), m.lastScan, m.gen, m.reopenChecked
+	wasLive, prev, gen, record, tickGen := maps.Clone(m.live), m.lastScan, m.gen, m.reopenChecked, m.liveGen
 	return func() tea.Msg {
 		scanned := sessions.ScanSessions(prev)
 		live := make(map[string]bool, len(scanned))
-		msg := liveMsg{live: live, pids: make(map[string]int, len(scanned)), gen: gen, stats: make(map[string]sessions.SessionStat, len(scanned)), unverified: make(map[string]bool), scan: scanned}
+		msg := liveMsg{tickGen: tickGen, live: live, pids: make(map[string]int, len(scanned)), gen: gen, stats: make(map[string]sessions.SessionStat, len(scanned)), unverified: make(map[string]bool), scan: scanned}
 		if askAgents {
 			msg.bg, _ = sessions.ListAgents() // nil on failure (no claude, or too old): the last answer stands
 		}

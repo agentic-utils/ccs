@@ -15,3 +15,6 @@ var errNoSysListing = errors.New("no in-process listing here")
 
 // sysStartTimes is macOS only; elsewhere ProcessStartTimes runs ps.
 var sysStartTimes = func([]int) (map[int]time.Time, error) { return nil, errNoSysListing }
+
+// sysNames is macOS only; elsewhere MayRun can't say, so answers yes.
+var sysNames = func() (map[string]bool, error) { return nil, errNoSysListing }

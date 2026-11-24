@@ -165,3 +165,18 @@ var sysStartTimes = func(pids []int) (map[int]time.Time, error) {
 	}
 	return out, nil
 }
+
+// sysNames is the name (p_comm, the executable's, at most 16 bytes) of every
+// process, from kern.proc.all alone: one sysctl, without the command line of
+// each that a full listing reads.
+var sysNames = func() (map[string]bool, error) {
+	procs, err := unix.SysctlKinfoProcSlice("kern.proc.all")
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]bool, len(procs)/2)
+	for i := range procs {
+		names[unix.ByteSliceToString(procs[i].Proc.P_comm[:])] = true
+	}
+	return names, nil
+}

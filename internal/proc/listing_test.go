@@ -91,3 +91,18 @@ func TestProcessStartTimesMatchPS(t *testing.T) {
 		t.Errorf("to the second in UTC, as ps's lstart is: %v", start)
 	}
 }
+
+func TestMayRun(t *testing.T) {
+	oldNames := sysNames
+	t.Cleanup(func() { sysNames = oldNames; names.set = nil })
+	sysNames = func() (map[string]bool, error) { return map[string]bool{"claude": true}, nil }
+	names.set = nil
+	if !MayRun("claude") || MayRun("codex") {
+		t.Fatal("from the process table's names")
+	}
+	sysNames = func() (map[string]bool, error) { return nil, errors.New("no table") }
+	names.set = nil
+	if !MayRun("codex") {
+		t.Fatal("unknown means it may run")
+	}
+}

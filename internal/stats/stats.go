@@ -77,6 +77,8 @@ var Registry = []Info{
 	{"tui.usage_screen", "^T Y: token use and allowance"},
 	{"tui.next_waiting", "Tab while something waits: select the next session waiting on you"},
 	{"tui.next_pr", "Tab with nothing waiting: select the next session with a PR ready to merge, else an open PR"},
+	{"tui.prev_waiting", "Shift+Tab while something waits: select the previous session waiting on you"},
+	{"tui.prev_pr", "Shift+Tab with nothing waiting: select the previous session with a PR ready to merge, else an open PR"},
 	{"tui.esc_parent", "Esc on a nested session: select the session it's nested under"},
 	{"tui.changelog", "^L changelog"},
 	{"tui.help", "? help"},

@@ -505,7 +505,7 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 	switch {
 	case (k == "pgup" || k == "pgdown") && review && !boxOpen:
 		// the review scrolls with them (menuKey)
-	case k == "ctrl+p", k == "ctrl+n", k == "pgup", k == "pgdown", k == "ctrl+c", k == "tab", k == "ctrl+x":
+	case k == "ctrl+p", k == "ctrl+n", k == "pgup", k == "pgdown", k == "ctrl+c", k == "tab", k == "shift+tab", k == "ctrl+x":
 		return nil, false
 	case (strings.HasPrefix(k, "ctrl+") || strings.HasPrefix(k, "alt+")) && !boxOpen:
 		return nil, false // the search's editing keys; an open box edits with them

@@ -182,6 +182,18 @@ func (m model) attention(c transcript.Conversation) int {
 // session's attention once (it reads the session's PRs), not a pass per
 // tier over the list and again over every session.
 func (m model) nextWaiting() (id string, tier int, ok bool) {
+	return m.stepWaiting(1)
+}
+
+// prevWaiting is the session Shift+Tab selects: nextWaiting's tier, the
+// first before the selection in list order, wrapping round.
+func (m model) prevWaiting() (id string, tier int, ok bool) {
+	return m.stepWaiting(-1)
+}
+
+// stepWaiting walks the list from the selection, one way (dir 1) or the
+// other (dir -1), for nextWaiting and prevWaiting.
+func (m model) stepWaiting(dir int) (id string, tier int, ok bool) {
 	tier = attentionTiers + 1
 	// note keeps the first session met in the most urgent tier so far, and
 	// says when nothing can beat it.
@@ -195,7 +207,7 @@ func (m model) nextWaiting() (id string, tier int, ok bool) {
 	if n := len(m.filtered); n > 0 {
 		cur := min(m.cursor, n-1)
 		for k := 1; k <= n; k++ {
-			c := m.filtered[(cur+k)%n].conv
+			c := m.filtered[((cur+dir*k)%n+n)%n].conv
 			shown[c.SessionID] = true
 			if note(c) {
 				return id, tier, true

@@ -390,3 +390,61 @@ func TestTeammateNestsUnderItsLead(t *testing.T) {
 		t.Errorf("the config's leadSessionId wins: %q", p)
 	}
 }
+
+// A codex TUI's folder (lsof) is looked up once its thread is found there,
+// not every tick, while the same process runs; the thread itself is still
+// the newest rollout in that folder each time, so /new moves to the new one.
+// A TUI with no thread yet, and a new process on the same pid, are asked.
+func TestCodexFolderLookedUpOncePerProcess(t *testing.T) {
+	path := codexFixture(t, cxA, "/w/flux", "cli")
+	oldPS, oldStart, oldCwd := proc.PsAll, proc.ProcessStartTimes, transcript.CodexProcCwd
+	t.Cleanup(func() { proc.PsAll, proc.ProcessStartTimes, transcript.CodexProcCwd = oldPS, oldStart, oldCwd })
+	proc.PsAll = func() (string, error) {
+		return "100 ttys001  /opt/homebrew/bin/codex\n105 ttys005  /opt/homebrew/bin/codex\n", nil
+	}
+	started := time.Now().Add(-time.Hour)
+	proc.ProcessStartTimes = func(pids map[string]int) map[int]time.Time {
+		out := map[int]time.Time{}
+		for _, p := range pids {
+			out[p] = started
+		}
+		return out
+	}
+	os.Chtimes(path, time.Now(), time.Now())
+	asked := map[int]int{}
+	transcript.CodexProcCwd = func(pid int) string {
+		asked[pid]++
+		if pid == 100 {
+			return "/w/flux"
+		}
+		return "/w/empty" // no turn yet: no thread
+	}
+	tick := func() map[string]sessions.LiveSession {
+		sessions.CodexLiveCache.Lock()
+		sessions.CodexLiveCache.Out = nil // past CodexLiveTTL
+		sessions.CodexLiveCache.Unlock()
+		return sessions.CodexLiveSessions()
+	}
+	for range 3 {
+		if live := tick(); live[cxA].PID != 100 {
+			t.Fatalf("pid 100 is on its thread: %+v", live)
+		}
+	}
+	if asked[100] != 1 || asked[105] != 3 {
+		t.Errorf("lsof ran %d times for a TUI on a known thread (want 1), %d for one with none (want 3)", asked[100], asked[105])
+	}
+
+	// /new in the same process: a newer rollout in its folder is its thread now.
+	later := codexFixture(t, cxB, "/w/flux", "cli")
+	os.Chtimes(later, time.Now().Add(time.Minute), time.Now().Add(time.Minute))
+	if live := tick(); live[cxB].PID != 100 || asked[100] != 1 {
+		t.Errorf("after /new the newest rollout is its thread, with no lsof: %+v, %d", live, asked[100])
+	}
+
+	// Another process on the same pid is looked up afresh.
+	started = started.Add(time.Minute)
+	tick()
+	if asked[100] != 2 {
+		t.Errorf("a new process on pid 100 wasn't looked up: %d", asked[100])
+	}
+}

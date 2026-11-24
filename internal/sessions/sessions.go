@@ -2479,11 +2479,7 @@ func CodexLiveSessions() map[string]LiveSession {
 		CodexLiveCache.at, CodexLiveCache.Out = time.Now(), out
 		return out
 	}
-	type tui struct {
-		pid  int
-		args []string
-	}
-	var tuis []tui
+	var tuis []codexTUI
 	pids := map[string]int{}
 	for _, line := range strings.Split(ps, "\n") {
 		f := strings.Fields(line)
@@ -2498,7 +2494,7 @@ func CodexLiveSessions() map[string]LiveSession {
 		if err != nil {
 			continue
 		}
-		tuis = append(tuis, tui{pid, args})
+		tuis = append(tuis, codexTUI{pid, args})
 		pids[f[0]] = pid
 	}
 	if len(tuis) == 0 {
@@ -2506,6 +2502,7 @@ func CodexLiveSessions() map[string]LiveSession {
 		return out
 	}
 	starts := proc.ProcessStartTimes(pids)
+	codexCwds.forgetBut(tuis, starts)
 	rollouts := transcript.CodexRollouts()
 	for _, t := range tuis {
 		start := starts[t.pid]
@@ -2541,7 +2538,11 @@ func codexThreadOf(args, rollouts []string, start time.Time, pid int) string {
 	if start.IsZero() {
 		return ""
 	}
-	cwd := transcript.CodexProcCwd(pid)
+	proc := codexProc{pid, start}
+	cwd, known := codexCwds.get(proc)
+	if !known {
+		cwd = transcript.CodexProcCwd(pid)
+	}
 	if cwd == "" {
 		return ""
 	}
@@ -2555,7 +2556,65 @@ func codexThreadOf(args, rollouts []string, start time.Time, pid int) string {
 			best, bestMod = m.ID, info.ModTime()
 		}
 	}
+	if best != "" && !known {
+		codexCwds.set(proc, cwd)
+	}
 	return best
+}
+
+type codexTUI struct {
+	pid  int
+	args []string
+}
+
+// codexProc is one codex process: its pid and when it started, so a
+// recycled pid is another.
+type codexProc struct {
+	pid   int
+	start time.Time
+}
+
+// codexCwds is each running codex TUI's folder (lsof, a process start),
+// kept from the first tick a thread was found in it until the process
+// ends, so the live tick doesn't run lsof for every codex every 2s. Only
+// the folder is kept: the thread is still the newest rollout in it on
+// every tick, since /new starts another thread in the same process. A
+// process with no thread found yet is asked again each tick (its folder
+// unproved, its first turn perhaps still to come).
+var codexCwds = &codexCwdCache{m: map[codexProc]string{}}
+
+type codexCwdCache struct {
+	sync.Mutex
+	m map[codexProc]string
+}
+
+func (c *codexCwdCache) get(p codexProc) (string, bool) {
+	c.Lock()
+	defer c.Unlock()
+	cwd, ok := c.m[p]
+	return cwd, ok
+}
+
+func (c *codexCwdCache) set(p codexProc, cwd string) {
+	c.Lock()
+	defer c.Unlock()
+	c.m[p] = cwd
+}
+
+// forgetBut drops every process but these (by pid and start time): the
+// rest have ended, or their pid is another process now.
+func (c *codexCwdCache) forgetBut(tuis []codexTUI, starts map[int]time.Time) {
+	keep := make(map[codexProc]bool, len(tuis))
+	for _, t := range tuis {
+		keep[codexProc{t.pid, starts[t.pid]}] = true
+	}
+	c.Lock()
+	defer c.Unlock()
+	for p := range c.m {
+		if !keep[p] {
+			delete(c.m, p)
+		}
+	}
 }
 
 // CodexStat is a Codex session's status from its rollout's last turn

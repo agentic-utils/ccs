@@ -216,6 +216,7 @@ Key bindings:
                   API on); other tabs stay put
   Ctrl+T G        Group the list by folder (again to stop)
   Ctrl+T M        Move sessions into topics (ccs reorg): see Sonnet's plan, enter applies it
+  Ctrl+T C        Copy the selected session's last reply to the clipboard
   Ctrl+T T        The full table, every column, instead of the sidebar
   Ctrl+T L        Hide or show the session list, the preview taking its place
   Ctrl+T H        Show or hide headless runs (claude -p, codex exec); --all
@@ -266,7 +267,8 @@ Key bindings:
   and end, Ctrl+K/U delete to the end or start, Ctrl+W the word before,
   Ctrl+Y puts back what they deleted, Alt+B/F move by word.
 
-  Click a row to select it, click a link in the preview to open it.
+  Click a row to select it, click a link in the preview to open it. Drag
+  over the preview to select its text: letting go copies it.
 
 `, state.Version)
 }

@@ -58,6 +58,8 @@ func TestMain(m *testing.M) {
 	statusDir, _ := os.MkdirTemp("", "ccs-test-statusline")
 	github.StatusLineDir = func() string { return statusDir } // never the real TMPDIR the status line reads
 	claimHold = func() {}                                     // a test never takes the real hold lock or sockets
+	pbcopy = func(string) error { return errors.New("tests never write the clipboard") }
+	osc52 = func(string) {}
 	// Not in iTerm unless a test says so: inITerm also reads these, and a
 	// test must never drive the real iTerm (open tabs, type into sessions).
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"} {

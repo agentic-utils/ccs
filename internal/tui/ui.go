@@ -314,11 +314,13 @@ type model struct {
 	linksCursor int             // into linksShown
 	accts       []cswapAccount
 	acctCursor  int
-	acctBusy    bool      // a cswap command is running
-	acctMsg     string    // outcome of the last list/switch/add, shown in the popup
-	acctPending bool      // opened by a click: the list still needs loading
-	lastMouse   time.Time // when the last mouse report arrived, to spot split ones
-	linkPending string    // a clicked link, opened by Update (handleMouse can't return a command)
+	acctBusy    bool       // a cswap command is running
+	acctMsg     string     // outcome of the last list/switch/add, shown in the popup
+	acctPending bool       // opened by a click: the list still needs loading
+	lastMouse   time.Time  // when the last mouse report arrived, to spot split ones
+	linkPending string     // a clicked link, opened by Update (handleMouse can't return a command)
+	copyPending string     // text a drag selected, copied by Update (handleMouse can't return a command)
+	sel         previewSel // a drag selecting the preview's text (selection.go)
 }
 
 // mouseFragment spots the rest of a split mouse report that mouseLeak can't
@@ -394,9 +396,22 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 		}
 		return m
 	}
-	if m.popupOpen() || m.showUsage || m.prompting() || msg.Action != tea.MouseActionPress {
+	if m.popupOpen() || m.showUsage || m.prompting() {
+		m.sel = previewSel{}
 		return m
 	}
+	if m.sel.pressed { // a press on the preview: a click, or a drag that selects
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			return m.selectDrag(msg)
+		case tea.MouseActionRelease:
+			return m.selectRelease()
+		}
+	}
+	if msg.Action != tea.MouseActionPress {
+		return m
+	}
+	m.sel = previewSel{} // any click or scroll clears a selection
 	if msg.Button == tea.MouseButtonLeft && msg.Y == 1 && cswapPath() != "" {
 		if start, end, ok := m.accountSpan(); ok && msg.X >= start && msg.X < end {
 			stats.Record("tui.account", stats.Mouse)
@@ -441,19 +456,9 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			return m
 		}
 		if onPreview && len(m.filtered) > 0 {
-			// ccs has the mouse, so the terminal never sees a click on a link: open it here.
-			lines := strings.Split(m.renderPreview(m.filtered[m.cursor], m.previewRenderHeight()), "\n")
-			if row := msg.Y - previewTop; row >= 0 && row < len(lines) {
-				m.linkPending = linkAt(lines[row], msg.X-paneX)
-				// A click anywhere on the summary line (its first) shows or hides
-				// the details; the detail rows below it hold links and stay put.
-				if m.linkPending != "" {
-					stats.Record("tui.link_open", stats.Mouse)
-				} else if row == 0 {
-					stats.Record("tui.details", stats.Mouse)
-					m.toggleHeader()
-				}
-			}
+			// Acted on when the button comes up (selectRelease): a click opens
+			// a link or toggles the details, a drag selects text instead.
+			m.sel = previewSel{pressed: true, px: msg.X, py: msg.Y}
 			return m
 		}
 		if msg.Y < listTop || msg.Y >= listTop+listHeight {
@@ -1944,6 +1949,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.linkPending = ""
 			return m, openLinkCmd(u)
 		}
+		if t := m.copyPending; t != "" {
+			m.copyPending = ""
+			return m, copyCmd(t)
+		}
+		return m, nil
+
+	case copiedMsg:
+		m.applyCopied(msg)
 		return m, nil
 
 	case linkErrMsg:
@@ -2023,6 +2036,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		prevKey := m.lastKeyAt
 		m.lastKeyAt = time.Now()
+		m.sel = previewSel{} // any key clears a selection
 		if h, _, ok := m.selectedHeld(); ok && m.menuLeft == h.ID && msg.String() == "right" && m.textInput.Value() == "" {
 			m.menuLeft = "" // give the held prompt the keys again
 			return m, nil
@@ -2219,6 +2233,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			return m, nil
+		}
+		if k == "^t c" && !m.prompting() && !m.acctOpen && !m.showUsage {
+			stats.Record("tui.copy_reply", stats.Key)
+			return m, m.copyReply()
 		}
 		if k == "^t t" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.table", stats.Key)
@@ -3277,6 +3295,7 @@ func (m model) shortcuts() [][2]string {
 	add(!m.grouped, "^T G", "group the list by folder")
 	add(m.grouped, "^T G", "stop grouping by folder")
 	add(m.reorgBusy == "", "^T M", "move sessions into topics: Sonnet plans, you accept or drop it")
+	add(len(m.filtered) > 0, "^T C", "copy its last reply; drag over the conversation to copy any text")
 	add(!m.table, "^T T", "the full table, every column")
 	add(m.table, "^T T", "back to the sidebar")
 	add(!m.table && !m.hideSidebar, "^T L", "hide the list, the preview taking the whole width (↑↓ still move)")
@@ -3361,7 +3380,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // handles is in its list, in order; TestEveryChordHasAHint checks it.
 var (
 	chordXPairs = []string{switchLetter, "another agent", "B", "background", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "K", "stop", "N", "new", "P", "pin", "R", "restart", "S", "send now", "W", "hand over", "X", "prune", "Z", "snooze", keyEsc, "interrupt"}
-	chordTPairs = []string{"A", "auto-focus", "G", "group", "H", "headless", "I", "auto-update", "J", "tab order", "L", "list", "M", "topics", "O", "orchestrator", "Q", "profile", "T", "table", "U", "account", "V", "remote, web", "Y", "usage"}
+	chordTPairs = []string{"A", "auto-focus", "C", "copy reply", "G", "group", "H", "headless", "I", "auto-update", "J", "tab order", "L", "list", "M", "topics", "O", "orchestrator", "Q", "profile", "T", "table", "U", "account", "V", "remote, web", "Y", "usage"}
 )
 
 // chordHint is the hint for a pending chord: its prefix, then what each

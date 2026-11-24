@@ -252,7 +252,8 @@ func (m *model) noteSelection() tea.Cmd {
 // without initialModel, e.g. tests) isn't memoised.
 func cachedPreview(c *previewCache, conv transcript.Conversation, query string, width int) []string {
 	if c == nil {
-		return buildPreviewLines(conv, query, width)
+		lines, _, _ := buildPreviewFrom(conv, query, width, nil)
+		return lines
 	}
 	// Preview lines depend only on the messages and tool calls, and on the
 	// width they're wrapped to.
@@ -285,10 +286,69 @@ func buildPreviewLines(conv transcript.Conversation, query string, width int) []
 	return lines
 }
 
+// Soft-wrap marks: a preview line that continues the line above it (wrapped
+// to fit, not a newline in the text) starts with one of these bytes, which
+// cleaned text never holds (CleanText drops C0 controls). renderPreview takes
+// them off before drawing; copying a selection reads them to join the line
+// back on, with the space the wrap dropped or with none (a word cut in two).
+const (
+	softSpace = '\x1e'
+	softJoin  = '\x1f'
+)
+
+// splitMark is l without its soft-wrap mark, and the mark (0 on a line of its own).
+func splitMark(l string) (string, byte) {
+	if len(l) > 0 && (l[0] == softSpace || l[0] == softJoin) {
+		return l[1:], l[0]
+	}
+	return l, 0
+}
+
+// unmarkAll is lines without their soft-wrap marks.
+func unmarkAll(lines []string) []string {
+	for i, l := range lines {
+		lines[i], _ = splitMark(l)
+	}
+	return lines
+}
+
+// softBreaks says, for each piece ansi.Wrap cut styled into, whether the wrap
+// dropped spaces before it (true) or cut a word in two (false).
+func softBreaks(styled string, pieces []string) []bool {
+	plain := ansi.Strip(styled)
+	out := make([]bool, len(pieces))
+	pos := 0
+	for j, p := range pieces {
+		p = strings.TrimLeft(ansi.Strip(p), " ")
+		k := pos
+		for k < len(plain) && (plain[k] == ' ' || plain[k] == '\t') {
+			k++
+		}
+		out[j] = k > pos
+		switch i := strings.Index(plain[k:], p); {
+		case i == 0:
+			pos = k + len(p)
+		case i > 0: // not where expected: say a space, the safer join
+			out[j], pos = true, k+i+len(p)
+		default:
+			out[j] = true
+		}
+	}
+	return out
+}
+
+// softMark is the mark for a continuation line: spaced when the wrap dropped a space.
+func softMark(spaced bool) string {
+	if spaced {
+		return string(rune(softSpace))
+	}
+	return string(rune(softJoin))
+}
+
 // buildPreview is buildPreviewLines with when each message's lines happened.
 func buildPreview(conv transcript.Conversation, query string, width int) ([]string, []previewStamp) {
 	lines, stamps, _ := buildPreviewFrom(conv, query, width, nil)
-	return lines, stamps
+	return unmarkAll(lines), stamps
 }
 
 // buildPreviewFrom is buildPreview carrying on from st (nil: from the start;
@@ -422,7 +482,7 @@ func buildPreviewFrom(conv transcript.Conversation, query string, width int, st 
 					head += " \033[90m· " + highlight(b.note, query) + "\033[0m"
 				}
 				msgLines = append(msgLines, head)
-				msgLines = append(msgLines, renderBody(b.body, query, width)...)
+				msgLines = append(msgLines, bodyLines(b.body, query, width)...)
 				msgLines = append(msgLines, "")
 			}
 			lastShown, lastRole = i, ""
@@ -440,7 +500,7 @@ func buildPreviewFrom(conv transcript.Conversation, query string, width int, st 
 				head += " \033[90m· " + highlight(transcript.CleanText(msg.Note), query) + "\033[0m"
 			}
 			msgLines = append(msgLines, head)
-			msgLines = append(msgLines, renderBody(msg.Text, query, width)...)
+			msgLines = append(msgLines, bodyLines(msg.Text, query, width)...)
 			msgLines = append(msgLines, "")
 			lastShown, lastRole = i, ""
 			continue
@@ -451,7 +511,7 @@ func buildPreviewFrom(conv transcript.Conversation, query string, width int, st 
 				from = n // the sending session as listed, found by its copy
 			}
 			msgLines = append(msgLines, fmt.Sprintf("\033[36m%s From %s\033[0m", marker, from))
-			msgLines = append(msgLines, renderBody(body, query, width)...)
+			msgLines = append(msgLines, bodyLines(body, query, width)...)
 			msgLines = append(msgLines, "")
 			lastShown, lastRole = i, ""
 			continue
@@ -480,7 +540,7 @@ func buildPreviewFrom(conv transcript.Conversation, query string, width int, st 
 			}
 			note(line)
 			if ev.Detail != "" && containsFold(ev.Detail, query) {
-				msgLines = append(msgLines[:len(msgLines)-1], renderBody(ev.Detail, query, width)...)
+				msgLines = append(msgLines[:len(msgLines)-1], bodyLines(ev.Detail, query, width)...)
 				msgLines = append(msgLines, "")
 				lastRole = ""
 			}
@@ -507,7 +567,7 @@ func buildPreviewFrom(conv transcript.Conversation, query string, width int, st 
 		if matchSet[i] {
 			mark = "\033[1m▶\033[22m"
 		}
-		body := markFirst(renderBody(msg.Text, query, width), mark)
+		body := markFirst(bodyLines(msg.Text, query, width), mark)
 		if msg.Role == "user" {
 			body = userRows(body, width)
 		}
@@ -550,12 +610,12 @@ func queuedLines(queue []transcript.QueuedMessage, width int) []string {
 	for _, q := range queue {
 		if from, body, ok := transcript.PeerParts(q.Text); ok && from != ccsSender {
 			out = append(out, "\033[36m  From "+from+"\033[0m")
-			out = append(out, renderBody(body, "", width)...)
+			out = append(out, bodyLines(body, "", width)...)
 		} else {
 			if ok {
 				q.Text = body // typed in ccs: the user's own words
 			}
-			out = append(out, userRows(markFirst(renderBody(transcript.StripImageNote(q.Text), "", width), "❯"), width)...)
+			out = append(out, userRows(markFirst(bodyLines(transcript.StripImageNote(q.Text), "", width), "❯"), width)...)
 		}
 		out = append(out, "\033[90m  ⎿ Queued\033[0m", "")
 	}
@@ -946,11 +1006,15 @@ const userBg = "\033[48;5;237;38;5;252m"
 // inside them ends the background too, so it's set again after each.
 func userRows(lines []string, width int) []string {
 	for i, l := range lines {
+		l, mark := splitMark(l)
 		l = strings.ReplaceAll(l, "\033[0m", "\033[0m"+userBg)
 		l = strings.ReplaceAll(l, "\033[49;39m", "\033[49;39m"+userBg)
 		l = strings.ReplaceAll(l, "\033[39m", "\033[39m"+userBg)
 		pad := strings.Repeat(" ", max(width-ansi.StringWidth(l), 0))
 		lines[i] = userBg + l + pad + "\033[0m"
+		if mark != 0 {
+			lines[i] = string(rune(mark)) + lines[i]
+		}
 	}
 	return lines
 }
@@ -958,6 +1022,11 @@ func userRows(lines []string, width int) []string {
 // renderTool draws a tool call as Claude Code's terminal does: "● Bash(cmd)",
 // a command's lines kept as they are and indented under it.
 func renderTool(t transcript.ToolUse, width int) []string {
+	return unmarkAll(toolLines(t, width))
+}
+
+// toolLines is renderTool with soft-wrap marks, for the preview.
+func toolLines(t transcript.ToolUse, width int) []string {
 	text := t.Name
 	if arg := transcript.CleanText(t.Arg); arg != "" {
 		text += "(" + strings.ReplaceAll(arg, "\t", "    ") + ")"
@@ -968,9 +1037,12 @@ func renderTool(t transcript.ToolUse, width int) []string {
 			out = append(out, "  "+line)
 			continue
 		}
-		for j, w := range strings.Split(ansi.Wrap(line, width-3, ""), "\n") {
+		pieces := strings.Split(ansi.Wrap(line, width-3, ""), "\n")
+		spaced := softBreaks(line, pieces)
+		for j, w := range pieces {
 			if j > 0 {
-				w = strings.TrimLeft(w, " ")
+				out = append(out, softMark(spaced[j])+"  "+strings.TrimLeft(w, " "))
+				continue
 			}
 			out = append(out, "  "+w)
 		}
@@ -993,7 +1065,7 @@ func renderToolIn(conv transcript.Conversation, t transcript.ToolUse, width int)
 		}
 		return renderAsk(a, width)
 	}
-	return renderTool(t, width)
+	return toolLines(t, width)
 }
 
 // wrapUnder wraps text to width under indent, every line indented, each line
@@ -1002,14 +1074,17 @@ func wrapUnder(text, indent, style string, width int) []string {
 	w := max(width-ansi.StringWidth(indent)-1, 10)
 	var out []string
 	for _, line := range strings.Split(transcript.CleanText(text), "\n") {
-		for j, l := range strings.Split(ansi.Wrap(line, w, ""), "\n") {
+		pieces := strings.Split(ansi.Wrap(line, w, ""), "\n")
+		spaced := softBreaks(line, pieces)
+		for j, l := range pieces {
+			mark := ""
 			if j > 0 {
-				l = strings.TrimLeft(l, " ")
+				l, mark = strings.TrimLeft(l, " "), softMark(spaced[j])
 			}
 			if style != "" {
 				l = style + l + "\033[0m"
 			}
-			out = append(out, indent+l)
+			out = append(out, mark+indent+l)
 		}
 	}
 	return out
@@ -1308,8 +1383,14 @@ func (m model) renderPreview(item listItem, height int) string {
 		header[len(header)-1] += fmt.Sprintf("  \033[90mhit %d/%d · ^] next ^\\ prev\033[0m", min(i, len(hits)), len(hits))
 	}
 
+	visibleMsgLines = slices.Clone(visibleMsgLines) // the cache's lines stay bare
+	for i := range visibleMsgLines {
+		visibleMsgLines[i], _ = splitMark(visibleMsgLines[i])
+		if a, b, ok := m.sel.selCols(start + i); ok {
+			visibleMsgLines[i] = highlightLine(visibleMsgLines[i], a, b)
+		}
+	}
 	if top, size, ok := scrollThumb(len(msgLines), start, msgHeight); ok {
-		visibleMsgLines = slices.Clone(visibleMsgLines) // the cache's lines stay bare
 		for i := range visibleMsgLines {
 			visibleMsgLines[i] = withBar(visibleMsgLines[i], m.paneWidth(), barCell(i, top, size))
 		}
@@ -1398,6 +1479,11 @@ var (
 // highlighted, and every line wrapped to width with a hanging indent so
 // nothing runs off the screen. width 0 means don't wrap.
 func renderBody(text, query string, width int) []string {
+	return unmarkAll(bodyLines(text, query, width))
+}
+
+// bodyLines is renderBody with soft-wrap marks, for the preview.
+func bodyLines(text, query string, width int) []string {
 	if r := []rune(text); len(r) > transcript.MaxMessageRunes {
 		text = string(r[:transcript.MaxMessageRunes]) + fmt.Sprintf("\n… (%d more characters)", len(r)-transcript.MaxMessageRunes)
 	}
@@ -1453,12 +1539,13 @@ func renderBody(text, query string, width int) []string {
 			out = append(out, indent+styled)
 			continue
 		}
-		wrapped := carryStyles(strings.Split(ansi.Wrap(styled, width-len(indent)-len(hang)-1, ""), "\n"))
-		for j, w := range wrapped {
+		wrapped := strings.Split(ansi.Wrap(styled, width-len(indent)-len(hang)-1, ""), "\n")
+		spaced := softBreaks(styled, wrapped)
+		for j, w := range carryStyles(wrapped) {
 			if j == 0 {
 				out = append(out, indent+w)
 			} else {
-				out = append(out, indent+hang+strings.TrimLeft(w, " "))
+				out = append(out, softMark(spaced[j])+indent+hang+strings.TrimLeft(w, " "))
 			}
 		}
 	}

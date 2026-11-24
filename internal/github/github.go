@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"maps"
 	"os"
@@ -1093,19 +1094,43 @@ func prDetailsAll(open []WatchedPR) []*WatchedPR {
 	return details
 }
 
-// PRFullEvery is how long an unchanged PR with settled checks goes without its
-// details being read. A re-run check or a conflict from the base moving doesn't
+// PRFullEvery is how long an unchanged PR with settled checks goes at least
+// without its details being read; each PR adds its own fullStagger, up to as
+// long again. A re-run check or a conflict from the base moving doesn't
 // change updatedAt, so those can be noticed this late.
 const PRFullEvery = 15 * time.Minute
+
+// noChecksGrace is how long after its last update a PR with no checks at all
+// is still read every pass: a push's checks register a moment after it, and
+// their arrival doesn't change updatedAt.
+const noChecksGrace = 10 * time.Minute
+
+// fullStagger is pr's own share of PRFullEvery, fixed by its address: every
+// PR is read in the same pass when ccs watch starts, and without it they'd
+// all fall due in the same pass again, a burst of hundreds of gh calls every
+// PRFullEvery.
+func fullStagger(pr string) time.Duration {
+	h := fnv.New32a()
+	h.Write([]byte(pr))
+	return time.Duration(h.Sum32()%uint32(PRFullEvery/time.Second)) * time.Second
+}
 
 // prSettled: what the search shows hasn't changed since old was read, and old
 // isn't waiting on anything a pass needs to see, so old can stand in for it.
 func prSettled(old *WatchedPR, p WatchedPR, now time.Time) bool {
-	if old == nil || old.State != "open" || old.Head == "" || p.UpdatedAt == "" || p.UpdatedAt != old.UpdatedAt || now.Sub(old.FullAt) >= PRFullEvery {
+	if old == nil || old.State != "open" || old.Head == "" || p.UpdatedAt == "" || p.UpdatedAt != old.UpdatedAt || now.Sub(old.FullAt) >= PRFullEvery+fullStagger(p.URL) {
 		return false
 	}
-	// a draft's threads are never counted, so it can't wait for them
-	return old.Checks == "failing" || (old.Checks == "success" && (old.Threads != nil || old.Draft))
+	switch old.Checks {
+	case "failing":
+		return true
+	case "success": // a draft's threads are never counted, so it can't wait for them
+		return old.Threads != nil || old.Draft
+	case "none": // no checks, and none have come since the last push
+		at, err := time.Parse(time.RFC3339, p.UpdatedAt)
+		return err == nil && now.Sub(at) >= noChecksGrace
+	}
+	return false
 }
 
 // prDetailsPass is prDetailsAll for one pass, reading only the PRs that aren't

@@ -655,8 +655,41 @@ func TestWatchSkipsAnUnchangedSettledPRUntilAFullRead(t *testing.T) {
 	if got := passEvents(t, now.Add(3*time.Minute)); len(got) != 0 || reads.Load() != 0 {
 		t.Errorf("unchanged: events %v, %d reads", got, reads.Load())
 	}
-	if got := passEvents(t, now.Add(PRFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || reads.Load() == 0 {
-		t.Errorf("after prFullEvery: events %v, %d reads", got, reads.Load())
+	if got := passEvents(t, now.Add(2*PRFullEvery)); !strings.Contains(strings.Join(got, " "), "checks_failing") || reads.Load() == 0 {
+		t.Errorf("after PRFullEvery and its stagger: events %v, %d reads", got, reads.Load())
+	}
+}
+
+func TestFullReadsAreStaggered(t *testing.T) {
+	due := map[time.Duration]int{}
+	for i := range 60 {
+		d := fullStagger(fmt.Sprintf("https://github.com/o/r/pull/%d", i))
+		if d < 0 || d >= PRFullEvery {
+			t.Fatalf("a stagger within PRFullEvery: %v", d)
+		}
+		due[d/(3*time.Minute)]++ // the pass, at ccs watch's interval
+	}
+	if len(due) < 4 {
+		t.Errorf("PRs read together at the start fall due in different passes: %v", due)
+	}
+	if fullStagger("https://github.com/o/r/pull/1") != fullStagger("https://github.com/o/r/pull/1") {
+		t.Error("a PR's stagger stays put")
+	}
+}
+
+func TestNoChecksPRSettlesAfterAGrace(t *testing.T) {
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	p := WatchedPR{URL: "https://github.com/o/r/pull/1", UpdatedAt: "2026-11-03T08:55:00Z"}
+	old := &WatchedPR{State: "open", Head: "h", Checks: "none", UpdatedAt: p.UpdatedAt, FullAt: now.Add(-time.Minute)}
+	if prSettled(old, p, now) {
+		t.Error("just pushed: its checks may still register")
+	}
+	if !prSettled(old, p, now.Add(noChecksGrace)) {
+		t.Error("no checks long after its last update: nothing to wait for")
+	}
+	old.Checks = "pending"
+	if prSettled(old, p, now.Add(noChecksGrace)) {
+		t.Error("checks running are read every pass")
 	}
 }
 

@@ -473,11 +473,11 @@ func TestUpdatedPopupAfterRestart(t *testing.T) {
 func TestAutoUpdateToggle(t *testing.T) {
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.autoUpdate = true
-	m, _ = chord(m, "i")
+	m, _ = chordT(m, "i")
 	if m.autoUpdate || loadSettings().autoUpdateOn() {
-		t.Error("^X I turns it off, and that's saved")
+		t.Error("^T I turns it off, and that's saved")
 	}
-	m, _ = chord(m, "i")
+	m, _ = chordT(m, "i")
 	if !m.autoUpdate || !loadSettings().autoUpdateOn() {
 		t.Error("again turns it back on")
 	}
@@ -487,22 +487,22 @@ func TestRemoteControlToggle(t *testing.T) {
 	t.Cleanup(func() { os.Remove(state.SettingsPath) })
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
 	m.width, m.height = 200, 30
-	m, _ = chord(m, "v")
+	m, _ = chordT(m, "v")
 	if !m.rcOpen || m.remoteControl {
-		t.Fatal("^X V opens its popup and changes nothing yet")
+		t.Fatal("^T V opens its popup and changes nothing yet")
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if m.rcOpen || !m.remoteControl || !state.RemoteControl() {
 		t.Error("v in it turns the setting on, and that's saved")
 	}
-	if v := strip2(m.View()); !strings.Contains(v, "^X V remote control on") {
+	if v := strip2(m.View()); !strings.Contains(v, "^T V remote control on") {
 		t.Errorf("the header says it's on:\n%s", v)
 	}
 	saveSettings(m.settings()) // another toggle's save keeps it
 	if !state.RemoteControl() {
 		t.Error("a save of the list's own settings keeps remote_control")
 	}
-	m, _ = chord(m, "v")
+	m, _ = chordT(m, "v")
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if m.remoteControl || state.RemoteControl() {
 		t.Error("again turns it off")
@@ -514,11 +514,11 @@ func TestHeaderShowsAutoUpdate(t *testing.T) {
 	m.width, m.height = 200, 30
 	m.checkLatest = func() (string, error) { return "", nil }
 	m.autoUpdate = true
-	if v := strip2(m.View()); !strings.Contains(v, "^X I auto-update on") {
+	if v := strip2(m.View()); !strings.Contains(v, "^T I auto-update on") {
 		t.Errorf("the header says auto-update is on:\n%s", v)
 	}
 	m.autoUpdate = false
-	if v := strip2(m.View()); !strings.Contains(v, "^X I auto-update off") {
+	if v := strip2(m.View()); !strings.Contains(v, "^T I auto-update off") {
 		t.Errorf("or off:\n%s", v)
 	}
 }

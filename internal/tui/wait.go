@@ -20,7 +20,7 @@ import (
 
 // ============================================================================
 // Live sessions waiting on the user: their statuses, the header's waiting
-// count, the question shown in the bottom pane, and ^X A auto-focus. All
+// count, the question shown in the bottom pane, and ^T A auto-focus. All
 // answering happens in the main view (held prompts in its bottom pane,
 // held.go and menu.go; the rest in their own tab). The ^X W overlay that
 // used to list waits is gone: see docs/design/input-prompt-overlay.md.
@@ -388,7 +388,7 @@ type autoFocusMsg struct {
 	focused bool
 }
 
-// autoFocusCmd (^X A) switches to a session that starts waiting on a menu or
+// autoFocusCmd (^T A) switches to a session that starts waiting on a menu or
 // prompt: once per wait, after autoFocusIdle without input, and not again
 // until the question it switched to is answered (focusHeld). That includes
 // waits already there when it starts; the waits it has dealt with are kept

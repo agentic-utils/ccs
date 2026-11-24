@@ -13,7 +13,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-// remoteControlSetting sets ^X V for the test and puts the settings back.
+// remoteControlSetting sets ^T V for the test and puts the settings back.
 func remoteControlSetting(t *testing.T, on bool) {
 	t.Helper()
 	old, err := os.ReadFile(state.SettingsPath)
@@ -79,7 +79,7 @@ func TestLaunchScriptNamesRemoteControl(t *testing.T) {
 	remoteControlSetting(t, true)
 	got = launchScript(LaunchOpts{Name: "n", Brief: "do it", Cwd: "/w"}, "/bin/claude", dir)
 	if !strings.Contains(got, `--name 'n' '--remote-control' 'n' ${=CCS_CLAUDE_ARGS}`) {
-		t.Errorf("^X V on: every Claude launch gets it:\n%s", got)
+		t.Errorf("^T V on: every Claude launch gets it:\n%s", got)
 	}
 	for _, o := range []LaunchOpts{{Name: "n", Brief: "x", Cwd: "/w", Codex: true}, {Name: "n", Brief: "x", Cwd: "/w", Agy: true}} {
 		if got := launchScript(o, "/bin/x", dir); strings.Contains(got, "remote-control") {
@@ -116,7 +116,7 @@ func TestRestartKeepsRemoteControlOnUnderItsName(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(r.launches) != 1 || !r.launches[0].RemoteControl {
-		t.Errorf("a session with Remote Control on comes back with it on, named, whatever ^X V says: %+v", r.launches)
+		t.Errorf("a session with Remote Control on comes back with it on, named, whatever ^T V says: %+v", r.launches)
 	}
 }
 

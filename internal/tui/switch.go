@@ -17,9 +17,8 @@ import (
 // the y/n prompt with the agent choice, and the command.
 
 // switchLetter is the ^X chord that switches the selected session to another
-// agent ("zap to another agent"). Temporary: a new chord layout may move it,
-// and this is the one place that names it.
-const switchLetter = "Z"
+// agent (A for agent), and the one place that names it.
+const switchLetter = "A"
 
 // switchKey is switchLetter as Update sees the chord, and switchHint as the
 // help and hints show it.
@@ -31,7 +30,7 @@ var (
 // switchSession is sessions.SwitchSession, stubbed in tests.
 var switchSession = sessions.SwitchSession
 
-// switchPrompt is ^X Z's question: which session, the agents it can go to
+// switchPrompt is ^X A's question: which session, the agents it can go to
 // and the one chosen.
 type switchPrompt struct {
 	id, name string
@@ -68,7 +67,7 @@ func switchTargets(conv transcript.Conversation) []sessions.Agent {
 	return out
 }
 
-// switchRefusal is why ^X Z can't switch conv, "" when it can.
+// switchRefusal is why ^X A can't switch conv, "" when it can.
 func (m model) switchRefusal(conv transcript.Conversation) string {
 	switch {
 	case conv.Kind == transcript.KindSubagent:
@@ -93,7 +92,7 @@ func (m model) switchRefusal(conv transcript.Conversation) string {
 	return ""
 }
 
-// switchKeyPressed is ^X Z: ask which agent, and whether to.
+// switchKeyPressed is ^X A: ask which agent, and whether to.
 func (m model) switchKeyPressed() (tea.Model, tea.Cmd) {
 	stats.Record("tui.switch", stats.Key)
 	m.helpOpen = false
@@ -111,7 +110,7 @@ func (m model) switchKeyPressed() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// switchConfirmKey handles a key while ^X Z asks.
+// switchConfirmKey handles a key while ^X A asks.
 func (m model) switchConfirmKey(k string) (tea.Model, tea.Cmd) {
 	p := m.confirmSwitch
 	switch k {
@@ -143,7 +142,7 @@ func switchCmd(o sessions.SwitchOpts) tea.Cmd {
 	}
 }
 
-// switchLine is ^X Z's question under the header.
+// switchLine is ^X A's question under the header.
 func (m model) switchLine() string {
 	p := m.confirmSwitch
 	parts := make([]string, len(p.agents))

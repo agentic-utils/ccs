@@ -1256,14 +1256,14 @@ func TestSidebarAndTable(t *testing.T) {
 		t.Errorf("clicking a sidebar row should select it, cursor=%d", m.cursor)
 	}
 
-	m, _ = chord(m, "t")
+	m, _ = chordT(m, "t")
 	if !m.table || !strings.Contains(m.View(), "PROJECT") {
 		t.Fatal("^T should show the full table with its columns")
 	}
 	if m.uiState().Table != true {
 		t.Error("the table choice should survive a restart after an update")
 	}
-	m, _ = chord(m, "t")
+	m, _ = chordT(m, "t")
 	if m.table {
 		t.Error("^T again should go back to the sidebar")
 	}
@@ -1280,16 +1280,16 @@ func TestHideSidebar(t *testing.T) {
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 120, 30
-	if v := strip2(m.View()); strings.Contains(v, "^X L") || !strings.Contains(v, "session 1") {
-		t.Fatalf("the sidebar shows by default, the header leaving ^X L to ? help:\n%s", v)
+	if v := strip2(m.View()); strings.Contains(v, "^T L") || !strings.Contains(v, "session 1") {
+		t.Fatalf("the sidebar shows by default, the header leaving ^T L to ? help:\n%s", v)
 	}
-	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^X L" && strings.Contains(s[1], "hide the list") }) {
-		t.Error("? help offers ^X L to hide the list")
+	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^T L" && strings.Contains(s[1], "hide the list") }) {
+		t.Error("? help offers ^T L to hide the list")
 	}
 
-	m, _ = chord(m, "l")
+	m, _ = chordT(m, "l")
 	if !m.hideSidebar || !loadSettings().HideSidebar {
-		t.Fatal("^X L hides the sidebar and saves it, so the next ccs starts that way")
+		t.Fatal("^T L hides the sidebar and saves it, so the next ccs starts that way")
 	}
 	if m.sidebarWidth() != 0 || m.paneWidth() != m.width || m.chatInput.Width != chatInputWidth(m.width) {
 		t.Errorf("the preview takes the whole width: sidebar %d, pane %d", m.sidebarWidth(), m.paneWidth())
@@ -1300,7 +1300,7 @@ func TestHideSidebar(t *testing.T) {
 	if len(lines) != m.height || strings.Contains(v, "session 1") || strings.ContainsAny(v, "│┬") {
 		t.Errorf("no list, no divider, still the full height (%d rows):\n%s", len(lines), v)
 	}
-	if !strings.Contains(v, "^X L list off") || !strings.HasPrefix(lines[listTop], "session 0") && !strings.HasPrefix(lines[listTop], "▾ ") {
+	if !strings.Contains(v, "^T L list off") || !strings.HasPrefix(lines[listTop], "session 0") && !strings.HasPrefix(lines[listTop], "▾ ") {
 		t.Errorf("the preview starts at the left edge, the header saying the list is off:\n%s", v)
 	}
 	if !strings.Contains(v, "said-0") {
@@ -1315,21 +1315,21 @@ func TestHideSidebar(t *testing.T) {
 	if m.cursor != 1 || !strings.Contains(strip2(m.View()), "said-1") {
 		t.Errorf("↓ still moves to the next session, cursor=%d", m.cursor)
 	}
-	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^X L" && strings.Contains(s[1], "show the list") }) {
-		t.Error("? help offers ^X L to show the list again")
+	if !slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == "^T L" && strings.Contains(s[1], "show the list") }) {
+		t.Error("? help offers ^T L to show the list again")
 	}
 
-	m, _ = chord(m, "t")
-	if v := strip2(m.View()); !strings.Contains(v, "session 0") || strings.Contains(v, "^X L") {
-		t.Errorf("the table always lists, and has no ^X L toggle:\n%s", v)
+	m, _ = chordT(m, "t")
+	if v := strip2(m.View()); !strings.Contains(v, "session 0") || strings.Contains(v, "^T L") {
+		t.Errorf("the table always lists, and has no ^T L toggle:\n%s", v)
 	}
-	if m, _ = chord(m, "l"); !m.hideSidebar {
-		t.Error("^X L does nothing in the table")
+	if m, _ = chordT(m, "l"); !m.hideSidebar {
+		t.Error("^T L does nothing in the table")
 	}
-	m, _ = chord(m, "t")
-	m, _ = chord(m, "l")
+	m, _ = chordT(m, "t")
+	m, _ = chordT(m, "l")
 	if v := strip2(m.View()); m.hideSidebar || loadSettings().HideSidebar || !strings.Contains(v, "session 0") {
-		t.Errorf("^X L again shows the list, and saves that:\n%s", v)
+		t.Errorf("^T L again shows the list, and saves that:\n%s", v)
 	}
 }
 
@@ -1343,18 +1343,18 @@ func TestSearchShowsAHiddenSidebar(t *testing.T) {
 	}
 	m := initialModel(buildItems(convs), "", nil)
 	m.width, m.height = 120, 30
-	m, _ = chord(m, "l")
+	m, _ = chordT(m, "l")
 	if m.sidebarWidth() != 0 {
-		t.Fatal("setup: ^X L hides the list")
+		t.Fatal("setup: ^T L hides the list")
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("session")})
 	if v := strip2(m.View()); m.sidebarWidth() == 0 || !strings.Contains(v, "session 1") || !strings.Contains(v, "│") {
 		t.Errorf("typing a search shows the list it filters:\n%s", v)
 	}
 	if !m.hideSidebar || !loadSettings().HideSidebar {
-		t.Error("searching doesn't change the saved ^X L choice")
+		t.Error("searching doesn't change the saved ^T L choice")
 	}
-	// Clearing the search hides it again: ^X L is still on.
+	// Clearing the search hides it again: ^T L is still on.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if v := strip2(m.View()); m.sidebarWidth() != 0 || strings.Contains(v, "session 1") {
 		t.Errorf("a cleared search hides the list again:\n%s", v)
@@ -1377,7 +1377,7 @@ func TestGroupByFolder(t *testing.T) {
 	m.sortList()
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "api-old" })
 
-	m, _ = chord(m, "g")
+	m, _ = chordT(m, "g")
 	var order []string
 	for _, it := range m.filtered {
 		order = append(order, it.conv.SessionID)
@@ -1429,7 +1429,7 @@ func TestGroupByFolder(t *testing.T) {
 		t.Errorf("grouped: a worktree keeps its own name: %q", g)
 	}
 
-	m, _ = chord(m, "g")
+	m, _ = chordT(m, "g")
 	if m.grouped || m.filtered[0].conv.SessionID != "api-new" || m.filtered[1].conv.SessionID != "ccs-tree" {
 		t.Error("^G again should go back to the usual order")
 	}
@@ -1534,12 +1534,12 @@ func TestViewIsRememberedAcrossRestarts(t *testing.T) {
 		t.Fatal("no file: the defaults")
 	}
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)
-	m, _ = chord(m, "g")
-	m, _ = chord(m, "t")
+	m, _ = chordT(m, "g")
+	m, _ = chordT(m, "t")
 	if got := loadSettings(); !got.Grouped || !got.Table {
 		t.Errorf("^G and ^T should be saved, got %+v", got)
 	}
-	m, _ = chord(m, "g")
+	m, _ = chordT(m, "g")
 	if got := loadSettings(); got.Grouped || !got.Table {
 		t.Errorf("^G again should be saved too, got %+v", got)
 	}
@@ -1557,7 +1557,7 @@ func TestHeaderTogglesGreyWithOnGreen(t *testing.T) {
 	m.autoFocus, m.autoUpdate = true, false
 	head := strings.Split(m.View(), "\n")[0]
 	plain := strip2(head)
-	if !strings.HasSuffix(plain, "^X A auto-focus on  ^X I auto-update off   ^X Y usage  ? help  ^C quit") {
+	if !strings.HasSuffix(plain, "^T A auto-focus on  ^T I auto-update off   ^T Y usage  ? help  ^C quit") {
 		t.Errorf("the toggles sit on the right, before the key hints: %q", plain)
 	}
 	if !strings.Contains(head, "auto-focus \033[32mon\033[90m") || !strings.Contains(head, "auto-update off") || strings.Contains(head, "\033[33m^") {
@@ -1572,11 +1572,11 @@ func TestHeaderTogglesGreyWithOnGreen(t *testing.T) {
 func TestHeaderShowsAutoFocusKey(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 150, 20
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X A auto-focus off") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^T A auto-focus off") {
 		t.Errorf("the header should say auto-focus is off, with its key: %q", head)
 	}
 	m.autoFocus = true
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X A auto-focus on") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^T A auto-focus on") {
 		t.Errorf("the header should say auto-focus is on: %q", head)
 	}
 }
@@ -1595,7 +1595,7 @@ func TestQuestionMarkHelpOnlyOnAnEmptySearch(t *testing.T) {
 	if m, _ = key(m, q); m.helpOpen || m.textInput.Value() != "why?" {
 		t.Errorf("with a search typed, ? is text: help=%v search=%q", m.helpOpen, m.textInput.Value())
 	}
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.HasSuffix(head, "auto-focus off   ^X Y usage  ? help  ^C quit") || strings.Contains(head, "^X G") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.HasSuffix(head, "auto-focus off   ^T Y usage  ? help  ^C quit") || strings.Contains(head, "^T G") {
 		t.Errorf("header keys: %q", head)
 	}
 }
@@ -1650,31 +1650,107 @@ func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
 	if m.autoFocus {
 		t.Error("^W and ^A only edit text now")
 	}
-	// ccs's own actions are ^X chords.
+	// ccs's own actions are chords: ^X for the session, ^T for views and tools.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "A auto-focus") || !strings.Contains(head, "esc interrupt or cancel") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X session:") || !strings.Contains(head, "B background") {
 		t.Errorf("after ^X the header lists what comes next: %q", head)
-	} else if strings.Contains(head, "^X") || strings.Contains(head, " on ") || strings.Contains(head, " off ") {
-		t.Errorf("after ^X only the next keys show, no ^X prefix and no on/off: %q", head)
+	} else if strings.Contains(head, " on ") || strings.Contains(head, " off ") {
+		t.Errorf("after ^X only the next keys show, no on/off: %q", head)
 	}
-	// Every chord the ? help can offer is in the ^X hint row.
-	listed := map[string]bool{}
-	for i := 0; i < len(chordPairs); i += 2 {
-		listed[strings.ToLower(chordPairs[i])] = true
-	}
-	for _, s := range m.shortcuts() {
-		if l, ok := strings.CutPrefix(s[0], "^X "); ok && l != "H" && !listed[strings.ToLower(strings.Fields(l)[0])] { // ^X V W by its V // ^X H stays out of the header
-			t.Errorf("%s is missing from the ^X hint row", s[0])
-		}
-	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc}) // a chord cancelled
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlA})
 	if !m.autoFocus || m.textInput.Value() != "fix the login " {
-		t.Errorf("^X ^A toggles auto-focus, without editing: on=%v %q", m.autoFocus, m.textInput.Value())
+		t.Errorf("^T ^A toggles auto-focus, without editing: on=%v %q", m.autoFocus, m.textInput.Value())
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+	if m.textInput.Value() != "fix the login " || !m.chordT {
+		t.Errorf("^T starts a chord and never edits the box: %q", m.textInput.Value())
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}) // ^T K is no chord (^X K stops a session)
+	if got := m.textInput.Value(); got != "fix the login " || m.chording() || m.confirmStop != "" {
+		t.Errorf("an unknown chord does nothing and types nothing: %q", got)
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}) // ^X J is no chord (^X Q records a profile)
-	if got := m.textInput.Value(); got != "fix the login " || m.chordX || m.profileStop != nil {
-		t.Errorf("an unknown chord does nothing and types nothing: %q", got)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // auto-focus moved to ^T A
+	if got := m.textInput.Value(); got != "fix the login " || m.chording() || !m.autoFocus {
+		t.Errorf("^X A is no longer auto-focus and types nothing: %q on=%v", got, m.autoFocus)
+	}
+}
+
+// Every chord shows at once what each second key does, all of them, over
+// two rows at any usual width; every chord ? help offers is in its row; and
+// every popup says which keys it takes. A new prefix, chord or popup can't
+// ship without its hint.
+func TestEveryChordHasAHint(t *testing.T) {
+	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "s", Messages: []transcript.Message{{Role: "user", Text: "hi"}}}}), "", nil)
+	m.height = 30
+	for _, prefix := range []struct {
+		name  string
+		key   tea.KeyType
+		pairs []string
+	}{{"^X", tea.KeyCtrlX, chordXPairs}, {"^T", tea.KeyCtrlT, chordTPairs}} {
+		for _, w := range []int{80, 120, 200} {
+			m.width = w
+			c, _ := key(m, tea.KeyMsg{Type: prefix.key})
+			if !c.chording() {
+				t.Fatalf("%s starts no chord", prefix.name)
+			}
+			lines := strings.Split(c.View(), "\n")[:len(c.chordHint(w))]
+			two := strip2(strings.Join(lines, " "))
+			for _, l := range lines {
+				if lw := ansi.StringWidth(l); lw > w {
+					t.Errorf("%s at %d columns: a hint row is %d wide", prefix.name, w, lw)
+				}
+			}
+			for i := 0; i+1 < len(prefix.pairs); i += 2 {
+				if !strings.Contains(two, prefix.pairs[i]+" "+prefix.pairs[i+1]) {
+					t.Errorf("%s at %d columns: no hint for %s %s in %q", prefix.name, w, prefix.pairs[i], prefix.pairs[i+1], two)
+				}
+			}
+		}
+		listed := map[string]bool{}
+		for i := 0; i < len(prefix.pairs); i += 2 {
+			listed[strings.ToLower(prefix.pairs[i])] = true
+		}
+		m.width = 120
+		for _, s := range m.shortcuts() {
+			if l, ok := strings.CutPrefix(s[0], prefix.name+" "); ok && !listed[strings.ToLower(strings.Fields(l)[0])] { // ^T V W by its V
+				t.Errorf("%s is missing from the %s hint row", s[0], prefix.name)
+			}
+		}
+	}
+	// Every popup (overPopups) draws its keys: at least how to close it.
+	m.width = 120
+	opened := []func(*model){
+		func(m *model) { m.updateOpen, m.updateTo = true, "v9.9.9" },
+		func(m *model) { m.updatedOpen, m.updatedFrom = true, "v0.0.1" },
+		func(m *model) { m.acctOpen = true },
+		func(m *model) { m.helpOpen = true },
+		func(m *model) { m.notesOpen = true },
+		func(m *model) { m.linksOpen = true },
+		func(m *model) { m.snoozeOpen = true },
+		func(m *model) { m.rcOpen = true },
+		func(m *model) { m.serveQROpen = true },
+		func(m *model) { m.setup = &serveSetup{} },
+		func(m *model) { m.reopen = []transcript.Conversation{{SessionID: "s"}} },
+		func(m *model) { m.reorgPlan = &reorgProposal{} },
+		func(m *model) { m.orchOffer, m.orchSince = &orchestratorPlan{}, time.Now() },
+	}
+	if n := len(m.overPopups()); n != len(opened) {
+		t.Fatalf("%d popups but %d opened here: a new popup needs a line above, so its hint is checked", n, len(opened))
+	}
+	for i, open := range opened {
+		p := m
+		open(&p)
+		pop := p.overPopups()[i]
+		if !pop.open {
+			t.Errorf("popup %d didn't open", i)
+			continue
+		}
+		if got := pop.draw(p); !strings.Contains(got, "\033[1m") || !strings.Contains(strip2(got), keyEsc) {
+			t.Errorf("popup %d shows no keys (a bold key and %s): %q", i, keyEsc, strip2(got))
+		}
 	}
 }
 
@@ -1875,8 +1951,8 @@ func TestHelpStatesTheRule(t *testing.T) {
 	}
 	for k, g := range map[string]string{
 		"^F": "this session", "^O": "",
-		"^X D": "^X then a letter: this session", "^X K": "^X then a letter: this session", "^X X": "^X then a letter: this session", "^X F": "^X then a letter: this session",
-		"^X G": "^X then a letter: view and tools", "^X L": "^X then a letter: view and tools",
+		"^X D": "^X then a key: this session", "^X K": "^X then a key: this session", "^X X": "^X then a key: this session", "^X F": "^X then a key: this session",
+		"^T G": "^T then a letter: view and tools", "^T L": "^T then a letter: view and tools",
 	} {
 		if g != "" && in[k] != g {
 			t.Errorf("%s is under %q, want %q", k, in[k], g)
@@ -2010,5 +2086,32 @@ func TestPaddedSearchMatchesUnpadded(t *testing.T) {
 		if got, want := startOrder(m), startOrder(p); got != want || len(m.filtered) != 3 {
 			t.Errorf("%q: after a live update: %s, want %s", q, got, want)
 		}
+	}
+}
+
+// An install from before the ^X/^T split hears once where its keys went; a
+// new install, or one already told, hears nothing.
+func TestMovedKeysNoteOnce(t *testing.T) {
+	saved := state.SettingsPath
+	state.SettingsPath = filepath.Join(t.TempDir(), "settings.json")
+	t.Cleanup(func() { state.SettingsPath = saved })
+
+	m := initialModel(nil, "", nil)
+	m.noteMovedKeys(loadSettings()) // no file: a new install
+	if m.errorMsg != "" {
+		t.Errorf("a new install is told nothing: %q", m.errorMsg)
+	}
+	os.WriteFile(state.SettingsPath, []byte(`{"table":true}`), 0o600) // an older install
+	m.noteMovedKeys(loadSettings())
+	if m.errorMsg != keysMovedNote || m.noteMsg != keysMovedNote {
+		t.Errorf("an older install gets the grey note once: %q", m.errorMsg)
+	}
+	if s := loadSettings(); s.KeyLayout != keyLayout {
+		t.Errorf("telling it is recorded: %d", s.KeyLayout)
+	}
+	m = initialModel(nil, "", nil)
+	m.noteMovedKeys(loadSettings())
+	if m.errorMsg != "" {
+		t.Errorf("and never again: %q", m.errorMsg)
 	}
 }

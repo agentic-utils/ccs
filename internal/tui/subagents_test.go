@@ -127,7 +127,7 @@ func TestSubagentRowIsReadOnly(t *testing.T) {
 	if p := strip2(m.renderPreview(m.filtered[m.cursor], 30)); !strings.Contains(p, "look into worker") || !strings.Contains(p, "◆ subagent") {
 		t.Errorf("its transcript previews, marked a subagent:\n%s", p)
 	}
-	for _, k := range []string{"e", "d", "x", "p", "s"} {
+	for _, k := range []string{"e", "d", "x", "p", "z"} {
 		m2, _ := key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
 		m2, _ = key(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{rune(k[0])}})
 		if m2.renaming || m2.confirmDelete || m2.confirmPrune || m2.snoozeOpen || m2.pinIndex("agent-worker") >= 0 || m2.errorMsg != subagentNote {

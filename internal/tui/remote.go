@@ -15,10 +15,10 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
-// ^X V's popup: Remote Control for running Claude Code sessions, typed as
+// ^T V's popup: Remote Control for running Claude Code sessions, typed as
 // `/remote-control <name>` into each one's terminal (Claude Code has no
 // other way in for a terminal session), and the launch setting
-// (state.RemoteControl) that used to be ^X V by itself.
+// (state.RemoteControl) that used to be ^T V by itself.
 //
 // Typed only into an idle session with Remote Control off: with it on, the
 // same command opens a menu that waits for a key, and any other state would
@@ -47,7 +47,7 @@ type rcResult struct {
 	on, skipped    bool
 }
 
-// rcDoneMsg ends a ^X V run.
+// rcDoneMsg ends a ^T V run.
 type rcDoneMsg struct{ results []rcResult }
 
 // rcCommand is what ccs types for name.
@@ -88,7 +88,7 @@ func (m model) rcCheck(conv transcript.Conversation) (name, why string) {
 	return name, ""
 }
 
-// rcCandidates are the running sessions ^X V's "all" considers: Claude
+// rcCandidates are the running sessions ^T V's "all" considers: Claude
 // Code ones (Codex, agy and subagent rows never have Remote Control).
 func (m model) rcCandidates() []transcript.Conversation {
 	var out []transcript.Conversation
@@ -110,7 +110,7 @@ func (m model) rcSelected() (transcript.Conversation, bool) {
 	return m.filtered[m.cursor].conv, true
 }
 
-// rcPopup is ^X V's popup.
+// rcPopup is ^T V's popup.
 func (m model) rcPopup() string {
 	var b strings.Builder
 	b.WriteString("\033[1mRemote Control\033[0m\n\n")
@@ -152,7 +152,7 @@ func (m model) rcPopup() string {
 	default:
 		b.WriteString("\033[1mw\033[0m  start it (its launchd agent)\n")
 	}
-	b.WriteString("\n\033[90m" + hints("t", "this one", "a", "all", "v", "setting", "w", "web page", "^X V/"+keyEsc, "close") + "\033[0m")
+	b.WriteString("\n\033[90m" + hints("t", "this one", "a", "all", "v", "setting", "w", "web page", "^T V/"+keyEsc, "close") + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
@@ -160,10 +160,10 @@ func (m model) rcPopup() string {
 		Render(b.String())
 }
 
-// rcKey handles a key while ^X V's popup is open.
+// rcKey handles a key while ^T V's popup is open.
 func (m model) rcKey(k string) (tea.Model, tea.Cmd) {
 	switch k {
-	case "esc", "^x v", "q":
+	case "esc", "^t v", "q":
 		m.rcOpen = false
 	case "ctrl+c":
 		m.quitting = true

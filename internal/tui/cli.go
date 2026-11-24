@@ -28,7 +28,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// startProfile records a CPU profile to path (CCS_CPUPROFILE, or ^X Q),
+// startProfile records a CPU profile to path (CCS_CPUPROFILE, or ^T Q),
 // for chasing slowness: go tool pprof -top it. Returns the stop.
 func startProfile(path string) (func(), error) {
 	f, err := os.Create(path)
@@ -138,11 +138,13 @@ Examples:
   ccs buyer -- --plan                Search "buyer", resume with plan mode
 
 Key bindings:
-  Single keys act now and leave nothing behind; Ctrl+X then a letter changes
-  something that stays (a mark, a setting, a file, whether it runs), and the
-  ones that can't be undone ask first. Ctrl+X Esc, Ctrl+X Enter and Ctrl+X B
+  Single keys act now and leave nothing behind; a chord changes something
+  that stays (a mark, a setting, a file, whether it runs): Ctrl+X then a key
+  for the selected session, Ctrl+T then a letter for views and tools. The
+  ones that can't be undone ask first. Ctrl+X Esc, Ctrl+X S and Ctrl+X B
   don't: they are Claude Code's own keys for a running turn, which don't ask
-  there either.
+  there either. The second key may be held with Ctrl (Ctrl+X Ctrl+S), and
+  after either prefix ccs lists what each key does.
 
  Moving around
   ↑/↓, Ctrl+P/N   Move through the list
@@ -168,10 +170,12 @@ Key bindings:
   Ctrl+F          Fork it: a new session with the same history, in a new tab
   Ctrl+O          Open a link in view, one of its PRs or artifacts
 
- Ctrl+X then a letter: this session
+ Ctrl+X then a key: this session
+  Ctrl+X C        Show the closed sessions under the selected session (its parent's
+                  when it has none), or hide them again; a click on the line too
   Ctrl+X P        Pin it to the top of the list (again to unpin)
   Alt+Up/Down     Move it among the pinned sessions
-  Ctrl+X S        Put it away: settle until its next message, or snooze it
+  Ctrl+X Z        Put it away: settle until its next message, or snooze it
                   (again to bring it back)
   Ctrl+X E        Edit its name, as /rename does (not while it's open in claude)
   Ctrl+X F        Show or hide its details under the summary line (clicking the line does too)
@@ -180,36 +184,39 @@ Key bindings:
   Ctrl+X K        Stop it and close its tab, or stop a background session;
                   asks first
   Ctrl+X Esc      Interrupt its turn now: ccs presses Esc in its tab
-  Ctrl+X Enter    Send its queued message now, as ctrl+enter in its tab
-                  (while it writes a reply, not during a tool call)
+  Ctrl+X S        Send its queued message now, as Claude Code's Ctrl+X Ctrl+S
+                  in its tab (while it writes a reply, not during a tool call)
   Ctrl+X B        Move the command it's running to the background (Ctrl+B
                   in its tab). These three use Claude Code's own keys, only
                   in a busy Claude Code session in iTerm or tmux
+  Ctrl+X R        Restart it: stop it, then resume the same conversation in a
+                  new tab with the same name, folder and flags; asks first
   Ctrl+X W        Hand it over: it sends its parent its leftovers, then it's
                   closed and its PRs and child sessions move to the parent
+  Ctrl+X A        Carry it on in another agent: pick Claude, Codex or Gemini
+                  (agy) with ←/→, then y; the new session gets its name, folder,
+                  children and PRs, briefed with a handover (see ccs switch)
   Ctrl+X D        Delete its transcript file; asks first, can't be undone
-
- Ctrl+X then a letter: view and tools
   Ctrl+X N        Start a new session in an iTerm tab or tmux window, in this one's folder:
                   pick Claude, Codex or Gemini (agy) with ←/→ or Tab (the ones on PATH; the last choice
                   is remembered), Enter, then its name and brief
-  Ctrl+X O        Open the orchestrator, setting one up if there is none
-  Ctrl+X J        Put the tabs of live sessions in list order: tmux windows in each
+
+ Ctrl+T then a letter: view and tools
+  Ctrl+T O        Open the orchestrator, setting one up if there is none
+  Ctrl+T J        Put the tabs of live sessions in list order: tmux windows in each
                   tmux session, iTerm tabs in each window (needs iTerm's Python
                   API on); other tabs stay put
-  Ctrl+X C        Show the closed sessions under the selected session (its parent's
-                  when it has none), or hide them again; a click on the line too
-  Ctrl+X G        Group the list by folder (again to stop)
-  Ctrl+X M        Move sessions into topics (ccs reorg): see Sonnet's plan, enter applies it
-  Ctrl+X T        The full table, every column, instead of the sidebar
-  Ctrl+X L        Hide or show the session list, the preview taking its place
-  Ctrl+X H        Show or hide headless runs (claude -p, codex exec); --all
+  Ctrl+T G        Group the list by folder (again to stop)
+  Ctrl+T M        Move sessions into topics (ccs reorg): see Sonnet's plan, enter applies it
+  Ctrl+T T        The full table, every column, instead of the sidebar
+  Ctrl+T L        Hide or show the session list, the preview taking its place
+  Ctrl+T H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
-  Ctrl+X A        When a session starts waiting on you, select it in ccs (and focus a prompt ccs
+  Ctrl+T A        When a session starts waiting on you, select it in ccs (and focus a prompt ccs
                   serve holds, to answer it in the bottom pane) and switch to its tab
-  Ctrl+X I        Install ccs updates on their own once you're away (off by
+  Ctrl+T I        Install ccs updates on their own once you're away (off by
                   default)
-  Ctrl+X V        Remote Control: t turns it on now in the selected session,
+  Ctrl+T V        Remote Control: t turns it on now in the selected session,
                   a in every running one that can take it (idle Claude Code
                   sessions in a terminal, with it off: ccs types
                   /remote-control <name>), v makes sessions ccs launches or
@@ -219,9 +226,9 @@ Key bindings:
                   Mac, or a form for your phone), start its launchd agent,
                   or show its address and QR code (s stops it, asking y/n;
                   e edits its setup)
-  Ctrl+X Q        Record a CPU profile, for when ccs feels slow; again to stop
+  Ctrl+T Q        Record a CPU profile, for when ccs feels slow; again to stop
                   (or set CCS_CPUPROFILE=path)
-  Ctrl+X U        Switch Claude account (needs cswap)
+  Ctrl+T U        Switch Claude account (needs cswap)
 
  ccs
   Ctrl+R          Refresh sessions, PRs and allowance now; check for an update
@@ -231,15 +238,15 @@ Key bindings:
                   ready to merge; then one with any other open PR. Within
                   each, the next after the selection, wrapping; with none,
                   "nothing needs you"
-  Ctrl+X Y        Your usage: token use of every session in the last 12h, and
-                  your allowance (Ctrl+X Y or Esc to go back)
+  Ctrl+T Y        Your usage: token use of every session in the last 12h, and
+                  your allowance (Ctrl+T Y or Esc to go back)
   Ctrl+L          What changed in each ccs release
   ?               Show the shortcuts that apply right now (on an empty search or
                   message box; after text it types a ?)
   Ctrl+C          Quit
 
-  ccs's own actions are Ctrl+X then a letter (Ctrl+X Ctrl+A works too), so
-  the search and message boxes edit like Claude Code's prompt: Ctrl+A/E start
+  ccs's own actions are Ctrl+X or Ctrl+T chords (Ctrl+T Ctrl+A works too),
+  so the search and message boxes edit like Claude Code's prompt: Ctrl+A/E start
   and end, Ctrl+K/U delete to the end or start, Ctrl+W the word before,
   Ctrl+Y puts back what they deleted, Alt+B/F move by word.
 
@@ -445,11 +452,12 @@ func Main(v string) {
 		m.openClosed[id] = true
 	}
 	m.headerCollapsed = !s.HeaderOpen
-	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^X I
+	m.autoUpdate = s.autoUpdateOn() // off unless turned on with ^T I
 	m.remoteControl = state.RemoteControl()
 	if s.AutoUpdate == nil && s.found {
 		saveSettings(m.settings()) // pin what an older install had
 	}
+	m.noteMovedKeys(s)
 	if from := os.Getenv(updatedEnv); from != "" {
 		os.Unsetenv(updatedEnv) // once only
 		m.updatedFrom, m.updatedOpen = from, true
@@ -494,7 +502,7 @@ func Main(v string) {
 		return buildItems(convs), nil
 	}
 	// Before NewProgram, which takes its own copy of m: set after, the
-	// program never sees the stop, so the profile is never written and ^X Q
+	// program never sees the stop, so the profile is never written and ^T Q
 	// can't start one.
 	if path := os.Getenv("CCS_CPUPROFILE"); path != "" {
 		stop, err := startProfile(path)
@@ -515,7 +523,7 @@ func Main(v string) {
 	sessions.CloseInboxes()
 	releaseHold("ccs quit")        // prompts it held are handed back: their hooks dial the next ccs
 	stopActiveRun(3 * time.Second) // a ! command never outlives this ccs (quit, error or an update's restart)
-	stopPreview()                  // a preview started from ^X V W lives only as long as this ccs
+	stopPreview()                  // a preview started from ^T V W lives only as long as this ccs
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

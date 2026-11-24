@@ -416,7 +416,7 @@ func TestMovedTranscriptLaterCopy(t *testing.T) {
 	}
 }
 
-// TestOrderTabsChord: ^X J hands OrderTabs the ttys of the live sessions in
+// TestOrderTabsChord: ^T J hands OrderTabs the ttys of the live sessions in
 // terminals, in list order; a background session and one in an app have no
 // tab of their own, and an exited one has no tty.
 func TestOrderTabsChord(t *testing.T) {
@@ -439,15 +439,15 @@ func TestOrderTabsChord(t *testing.T) {
 	var got []string
 	sessions.OrderTabs = func(ttys []string) (int, error) { got = ttys; return 2, nil }
 
-	if m2, cmd := chord(m, "j"); cmd != nil || !strings.Contains(m2.errorMsg, "neither") {
+	if m2, cmd := chordT(m, "j"); cmd != nil || !strings.Contains(m2.errorMsg, "neither") {
 		t.Fatalf("outside tmux and iTerm: %q", m2.errorMsg)
 	}
 	t.Setenv("TMUX", "/tmp/tmux-1/default,1,0")
-	m, cmd := chord(m, "j")
+	m, cmd := chordT(m, "j")
 	if cmd == nil || !m.orderingTabs {
-		t.Fatal("^X J starts ordering")
+		t.Fatal("^T J starts ordering")
 	}
-	if m2, cmd2 := chord(m, "j"); cmd2 != nil || !strings.Contains(m2.errorMsg, "Still") {
+	if m2, cmd2 := chordT(m, "j"); cmd2 != nil || !strings.Contains(m2.errorMsg, "Still") {
 		t.Errorf("never twice at once: %q", m2.errorMsg)
 	}
 	var want []string
@@ -466,9 +466,9 @@ func TestOrderTabsChord(t *testing.T) {
 	}
 
 	sessions.OrderTabs = func([]string) (int, error) { return 0, errors.New("iTerm's API is off") }
-	m, cmd = chord(m, "j")
+	m, cmd = chordT(m, "j")
 	res, _ = m.Update(cmd())
-	if m = res.(model); !strings.Contains(m.errorMsg, "^X J: iTerm's API is off") {
+	if m = res.(model); !strings.Contains(m.errorMsg, "^T J: iTerm's API is off") {
 		t.Errorf("failure: %q", m.errorMsg)
 	}
 }

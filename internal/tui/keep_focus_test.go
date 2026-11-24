@@ -131,7 +131,7 @@ func TestAutoSelectWaitsAfterTheMouse(t *testing.T) {
 	}
 }
 
-// ^X A doesn't switch to another session's tab while you're in ccs on a
+// ^T A doesn't switch to another session's tab while you're in ccs on a
 // session waiting on you; out of ccs (blurred) or on one that needs
 // nothing, it does.
 func TestAutoFocusWaitsWhileYouReadInCCS(t *testing.T) {

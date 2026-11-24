@@ -96,9 +96,9 @@ type uiState struct {
 	QueryCursor   int    `json:"query_cursor"`
 	Selected      string `json:"selected"` // SessionID, so it survives a reordered list
 	PreviewScroll int    `json:"preview_scroll"`
-	Table         bool   `json:"table,omitempty"`    // ^X T: the full table, not the sidebar
-	Grouped       bool   `json:"grouped,omitempty"`  // ^X G: grouped by folder
-	Headless      *bool  `json:"headless,omitempty"` // ^X H: headless runs shown; nil (an older ccs) keeps --all's
+	Table         bool   `json:"table,omitempty"`    // ^T T: the full table, not the sidebar
+	Grouped       bool   `json:"grouped,omitempty"`  // ^T G: grouped by folder
+	Headless      *bool  `json:"headless,omitempty"` // ^T H: headless runs shown; nil (an older ccs) keeps --all's
 }
 
 func (m model) screenName() string {
@@ -381,7 +381,7 @@ func (m model) updatedPopup() string {
 	if len(m.changelog) > 0 {
 		body += m.changelogBlock() + "\n\n"
 	}
-	body += "\033[90m" + hints(keyEnter+"/"+keyEsc, "close", "^X I", "stop updating on its own") + "\033[0m"
+	body += "\033[90m" + hints(keyEnter+"/"+keyEsc, "close", "^T I", "stop updating on its own") + "\033[0m"
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).

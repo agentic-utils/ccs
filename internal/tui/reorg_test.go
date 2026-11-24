@@ -353,7 +353,7 @@ func TestReorgRefusesAStalePlan(t *testing.T) {
 	}
 }
 
-// ^X M asks the model and shows its checked plan in a popup that owns the
+// ^T M asks the model and shows its checked plan in a popup that owns the
 // keyboard: an enter on its way as it appears does nothing, a plan taller
 // than the screen scrolls and applies only once its end has been shown, and
 // esc drops it with nothing moved.
@@ -387,11 +387,11 @@ func TestReorgKey(t *testing.T) {
 	}
 	plan := func(m model) model {
 		t.Helper()
-		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlX})
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 		next, cmd := next.(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
 		m = next.(model)
 		if m.reorgBusy != "planning" || cmd == nil || !strings.Contains(strip2(m.View()), "reorg planning") {
-			t.Fatalf("^X M asks for a plan and the header says so: %q", m.reorgBusy)
+			t.Fatalf("^T M asks for a plan and the header says so: %q", m.reorgBusy)
 		}
 		m = run(m, cmd)
 		if m.reorgPlan != nil || m.reorgReady == nil {

@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 )
 
-// RemoteControlKey is the settings.json key for ^X V: Claude Code sessions
+// RemoteControlKey is the settings.json key for ^T V: Claude Code sessions
 // ccs starts or resumes get Remote Control on, under their ccs name.
 const RemoteControlKey = "remote_control"
 
-// RemoteControl reports whether ^X V is on. Off unless chosen.
+// RemoteControl reports whether ^T V is on. Off unless chosen.
 func RemoteControl() bool {
 	b, err := os.ReadFile(SettingsPath)
 	if err != nil {

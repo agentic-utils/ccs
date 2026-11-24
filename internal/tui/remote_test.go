@@ -52,12 +52,12 @@ func rcModel(t *testing.T, file string) (m model, typed *[]string, onType *func(
 	return m, &got, &hook
 }
 
-// runRC presses ^X V then k and applies what the worker returns.
+// runRC presses ^T V then k and applies what the worker returns.
 func runRC(t *testing.T, m model, k string) model {
 	t.Helper()
-	m, _ = chord(m, "v")
+	m, _ = chordT(m, "v")
 	if !m.rcOpen {
-		t.Fatal("^X V opens the popup")
+		t.Fatal("^T V opens the popup")
 	}
 	if v := strip2(m.View()); !strings.Contains(v, "Remote Control") {
 		t.Fatalf("popup not drawn:\n%s", v)

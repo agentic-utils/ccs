@@ -249,7 +249,7 @@ func OpenResumeTab(conv transcript.Conversation, claudeFlags []string) (bool, er
 }
 
 // ResumeRemoteControlArgs are the Remote Control flags for resuming conv
-// with ^X V on: its user-set name, so the phone shows that and not a
+// with ^T V on: its user-set name, so the phone shows that and not a
 // hostname. Nothing for a fork (a new conversation under the old name) or a
 // session with no name of its own.
 func ResumeRemoteControlArgs(conv transcript.Conversation, claudeFlags []string) []string {
@@ -1010,7 +1010,7 @@ type LaunchOpts struct {
 	OnTab                    func(tty string) // called once the tab is open, before the wait for the session
 	RecordParent             bool             // note the calling session as its parent (launch_session, ccs launch; never a restart)
 	// RemoteControl starts a Claude Code session with Remote Control on
-	// under its name (state.RemoteControlArgs), whatever ^X V says: a
+	// under its name (state.RemoteControlArgs), whatever ^T V says: a
 	// restart of a session that had it on.
 	RemoteControl bool
 }

@@ -273,8 +273,9 @@ type model struct {
 	allowanceStale   bool   // the account changed while a fetch was in flight: fetch again
 
 	// Account switcher (Ctrl+X U), backed by the cswap CLI.
-	acctOpen bool
-	helpOpen bool // ? shortcut list
+	acctOpen   bool
+	helpOpen   bool // ? shortcut list
+	helpScroll int  // its first line in view
 
 	reopen        []transcript.Conversation // sessions open before a restart, offered for reopening
 	reopenChecked bool                      // the last boot's record has been read, so it may be overwritten
@@ -377,6 +378,14 @@ func (m model) paneWidth() int {
 func (m model) handleMouse(msg tea.MouseMsg) model {
 	if m.linksOpen || m.snoozeOpen || m.rcOpen || len(m.reopen) > 0 || m.reorgPlan != nil || m.offerShown() {
 		return m // keyboard only while it's open
+	}
+	if m.helpOpen { // the wheel scrolls the shortcuts, nothing else reacts
+		if msg.Button == tea.MouseButtonWheelUp {
+			m.scrollHelp(-3)
+		} else if msg.Button == tea.MouseButtonWheelDown {
+			m.scrollHelp(3)
+		}
+		return m
 	}
 	if m.notesOpen { // the wheel scrolls the changelog, nothing else reacts
 		if msg.Button == tea.MouseButtonWheelUp {
@@ -2464,6 +2473,14 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "?", "esc":
 				m.helpOpen = false
+			case "up", "ctrl+p", "ctrl+k":
+				m.scrollHelp(-1)
+			case "down", "ctrl+n", "ctrl+j":
+				m.scrollHelp(1)
+			case "pgup":
+				m.scrollHelp(-m.helpRows())
+			case "pgdown", " ":
+				m.scrollHelp(m.helpRows())
 			case "ctrl+c":
 				m.quitting = true
 				return m, tea.Quit
@@ -2482,7 +2499,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.String() == "?" && box == "" && !m.prompting() && !m.showUsage {
 			stats.Record("tui.help", stats.Key)
-			m.helpOpen = true
+			m.helpOpen, m.helpScroll = true, 0
 			return m, nil
 		}
 		if k == "^t u" && !m.prompting() {
@@ -3411,34 +3428,91 @@ func legendLines() string {
 	}, "  ")
 }
 
-func (m model) helpPopup() string {
-	var b strings.Builder
-	b.WriteString("\033[1mshortcuts\033[0m\n")
+// helpWidth is the ? popup's text width: the screen less its border,
+// padding and scrollbar, so no entry is ever cut at the side.
+func (m model) helpWidth() int { return min(max(m.width-10, 30), 110) }
+
+// helpRows is how many of helpLines the popup shows at once: the screen
+// less the title row overlayCentre keeps clear, the border, the popup's
+// title and its footer, so the box always fits and its footer shows.
+func (m model) helpRows() int { return max(m.height-7, 3) }
+
+// helpLines is everything the ? popup lists, each line wrapped to width
+// (a key's description under its own column), so scrolling reaches all of it.
+func (m model) helpLines(width int) []string {
+	var out []string
 	for _, l := range keyRule {
-		b.WriteString("\033[90m" + l + "\033[0m\n")
+		out = append(out, wrapIndent("", "\033[90m", l, width)...)
 	}
-	b.WriteString("\n")
+	out = append(out, "")
 	for i, s := range m.shortcuts() {
 		if s[0] == "" { // a group's heading
 			if i > 0 {
-				b.WriteString("\n")
+				out = append(out, "")
 			}
-			b.WriteString("\033[90m" + s[1] + "\033[0m\n")
+			out = append(out, "\033[90m"+s[1]+"\033[0m")
 			continue
 		}
-		fmt.Fprintf(&b, "\033[33m%-8s\033[0m %s\n", s[0], s[1])
+		prefix := fmt.Sprintf("\033[33m%-8s\033[0m ", s[0])
+		if ansi.StringWidth(prefix) > 9 { // a key wider than its column gets a line of its own
+			out = append(out, "\033[33m"+s[0]+"\033[0m")
+			prefix = strings.Repeat(" ", 9)
+		}
+		out = append(out, wrapIndent(prefix, "", s[1], width)...)
 	}
 	if !m.showUsage {
-		b.WriteString("\n" + legendLines() + "\n")
+		out = append(out, "")
+		for _, l := range strings.Split(legendLines(), "\n") {
+			out = append(out, wrapIndent("", "", l, width)...)
+		}
 	}
 	if len(m.hooksMissing) > 0 {
-		fmt.Fprintf(&b, "\n\033[33mhooks out of date:\033[0m %s %s missing from Claude Code's settings; run \033[1mccs hook install\033[0m (ccs hook status lists them)\n", strings.Join(m.hooksMissing, ", "), map[bool]string{true: "is", false: "are"}[len(m.hooksMissing) == 1])
+		note := fmt.Sprintf("hooks out of date: %s %s missing from Claude Code's settings; run \033[1mccs hook install\033[22m (ccs hook status lists them)", strings.Join(m.hooksMissing, ", "), map[bool]string{true: "is", false: "are"}[len(m.hooksMissing) == 1])
+		out = append(out, "")
+		out = append(out, wrapIndent("", "\033[33m", note, width)...)
 	}
-	b.WriteString("\n\033[90m" + hints("?/"+keyEsc, "close") + "\033[0m")
+	return out
+}
+
+// scrollHelp moves the ? popup by rows, within its lines.
+func (m *model) scrollHelp(by int) {
+	m.helpScroll = min(max(m.helpScroll+by, 0), max(len(m.helpLines(m.helpWidth()))-m.helpRows(), 0))
+}
+
+// helpPopup lists the shortcuts that apply now, helpRows of them at a
+// time with a scrollbar when they don't fit; ? or Esc closes it.
+func (m model) helpPopup() string {
+	width, rows := m.helpWidth(), m.helpRows()
+	lines := m.helpLines(width)
+	from := min(m.helpScroll, max(len(lines)-rows, 0))
+	end := min(from+rows, len(lines))
+	top, size, bar := scrollThumb(len(lines), from, rows)
+	var b strings.Builder
+	b.WriteString("\033[1mshortcuts\033[0m\n")
+	for i, l := range lines[from:end] {
+		if bar {
+			l = withBar(l, width+2, barCell(i, top, size))
+		}
+		b.WriteString(l + "\n")
+	}
+	keys := hints("?/"+keyEsc, "close")
+	if bar {
+		more := ""
+		if end < len(lines) {
+			more = ", more below"
+		}
+		pos := fmt.Sprintf("  %d–%d of %d", from+1, end, len(lines))
+		keys = hints("↑↓ pgup/dn", "scroll", "?/"+keyEsc, "close") + pos + more
+		if ansi.StringWidth(keys) > width+2 { // a narrow screen: the keys that say it scrolls, and whether there's more
+			keys = hints("↑↓", "scroll", "?/"+keyEsc, "close") + more
+		}
+		keys = ansi.Truncate(keys, width+2, "…")
+	}
+	b.WriteString("\033[90m" + keys + "\033[0m")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("39")).
-		Padding(0, 3).
+		Padding(0, 1, 0, 3).
 		Render(b.String())
 }
 

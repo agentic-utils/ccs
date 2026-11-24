@@ -1033,7 +1033,7 @@ func TestLiveUpdateKeepsScrolledBackViewStill(t *testing.T) {
 
 func TestHelpPopup(t *testing.T) {
 	m := initialModel([]listItem{{conv: transcript.Conversation{SessionID: "s"}}}, "", nil)
-	m.width, m.height = 120, 40
+	m.width, m.height = 120, 100 // tall enough that the popup doesn't scroll (TestHelpPopupScrollsToEveryShortcut scrolls it)
 	v := strip2(m.View())
 	if !strings.Contains(v, "? help  ^C quit") || strings.Contains(v, "HITS") || strings.Contains(v, "prune") {
 		t.Errorf("header should list only the essentials:\n%s", v)
@@ -2113,5 +2113,78 @@ func TestMovedKeysNoteOnce(t *testing.T) {
 	m.noteMovedKeys(loadSettings())
 	if m.errorMsg != "" {
 		t.Errorf("and never again: %q", m.errorMsg)
+	}
+}
+
+// On a short screen the ? popup scrolls: every shortcut can be reached with
+// the keys or the wheel, the box always fits, and its footer says there's more.
+func TestHelpPopupScrollsToEveryShortcut(t *testing.T) {
+	for _, size := range [][2]int{{80, 20}, {140, 40}, {50, 12}} {
+		m := chatModel(t)
+		m.width, m.height = size[0], size[1]
+		m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
+		m.hooksMissing = []string{"Stop"}
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+		if !m.helpOpen {
+			t.Fatal("? opens help")
+		}
+		seen := ""
+		for step := 0; ; step++ {
+			box := strings.Split(m.helpPopup(), "\n")
+			if len(box) > m.height-1 {
+				t.Fatalf("%v: the box is %d rows on a %d-row screen", size, len(box), m.height)
+			}
+			for _, l := range box {
+				if w := ansi.StringWidth(l); w > m.width {
+					t.Fatalf("%v: a row is %d wide on a %d-wide screen: %q", size, w, m.width, strip2(l))
+				}
+			}
+			text := strip2(strings.Join(box, "\n"))
+			if !strings.Contains(text, "?/esc close") {
+				t.Fatalf("%v: the footer is always shown", size)
+			}
+			seen += text + "\n"
+			if !strings.Contains(text, "more below") {
+				break
+			}
+			if step > 200 {
+				t.Fatalf("%v: ↓ never reaches the end", size)
+			}
+			m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+		}
+		flat := strings.Join(strings.Fields(seen), " ")
+		for _, s := range m.shortcuts() {
+			words := strings.Fields(s[1])
+			if !strings.Contains(flat, strings.Join(words[:min(4, len(words))], " ")) {
+				t.Errorf("%v: %q (%s) never shows while scrolling", size, s[1], s[0])
+			}
+		}
+		if !strings.Contains(flat, "Stop is missing") || !strings.Contains(flat, "merged") {
+			t.Errorf("%v: the legend and the hooks note come last and are reachable", size)
+		}
+		// The wheel and PgUp go back to the top, and PgDn to the end.
+		for range 20 {
+			m, _ = key(m, tea.KeyMsg{Type: tea.KeyPgUp})
+		}
+		m = m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+		if m.helpScroll != 0 {
+			t.Errorf("%v: the wheel and PgUp scroll back to the top, at %d", size, m.helpScroll)
+		}
+		m = m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+		if m.helpScroll != 3 {
+			t.Errorf("%v: the wheel scrolls 3 rows, at %d", size, m.helpScroll)
+		}
+		for range 20 {
+			m, _ = key(m, tea.KeyMsg{Type: tea.KeyPgDown})
+		}
+		if strings.Contains(strip2(m.helpPopup()), "more below") {
+			t.Errorf("%v: PgDn reaches the end", size)
+		}
+		// Reopening starts at the top again.
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+		if m.helpScroll != 0 {
+			t.Errorf("%v: ? opens at the top", size)
+		}
 	}
 }

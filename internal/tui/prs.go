@@ -113,8 +113,11 @@ func (m model) prCell(conv transcript.Conversation, coloured bool) string {
 }
 
 // prLines is the preview header's PRs, width wide: one line, a link, for each
-// open PR (at most maxPRLines), then one line counting the merged and closed.
-func (m model) prLines(conv transcript.Conversation, width int) []string {
+// open PR (at most limit), then one line counting the open ones left out and,
+// with counts, the merged and closed (and a failed lookup). Without counts
+// (the hidden-details header, whose summary already counts them) that line
+// shows only when open PRs were left out.
+func (m model) prLines(conv transcript.Conversation, width, limit int, counts bool) []string {
 	urls := m.sessionPRs(conv)
 	if len(urls) == 0 {
 		return nil
@@ -129,13 +132,16 @@ func (m model) prLines(conv transcript.Conversation, width int) []string {
 			gone++
 		case g == github.PRClosed:
 			closed++
-		case len(lines) < github.MaxPRLines:
+		case len(lines) < limit:
 			lines = append(lines, m.prLine(u))
 		}
 	}
 	var rest []string
 	if more := len(urls) - merged - closed - gone - len(lines); more > 0 {
 		rest = append(rest, fmt.Sprintf("+%d more open", more))
+	}
+	if !counts {
+		merged, closed, gone = 0, 0, 0
 	}
 	if merged > 0 {
 		rest = append(rest, fmt.Sprintf("\033[%sm%d merged\033[90m", prPurple, merged))
@@ -149,7 +155,7 @@ func (m model) prLines(conv transcript.Conversation, width int) []string {
 	if len(rest) > 0 {
 		lines = append(lines, "\033[90m"+strings.Join(rest, " · ")+" · ^O all\033[0m")
 	}
-	if m.prErr != "" && slices.ContainsFunc(urls, func(u string) bool { return m.prs[u].State == "" }) {
+	if counts && m.prErr != "" && slices.ContainsFunc(urls, func(u string) bool { return m.prs[u].State == "" }) {
 		lines = append(lines, "\033[90mcouldn't ask GitHub: "+m.prErr+"\033[0m")
 	}
 	for i, l := range lines {

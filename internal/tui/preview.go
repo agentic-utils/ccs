@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -1002,29 +1003,41 @@ func (m model) previewMessageRows(conv transcript.Conversation) int {
 
 // previewHeader is the preview's fixed header (always visible above the
 // scrolling messages). Its first line is always the one-line summary, the same text in the same
-// place whether the details are shown or not; showing them (^X F, or a click
-// on that line) only adds their rows beneath it, indented under its glyph.
-// The summary already says the session's name, size and message count, so no
-// detail row repeats them.
+// place whether the details are shown or not. With the details hidden, the
+// open PRs follow it (at most collapsedPRLines); showing them (^X F, or a
+// click on that line) adds the detail rows beneath it, indented under its
+// glyph, the PRs last. The summary already says the session's name, size and
+// message count, so no detail row repeats them.
 func (m model) previewHeader(conv transcript.Conversation, query string) []string {
 	header := []string{m.headerSummary(conv, query, "")}
-	if m.headerCollapsed {
-		return append(header, "")
-	}
-	var rows []string
-	rows = append(rows, "\033[1;33mProject:\033[0m "+highlight(conv.Cwd, query))
-	rows = append(rows, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
-	rows = append(rows, sessionStats(conv)...)
 	width := m.paneWidth() - len(detailIndent)
-	rows = append(rows, m.prLines(conv, width)...)
-	rows = append(rows, artifactLines(conv, width)...)
-	rows = append(rows, m.taskLines(conv, width)...)
-	rows = append(rows, m.subagentLines(conv, width)...)
+	var rows []string
+	if m.headerCollapsed {
+		rows = m.prLines(conv, width, m.collapsedPRLines(), false)
+	} else {
+		rows = append(rows, "\033[1;33mProject:\033[0m "+highlight(conv.Cwd, query))
+		rows = append(rows, "\033[1;33mSession:\033[0m "+highlight(conv.SessionID, query))
+		rows = append(rows, sessionStats(conv)...)
+		rows = append(rows, artifactLines(conv, width)...)
+		rows = append(rows, m.taskLines(conv, width)...)
+		rows = append(rows, m.subagentLines(conv, width)...)
+		rows = append(rows, m.prLines(conv, width, github.MaxPRLines, true)...) // last, so the PRs end the header
+	}
 	for _, r := range rows {
 		header = append(header, detailIndent+r)
 	}
 	return append(header, "")
 }
+
+// collapsedPRLines is how many open PRs the hidden-details header lists:
+// collapsedPRMax, fewer on a short screen (one per collapsedPRRows rows the
+// preview has), so the PRs never push the transcript off it.
+func (m model) collapsedPRLines() int {
+	_, _, previewTop := m.listLayout()
+	return max(1, min(collapsedPRMax, (m.height-previewTop)/collapsedPRRows))
+}
+
+const collapsedPRMax, collapsedPRRows = 3, 8
 
 // detailIndent puts the detail rows under the summary's text, past its glyph.
 const detailIndent = "  "

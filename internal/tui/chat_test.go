@@ -818,6 +818,26 @@ func TestPeerLabelsNotRebuiltPerFrameOrScroll(t *testing.T) {
 	if n := m.peerNotes.builds; n != 2 {
 		t.Errorf("built %d times after the rename, want 2", n)
 	}
+	// A message that isn't between sessions changes no label: not worked out again.
+	for i := range m.items {
+		if m.items[i].conv.SessionID == "b" {
+			m.items[i].conv.Messages = append(m.items[i].conv.Messages, transcript.Message{Role: "assistant", Text: "busy"})
+		}
+	}
+	m.View()
+	if n := m.peerNotes.builds; n != 2 {
+		t.Errorf("built %d times after a plain message elsewhere, want 2", n)
+	}
+	// An untitled recipient is named by its first prompt, which the key follows.
+	for i := range m.items {
+		if m.items[i].conv.SessionID == "b" {
+			m.items[i].conv.Title = ""
+			m.items[i].conv.Messages[0].Text = "fix the flaky test"
+		}
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "To fix the flaky test · note 59") {
+		t.Errorf("an untitled recipient is named by its topic:\n%s", v)
+	}
 	m.livePIDs = nil
 	if v := strip2(m.View()); strings.Contains(v, "To renamed") {
 		t.Errorf("a recipient no longer live isn't named by its socket:\n%s", v)

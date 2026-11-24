@@ -109,6 +109,7 @@ type LiveSession struct {
 	misses     int    // ticks in a row it was kept without a readable file
 	Codex      bool   // a Codex session (codexLiveSessions), never kept from an earlier scan
 	Agy        bool   // an agy session (AgyLiveSessions), never kept from an earlier scan
+	Kind       string // its session file's kind: "interactive", "background", or "" (none written)
 }
 
 // KeepTicks is how long a session without a readable file is kept when its
@@ -123,8 +124,8 @@ const KeepTicks = 3
 // names another session (/clear).
 func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 	type candidate struct {
-		id, start string
-		stat      SessionStat
+		id, start, kind string
+		stat            SessionStat
 	}
 	byPid := make(map[int][]candidate)
 	files, _ := filepath.Glob(filepath.Join(GetSessionsDir(), "*.json"))
@@ -139,7 +140,7 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 			continue
 		}
 		if proc.PIDAlive(s.Pid) {
-			byPid[s.Pid] = append(byPid[s.Pid], candidate{s.SessionID, s.ProcStart, s.Stat()})
+			byPid[s.Pid] = append(byPid[s.Pid], candidate{s.SessionID, s.ProcStart, s.Kind, s.Stat()})
 		}
 	}
 	// Check each process before mapping sessions: a stale file whose pid was
@@ -156,7 +157,7 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 	for pid, cs := range byPid {
 		for _, c := range cs {
 			if match, checked := sameStart(c.start, actual[pid]); match {
-				live[c.id] = LiveSession{PID: pid, Stat: c.stat, Start: c.start, Unverified: !checked}
+				live[c.id] = LiveSession{PID: pid, Stat: c.stat, Start: c.start, Unverified: !checked, Kind: c.kind}
 			}
 		}
 	}
@@ -175,7 +176,7 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 			continue
 		}
 		if match, checked := sameStart(p.Start, actual[p.PID]); match && (checked || p.misses < KeepTicks) {
-			live[id] = LiveSession{PID: p.PID, Start: p.Start, Unverified: p.Unverified, misses: p.misses + 1}
+			live[id] = LiveSession{PID: p.PID, Start: p.Start, Unverified: p.Unverified, misses: p.misses + 1, Kind: p.Kind}
 		}
 	}
 	return live
@@ -630,6 +631,20 @@ const (
 	AgentsInterval = 60 * time.Second
 	AgentsSoon     = 10 * time.Second
 )
+
+// MayHaveBackground: a live Claude session may be a background one, so
+// claude agents (a Node start and a couple of dozen programs more) has
+// something to say: one whose session file says kind "background", or
+// writes no kind at all (an older Claude Code). With none, ccs knows there
+// are no background sessions without asking.
+func MayHaveBackground(live map[string]LiveSession) bool {
+	for _, s := range live {
+		if !s.Codex && !s.Agy && s.Kind != "interactive" {
+			return true
+		}
+	}
+	return false
+}
 
 // ListAgents is the background sessions by SessionID, from claude agents
 // --json. A variable so tests never run the real one.
@@ -1877,6 +1892,9 @@ type SessionFile struct {
 	// BridgeSessionID is set while Remote Control is on: claude.ai's id for
 	// the session.
 	BridgeSessionID string `json:"bridgeSessionId"`
+	// Kind is "interactive" or "background" (claude --bg); older Claude
+	// Code writes none.
+	Kind string `json:"kind"`
 }
 
 // cleaned is f with the text another program wrote cleaned as it enters

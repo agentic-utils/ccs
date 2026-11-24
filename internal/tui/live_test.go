@@ -501,3 +501,47 @@ func TestAgentsAskedLessOften(t *testing.T) {
 		t.Fatal("focus asks soon")
 	}
 }
+
+// claude agents is asked only when a live session file says it may be a
+// background session (kind "background", or no kind from an older Claude
+// Code): with every file saying interactive, none runs in the background.
+func TestAgentsAskedOnlyForBackgroundKinds(t *testing.T) {
+	dir := t.TempDir()
+	old, oldPS, oldList := sessions.GetSessionsDir, proc.ProcessStartTimes, sessions.ListAgents
+	t.Cleanup(func() { sessions.GetSessionsDir, proc.ProcessStartTimes, sessions.ListAgents = old, oldPS, oldList })
+	sessions.GetSessionsDir = func() string { return dir }
+	proc.ProcessStartTimes = func(map[string]int) map[int]time.Time {
+		return map[int]time.Time{os.Getpid(): time.Date(2026, 9, 23, 16, 52, 33, 0, time.UTC)}
+	}
+	asked := 0
+	sessions.ListAgents = func() (map[string]sessions.BgSession, error) {
+		asked++
+		return map[string]sessions.BgSession{"s": {ID: "ab12", State: "working"}}, nil
+	}
+	m := initialModel(nil, "", nil)
+	for _, c := range []struct {
+		kind string
+		ask  bool
+	}{{`"kind":"interactive",`, false}, {`"kind":"background",`, true}, {``, true}} {
+		body := fmt.Sprintf(`{"pid":%d,"sessionId":"s",%s"procStart":"Wed Sep 23 16:52:33 2026"}`, os.Getpid(), c.kind)
+		if err := os.WriteFile(filepath.Join(dir, "s.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		asked = 0
+		msg := m.liveCmd(true)().(liveMsg)
+		if got := asked > 0; got != c.ask {
+			t.Errorf("%q: asked claude agents %v, want %v", c.kind, got, c.ask)
+		}
+		if !c.ask && (msg.bg == nil || len(msg.bg) != 0) {
+			t.Errorf("%q: background sessions %v, want none known", c.kind, msg.bg)
+		}
+		if c.ask && msg.bg["s"].ID != "ab12" {
+			t.Errorf("%q: background sessions %v, want claude agents' answer", c.kind, msg.bg)
+		}
+	}
+	asked = 0
+	m.liveCmd(false)()
+	if asked != 0 {
+		t.Error("asked claude agents on a tick that doesn't ask")
+	}
+}

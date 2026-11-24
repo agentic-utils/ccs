@@ -1610,6 +1610,16 @@ func rawTopic(conv Conversation) string {
 	if conv.Title != "" {
 		return conv.Title
 	}
+	if t, ok := MessageTopic(&conv); ok {
+		return t
+	}
+	return conv.SessionID
+}
+
+// MessageTopic is the topic conv's messages give it, uncleaned, ignoring its
+// title, and whether one gave it: once one has, later messages can't change
+// it (only a title can).
+func MessageTopic(conv *Conversation) (string, bool) {
 	for _, msg := range conv.Messages {
 		if msg.Role != "user" {
 			continue
@@ -1618,17 +1628,17 @@ func rawTopic(conv Conversation) string {
 		// messages) is tag-wrapped. ponytail: a real prompt starting with "<"
 		// is treated as harness text too.
 		if !strings.HasPrefix(msg.Text, "<") {
-			return msg.Text
+			return msg.Text, true
 		}
 		// Slash and ! commands: show the command itself.
 		if cmd := tagText(msg.Text, "command-name"); cmd != "" {
-			return cmd
+			return cmd, true
 		}
 		if cmd := tagText(msg.Text, "bash-input"); cmd != "" {
-			return "! " + cmd
+			return "! " + cmd, true
 		}
 	}
-	return conv.SessionID
+	return "", false
 }
 
 // tagText returns the trimmed text inside the first <tag>...</tag> of s, or "".
@@ -2326,21 +2336,45 @@ func (c *subagentMeta) subagentStarted(transcript string) time.Time {
 	return c.started
 }
 
+// subagentsRead is one read of a session's subagents. quiet: none of their
+// transcripts had been written within SubagentIdle (or it has none), so past
+// the TTL only a change to the session's own transcript (size: a quiet
+// subagent wakes only through its parent, a SendMessage or a new Agent call)
+// or to its subagents folder (folder: one added or removed) reads them again.
 type subagentsRead struct {
-	at   time.Time
-	subs []Subagent
+	at     time.Time
+	subs   []Subagent
+	size   int64
+	folder time.Time
+	quiet  bool
 }
 
 // SubagentsOf is conv's subagents, running first then newest, read at most
-// every subagentsTTL per session (the list asks on every frame).
+// every subagentsTTL per session (the list asks on every frame), and for a
+// session whose subagents are all quiet, only when it or their folder
+// changes: one stat, not a glob and two stats a subagent.
 func SubagentsOf(conv Conversation) []Subagent {
 	dir := filepath.Join(strings.TrimSuffix(conv.FilePath, ".jsonl"), "subagents")
 	subagentCache.Lock()
 	defer subagentCache.Unlock()
-	if r, ok := subagentCache.m[dir]; ok && time.Since(r.at) < subagentsTTL {
+	r, ok := subagentCache.m[dir]
+	if ok && time.Since(r.at) < subagentsTTL {
 		return r.subs
 	}
-	metas, _ := filepath.Glob(filepath.Join(dir, "agent-*.meta.json"))
+	var folder time.Time
+	if info, err := os.Stat(dir); err == nil {
+		folder = info.ModTime()
+	}
+	if ok && r.quiet && r.size == conv.Size && r.folder.Equal(folder) {
+		r.at = time.Now()
+		subagentCache.m[dir] = r
+		return r.subs
+	}
+	if folder.IsZero() { // no subagents folder: none, and nothing to glob
+		subagentCache.m[dir] = subagentsRead{at: time.Now(), size: conv.Size, quiet: true}
+		return nil
+	}
+	metas, _ := subagentMetaGlob(filepath.Join(dir, "agent-*.meta.json"))
 	var subs []Subagent
 	for _, path := range metas {
 		mi, err := os.Stat(path)
@@ -2385,7 +2419,13 @@ func SubagentsOf(conv Conversation) []Subagent {
 		}
 		return b.Started.Compare(a.Started)
 	})
-	subagentCache.m[dir] = subagentsRead{time.Now(), subs}
+	quiet := true
+	for _, sub := range subs {
+		if time.Since(sub.LastWrite) < SubagentIdle {
+			quiet = false
+		}
+	}
+	subagentCache.m[dir] = subagentsRead{at: time.Now(), subs: subs, size: conv.Size, folder: folder, quiet: quiet}
 	return subs
 }
 
@@ -3035,3 +3075,6 @@ func ShortAddr(a string) string {
 	}
 	return a
 }
+
+// subagentMetaGlob is filepath.Glob, counted in tests.
+var subagentMetaGlob = filepath.Glob

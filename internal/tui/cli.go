@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime/pprof"
 	"slices"
 	"strings"
 	"syscall"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/mcp"
+	"github.com/agentic-utils/ccs/internal/profiling"
 	"github.com/agentic-utils/ccs/internal/selfupdate"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -29,17 +29,18 @@ import (
 )
 
 // startProfile records a CPU profile to path (CCS_CPUPROFILE, or ^T Q),
-// for chasing slowness: go tool pprof -top it. Returns the stop.
-func startProfile(path string) (func(), error) {
-	f, err := os.Create(path)
+// for chasing slowness: go tool pprof -top it. Returns the stop. Refused
+// while ccs profile is recording one of this process.
+func startProfile(path string) (func(), error) { return profiling.StartManual(path) }
+
+// serveProfiles lets ccs profile (and profile_ccs) profile this process, as
+// role. Not being able to only means it takes none.
+func serveProfiles(role string) func() {
+	stop, err := profiling.Serve(role)
 	if err != nil {
-		return nil, err
+		state.LogActivity("profile: ccs %s takes no profiles: %v", role, err)
 	}
-	if err := pprof.StartCPUProfile(f); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return func() { pprof.StopCPUProfile(); f.Close() }, nil
+	return stop
 }
 
 func printHelp() {
@@ -109,6 +110,12 @@ Usage: ccs [filter] [-- claude-flags...]
                             claude mcp add --scope user ccs -- ccs mcp
        ccs stats [--json]   How often you use each ccs feature, and the ones never used;
                             recorded on this machine only (--off / --on, or CCS_NO_STATS=1)
+       ccs profile [--pid N | --role tui|watch|mcp|serve] [--kind cpu|heap|trace] [--seconds 30] [--no-wait]
+       ccs profile --list [--json]
+                            Profile a running ccs (the TUI by default) without touching it, for an agent
+                            chasing CPU or power use: a CPU profile or trace stops by itself (at most 300s),
+                            heap is a snapshot; prints the file, beside the update log (newest 20 kept).
+                            One at a time; only your own processes can ask
 
 Arguments:
   filter           Initial search query (optional)
@@ -227,7 +234,7 @@ Key bindings:
                   or show its address and QR code (s stops it, asking y/n;
                   e edits its setup)
   Ctrl+T Q        Record a CPU profile, for when ccs feels slow; again to stop
-                  (or set CCS_CPUPROFILE=path)
+                  (or set CCS_CPUPROFILE=path; ccs profile records one without you)
   Ctrl+T U        Switch Claude account (needs cswap)
 
  ccs
@@ -293,8 +300,12 @@ func Main(v string) {
 	if len(args) > 0 && args[0] == "link" {
 		os.Exit(sessions.RunLink(args[1:], os.Stdout, os.Stderr))
 	}
+	if len(args) > 0 && args[0] == "profile" {
+		os.Exit(profiling.Run(args[1:], os.Stdout, os.Stderr))
+	}
 	if len(args) > 0 && args[0] == "watch" {
 		github.SessionTick = mcp.WatchSessions
+		serveProfiles(profiling.RoleWatch) // os.Exit skips a stop; the next ccs sweeps its socket
 		os.Exit(github.RunWatch(args[1:]))
 	}
 	if len(args) > 0 && args[0] == "claim" {
@@ -373,11 +384,14 @@ func Main(v string) {
 			defer transcript.ReleaseScanSlot()
 			return transcript.GetConversations(time.Now().AddDate(0, 0, -60), 1024*1024*1024, []string{"observer-sessions"})
 		}
+		serveProfiles(profiling.RoleServe)
 		mcp.ServeMain(args[1:], load)
 	}
 
 	if len(args) > 0 && args[0] == "mcp" {
+		stop := serveProfiles(profiling.RoleMCP)
 		mcp.Main(cutoff, maxSize, excludeDirs)
+		stop()
 		return
 	}
 
@@ -545,8 +559,14 @@ func Main(v string) {
 		m.profileStop, m.profilePath = stop, path
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(), tea.WithOutput(eraseSavedLines{os.Stdout}))
+	// The header says when ccs profile records this ccs. Never blocking:
+	// ^T Q starts and stops from Update, which a blocking Send would wait on.
+	profiling.SetOnChange(func() { go p.Send(profileChangedMsg{}) })
+	stopProfiles := serveProfiles(profiling.RoleTUI)
 	finalModel, err := p.Run()
-	stats.Flush() // before any exec or exit below, which skip the background flush
+	profiling.SetOnChange(nil)
+	stopProfiles() // a profile it's recording is written, never left on
+	stats.Flush()  // before any exec or exit below, which skip the background flush
 	// After a panic bubbletea hands back no model, only the error.
 	final, _ := finalModel.(model)
 	if stop := final.profileStop; stop != nil {
@@ -666,7 +686,7 @@ var cliCommands = map[string]stats.Feature{
 	state.LegacyOrchestratorName: "cli.orchestrator", "reorg": "cli.reorg", "adopt": "cli.adopt",
 	"close": "cli.close", "restart": "cli.restart", "switch": "cli.switch", "link": "cli.link", "watch": "cli.watch",
 	"claim": "cli.claim", "review": "cli.review", "prs": "cli.prs",
-	"orchestrator-report": "cli.orchestrator_report", "depends": "cli.depends",
+	"orchestrator-report": "cli.orchestrator_report", "depends": "cli.depends", "profile": "cli.profile",
 	"sessions": "cli.sessions", "mcp": "cli.mcp", "stats": "cli.stats",
 }
 
@@ -710,3 +730,7 @@ func recordCLI(args []string) {
 		}
 	}
 }
+
+// profileChangedMsg says ccs profile started or stopped recording this ccs:
+// a redraw shows it in the header.
+type profileChangedMsg struct{}

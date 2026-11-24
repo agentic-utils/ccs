@@ -1,17 +1,10 @@
 package mcp
 
-import (
-	"errors"
-	"os"
-	"syscall"
+import "github.com/agentic-utils/ccs/internal/proc"
+
+// The socket checks live in proc, shared with internal/profiling.
+var (
+	ownerOf       = proc.OwnerOf
+	peerUID       = proc.PeerUID
+	trustedSocket = proc.TrustedSocket
 )
-
-var errNotUnix = errors.New("not a unix socket")
-
-// ownerOf is a file's owner's uid; MaxUint32 when it can't be told.
-func ownerOf(fi os.FileInfo) uint32 {
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		return st.Uid
-	}
-	return ^uint32(0)
-}

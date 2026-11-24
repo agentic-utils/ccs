@@ -151,6 +151,7 @@ var Registry = []Info{
 	{"cli.sessions", "ccs sessions"},
 	{"cli.mcp", "ccs mcp"},
 	{"cli.stats", "ccs stats"},
+	{"cli.profile", "ccs profile"},
 
 	// MCP tools.
 	{"mcp.search_sessions", "search_sessions"},
@@ -167,6 +168,7 @@ var Registry = []Info{
 	{"mcp.depends", "depends"},
 	{"mcp.orchestrator_report", "orchestrator_report"},
 	{"mcp.child_notices", "child_notices"},
+	{"mcp.profile_ccs", "profile_ccs"},
 
 	// ccs watch events and nudges.
 	{"watch.watch_started", "watch started"},

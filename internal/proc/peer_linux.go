@@ -1,4 +1,4 @@
-package mcp
+package proc
 
 import (
 	"net"
@@ -6,9 +6,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// peerUID is the uid of the process on the other end of a unix socket, as
+// PeerUID is the uid of the process on the other end of a unix socket, as
 // the kernel tells it (SO_PEERCRED).
-func peerUID(c net.Conn) (uint32, error) {
+func PeerUID(c net.Conn) (uint32, error) {
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
 		return 0, errNotUnix

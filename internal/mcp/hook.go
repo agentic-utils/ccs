@@ -361,31 +361,6 @@ func (w *ownWait) over() bool {
 	return f.SessionID != w.session || f.Status != "waiting" || (at != 0 && f.StatusUpdatedAt != at)
 }
 
-// trustedSocket refuses a socket that isn't this user's own: its folder must
-// be a real directory (not a symlink) owned by this user and writable by no
-// one else, and the socket a real socket owned by this user that only they
-// can use. Other macOS users are what this keeps out; a process running as
-// this user could change Claude Code's settings or run claude itself, so
-// it's beyond what any check here could stop (docs/remote.md).
-func trustedSocket(path string) error {
-	uid := uint32(os.Getuid())
-	dir, err := os.Lstat(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	if !dir.IsDir() || dir.Mode()&os.ModeSymlink != 0 || dir.Mode().Perm()&0o022 != 0 || ownerOf(dir) != uid {
-		return fmt.Errorf("%s isn't a private folder of this user's", filepath.Dir(path))
-	}
-	sock, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if sock.Mode()&os.ModeSocket == 0 || sock.Mode().Perm()&0o077 != 0 || ownerOf(sock) != uid {
-		return fmt.Errorf("%s isn't this user's private socket", path)
-	}
-	return nil
-}
-
 // hookDecision is what the hook prints for ccs serve's reply, built from the
 // hook's own input: deny; allow with no input change for a permission
 // prompt; allow for an AskUserQuestion only with an answer to each of its

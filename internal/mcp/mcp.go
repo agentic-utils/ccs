@@ -91,7 +91,8 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 				"Use search_sessions to find a past conversation by what was said in it, list_sessions for recent ones, " +
 				"and read_session to read one. Sessions are the user's private history; quote only what's relevant. " +
 				"launch_session starts a named session in a new iTerm tab or tmux window and close_session stops one and closes its tab; restart_session stops one and resumes it in a new tab (your own once your turn ends). A session you launch is your child, and adopt_session moves one under you (or another session). " +
-				"list_prs lists the user's open PRs with the session that owns each (or with merged, the recent merges and who merged them); claim_pr records a PR's owner and depends the order PRs must merge in.",
+				"list_prs lists the user's open PRs with the session that owns each (or with merged, the recent merges and who merged them); claim_pr records a PR's owner and depends the order PRs must merge in. " +
+				"profile_ccs records a CPU, heap or trace profile of a running ccs (the TUI by default) that stops by itself.",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -301,6 +302,20 @@ var mcpTools = []map[string]any{
 				"orchestrator": map[string]any{"type": "string", "description": "the orchestrator's session name; default your own session"},
 			},
 			"required": []string{"enabled"},
+		},
+	},
+	{
+		"name":        "profile_ccs",
+		"description": "Record a profile of a running ccs process (as ccs profile), for investigating its CPU use, power or memory with nobody at the keyboard: by default the one running ccs TUI, a 30-second CPU profile. kind heap is a snapshot written at once; cpu and trace record for seconds (at most 300) and always stop by themselves. Answers at once with the file's path and when it's complete (beside ccs's update log; the newest 20 are kept); read it then with go tool pprof -top <path> (go tool trace for a trace). Refused while any ccs is recording a profile. With list, the ccs processes that take profiles (pid, role tui, watch, mcp or serve, version, and any profile recording). Several of a role (there is a ccs mcp per Claude session) need pid.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pid":     map[string]any{"type": "integer", "description": "the ccs process to profile; default the one of role"},
+				"role":    map[string]any{"type": "string", "enum": []string{"tui", "watch", "mcp", "serve"}, "description": "which ccs, when pid isn't given; default tui"},
+				"kind":    map[string]any{"type": "string", "enum": []string{"cpu", "heap", "trace"}, "description": "default cpu"},
+				"seconds": map[string]any{"type": "integer", "description": "how long cpu or trace records, 1 to 300; default 30"},
+				"list":    map[string]any{"type": "boolean", "description": "list the processes that take profiles instead; default false"},
+			},
 		},
 	},
 }
@@ -713,6 +728,9 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	}
 	if name == "child_notices" {
 		return childNoticesCall(raw)
+	}
+	if name == "profile_ccs" {
+		return profileCall(raw)
 	}
 	var a struct {
 		Query      string `json:"query"`

@@ -69,6 +69,27 @@ func ReadLiveSessions() map[string]bool {
 	return live
 }
 
+// ClaudeRunning is the Claude Code sessions whose session file's pid is
+// alive: what the list's first load parses whatever their age. Cheap, with
+// no start-time check and no Codex or agy lookups (ScanSessions' lsof takes
+// most of a second): a recycled pid only means one more transcript parsed
+// early.
+func ClaudeRunning() map[string]bool {
+	live := make(map[string]bool)
+	files, _ := filepath.Glob(filepath.Join(GetSessionsDir(), "*.json"))
+	for _, f := range files {
+		var s struct {
+			SessionID string `json:"sessionId"`
+			Pid       int    `json:"pid"`
+		}
+		data, err := os.ReadFile(f)
+		if err == nil && json.Unmarshal(data, &s) == nil && s.SessionID != "" && s.Pid > 0 && proc.PIDAlive(s.Pid) {
+			live[s.SessionID] = true
+		}
+	}
+	return live
+}
+
 // LiveSessionPIDs maps each live SessionID to the pid of its claude process.
 func LiveSessionPIDs() map[string]int {
 	out := make(map[string]int)

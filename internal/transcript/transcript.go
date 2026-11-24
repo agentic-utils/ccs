@@ -1386,20 +1386,50 @@ func ClaudeTranscripts(excludeDirs []string) ([]string, error) {
 	return files, nil
 }
 
-// ScanTargets is the Claude transcripts a GetConversations with these
-// arguments would parse, by path and size: the list warms their subagents'
-// PRs while the scan parses them.
-func ScanTargets(cutoff time.Time, maxSize int64, excludeDirs []string) []Conversation {
-	files, _ := ClaudeTranscripts(excludeDirs)
-	var out []Conversation
-	for _, f := range files {
+// FirstLoad is the part of a GetConversations the list parses before it
+// draws: transcripts written since its recent cutoff, and those of sessions
+// running now, whenever they were last written. The rest of the window is
+// left to a background scan, which parses only those (ParseCache has the
+// first part).
+type FirstLoad struct {
+	Files []string       // to parse now, as ScanFiles takes them
+	Warm  []Conversation // the Claude transcripts among them, by path and size: their subagents' PRs, read alongside
+	Rest  int            // transcripts in the window left for the background scan
+}
+
+// PlanFirstLoad splits the scan GetConversations(cutoff, maxSize,
+// excludeDirs) would make: files written since recent, or whose session
+// id is in live, come first. A recent at or before cutoff puts everything
+// first.
+func PlanFirstLoad(cutoff, recent time.Time, maxSize int64, excludeDirs []string, live map[string]bool) (FirstLoad, error) {
+	claude, err := ClaudeTranscripts(excludeDirs)
+	if err != nil {
+		return FirstLoad{}, err
+	}
+	var plan FirstLoad
+	all := slices.Concat(claude, CodexRollouts(), AgyTranscripts())
+	for i, f := range all {
 		info, err := os.Stat(f)
 		if err != nil || maxSize > 0 && info.Size() > maxSize || !cutoff.IsZero() && info.ModTime().Before(cutoff) {
+			continue // the scan would skip it too
+		}
+		isClaude := i < len(claude)
+		if !info.ModTime().Before(recent) || isClaude && live[strings.TrimSuffix(filepath.Base(f), ".jsonl")] {
+			plan.Files = append(plan.Files, f)
+			if isClaude {
+				plan.Warm = append(plan.Warm, Conversation{FilePath: f, Size: info.Size()})
+			}
 			continue
 		}
-		out = append(out, Conversation{FilePath: f, Size: info.Size()})
+		plan.Rest++
 	}
-	return out
+	return plan, nil
+}
+
+// ScanFiles parses files as GetConversations parses its own: newest
+// message first, one session a row.
+func ScanFiles(files []string, cutoff time.Time, maxSize int64) ([]Conversation, error) {
+	return scanFiles(files, max(runtime.NumCPU(), 2), cutoff, maxSize)
 }
 
 // scanFiles parses files with numWorkers at once, newest message first.

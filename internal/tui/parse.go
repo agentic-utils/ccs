@@ -32,6 +32,8 @@ func (m model) refreshNote() string {
 	switch {
 	case m.reload == nil || m.refreshStalled():
 		return ""
+	case m.restPending > 0:
+		return fmt.Sprintf(" · loading %d more", m.restPending)
 	case !m.refreshStarted.IsZero():
 		return " · refreshing…"
 	case m.lastRefresh.IsZero():
@@ -72,6 +74,55 @@ func keepNewer(current, scanned []listItem) []listItem {
 		return out[i].conv.LastTimestamp > out[j].conv.LastTimestamp
 	})
 	return out
+}
+
+// firstLoadDays is how far back the list's first load reads before it draws,
+// running sessions aside: the rest of the window comes from a background
+// scan straight after (loadRestMsg), so the list draws in a second or two.
+const firstLoadDays = 7
+
+// loadRestMsg starts the scan that brings in what the first load left.
+type loadRestMsg struct{}
+
+// restRetry: how soon a background scan that didn't land is tried again
+// while the rest is still to come.
+const restRetry = 2 * time.Second
+
+func loadRestCmd(after time.Duration) tea.Cmd {
+	if after == 0 {
+		return func() tea.Msg { return loadRestMsg{} }
+	}
+	return tea.Tick(after, func(time.Time) tea.Msg { return loadRestMsg{} })
+}
+
+// restLoaded: a full scan has landed, so the whole window is listed. A
+// restore whose session was among the rest selects it now, unless the
+// selection moved meanwhile; a reopen offer is matched now.
+func (m *model) restLoaded() {
+	if m.restPending == 0 {
+		return
+	}
+	m.restPending = 0
+	if sel, from := m.restoreSel, m.restoreFrom; sel != "" {
+		m.restoreSel, m.restoreFrom = "", ""
+		if len(m.filtered) > 0 && m.filtered[m.cursor].conv.SessionID == from {
+			for i, item := range m.filtered {
+				if item.conv.SessionID == sel {
+					m.cursor = i
+					break
+				}
+			}
+		}
+	}
+	for _, id := range m.reopenWait {
+		for _, item := range m.items {
+			if item.conv.SessionID == id {
+				m.reopen = append(m.reopen, item.conv)
+				break
+			}
+		}
+	}
+	m.reopenWait = nil
 }
 
 // startRefresh begins a full scan off the UI goroutine.

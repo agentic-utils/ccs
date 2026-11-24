@@ -63,7 +63,7 @@ func (m model) selectedLive() bool {
 // (Esc in the box, or a click on the search row).
 func (m *model) selectionMoved() {
 	m.chatFocus = m.selectedLive() && !m.boxHidden() && !m.showUsage
-	m.heldFocus, m.heldAutoAt, m.heldConfirmed, m.menuLeft = false, time.Time{}, nil, ""
+	m.heldFocus, m.heldAutoAt, m.menuLeft = false, time.Time{}, ""
 	// A held prompt's outcome belongs to its session: it goes with the selection.
 	if m.heldNoteFor != "" && (len(m.filtered) == 0 || m.filtered[m.cursor].conv.SessionID != m.heldNoteFor) {
 		if m.heldNoteShown && m.errorMsg == m.heldNote {
@@ -245,10 +245,15 @@ func (m model) heldParts(h mcp.HeldPrompt) (body, tail []string, room int, revie
 // footer (what Enter sends, an open box, the hint row, the outcome note),
 // which always stays on screen. review says the menu is at its review.
 func (m model) heldSplit(h mcp.HeldPrompt, pane []string) (body, tail []string, review bool) {
-	if len(h.Questions) == 0 {
-		return pane, nil, false
-	}
 	mnu := mn(m, h)
+	if len(h.Questions) == 0 { // a permission prompt: its rows scroll, No's box and the hints stay
+		n := len(m.permLines(h, m.heldInner(), false))
+		if mnu.editing != boxNone {
+			n -= 2 + len(menuBoxLines(mnu, m.heldInner()))
+		}
+		n = min(max(n, 0), len(pane))
+		return pane[:n], pane[n:], false
+	}
 	n := len(m.menuLines(h, m.heldInner(), false)) // the menu without its footer
 	if mnu.editing != boxNone && mnu.step < len(h.Questions) {
 		n -= 2 + len(menuBoxLines(mnu, m.heldInner())) // the open box (a blank, its lines, its hints) belongs to the footer

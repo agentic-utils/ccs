@@ -240,6 +240,10 @@ Key bindings:
 
  ccs
   Ctrl+R          Refresh sessions, PRs and allowance now; check for an update
+  ↑↓ Enter 1-9    A prompt ccs holds, in the bottom pane: a question's menu, or a
+                  permission prompt's rows as in its tab (Yes, Yes and don't ask
+                  again, No and tell Claude what to do); Enter or a row's digit
+                  sends it at once, A yes, D no, Esc back to the list
   Tab             Select the next session that needs you, by priority: a held
                   question, menu or prompt; then one that asked you something;
                   then one done that you haven't read; then one with a PR

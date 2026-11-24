@@ -75,7 +75,7 @@ func TestMenuSingleQuestion(t *testing.T) {
 		t.Errorf("the footer follows the cursor:\n%s", v)
 	}
 	m = keyType(m, tea.KeyEnter)
-	if len(*calls) != 1 || (*calls)[0].choice != "answer" || (*calls)[0].labels[0][0] != "Green" || m.heldConfirmed != nil {
+	if len(*calls) != 1 || (*calls)[0].choice != "answer" || (*calls)[0].labels[0][0] != "Green" {
 		t.Fatalf("Enter picks and sends at once: %+v", *calls)
 	}
 }

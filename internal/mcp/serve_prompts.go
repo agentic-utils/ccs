@@ -168,6 +168,7 @@ func shortID(id string) string {
 type promptView struct {
 	ID, Session, Name, Tool, Summary, Input, Age string
 	Questions                                    []questionView // AskUserQuestion's; none for a permission prompt
+	Options                                      []HeldOption   // a permission prompt's menu: Yes, don't ask again, No
 }
 
 type questionView struct {
@@ -210,6 +211,7 @@ func (s *server) promptViews(session string, names map[string]string) []promptVi
 			}
 		} else {
 			v.Summary = transcript.CleanText(transcript.ToolSummary(p.req.ToolInput))
+			v.Options = permOptions(p.req)
 			var pretty any
 			if json.Unmarshal(p.req.ToolInput, &pretty) == nil {
 				b, _ := json.MarshalIndent(pretty, "", "  ")
@@ -237,9 +239,14 @@ func promptDecision(p *heldPrompt, choice string, answers map[string][]string, o
 	switch choice {
 	case "mac": // an older client's "back to its tab": the menu is there anyway, so only stop offering it here
 		return hookReply{}, "Stopped offering it here; it's in its tab.", nil
-	case "deny":
-		return hookReply{Behavior: "deny", Message: "Denied from ccs serve by " + who}, fmt.Sprintf("Deny %s.", p.req.ToolName), nil
-	case "allow":
+	case choiceDeny:
+		// A permission prompt's No: its note (q0's) tells Claude what to do instead.
+		note := ""
+		if p.req.ToolName != "AskUserQuestion" {
+			note = OtherText(notes["q0"])
+		}
+		return hookReply{Behavior: "deny", Message: denyMessage(who, note)}, fmt.Sprintf("Deny %s.%s", p.req.ToolName, noteSaid(note)), nil
+	case choiceAllow:
 		if p.req.ToolName == "AskUserQuestion" {
 			return hookReply{}, "", errors.New("a question is answered by choosing its options")
 		}
@@ -288,6 +295,12 @@ func promptDecision(p *heldPrompt, choice string, answers map[string][]string, o
 			kept = nil
 		}
 		return hookReply{Behavior: "allow", Answers: out, Other: others, Notes: kept}, "Answer:\n" + strings.Join(said, "\n"), nil
+	}
+	if n := alwaysIndex(choice); n > 0 {
+		if _, label, ok := suggestionFor(p.req, n); ok {
+			return hookReply{Behavior: "allow", Permission: n}, fmt.Sprintf("%s: %s", label, transcript.ToolSummary(p.req.ToolInput)), nil
+		}
+		return hookReply{}, "", errors.New("that \"don't ask again\" choice isn't one this prompt offers")
 	}
 	return hookReply{}, "", fmt.Errorf("unknown choice %q", choice)
 }

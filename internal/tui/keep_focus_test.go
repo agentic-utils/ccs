@@ -24,10 +24,10 @@ func on(m model) string { return m.filtered[m.cursor].conv.SessionID }
 // message box once the question has gone, as ^S would: typing goes there,
 // not to the search, and the selection stays.
 func TestAnswerLeavesTheChatFocused(t *testing.T) {
-	m, calls, _ := paneModel(t, mcp.HeldPrompt{ID: "p6", Session: "live", Tool: "Bash", Summary: "make deploy"})
-	m = press(press(m, "a"), "y")
+	m, calls, _ := permPane(t, mcp.HeldPrompt{ID: "p6", Session: "live", Tool: "Bash", Summary: "make deploy"})
+	m = press(m, "a")
 	if len(*calls) != 1 {
-		t.Fatalf("a then y answers it: %+v", *calls)
+		t.Fatalf("a answers it: %+v", *calls)
 	}
 	m = tick(m)
 	if m.chatFocus {
@@ -50,8 +50,8 @@ func TestAnswerLeavesTheChatFocused(t *testing.T) {
 // When the same session asks again straight away, its next question's menu
 // has the keys, not the message box.
 func TestAnswerThenTheNextQuestionTakesTheKeys(t *testing.T) {
-	m, calls, _ := paneModel(t, mcp.HeldPrompt{ID: "p6", Session: "live", Tool: "Bash", Summary: "make deploy"})
-	m = press(press(m, "a"), "y")
+	m, calls, _ := permPane(t, mcp.HeldPrompt{ID: "p6", Session: "live", Tool: "Bash", Summary: "make deploy"})
+	m = press(m, "a")
 	if len(*calls) != 1 {
 		t.Fatalf("answered: %+v", *calls)
 	}

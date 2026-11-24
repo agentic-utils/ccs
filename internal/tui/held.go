@@ -13,7 +13,6 @@ package tui
 
 import (
 	"errors"
-	"fmt"
 	"github.com/charmbracelet/x/ansi"
 	"os"
 	"slices"
@@ -257,12 +256,6 @@ type heldDoneMsg struct {
 	err        error
 }
 
-// heldConfirm is a digit, A or D waiting for its y/n.
-type heldConfirm struct {
-	id, choice, what string
-	labels           map[int][]string // an answer's chosen option, for a digit
-}
-
 // heldCmd asks ccs serve for its held prompts off the UI goroutine, at most
 // every heldEvery and only while its control socket exists.
 func (m *model) heldCmd() tea.Cmd {
@@ -300,11 +293,6 @@ func (m *model) applyHeld(msg heldMsg) {
 	}
 	m.noteGone(held)
 	m.heldPrompt = held
-	if m.heldConfirmed != nil {
-		if _, ok := m.heldByID(m.heldConfirmed.id); !ok {
-			m.heldConfirmed = nil // answered elsewhere meanwhile
-		}
-	}
 }
 
 func (m model) heldByID(id string) (mcp.HeldPrompt, bool) {
@@ -317,19 +305,12 @@ func (m model) heldByID(id string) (mcp.HeldPrompt, bool) {
 }
 
 // heldLines shows a held prompt with its keys: a question's menu
-// (menu.go), or a permission prompt's tool with A, D and T.
+// (menu.go), or a permission prompt's (permmenu.go).
 func (m model) heldLines(h mcp.HeldPrompt, width int, active bool) []string {
 	if len(h.Questions) > 0 {
 		return m.menuLines(h, width, active)
 	}
-	// A permission prompt, in the menu's style: one header line, what it
-	// wants to run wrapped, one hint row.
-	lines := []string{paneHeader("\033[1;"+amber+"m"+h.Tool+"\033[0m \033[90m· permission\033[0m", width)}
-	lines = append(lines, wrapIndent("", "\033[1m", h.Summary, width)...)
-	if !active {
-		return lines
-	}
-	return append(lines, "", paneHintsFit(width, "a", "allow", "d", "deny", keyEnter, "open its tab", keyEsc, "list"))
+	return m.permLines(h, width, active)
 }
 
 // paneHeader is a held prompt's one header line: left on the left, a dim
@@ -370,8 +351,8 @@ func paneHintsFit(width int, pairs ...string) string {
 }
 
 // heldKey handles a key for its session's held prompt, in the bottom
-// pane: a question's menu (menuKey) or a permission prompt's A and D (each
-// asking y/n). done is false when the key isn't the prompt's.
+// pane: a question's menu (menuKey) or a permission prompt's (permKey).
+// done is false when the key isn't the prompt's.
 func (m *model) heldKey(k string, msg tea.KeyMsg, conv transcript.Conversation) (cmd tea.Cmd, done bool) {
 	h, ok := m.heldPrompt[conv.SessionID]
 	if !ok {
@@ -381,33 +362,7 @@ func (m *model) heldKey(k string, msg tea.KeyMsg, conv transcript.Conversation) 
 	if len(h.Questions) > 0 {
 		return m.menuKey(h, name, k, msg)
 	}
-	switch {
-	case len(k) == 1 && k >= "0" && k <= "9":
-		// While a prompt is held every digit is the held prompt's: none may
-		// reach anything below it.
-		m.setHeldNote("a permission prompt: A allows, D denies")
-		return nil, true
-	case k == "A" || k == "a" || k == "D" || k == "d":
-		choice, verb := "allow", "Allow"
-		if k == "D" || k == "d" {
-			choice, verb = "deny", "Deny"
-		}
-		m.heldConfirmed = &heldConfirm{id: h.ID, choice: choice, what: fmt.Sprintf("%s %s for %s? y/n", verb, h.Tool, name)}
-		return nil, true
-	}
-	return nil, false
-}
-
-// heldConfirmKey: y sends the confirmed digit, A or D; anything else drops it.
-func (m *model) heldConfirmKey(k string) tea.Cmd {
-	c := m.heldConfirmed
-	m.heldConfirmed = nil
-	h, ok := m.heldByID(c.id)
-	if k != "y" || !ok {
-		m.setHeldNote("not sent")
-		return nil
-	}
-	return m.answerHeldCmd(h, m.sessionNameByID(h.Session), c.choice, nil, nil, nil)
+	return m.permKey(h, name, k, msg)
 }
 
 func (m model) sessionNameByID(id string) string {
@@ -463,14 +418,12 @@ func (m model) selectedHeld() (mcp.HeldPrompt, transcript.Conversation, bool) {
 }
 
 // heldPaneLines is the bottom pane's held prompt: the prompt and its keys,
-// then the y/n and the last outcome; while the menu doesn't have the keys,
+// then the last outcome; while the menu doesn't have the keys,
 // how to give them to it.
 func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 	active := m.heldKeysActive()
 	lines := m.heldLines(h, m.heldInner(), active)
 	switch {
-	case m.heldConfirmed != nil && m.heldConfirmed.id == h.ID:
-		lines = append(lines, "\033[1;"+amber+"m"+m.heldConfirmed.what+"\033[0m")
 	case m.heldErr != "":
 		lines = append(lines, "\033[31m"+m.heldErr+"\033[0m")
 	case m.heldNote != "" && (m.heldNoteFor == "" || m.heldNoteFor == h.Session):
@@ -480,6 +433,12 @@ func (m model) heldPaneLines(h mcp.HeldPrompt) []string {
 		lines = append(lines, paneHints("→", "answer it here", keyEnter, "the same"))
 	}
 	return lines
+}
+
+// heldPermissionShown: the held prompt on screen is a permission prompt.
+func (m model) heldPermissionShown() bool {
+	h, ok := m.heldShown()
+	return ok && len(h.Questions) == 0
 }
 
 // heldKeysActive: the menu (or a permission prompt's keys) takes keys now,
@@ -526,8 +485,8 @@ func (m model) heldDrawn() (mcp.HeldPrompt, transcript.Conversation, bool) {
 }
 
 // heldPaneKey handles a key while the held prompt has the keys
-// (heldKeysActive): a question's menu (menu.go), or a permission prompt's A
-// or D (each with y/n), T, and Enter (sends it back and opens its tab).
+// (heldKeysActive): a question's menu (menu.go), or a permission prompt's
+// (permmenu.go: ↑/↓, Enter or a digit sends the row, A yes, D no).
 // Esc leaves it for the list (menuLeft): then ↑/↓ move the list, and →
 // or Enter give it the keys again (Tab is never the menu's: it goes to the next session that needs you). ^P/^N, PgUp/PgDn and ^X chords
 // always fall through; so does any key the prompt doesn't use, which goes
@@ -541,7 +500,7 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 	}
 	k := msg.String()
 	menu := len(h.Questions) > 0
-	boxOpen := menu && m.menus[h.ID] != nil && m.menus[h.ID].editing != boxNone
+	boxOpen := m.menus[h.ID] != nil && m.menus[h.ID].editing != boxNone
 	review := menu && m.menus[h.ID] != nil && m.menus[h.ID].step >= len(h.Questions)
 	switch {
 	case (k == "pgup" || k == "pgdown") && review && !boxOpen:
@@ -550,15 +509,10 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 		return nil, false
 	case (strings.HasPrefix(k, "ctrl+") || strings.HasPrefix(k, "alt+")) && !boxOpen:
 		return nil, false // the search's editing keys; an open box edits with them
-	case (k == "up" || k == "down") && !menu:
-		return nil, false
 	}
 	leave := func() (tea.Cmd, bool) {
-		m.heldFocus, m.heldConfirmed, m.menuLeft = false, nil, h.ID
+		m.heldFocus, m.menuLeft = false, h.ID
 		return nil, true
-	}
-	if k == "esc" && (!menu || m.heldConfirmed != nil) {
-		return leave()
 	}
 	if !m.heldAutoAt.IsZero() {
 		now := heldNow()
@@ -568,21 +522,11 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 		}
 		m.heldAutoAt = time.Time{}
 	}
-	if m.heldConfirmed != nil {
-		return m.heldConfirmKey(k), true
+	cmd, done := m.heldKey(k, msg, conv)
+	if !done && k == "esc" { // Esc with no box open: back to the list, progress kept
+		return leave()
 	}
-	if menu {
-		cmd, done := m.heldKey(k, msg, conv)
-		if !done && k == "esc" { // Esc at the first question: back to the list, progress kept
-			return leave()
-		}
-		return cmd, done
-	}
-	if k == "enter" {
-		m.heldFocus = false
-		return m.focusCmd(conv), true // the menu is in its tab too: answer it there
-	}
-	return m.heldKey(k, msg, conv)
+	return cmd, done
 }
 
 // autoSelect: once you've stopped typing in ccs for autoFocusIdle, select

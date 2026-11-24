@@ -35,6 +35,10 @@ type HeldPrompt struct {
 	At        time.Time      `json:"at"` // when it was held: the oldest is answered first
 	Summary   string         `json:"summary,omitempty"`
 	Questions []HeldQuestion `json:"questions,omitempty"` // an AskUserQuestion's; none for a permission prompt
+	// Options are a permission prompt's menu, as Claude Code's: Yes, a
+	// "don't ask again" per suggestion ccs offers, No. None from an older
+	// ccs serve: then Yes and No.
+	Options []HeldOption `json:"options,omitempty"`
 }
 
 // HeldQuestion is one question of a held AskUserQuestion.
@@ -51,10 +55,10 @@ type HeldQuestion struct {
 type controlRequest struct {
 	Op      string              `json:"op"` // list, answer, yield
 	Prompt  string              `json:"prompt,omitempty"`
-	Choice  string              `json:"choice,omitempty"`  // allow, deny, mac, answer
+	Choice  string              `json:"choice,omitempty"`  // allow, always:<n>, deny, mac, answer
 	Answers map[string][]string `json:"answers,omitempty"` // q<i> → labels, or one free-text answer when Other[q<i>]
 	Other   map[string]bool     `json:"other,omitempty"`   // q<i> answered with free text ("Other…")
-	Notes   map[string]string   `json:"notes,omitempty"`   // q<i>'s note on its answer
+	Notes   map[string]string   `json:"notes,omitempty"`   // q<i>'s note on its answer; a permission prompt's deny takes q0's as what to tell Claude
 }
 
 type controlReply struct {
@@ -81,6 +85,7 @@ func heldList(b *promptBook) []HeldPrompt {
 			}
 		} else {
 			h.Summary = transcript.CleanText(transcript.ToolSummary(p.req.ToolInput))
+			h.Options = permOptions(p.req)
 		}
 		out = append(out, h)
 	}
@@ -142,8 +147,9 @@ var HeldPrompts = func() ([]HeldPrompt, error) {
 	return r.Prompts, err
 }
 
-// AnswerHeld answers a held prompt by its id: choice allow, deny, mac (show
-// it in its tab) or answer, with a question's chosen labels by its index,
+// AnswerHeld answers a held prompt by its id: choice allow, always:<n> (a
+// "don't ask again" from its Options), deny (notes[0] what to tell Claude),
+// mac (show it in its tab) or answer, with a question's chosen labels by its index,
 // or, for one in other, its free-text answer.
 // It says what was done. A var so TUI tests stub it.
 var AnswerHeld = func(id, choice string, labels map[int][]string, other map[int]bool, notes map[int]string) (string, error) {

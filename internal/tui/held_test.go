@@ -63,24 +63,15 @@ func TestHeldNeedsServe(t *testing.T) {
 	}
 }
 
-// While a permission prompt is held, a digit is swallowed: it never reaches
-// the answer that types into the session's terminal.
+// While a permission prompt is held every digit is its own: one past its
+// rows, or 0, is swallowed with a note, and none reaches the terminal.
 func TestHeldPermissionSwallowsDigits(t *testing.T) {
-	m, calls, typedp := paneModel(t, mcp.HeldPrompt{ID: "p3", Session: "live", Tool: "Bash", Summary: "ls"})
-	conv := m.items[0].conv
-	for _, it := range m.items {
-		if it.conv.SessionID == "live" {
-			conv = it.conv
-		}
+	m, calls, typedp := permPane(t, bashPrompt())
+	for _, k := range []string{"0", "4", "9"} {
+		m = press(m, k)
 	}
-	for _, k := range []string{"1", "5", "9"} {
-		if _, done := m.heldKey(k, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}, conv); !done {
-			t.Errorf("digit %s must be the held prompt's, never the terminal answer's", k)
-		}
-	}
-	m = press(m, "1")
-	if *typedp || len(*calls) != 0 || m.chatInput.Value() != "" {
-		t.Errorf("a digit on a held permission prompt: typed %v, calls %v, box %q", *typedp, *calls, m.chatInput.Value())
+	if *typedp || len(*calls) != 0 || m.chatInput.Value() != "" || !strings.Contains(m.heldNote, "1-3") {
+		t.Errorf("a digit past the rows: typed %v, calls %v, box %q, note %q", *typedp, *calls, m.chatInput.Value(), m.heldNote)
 	}
 }
 
@@ -118,34 +109,72 @@ func keyType(m model, k tea.KeyType) model {
 	return run(res.(model), cmd)
 }
 
-// The bottom pane answers the selected session's held prompt with no Enter
-// first: A and D ask y/n, a letter it doesn't use goes to
-// the search, Esc leaves it for the list; nothing is typed into a terminal.
+// bashPrompt is a held Bash prompt with Claude Code's three rows.
+func bashPrompt() mcp.HeldPrompt {
+	return mcp.HeldPrompt{ID: "p6", Session: "live", Tool: "Bash", Summary: "make deploy", Options: []mcp.HeldOption{
+		{Choice: "allow", Label: "Yes"},
+		{Choice: "always:1", Label: "Yes, and don't ask again for Bash(make deploy) in this project"},
+		{Choice: "deny", Label: "No, and tell Claude what to do differently"},
+	}}
+}
+
+// permPane is a held permission prompt's session selected, its menu shown
+// and past the first-appearance pause. One arrow key there and back first:
+// the first key after the model is made wakes it, and its command comes
+// back in a batch that run doesn't unpack.
+func permPane(t *testing.T, h mcp.HeldPrompt) (model, *[]heldCall, *bool) {
+	t.Helper()
+	tick := menuClock(t)
+	m, calls, typed := paneModel(t, h)
+	m.showMenu(m.heldShown())
+	tick(time.Second)
+	m = keyType(keyType(m, tea.KeyDown), tea.KeyUp)
+	return m, calls, typed
+}
+
+// The bottom pane draws Claude Code's permission menu and answers it with
+// no Enter first and no y/n: ↑/↓ (j/k) move, Enter sends the row, a digit
+// sends its row, A yes, D no; a letter it doesn't use goes to the search,
+// Esc leaves it for the list; nothing is typed into a terminal.
 func TestHeldPaneAnswersAPermission(t *testing.T) {
-	m, calls, typed := paneModel(t, mcp.HeldPrompt{ID: "p6", Session: "live", Tool: "Bash", Summary: "make deploy"})
+	m, calls, typed := permPane(t, bashPrompt())
 	if !m.heldKeysActive() || m.chatFocus {
 		t.Fatalf("the held prompt has the keys at once: active %v chat %v", m.heldKeysActive(), m.chatFocus)
 	}
-	if v := strip2(m.View()); !strings.Contains(v, "open its tab") || !strings.Contains(v, "keys: menu") {
-		t.Errorf("the pane says what its keys do:\n%s", v)
+	v := strip2(m.View())
+	for _, want := range []string{"Bash · permission", "make deploy", "❯ 1. Yes", "2. Yes, and don't ask again for Bash(make deploy)", "3. No, and tell Claude what to do differently", "enter send", "a yes", "keys: menu"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the pane lacks %q:\n%s", want, v)
+		}
 	}
-	m = press(m, "a")
-	if len(*calls) != 0 || m.heldConfirmed == nil || !strings.Contains(strip2(m.View()), "Allow Bash") {
-		t.Fatalf("a asks y/n first: calls %+v", *calls)
+	m = press(press(m, "j"), "j")
+	m = press(m, "k")
+	if m.textInput.Value() != "" || !strings.Contains(strip2(m.View()), "❯ 2. Yes, and") {
+		t.Fatalf("j and k move the menu: search %q\n%s", m.textInput.Value(), strip2(m.View()))
 	}
-	if m = press(m, "n"); len(*calls) != 0 || m.heldConfirmed != nil {
-		t.Fatal("n sends nothing")
+	m = keyType(m, tea.KeyEnter)
+	if len(*calls) != 1 || (*calls)[0].choice != "always:1" {
+		t.Fatalf("Enter sends the highlighted row at once: %+v", *calls)
 	}
-	m = press(press(m, "d"), "y")
-	if len(*calls) != 1 || (*calls)[0].choice != "deny" {
-		t.Fatalf("d then y denies: %+v", *calls)
+	m, calls, _ = permPane(t, bashPrompt())
+	if m = press(m, "1"); len(*calls) != 1 || (*calls)[0].choice != "allow" {
+		t.Fatalf("a digit sends its row at once: %+v", *calls)
 	}
+	m, calls, _ = permPane(t, bashPrompt())
+	if m = press(m, "A"); len(*calls) != 1 || (*calls)[0].choice != "allow" {
+		t.Fatalf("A allows at once: %+v", *calls)
+	}
+	m, calls, _ = permPane(t, bashPrompt())
+	if m = press(m, "d"); len(*calls) != 1 || (*calls)[0].choice != "deny" || len((*calls)[0].notes) != 0 {
+		t.Fatalf("D denies at once, with no note: %+v", *calls)
+	}
+	m, calls, typed = permPane(t, bashPrompt())
 	if m = keyType(m, tea.KeyEsc); m.heldKeysActive() {
 		t.Error("Esc leaves it for the list")
 	}
 	m = press(m, "a")
-	if m.textInput.Value() != "a" || m.heldConfirmed != nil {
-		t.Errorf("after Esc, letters go to the search: %q", m.textInput.Value())
+	if m.textInput.Value() != "a" || len(*calls) != 0 {
+		t.Errorf("after Esc, letters go to the search: %q %+v", m.textInput.Value(), *calls)
 	}
 	m = selectLive(keyType(m, tea.KeyBackspace)) // the search empty again, back on it
 	m = keyType(m, tea.KeyEnter)
@@ -153,11 +182,74 @@ func TestHeldPaneAnswersAPermission(t *testing.T) {
 		t.Fatal("Enter gives it the keys again")
 	}
 	m = press(m, "x")
-	if m.textInput.Value() != "x" || len(*calls) != 1 {
+	if m.textInput.Value() != "x" || len(*calls) != 0 {
 		t.Errorf("a letter it doesn't use goes to the search: %q %+v", m.textInput.Value(), *calls)
 	}
 	if *typed {
 		t.Error("nothing is ever typed into a terminal")
+	}
+}
+
+// No, and tell Claude: its row opens a box; Enter sends a deny with what
+// was typed as its note, an empty box a plain no; Esc closes the box and
+// keeps the draft.
+func TestHeldPermissionDenyNote(t *testing.T) {
+	m, calls, _ := permPane(t, bashPrompt())
+	m = press(m, "3")
+	if len(*calls) != 0 || !strings.Contains(strip2(m.View()), "send no") {
+		t.Fatalf("No opens its box first: %+v\n%s", *calls, strip2(m.View()))
+	}
+	for _, r := range "use make test" {
+		m = press(m, string(r))
+	}
+	m = keyType(m, tea.KeyEsc)
+	if !m.heldKeysActive() || len(*calls) != 0 || m.textInput.Value() != "" {
+		t.Fatalf("Esc closes the box only: active %v calls %+v", m.heldKeysActive(), *calls)
+	}
+	m = keyType(m, tea.KeyEnter) // the cursor is still on No: the box again, with the draft
+	if v := strip2(m.View()); !strings.Contains(v, "use make test") {
+		t.Fatalf("the draft is kept:\n%s", v)
+	}
+	m = keyType(m, tea.KeyEnter)
+	if len(*calls) != 1 || (*calls)[0].choice != "deny" || (*calls)[0].notes[0] != "use make test" {
+		t.Fatalf("Enter sends no with the note: %+v", *calls)
+	}
+	m, calls, _ = permPane(t, bashPrompt())
+	m = keyType(press(m, "3"), tea.KeyEnter)
+	if len(*calls) != 1 || (*calls)[0].choice != "deny" || len((*calls)[0].notes) != 0 {
+		t.Fatalf("an empty box sends a plain no: %+v", *calls)
+	}
+}
+
+// For menuFresh after a prompt first shows, Enter, digits, A and D do
+// nothing (arrows still move), so a key meant for something else can't
+// approve it; after it they answer.
+func TestHeldPermissionFreshGuard(t *testing.T) {
+	tick := menuClock(t)
+	m, calls, _ := paneModel(t, bashPrompt())
+	m.showMenu(m.heldShown())
+	m = keyType(m, tea.KeyDown)
+	for _, k := range []string{"1", "a", "A", "d", "D"} {
+		m = press(m, k)
+	}
+	m = keyType(m, tea.KeyEnter)
+	if len(*calls) != 0 || !strings.Contains(strip2(m.View()), "❯ 2.") {
+		t.Fatalf("fresh: nothing sent, arrows move: %+v", *calls)
+	}
+	tick(menuFresh)
+	if m = press(m, "a"); len(*calls) != 1 || (*calls)[0].choice != "allow" {
+		t.Fatalf("after the pause: %+v", *calls)
+	}
+}
+
+// An older ccs serve lists no options: the menu is Yes and No.
+func TestHeldPermissionWithoutOptions(t *testing.T) {
+	m, calls, _ := permPane(t, mcp.HeldPrompt{ID: "p7", Session: "live", Tool: "Bash", Summary: "ls"})
+	if v := strip2(m.View()); !strings.Contains(v, "1. Yes") || !strings.Contains(v, "2. No, and tell Claude") {
+		t.Errorf("fallback rows:\n%s", v)
+	}
+	if m = press(m, "1"); len(*calls) != 1 || (*calls)[0].choice != "allow" {
+		t.Errorf("1 allows: %+v", *calls)
 	}
 }
 
@@ -209,12 +301,12 @@ func TestHeldAutoSelect(t *testing.T) {
 	*calls = nil
 	offset = 300 * time.Millisecond
 	m = press(m, "a")
-	if m.heldConfirmed != nil || !strings.Contains(m.heldNote, "paused") {
-		t.Fatalf("a key in the first second is dropped: confirm %v note %q", m.heldConfirmed, m.heldNote)
+	if len(*calls) != 0 || !strings.Contains(m.heldNote, "paused") {
+		t.Fatalf("a key in the first second is dropped: calls %+v note %q", *calls, m.heldNote)
 	}
 	offset = 3 * time.Second
-	if m = press(m, "a"); m.heldConfirmed == nil {
-		t.Error("after the pause, keys answer as usual")
+	if m = press(m, "a"); len(*calls) != 1 || (*calls)[0].choice != "allow" {
+		t.Errorf("after the pause, keys answer as usual: %+v", *calls)
 	}
 	// Once per wait: a second look doesn't move it again.
 	m.selectionMoved()

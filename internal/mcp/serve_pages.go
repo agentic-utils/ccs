@@ -129,10 +129,10 @@ label.field{display:block;margin:14px 0 6px;font-weight:600}
 </fieldset>{{end}}
 <button class="btn">Answer</button></form>
 {{else}}<pre class="wrap-text">{{.P.Summary}}</pre>{{if .P.Input}}<details><summary class="more">Full input</summary><pre>{{.P.Input}}</pre></details>{{end}}
-<div class="row2">
-<form method="post" action="{{.Base}}/act">{{template "csrf" .CSRF}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="allow"><input type="hidden" name="prompt" value="{{.P.ID}}"><input type="hidden" name="id" value="{{.SID}}"><input type="hidden" name="name" value="{{.SName}}"><button class="btn">Allow</button></form>
-<form method="post" action="{{.Base}}/act">{{template "csrf" .CSRF}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="deny"><input type="hidden" name="prompt" value="{{.P.ID}}"><input type="hidden" name="id" value="{{.SID}}"><input type="hidden" name="name" value="{{.SName}}"><button class="btn danger">Deny</button></form>
-</div>{{end}}
+{{$a := .}}{{range .P.Options}}{{if eq .Choice "deny"}}<form method="post" action="{{$a.Base}}/act">{{template "csrf" $a.CSRF}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="deny"><input type="hidden" name="prompt" value="{{$a.P.ID}}"><input type="hidden" name="id" value="{{$a.SID}}"><input type="hidden" name="name" value="{{$a.SName}}">
+<label class="opt"><span>What should Claude do instead?<span class="desc">optional</span><input type="text" name="q0_note" maxlength="2000" autocomplete="off"></span></label><button class="btn danger">{{.Label}}</button></form>
+{{else}}<form method="post" action="{{$a.Base}}/act">{{template "csrf" $a.CSRF}}<input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="{{.Choice}}"><input type="hidden" name="prompt" value="{{$a.P.ID}}"><input type="hidden" name="id" value="{{$a.SID}}"><input type="hidden" name="name" value="{{$a.SName}}"><button class="btn">{{.Label}}</button></form>
+{{end}}{{end}}{{end}}
 <p class="more">The same menu is in its tab too: the first answer wins.</p>
 </section>{{end}}
 

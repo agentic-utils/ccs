@@ -237,6 +237,11 @@ type model struct {
 	remoteControl     bool   // ^T V: Claude sessions ccs starts or resumes get Remote Control, named (state.RemoteControl)
 	profileStop       func() // ^T Q: a CPU profile is being recorded to profilePath; this stops it
 	profilePath       string
+	frame             *frameCache  // the last frame drawn (frame.go); nil: draw every time
+	viewGen           uint64       // moves on whenever a message may have changed what View draws
+	listGen           int          // moves on whenever applyLive, applySubagents or applyRefresh change the rows
+	sortMinute        int64        // the minute the list was last sorted in (Update)
+	hdrMinute         int64        // and the header's counts worked out in
 	hdr               headerCounts // the header's counts as of the last Update (noteHeader)
 	autoFailed        string       // the version an automatic install failed for: offered, not retried
 	autoInstalling    bool         // this install started on its own: the new ccs says so
@@ -647,8 +652,10 @@ func (m model) liveGroup(c transcript.Conversation) int {
 // bottom and pinned ones to the top; while searching, the best match (named
 // after the query, then the words as a phrase) comes before started time.
 // It keeps the cursor on the same session. Update runs it after every
-// message but those that only move the selection (movesOnly).
+// message but those that only move the selection (movesOnly) and those that
+// changed nothing (driftSig), which sort once a minute.
 func (m *model) sortList() {
+	m.sortMinute = time.Now().Unix() / 60 // a still message sorts again only in another minute (Update)
 	if len(m.filtered) == 0 {
 		return
 	}
@@ -1267,6 +1274,13 @@ func (m model) Init() tea.Cmd {
 // session is selected.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	quiet := m.quietTick(msg)
+	// A frequent message that may change nothing: if it didn't (driftSig),
+	// the frame, the order and the header's counts stay as they were.
+	check := quiet || stillCandidate(msg)
+	var before uint64
+	if check {
+		before = m.driftSig()
+	}
 	wasIdle := m.idle()
 	res, cmd := m.update(msg)
 	n := res.(model)
@@ -1274,8 +1288,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = tea.Batch(cmd, wake)
 	}
 	n.openReadyReorg()
-	if !movesOnly(msg) && !quiet {
+	still := check && n.driftSig() == before
+	// The order also moves with the time (a snooze ends, a closed session's
+	// cooldown passes), so a still message sorts once a minute.
+	minute := time.Now().Unix() / 60
+	sorted := false
+	if !movesOnly(msg) && (!still || minute != n.sortMinute) {
 		n.sortList()
+		sorted = true
 	}
 	if settle := n.noteSelection(); settle != nil {
 		cmd = tea.Batch(cmd, settle)
@@ -1302,9 +1322,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	n.showMenu(n.heldShown())
 	n.noteReview()
-	n.paneAt = heldNow() // the pane's clock for this frame (paneNow)
-	if !quiet || !n.hdr.valid {
+	n.paneAt = heldNow()                                  // the pane's clock for this frame (paneNow)
+	changed := !still || sorted || n.driftSig() != before // Update's own steps since may have changed something
+	if changed || !n.hdr.valid || n.hdrMinute != minute {
 		n.noteHeader()
+		n.hdrMinute = minute
+	}
+	if changed {
+		n.viewGen++
 	}
 	if pr := n.prCmd(); pr != nil {
 		cmd = tea.Batch(cmd, pr)
@@ -3000,6 +3025,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View draws the current screen, then any popup on top. Popups are overlaid
 // here, not by each screen, so every screen (and any added later) shows them.
 func (m model) View() string {
+	return m.cachedView(m.drawView)
+}
+
+// drawView draws the frame View hands out.
+func (m model) drawView() string {
 	screen := m.viewScreen()
 	if rows := m.chordHint(m.width); m.chording() && len(rows) > 2 { // the rows the title and search rows had no room for
 		lines := strings.Split(screen, "\n")

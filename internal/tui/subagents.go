@@ -108,6 +108,7 @@ func (m *model) applySubagents(rows []transcript.Conversation, subs map[string]t
 	if same {
 		return grew
 	}
+	m.listGen++
 	var selectedID string
 	if len(m.filtered) > 0 {
 		selectedID = m.filtered[m.cursor].conv.SessionID

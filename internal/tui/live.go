@@ -214,6 +214,7 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 // refresh it only re-matches and re-counts the changed rows, so a streaming
 // session doesn't rebuild every cache on the UI goroutine each tick.
 func (m *model) applyLive(updated []transcript.Conversation) {
+	m.listGen++
 	byID := make(map[string]listItem, len(updated))
 	for _, item := range buildItems(updated) {
 		byID[item.conv.SessionID] = item

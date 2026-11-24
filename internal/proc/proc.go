@@ -157,12 +157,21 @@ func PIDAlive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
-// ProcessStartTimes returns each pid's start time from one ps call. Pids ps
-// can't report are left out.
+// ProcessStartTimes returns each pid's start time: read in-process where
+// sysStartTimes can (macOS), since every program started costs (a scanner
+// may check each one), else from one ps call. Pids it can't report are
+// left out.
 var ProcessStartTimes = func(live map[string]int) map[int]time.Time {
 	out := make(map[int]time.Time)
 	if len(live) == 0 {
 		return out
+	}
+	ids := make([]int, 0, len(live))
+	for _, pid := range live {
+		ids = append(ids, pid)
+	}
+	if got, err := sysStartTimes(ids); err == nil {
+		return got
 	}
 	pids := make([]string, 0, len(live))
 	for _, pid := range live {

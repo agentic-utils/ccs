@@ -416,3 +416,25 @@ func TestOpenPRsByOwnerReadsOnly(t *testing.T) {
 		t.Error("claims.json was written: the lookup must never prune")
 	}
 }
+
+func TestPRsChecksOnlyClaimedPIDs(t *testing.T) {
+	live := claimEnv(t)
+	now := time.Now()
+	writeWatchState(t, now.Add(-time.Minute), &WatchedPR{URL: claimA, Repo: "o/r", Number: 1, State: "open", Checks: "success", Review: "approved"})
+	Claim(claimA, false, now)
+	oldAmong := LiveAmong
+	t.Cleanup(func() { LiveAmong = oldAmong })
+	var asked []int
+	LiveAmong = func(pids []int) map[int]PRClaim {
+		asked = pids
+		return map[int]PRClaim{os.Getppid(): live[os.Getppid()]}
+	}
+	LiveByPID = func() map[int]PRClaim { t.Fatal("ccs prs listed every session"); return nil }
+	rep, err := PRsList("me", "o", true, now)
+	if err != nil || len(rep.PRs) != 1 || rep.PRs[0].Unowned {
+		t.Fatalf("still owned: %+v %v", rep.PRs, err)
+	}
+	if !slices.Equal(asked, []int{os.Getppid()}) {
+		t.Errorf("only the claimant's pid is checked: %v", asked)
+	}
+}

@@ -180,6 +180,44 @@ func ScanSessions(prev map[string]LiveSession) map[string]LiveSession {
 	return live
 }
 
+// LiveAmong is ScanSessions for the given pids only: each one's session
+// file, checked as ScanSessions checks it, and nothing else read. No Codex
+// or agy lookups and no process listing, so a caller that knows which pids
+// it cares about (ccs prs, checking claims) lists no processes at all.
+func LiveAmong(pids []int) map[string]LiveSession {
+	type candidate struct {
+		pid       int
+		id, start string
+		stat      SessionStat
+	}
+	var found []candidate
+	check := make(map[string]int, len(pids))
+	for _, pid := range pids {
+		if pid <= 0 || check[strconv.Itoa(pid)] != 0 {
+			continue
+		}
+		var s struct {
+			SessionFile
+			Pid       int    `json:"pid"`
+			ProcStart string `json:"procStart"`
+		}
+		data, err := os.ReadFile(filepath.Join(GetSessionsDir(), strconv.Itoa(pid)+".json"))
+		if err != nil || json.Unmarshal(data, &s) != nil || s.SessionID == "" || s.Pid != pid || !proc.PIDAlive(pid) {
+			continue
+		}
+		check[strconv.Itoa(pid)] = pid
+		found = append(found, candidate{pid, s.SessionID, s.ProcStart, s.Stat()})
+	}
+	actual := proc.ProcessStartTimes(check)
+	live := make(map[string]LiveSession, len(found))
+	for _, c := range found {
+		if match, checked := sameStart(c.start, actual[c.pid]); match {
+			live[c.id] = LiveSession{PID: c.pid, Stat: c.stat, Start: c.start, Unverified: !checked}
+		}
+	}
+	return live
+}
+
 // sameStart compares the session file's procStart (UTC) with the process's
 // actual start. Unknown on either side counts as a match, so a format change
 // or ps failure never hides a live session; checked says whether it was known.

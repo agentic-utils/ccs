@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -30,6 +31,8 @@ var (
 // stubbed, and logs, settings and Codex's folder go to a temp folder.
 func TestMain(m *testing.M) {
 	os.Setenv("CCS_NO_STATS", "1") // feature stats are tested in internal/stats; nothing else writes them
+	// ccs prs checks only the claims' pids (github.LiveAmong): through each test's LiveByPID stub.
+	github.LiveAmong = func([]int) map[int]github.PRClaim { return github.LiveByPID() }
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"} {
 		os.Unsetenv(k)
 	}

@@ -4,17 +4,20 @@ package tui
 // bottom pane, as Claude Code's own menu works: one question at a time,
 // ↑/↓ (j/k) over its options and a last "Other…" row, Enter picks (a digit
 // highlights an option, Other… included), Space ticks a pick-any
-// question's options and Enter confirms them, "Other…" opens a wrapping box
-// for your own answer (Enter, or typing on its row: every key typed then is
-// the answer's, n, digits and Space included; Enter sends it, Esc keeps it
-// as a draft), n outside a box adds a note to the question's answer (as
-// Claude Code's own menu does), ← goes back a question keeping the answers.
-// One question is sent as soon as it's answered; several end on a review
-// (Enter submits, Esc goes back). The menu takes these keys as soon as its
-// session is selected with the search empty (held.go, heldKeysActive); any
-// other key goes to the search, except on the Other… row, where it starts
-// your answer. A stray key never answers an unread question: Enter,
-// a digit and Space do nothing for menuFresh after a question first shows.
+// question's options and Enter confirms them. "Other…" is a text field on
+// its row, as Claude Code's "Type something." is: with ❯ on it every key
+// typed is the answer's (n, j/k, digits and Space included), ↑/↓ move off
+// it keeping the text, Enter sends it (a pick-any question: it counts as
+// ticked, joined to the ticks), Esc leaves for the list keeping it. n adds
+// a note to the question's answer (as Claude Code's own menu does); on a
+// single-select question it also chooses the highlighted option. ← goes
+// back a question keeping the answers. One question is sent as soon as
+// it's answered; several end on a review (Enter submits, Esc goes back).
+// The menu takes these keys as soon as its session is selected with the
+// search empty (held.go, heldKeysActive); any other key goes to the
+// search, except on the Other… row. A stray key never answers an unread
+// question: Enter, a digit, Space and letters for the field do nothing
+// for menuFresh after a question first shows.
 
 import (
 	"fmt"
@@ -34,10 +37,12 @@ import (
 // can't answer it unread.
 const menuFresh = 500 * time.Millisecond
 
-// The menu's boxes, drawn soft-wrapped by menuBoxLines.
+// What has the menu's text box: nothing, the Other… row's field (drawn on
+// its row by otherLines) or the note box (drawn under the options by
+// menuBoxLines).
 const (
 	boxNone  = iota
-	boxOther // "Other…": your own answer
+	boxOther // "Other…": your own answer, while ❯ is on its row
 	boxNote  // n: a note on the question's answer
 )
 
@@ -49,10 +54,10 @@ type heldMenu struct {
 	cursor  int             // over the options and the "Other…" row
 	picks   map[int][]int   // a question's chosen options, by index
 	other   map[int]string  // a question answered with your own text
-	drafts  map[int]string  // text typed into a question's Other box and closed with Esc
+	drafts  map[int]string  // the text in a question's Other… field
 	notes   map[int]string  // a note on a question's answer (Claude Code's annotations)
-	editing int             // which box is open: boxNone, boxOther or boxNote
-	box     textinput.Model // the open box
+	editing int             // what has the box: boxNone, boxOther or boxNote
+	box     textinput.Model // the Other… field or the note box, whichever is open
 	shownAt time.Time       // when this step first showed: menuFresh from it
 	revTop  int             // the review's first line on screen, when it's taller than the pane
 	revSeen bool            // the review's last line has been on screen: only then does Enter send it
@@ -90,6 +95,9 @@ func (m *model) showMenu(h mcp.HeldPrompt, ok bool) {
 	if m.menuShown != h.ID {
 		m.menuShown, mn.shownAt = h.ID, heldNow()
 	}
+	if mn.step < len(h.Questions) {
+		mn.syncOther(h.Questions[mn.step]) // ❯ on Other… (a question with no options): its field has the keys
+	}
 	for id := range m.menus { // forget prompts no longer held
 		if _, held := m.heldByID(id); !held {
 			delete(m.menus, id)
@@ -106,26 +114,32 @@ func (m model) heldShown() (mcp.HeldPrompt, bool) {
 }
 
 // menuKey handles a key on a held question menu. done is false for a key
-// the menu doesn't use, which goes to the search instead, and for Esc at
-// the first question with no box open, which leaves the menu.
+// the menu doesn't use, which goes to the search instead, and for Esc with
+// no note box open, which leaves the menu.
 func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.Cmd, bool) {
 	mn := m.menuFor(h)
 	qs := h.Questions
 	if mn.step > len(qs) {
 		mn.step = len(qs)
 	}
-	// The appearance guard comes before anything else, an open box included:
-	// Enter there would send a filled-in Other… at once.
+	if mn.step < len(qs) {
+		mn.syncOther(qs[mn.step])
+	}
+	// The appearance guard comes before anything else, the Other… field and
+	// the note box included: Enter there would send at once, and a letter
+	// typed for something else would land in the field.
 	fresh := heldNow().Sub(mn.shownAt) < menuFresh
 	pickKey := k == "enter" || k == " " || k == "space" || (len(k) == 1 && k >= "1" && k <= "9")
-	if fresh && (k == "enter" || (mn.editing == boxNone && pickKey)) {
+	typing := msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace
+	if fresh && (k == "enter" || (mn.editing == boxNone && pickKey) || (mn.editing == boxOther && typing)) {
 		if mn.editing != boxNone && k == "enter" { // say so: a silent Enter in a box reads as stuck
-			m.setHeldNote("just shown: press " + keyEnter + " again to save")
+			m.setHeldNote("just shown: press " + keyEnter + " again")
 		}
 		return nil, true // unread: a stray key never answers it
 	}
-	if mn.editing != boxNone {
-		return m.menuBoxKey(h, name, mn, k, msg), true
+	if mn.editing == boxNote {
+		m.menuNoteKey(mn, k, msg)
+		return nil, true
 	}
 	if mn.step == len(qs) { // the review
 		switch k {
@@ -148,7 +162,7 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 			mn.revTop += max(m.heldRoom()-2, 1)
 			return nil, true
 		case "left":
-			mn.step, mn.shownAt = len(qs)-1, heldNow()
+			mn.goStep(len(qs)-1, qs)
 			return nil, true
 		case "esc":
 			return nil, false // back to the list; the answers are kept
@@ -157,6 +171,9 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 	}
 	q := qs[mn.step]
 	rows := len(q.Options) + 1 // and "Other…"
+	if mn.editing == boxOther {
+		return m.menuFieldKey(h, name, mn, q, k, msg)
+	}
 	switch {
 	case k == "up" || k == "k":
 		mn.cursor = (mn.cursor - 1 + rows) % rows
@@ -164,11 +181,15 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 		mn.cursor = (mn.cursor + 1) % rows
 	case k == "left":
 		if mn.step > 0 {
-			mn.step, mn.cursor, mn.shownAt = mn.step-1, 0, heldNow()
+			mn.goStep(mn.step-1, qs)
 		}
+		return nil, true
 	case k == "esc":
 		return nil, false // back to the list at any step; the answers are kept
 	case k == "n" || k == "N":
+		if !q.Multi { // a note on an option chooses it: Enter then sends it with the note
+			mn.picks[mn.step], mn.other[mn.step] = []int{mn.cursor}, ""
+		}
 		m.menuOpen(mn, boxNote, mn.notes[mn.step], "a note on your answer")
 	case len(k) == 1 && k >= "1" && k <= "9":
 		n := int(k[0] - '1')
@@ -176,86 +197,103 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 			m.setHeldNote(fmt.Sprintf("options here are 1-%d", min(rows, 9)))
 			return nil, true
 		}
-		mn.cursor = n // highlights it (Other… too, numbered last); Enter picks or opens its box
+		mn.cursor = n // highlights it (Other… too, numbered last, whose field then takes the keys)
 		if q.Multi && n < len(q.Options) {
 			mn.toggle(n)
 		}
-	case mn.cursor == len(q.Options) && msg.Type == tea.KeyRunes && !msg.Alt:
-		// Typing on the Other… row starts your answer, as in Claude Code's
-		// own menu: the box opens with the text typed. The row's own keys
-		// (j/k, n, digits, Space) are taken above.
-		m.menuOtherBox(mn)
-		mn.box, _ = editKey(mn.box, msg)
 	case k == " " || k == "space":
-		if q.Multi && mn.cursor < len(q.Options) {
+		if q.Multi {
 			mn.toggle(mn.cursor)
-		} else if mn.cursor == len(q.Options) {
-			m.menuOtherBox(mn)
 		}
 	case k == "enter":
-		if mn.cursor == len(q.Options) {
-			m.menuOtherBox(mn)
-			return nil, true
-		}
 		if q.Multi {
-			if len(mn.picks[mn.step]) == 0 && mn.other[mn.step] == "" {
-				m.setHeldNote("tick at least one (space), or choose Other…")
-				return nil, true
-			}
-			return m.menuNext(h, name, mn), true
+			return m.menuConfirm(h, name, mn, q), true
 		}
 		mn.picks[mn.step], mn.other[mn.step] = []int{mn.cursor}, ""
 		return m.menuNext(h, name, mn), true
 	default:
 		return nil, false // not the menu's: the search takes it
 	}
+	mn.syncOther(q)
 	return nil, true
 }
 
-// menuBoxKey is a key in an open box: Enter uses it (Other…: your answer,
-// then on to the next; a note: saved, or removed when empty), Esc closes it
-// (Other…'s text kept as a draft), anything else edits it.
-func (m *model) menuBoxKey(h mcp.HeldPrompt, name string, mn *heldMenu, k string, msg tea.KeyMsg) tea.Cmd {
-	kind := mn.editing
+// menuFieldKey is a key while ❯ is on the Other… row, whose field has the
+// keys, as in Claude Code's own menu: ↑/↓ move off it (its text kept),
+// Enter sends its text (a pick-any question: confirms the ticks and it),
+// Esc leaves for the list, anything else edits it (n, j/k, digits and
+// Space are letters here).
+func (m *model) menuFieldKey(h mcp.HeldPrompt, name string, mn *heldMenu, q mcp.HeldQuestion, k string, msg tea.KeyMsg) (tea.Cmd, bool) {
+	rows := len(q.Options) + 1
+	switch k {
+	case "up":
+		mn.cursor = (mn.cursor - 1 + rows) % rows
+	case "down":
+		mn.cursor = (mn.cursor + 1) % rows
+	case "esc":
+		return nil, false // back to the list; the text is kept
+	case "enter":
+		if q.Multi {
+			return m.menuConfirm(h, name, mn, q), true
+		}
+		text := strings.TrimSpace(mn.box.Value())
+		if text == "" {
+			if mn.notes[mn.step] != "" { // the note isn't the answer: say so, or this reads as a loop
+				m.setHeldNote("Other… is empty (your note isn't the answer): type your answer, or ↑ to pick an option")
+			} else {
+				m.setHeldNote("Other… is empty: type your answer, or ↑ to pick an option")
+			}
+			return nil, true
+		}
+		mn.other[mn.step], mn.picks[mn.step] = text, nil
+		return m.menuNext(h, name, mn), true
+	default:
+		mn.box, _ = editKey(mn.box, msg)
+		mn.drafts[mn.step] = mn.box.Value()
+		return nil, true
+	}
+	mn.syncOther(q)
+	return nil, true
+}
+
+// menuConfirm confirms a pick-any question: its ticks, and the Other…
+// field's text when there is any, which counts as ticked (Claude Code
+// joins them: "Red, violet").
+func (m *model) menuConfirm(h mcp.HeldPrompt, name string, mn *heldMenu, q mcp.HeldQuestion) tea.Cmd {
+	text := strings.TrimSpace(mn.drafts[mn.step])
+	if len(mn.picks[mn.step]) == 0 && text == "" {
+		m.setHeldNote("tick at least one (space), or type your own on the Other… row")
+		return nil
+	}
+	if text == "" {
+		delete(mn.other, mn.step)
+	} else {
+		mn.other[mn.step] = text
+	}
+	return m.menuNext(h, name, mn)
+}
+
+// menuNoteKey is a key in the open note box: Enter saves it (removed when
+// empty), Esc closes it unchanged, anything else edits it.
+func (m *model) menuNoteKey(mn *heldMenu, k string, msg tea.KeyMsg) {
 	switch k {
 	case "esc":
-		if kind == boxOther {
-			mn.drafts[mn.step] = mn.box.Value() // kept for when it's opened again
-		}
 		mn.editing = boxNone
 		mn.box.Blur()
 	case "enter":
-		text := strings.TrimSpace(mn.box.Value())
+		if text := strings.TrimSpace(mn.box.Value()); text == "" {
+			delete(mn.notes, mn.step)
+		} else {
+			mn.notes[mn.step] = text
+		}
 		mn.editing = boxNone
 		mn.box.Blur()
-		if kind == boxNote {
-			if text == "" {
-				delete(mn.notes, mn.step)
-			} else {
-				mn.notes[mn.step] = text
-			}
-			return nil
-		}
-		if text == "" {
-			mn.editing = boxOther
-			mn.box.Focus()
-			if mn.notes[mn.step] != "" { // the note isn't the answer: say so, or this reads as a loop
-				m.setHeldNote("Other… is empty (your note isn't the answer): type your answer, or esc")
-			} else {
-				m.setHeldNote("Other… is empty: type your answer, or esc")
-			}
-			return nil
-		}
-		mn.other[mn.step], mn.picks[mn.step] = text, nil
-		return m.menuNext(h, name, mn)
 	default:
 		mn.box, _ = editKey(mn.box, msg)
 	}
-	return nil
 }
 
 func (mn *heldMenu) toggle(n int) {
-	delete(mn.other, mn.step)
 	if i := slices.Index(mn.picks[mn.step], n); i >= 0 {
 		mn.picks[mn.step] = slices.Delete(mn.picks[mn.step], i, i+1)
 		return
@@ -264,15 +302,40 @@ func (mn *heldMenu) toggle(n int) {
 	slices.Sort(mn.picks[mn.step])
 }
 
-func (m *model) menuOtherBox(mn *heldMenu) {
-	text := mn.other[mn.step]
-	if text == "" {
-		text = mn.drafts[mn.step]
+// otherPlaceholder is the empty Other… field's dim text while ❯ is on it.
+const otherPlaceholder = "Other… type your answer"
+
+// syncOther gives the Other… field the keys while ❯ is on its row, with
+// the text typed there before, and takes them back (keeping the text) once
+// ❯ moves off it. Called after every move of the cursor or the step.
+func (mn *heldMenu) syncOther(q mcp.HeldQuestion) {
+	on := mn.cursor == len(q.Options)
+	switch {
+	case on && mn.editing == boxNone:
+		text := mn.drafts[mn.step]
+		if text == "" {
+			text = mn.other[mn.step]
+		}
+		mn.menuOpen(boxOther, text, otherPlaceholder)
+	case !on && mn.editing == boxOther:
+		mn.leaveField()
 	}
-	m.menuOpen(mn, boxOther, text, "your answer")
+}
+
+// leaveField takes the keys back from the Other… field, its text kept.
+func (mn *heldMenu) leaveField() {
+	if mn.editing == boxOther {
+		mn.drafts[mn.step] = mn.box.Value()
+		mn.editing = boxNone
+		mn.box.Blur()
+	}
 }
 
 func (m *model) menuOpen(mn *heldMenu, kind int, text, placeholder string) {
+	mn.menuOpen(kind, text, placeholder)
+}
+
+func (mn *heldMenu) menuOpen(kind int, text, placeholder string) {
 	mn.editing = kind
 	mn.box.Placeholder = placeholder
 	mn.box.SetValue(text)
@@ -286,16 +349,26 @@ func (m *model) menuNext(h mcp.HeldPrompt, name string, mn *heldMenu) tea.Cmd {
 	if len(h.Questions) == 1 {
 		return m.menuSubmit(h, name, mn)
 	}
-	mn.step, mn.shownAt = mn.step+1, heldNow()
-	mn.cursor, mn.revTop, mn.revSeen = 0, 0, false
-	if mn.step < len(h.Questions) {
-		if p := mn.picks[mn.step]; len(p) > 0 { // coming back: start on its answer
-			mn.cursor = p[0]
-		} else if mn.other[mn.step] != "" {
-			mn.cursor = len(h.Questions[mn.step].Options)
-		}
-	}
+	mn.revTop, mn.revSeen = 0, false
+	mn.goStep(mn.step+1, h.Questions)
 	return nil
+}
+
+// goStep shows question i (len(qs): the review) with ❯ on its answer, if
+// it has one (its Other… field when that's the answer), else on its
+// first option; the field it leaves keeps its text.
+func (mn *heldMenu) goStep(i int, qs []mcp.HeldQuestion) {
+	mn.leaveField()
+	mn.step, mn.shownAt, mn.cursor = i, heldNow(), 0
+	if i >= len(qs) {
+		return
+	}
+	if p := mn.picks[i]; len(p) > 0 {
+		mn.cursor = p[0]
+	} else if mn.other[i] != "" {
+		mn.cursor = len(qs[i].Options)
+	}
+	mn.syncOther(qs[i])
 }
 
 // menuSubmit sends every question's answer, and its note, by the prompt's id.
@@ -305,17 +378,21 @@ func (m *model) menuSubmit(h mcp.HeldPrompt, name string, mn *heldMenu) tea.Cmd 
 		if n := mn.notes[i]; n != "" {
 			notes[i] = n
 		}
-		if t := mn.other[i]; t != "" {
-			labels[i], other[i] = []string{t}, true
-			continue
-		}
-		if len(mn.picks[i]) == 0 {
-			mn.step, mn.shownAt = i, heldNow()
+		t := mn.other[i]
+		if t == "" && len(mn.picks[i]) == 0 {
+			mn.goStep(i, h.Questions)
 			m.setHeldNote("question " + fmt.Sprint(i+1) + " has no answer yet")
 			return nil
 		}
+		if t != "" && !q.Multi {
+			labels[i], other[i] = []string{t}, true
+			continue
+		}
 		for _, n := range mn.picks[i] {
 			labels[i] = append(labels[i], q.Options[n])
+		}
+		if t != "" { // ticks and your own text, joined as Claude Code sends them
+			labels[i], other[i] = []string{strings.Join(append(labels[i], t), ", ")}, true
 		}
 	}
 	return m.answerHeldCmd(h, name, "answer", labels, other, notes)
@@ -324,12 +401,16 @@ func (m *model) menuSubmit(h mcp.HeldPrompt, name string, mn *heldMenu) tea.Cmd 
 // menuAnswer is a question's answer as the review shows it: the chosen
 // options joined with ", ", or "(Other)" and your own text.
 func (mn *heldMenu) menuAnswer(i int, q mcp.HeldQuestion) string {
-	if t := mn.other[i]; t != "" {
+	t := mn.other[i]
+	if t != "" && !q.Multi {
 		return "\033[22;90m(Other)\033[0;1m " + t
 	}
 	var out []string
 	for _, n := range mn.picks[i] {
 		out = append(out, q.Options[n])
+	}
+	if t != "" {
+		out = append(out, "\033[22;90m(Other)\033[0;1m "+t)
 	}
 	return strings.Join(out, ", ")
 }
@@ -378,7 +459,7 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 	lines = append(lines, wrapIndent("", "\033[1m", q.Question, width)...)
 	lines = append(lines, "")
 	cursor := func(i int) string {
-		if i == mn.cursor && mn.editing == boxNone {
+		if i == mn.cursor && mn.editing != boxNote {
 			return "\033[1;" + amber + "m❯\033[0m "
 		}
 		return "  "
@@ -420,19 +501,19 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 			lines = append(lines, wrapIndent(indent+"note: ", "\033[90m", mn.notes[mn.step], width)...)
 		}
 	}
-	other := "Other…"
-	if t := mn.other[mn.step]; t != "" {
-		other += " \033[1m“" + t + "”\033[22m"
-	}
 	n := len(q.Options)
-	lines = append(lines, ansi.Truncate(cursor(n)+number(n)+other, width, "…"))
+	mark := ""
+	if q.Multi {
+		mark = "[ ] "
+		if strings.TrimSpace(mn.otherText()) != "" { // typed text ticks it, as in Claude Code
+			mark = "[x] "
+		}
+	}
+	lines = append(lines, mn.otherLines(cursor(n)+number(n)+mark, q, width, active)...)
 	if noteAt == n {
 		lines = append(lines, wrapIndent(strings.Repeat(" ", 2+len(number(n)))+"note: ", "\033[90m", mn.notes[mn.step], width)...)
 	}
 	switch mn.editing {
-	case boxOther:
-		lines = append(append(lines, ""), menuBoxLines(mn, width)...)
-		return append(lines, paneHintsFit(width, keyEnter, "save", keyEsc, "cancel"))
 	case boxNote:
 		lines = append(append(lines, ""), menuBoxLines(mn, width)...)
 		return append(lines, paneHintsFit(width, keyEnter, "save (empty removes it)", keyEsc, "cancel"))
@@ -450,15 +531,19 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 		lines = append(lines, "")
 	}
 	keys := []string{"↑↓", "move", keyEnter, "pick"}
-	if mn.cursor == len(q.Options) {
-		keys = []string{"↑↓", "move", "type", "your answer"}
-	}
 	if q.Multi {
 		keys = []string{"↑↓", "move", "space", "tick", keyEnter, "confirm"}
 	}
-	keys = append(keys, "n", "note")
-	if mn.step > 0 {
-		keys = append(keys, "←", "back")
+	if mn.editing == boxOther { // the field has the keys: n, ← and Space are its own
+		keys = []string{"↑↓", "move", "type", "your answer", keyEnter, "send"}
+		if q.Multi {
+			keys = []string{"↑↓", "move", "type", "your own (ticks it)", keyEnter, "confirm"}
+		}
+	} else {
+		keys = append(keys, "n", "note")
+		if mn.step > 0 {
+			keys = append(keys, "←", "back")
+		}
 	}
 	keys = append(keys, keyEsc, "list")
 	return append(lines, paneHintsFit(width, keys...))
@@ -487,13 +572,14 @@ func descLines(text, indent string, width, most int) []string {
 // pending is what Enter would send for this question now: the highlighted
 // option, the ticked ones of a pick-any question, or Other…'s text.
 func (mn *heldMenu) pending(q mcp.HeldQuestion) string {
+	t := strings.TrimSpace(mn.otherText())
 	if q.Multi {
-		if t := mn.other[mn.step]; t != "" {
-			return "(Other) " + t
-		}
 		var out []string
 		for _, n := range mn.picks[mn.step] {
 			out = append(out, q.Options[n])
+		}
+		if t != "" {
+			out = append(out, "(Other) "+t)
 		}
 		if len(out) == 0 {
 			return "nothing ticked yet"
@@ -503,10 +589,46 @@ func (mn *heldMenu) pending(q mcp.HeldQuestion) string {
 	if mn.cursor < len(q.Options) {
 		return q.Options[mn.cursor]
 	}
-	if t := mn.other[mn.step]; t != "" {
+	if t != "" {
 		return "(Other) " + t
 	}
-	return "Other… (type, or enter, to answer)"
+	return "nothing yet: type your answer"
+}
+
+// otherText is the Other… field's text now: the field's while it has the
+// keys, else what was typed there before, else the answer it gave.
+func (mn *heldMenu) otherText() string {
+	if mn.editing == boxOther {
+		return mn.box.Value()
+	}
+	if t := mn.drafts[mn.step]; t != "" {
+		return t
+	}
+	return mn.other[mn.step]
+}
+
+// otherLines draws the Other… row as the text field it is: prefix (❯, its
+// number, a pick-any question's tick), then its text soft-wrapped as
+// menuBoxLines wraps a box, with the cursor (reverse video) while the
+// field has the keys and the menu is active; "Other…" while it's empty
+// and ❯ is elsewhere; " ✓" after an answer it gave. The rows depend on the
+// menu's state only, never on active, so heldSplit's count agrees.
+func (mn *heldMenu) otherLines(prefix string, q mcp.HeldQuestion, width int, active bool) []string {
+	text := mn.otherText()
+	focused := mn.editing == boxOther
+	if !focused {
+		if text == "" {
+			return []string{ansi.Truncate(prefix+"Other…", width, "…")}
+		}
+		rows := fieldRows(prefix, []rune(text), len([]rune(text)), "", width, false)
+		if !q.Multi && mn.other[mn.step] != "" && mn.other[mn.step] == strings.TrimSpace(text) {
+			last := len(rows) - 1
+			rows[last] = ansi.Truncate(rows[last]+" ✓", width, "…")
+		}
+		return rows
+	}
+	pos := min(max(mn.box.Position(), 0), len([]rune(text)))
+	return fieldRows(prefix, []rune(text), pos, otherPlaceholder, width, active)
 }
 
 // wrapIndent wraps text to width after prefix, its later lines indented to
@@ -541,14 +663,30 @@ func menuBoxLines(mn *heldMenu, width int) []string {
 	if mn.editing == boxNote {
 		prefix = "\033[90mnote\033[0m \033[1;" + amber + "m›\033[0m "
 	}
-	pw := ansi.StringWidth(prefix)
-	room := max(width-pw, 10)
 	val := []rune(mn.box.Value())
 	pos := min(max(mn.box.Position(), 0), len(val))
-	cursor := func(r string) string { return "\033[7m" + r + "\033[27m" }
-	if len(val) == 0 {
-		ph := ansi.Truncate(mn.box.Placeholder, max(room-1, 1), "…")
-		return []string{prefix + cursor(" ") + "\033[90m" + ph + "\033[0m"}
+	return fieldRows(prefix, val, pos, mn.box.Placeholder, width, true)
+}
+
+// fieldRows draws text val after prefix soft-wrapped to width, at most
+// menuBoxMaxLines rows following the cursor at pos, which is drawn (reverse
+// video) when show is set; an empty val is the dim placeholder. Whether the
+// cursor shows never changes the rows.
+func fieldRows(prefix string, val []rune, pos int, placeholder string, width int, show bool) []string {
+	pw := ansi.StringWidth(prefix)
+	room := max(width-pw, 10)
+	cursor := func(r string) string {
+		if !show {
+			return r
+		}
+		return "\033[7m" + r + "\033[27m"
+	}
+	if len(val) == 0 { // the cursor on the placeholder's first letter, as a textinput draws it
+		ph := []rune(ansi.Truncate(placeholder, max(room, 2), "…"))
+		if len(ph) == 0 {
+			return []string{prefix + cursor(" ")}
+		}
+		return []string{prefix + "\033[90m" + cursor(string(ph[0])) + string(ph[1:]) + "\033[0m"}
 	}
 	type span struct{ start, end int }
 	var rows []span

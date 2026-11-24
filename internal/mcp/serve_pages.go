@@ -124,7 +124,7 @@ label.field{display:block;margin:14px 0 6px;font-weight:600}
 <input type="hidden" name="id" value="{{.SID}}"><input type="hidden" name="name" value="{{.SName}}">
 {{range .P.Questions}}{{$key := .Key}}{{$multi := .Multi}}<fieldset><legend>{{.Question}}{{if .Multi}} <span class="dim">(pick any)</span>{{end}}</legend>
 {{range .Options}}<label class="opt"><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="{{.Label}}"><span>{{.Label}}{{if .Description}}<span class="desc">{{.Description}}</span>{{end}}</span></label>{{end}}
-<label class="opt"><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="__other__"><span>Other<span class="desc">your own answer{{if $multi}}, in place of any ticked{{end}}:</span><input type="text" name="{{$key}}_other" maxlength="2000" autocomplete="off"></span></label>
+<label class="opt"><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="__other__"><span>Other<span class="desc">your own answer{{if $multi}}, added to any ticked{{else}}, used when no option is chosen{{end}}:</span><input type="text" name="{{$key}}_other" maxlength="2000" autocomplete="off" placeholder="type something"></span></label>{{if $multi}}<input type="hidden" name="{{$key}}_multi" value="1">{{end}}
 <label class="opt"><span>Note<span class="desc">optional, on your answer</span><input type="text" name="{{$key}}_note" maxlength="2000" autocomplete="off"></span></label>
 </fieldset>{{end}}
 <button class="btn">Answer</button></form>

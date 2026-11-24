@@ -86,3 +86,35 @@ func TestPageOtherAnswer(t *testing.T) {
 		t.Errorf("decision %v", d)
 	}
 }
+
+// Text typed in the page's Other field is the answer as in Claude Code's
+// menu: with Other ticked or not, in place of a single-select's choice
+// only when none is chosen, and beside a pick-any question's ticks,
+// joined as Claude Code sends them.
+func TestPageOtherFieldImpliesOther(t *testing.T) {
+	fields := func(v url.Values) (map[string][]string, map[string]bool) {
+		r := &http.Request{PostForm: v}
+		out, other, _ := answerFields(r)
+		return out, other
+	}
+	cases := []struct {
+		name  string
+		form  url.Values
+		want  []string
+		other bool
+	}{
+		{"typed, nothing chosen", url.Values{"q0_other": {"Teal"}}, []string{"Teal"}, true},
+		{"Other ticked", url.Values{"q0": {"__other__"}, "q0_other": {"Teal"}}, []string{"Teal"}, true},
+		{"an option chosen, a draft left behind", url.Values{"q0": {"Red"}, "q0_other": {"Teal"}}, []string{"Red"}, false},
+		{"pick-any: ticks and typed", url.Values{"q0": {"Red"}, "q0_other": {" violet "}, "q0_multi": {"1"}}, []string{"Red, violet"}, true},
+		{"pick-any: ticks, Other ticked and typed", url.Values{"q0": {"Red", "Blue", "__other__"}, "q0_other": {"violet"}, "q0_multi": {"1"}}, []string{"Red, Blue, violet"}, true},
+		{"pick-any: ticks only", url.Values{"q0": {"Red", "Blue"}, "q0_other": {""}, "q0_multi": {"1"}}, []string{"Red", "Blue"}, false},
+		{"nothing", url.Values{"q0_other": {"  "}}, nil, false},
+	}
+	for _, c := range cases {
+		out, other := fields(c.form)
+		if strings.Join(out["q0"], "|") != strings.Join(c.want, "|") || other["q0"] != c.other {
+			t.Errorf("%s: %q other %v, want %q other %v", c.name, out["q0"], other["q0"], c.want, c.other)
+		}
+	}
+}

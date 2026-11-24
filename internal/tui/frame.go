@@ -184,7 +184,6 @@ func (m model) driftSig() uint64 {
 	}
 	flag(m.heldPrompt == nil)
 	flag(m.heldBusy)
-	flag(m.heldConfirmed != nil)
 	str(m.heldNote)
 	str(m.heldErr)
 	flag(m.heldNoteShown)

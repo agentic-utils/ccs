@@ -198,7 +198,7 @@ func checkPromptChoice(t *testing.T, choice, want string) {
 		p := waitHeld(t, s)
 		if choice == "allow" {
 			page := request(s, "GET", "/session?id=s-1", signJWT(t, testKey, "RS256", goodClaims()), nil, nil).Body.String()
-			if !strings.Contains(page, "rm -rf build") || !strings.Contains(page, ">Allow<") || !strings.Contains(page, ">Deny<") {
+			if !strings.Contains(page, "rm -rf build") || !strings.Contains(page, ">Yes<") || !strings.Contains(page, ">No, and tell Claude what to do differently<") {
 				t.Errorf("the page shows the command and both buttons:\n%s", page)
 			}
 		}

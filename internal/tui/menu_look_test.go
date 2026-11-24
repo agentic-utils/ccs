@@ -155,7 +155,7 @@ func TestMenuHintRowPerStep(t *testing.T) {
 func TestPermissionPaneLook(t *testing.T) {
 	m, _, _ := paneModel(t, mcp.HeldPrompt{ID: "p", Session: "live", Tool: "Bash", Summary: "make deploy"})
 	joined := strings.Join(paneText(m), "\n")
-	for _, want := range []string{"Bash · permission", "also in its tab", "make deploy", "a allow · d deny · enter open its tab · esc list"} {
+	for _, want := range []string{"Bash · permission", "also in its tab", "make deploy", "❯ 1. Yes", "2. No, and tell Claude what to do differently", "enter send · a yes · d no · esc list"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("lacks %q:\n%s", want, joined)
 		}

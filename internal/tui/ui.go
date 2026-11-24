@@ -152,7 +152,6 @@ type model struct {
 	paneAt           time.Time               // when Update last finished: the bottom pane's clock (paneNow)
 	heldAnswered     map[string]answeredWait // the wait each held prompt ccs answered was part of: hidden while the status still reports it
 	heldGone         map[string]time.Time    // when each session's held prompt left the list (answered, sent back): its status may still say waiting
-	heldConfirmed    *heldConfirm            // a digit, A or D, waiting for y/n
 	heldFocus        bool                    // the bottom pane's held prompt has the keys
 	heldAutoAt       time.Time               // when an auto-select focused it (zero: by hand, or the guard has passed)
 	heldNote         string                  // the pane's last held-prompt outcome
@@ -3199,6 +3198,13 @@ func (m model) shortcuts() [][2]string {
 		add(m.runSendable(), "^S", "send the finished command's result to the session it ran for: o with its output, e the exit code only")
 		add(true, "/cmd", "type a slash command into the session's tab, so Claude Code runs it (only while it's idle)")
 		add(true, "!! //", "send a line starting ! or / as an ordinary message")
+	case m.heldKeysActive() && m.heldPermissionShown():
+		add(true, "↑↓ j k", "a permission prompt: move over its rows, as in its tab (no Enter first: the menu has the keys while the search is empty)")
+		add(true, keyEnter+" 1-9", "send the highlighted row, or that row, at once: yes, yes and don't ask again, or no")
+		add(true, "A D", "yes or no at once")
+		add(true, "no", "its box says what Claude should do instead; enter sends it (empty: just no), esc closes it")
+		add(true, keyEsc, "back to the list (→ or selecting it again returns to the menu)")
+		add(true, "^P ^N", "move the list, menu or not; any other letter types in the search")
 	case m.heldKeysActive():
 		add(true, "↑↓ j k", "a question: move over its options and Other… (no Enter first: the menu has the keys while the search is empty)")
 		add(true, "1-9", "a question: highlight that option (a pick-any one: tick it)")
@@ -3206,11 +3212,10 @@ func (m model) shortcuts() [][2]string {
 		add(true, "space", "a pick-any question: tick or untick; enter confirms")
 		add(true, "n", "a note on this question's answer, sent with it (empty removes it)")
 		add(true, "←", "back a question, keeping your answers (several end on a review: enter submits)")
-		add(true, "A D", "a permission prompt: allow or deny (asks y/n)")
 		add(true, keyEsc, "back to the list, keeping your answers (→ or tab returns to the menu)")
 		add(true, "^P ^N", "move the list, menu or not; any other letter types in the search")
 	case live && m.boxHidden() && m.heldPrompt[m.filtered[m.cursor].conv.SessionID].ID != "":
-		add(true, "→ "+keyEnter, "answer the prompt ccs holds for it, here: its question's menu, or A allow / D deny (y/n); it's in its tab too, and the first answer wins")
+		add(true, "→ "+keyEnter, "answer the prompt ccs holds for it, here: its question's menu, or its permission menu (yes, yes and don't ask again, no); it's in its tab too, and the first answer wins")
 	case live && m.boxHidden():
 		add(true, keyEnter, "go to its tab to answer it")
 	case live:

@@ -56,6 +56,10 @@ type hookRequest struct {
 	Event     string          `json:"hook_event_name"`
 	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
+	// PermissionSuggestions are the permission updates Claude Code offers
+	// for this prompt ("don't ask again"), kept as sent: a chosen one goes
+	// back to it unchanged, as updatedPermissions.
+	PermissionSuggestions []json.RawMessage `json:"permission_suggestions,omitempty"`
 }
 
 // hookHello is the hook's first line: its prompt, and a nonce ccs serve
@@ -82,10 +86,17 @@ type hookReply struct {
 	Message  string            `json:"message,omitempty"`
 	Other    []string          `json:"other,omitempty"` // questions answered with free text ("Other…") instead of an option
 	Notes    map[string]string `json:"notes,omitempty"` // a note on a question's answer, by question text (Claude Code's annotations)
+	// Permission, with allow on a permission prompt: the 1-based index of
+	// the permission_suggestions entry to save ("don't ask again"). The
+	// hook takes the entry from its own input.
+	Permission int `json:"permission,omitempty"`
 	// Retry, with no decision: the holder is going away (a quit, a restart,
 	// a yield to ccs serve), not settling the prompt; the hook dials again.
 	Retry bool `json:"retry,omitempty"`
 }
+
+// maxDenyRunes caps a deny's message: who denied it and a note.
+const maxDenyRunes = maxOtherRunes + 200
 
 // maxOtherRunes caps a free-text ("Other…") answer.
 const maxOtherRunes = 2000
@@ -376,8 +387,8 @@ func hookDecision(req hookRequest, r hookReply) map[string]any {
 			}
 			return c
 		}, r.Message)
-		if len(msg) > 200 {
-			msg = msg[:200]
+		if r := []rune(msg); len(r) > maxDenyRunes {
+			msg = string(r[:maxDenyRunes])
 		}
 		return map[string]any{"behavior": "deny", "message": msg}
 	case "allow":
@@ -385,7 +396,17 @@ func hookDecision(req hookRequest, r hookReply) map[string]any {
 			if len(r.Answers) > 0 {
 				return nil
 			}
-			return map[string]any{"behavior": "allow"}
+			if r.Permission == 0 {
+				return map[string]any{"behavior": "allow"}
+			}
+			raw, _, ok := suggestionFor(req, r.Permission)
+			if !ok { // not one ccs offers: the tab asks
+				return nil
+			}
+			return map[string]any{"behavior": "allow", "updatedPermissions": []json.RawMessage{raw}}
+		}
+		if r.Permission != 0 {
+			return nil
 		}
 		var input map[string]any
 		var in askInput

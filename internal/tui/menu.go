@@ -82,7 +82,7 @@ func (m *model) menuFor(h mcp.HeldPrompt) *heldMenu {
 // it (or a later question) shows, menuFresh starts. Called after every
 // update with the prompt shown, if any.
 func (m *model) showMenu(h mcp.HeldPrompt, ok bool) {
-	if !ok || len(h.Questions) == 0 {
+	if !ok {
 		m.menuShown = ""
 		return
 	}

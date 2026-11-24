@@ -148,7 +148,7 @@ func TestHooksOutOfDateNote(t *testing.T) {
 	if !strings.Contains(strip2(m.View()), "hooks out of date: run ccs hook install") {
 		t.Error("the header says so while they're missing")
 	}
-	if !strings.Contains(strip2(m.helpPopup()), "Stop, SessionStart are missing") {
+	if !strings.Contains(strip2(strings.Join(m.helpLines(200), "\n")), "Stop, SessionStart are missing") {
 		t.Error("? help names them")
 	}
 	res, _ = m.Update(hooksMsg{})

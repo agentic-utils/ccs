@@ -33,6 +33,7 @@ type Ask struct {
 // AskQuestion is one question of an AskUserQuestion call, as asked.
 type AskQuestion struct {
 	Question    string
+	Header      string // the short chip Claude Code shows above the question
 	MultiSelect bool
 	Options     []AskOption
 }
@@ -43,23 +44,27 @@ type AskOption struct{ Label, Description string }
 // AskAnswer is the user's choice for one question, and any notes they added.
 type AskAnswer struct{ Question, Answer, Notes string }
 
-// noteAsk records an AskUserQuestion call.
-func noteAsk(conv *Conversation, call toolCall, ts string) {
+// noteAsk records an AskUserQuestion call, and its place among the tool
+// calls, which the preview draws as the questions; false when its input has
+// none, for the caller to note it as any other tool call.
+func noteAsk(conv *Conversation, call toolCall, ts string) bool {
 	var in struct {
 		Questions []askQuestion `json:"questions"`
 	}
 	if json.Unmarshal(call.Input, &in) != nil || len(in.Questions) == 0 {
-		return
+		return false
 	}
 	a := Ask{ID: call.ID, At: len(conv.Messages), Ts: ts}
 	for _, q := range in.Questions {
-		aq := AskQuestion{Question: q.Question, MultiSelect: q.MultiSelect}
+		aq := AskQuestion{Question: q.Question, Header: q.Header, MultiSelect: q.MultiSelect}
 		for _, o := range q.Options {
 			aq.Options = append(aq.Options, AskOption{o.Label, o.Description})
 		}
 		a.Questions = append(a.Questions, aq)
 	}
 	conv.Asks = append(conv.Asks, a)
+	conv.Tools = append(conv.Tools, ToolUse{At: a.At, Name: call.Name, Arg: oneLine(a.Questions[0].Question), Ts: ts, Ask: len(conv.Asks)})
+	return true
 }
 
 // askAwaiting is the index in conv.Asks of the unanswered call id, or -1.
@@ -85,6 +90,8 @@ func noteAskResult(conv *Conversation, i int, content json.RawMessage, isError b
 	// answers looked up by the cleaned question its record already holds.
 	a.Answered, a.AnswerTs, a.AnswerAt, a.Failed = true, CleanText(ts), len(conv.Messages), isError
 	a.Result = CleanText(strings.TrimSpace(ResultText(content)))
+	// The answer is drawn where it arrived, as an entry of its own.
+	conv.Tools = append(conv.Tools, ToolUse{At: a.AnswerAt, Name: "AskUserQuestion", Ts: a.AnswerTs, Ask: i + 1, Answer: true})
 	if !bytes.Contains(line, []byte(`"answers"`)) {
 		return
 	}

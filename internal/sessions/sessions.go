@@ -1284,6 +1284,11 @@ func launchSession(o LaunchOpts) (Launched, error) {
 	if err := os.WriteFile(filepath.Join(dir, "brief.md"), []byte(briefText(o)), 0o600); err != nil {
 		return Launched{}, err
 	}
+	// agy records only its --add-dir folders as a conversation's workspaces,
+	// never the folder it runs in: transcript.AgyPrimaryCwd reads it here.
+	if err := os.WriteFile(filepath.Join(dir, transcript.LaunchCwdFile), []byte(o.Cwd), 0o600); err != nil {
+		return Launched{}, err
+	}
 	script := filepath.Join(dir, "launch.sh")
 	if err := os.WriteFile(script, []byte(launchScript(o, bin, dir)), 0o700); err != nil {
 		return Launched{}, err

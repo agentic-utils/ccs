@@ -172,7 +172,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "launch_session",
-		"description": "Start a new named Claude Code (or codex / agy) session in a new iTerm tab or tmux window, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty, or says it is still starting (its tab is up but no session has registered, as while a folder-trust question waits there): that is not a failure, and the name is refused if launched again meanwhile. A new session's brief starts with the user's launch-preamble.md, when they keep one beside ccs's settings.",
+		"description": "Start a new named session of an agent (claude, the default; codex; or agy, which is Gemini) in a new iTerm tab or tmux window, with a brief as its first prompt or resuming an earlier session, and wait until it runs. Returns its pid and tty, or says it is still starting (its tab is up but no session has registered, as while a folder-trust question waits there): that is not a failure, and the name is refused if launched again meanwhile. A new session's brief starts with the user's launch-preamble.md, when they keep one beside ccs's settings.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -180,8 +180,9 @@ var mcpTools = []map[string]any{
 				"brief":    map[string]any{"type": "string", "description": "its first prompt"},
 				"resume":   map[string]any{"type": "string", "description": "a session id to resume instead (or as well)"},
 				"cwd":      map[string]any{"type": "string", "description": "absolute path of the folder to start in"},
-				"codex":    map[string]any{"type": "boolean", "description": "start codex instead of claude"},
-				"agy":      map[string]any{"type": "boolean", "description": "start agy instead of claude"},
+				"agent":    map[string]any{"type": "string", "enum": []string{"claude", "codex", "agy"}, "description": "the agent to start: claude (default), codex, or agy (Gemini). An agy session in a folder it hasn't seen stops at agy's folder-trust question in its tab, so the call says it is still starting until that is answered"},
+				"codex":    map[string]any{"type": "boolean", "description": "older spelling of agent codex; refused when agent names another"},
+				"agy":      map[string]any{"type": "boolean", "description": "older spelling of agent agy; refused when agent names another"},
 				"preamble": map[string]any{"type": "boolean", "description": "false to give the brief as it is, without the user's launch preamble; default true"},
 			},
 			"required": []string{"name", "cwd"},
@@ -195,7 +196,7 @@ var mcpTools = []map[string]any{
 			"properties": map[string]any{
 				"name":            map[string]any{"type": "string", "description": "the session's name"},
 				"session_id":      map[string]any{"type": "string", "description": "optional: refuse unless the session with this name is still this session id (nothing is stopped otherwise)"},
-				"graceful":        map[string]any{"type": "boolean", "description": "ask it to wrap up first and wait for it to go idle; default false. Not for Codex sessions"},
+				"graceful":        map[string]any{"type": "boolean", "description": "ask it to wrap up first and wait for it to go idle; default false. Not for Codex or agy sessions, which have no socket to send the notice to (refused, nothing stopped)"},
 				"handover":        map[string]any{"type": "boolean", "description": "implies graceful: ask it to hand its leftovers (what it finished, leftover work, what it created) to its parent with SendMessage before it's stopped; then its PR claims and child sessions move to the parent, and the parent gets an automatic notice saying whether the handover message was seen. Refused (nothing sent or stopped) when it has no running parent"},
 				"timeout_seconds": map[string]any{"type": "integer", "description": "with graceful or handover: how long to wait before stopping it anyway; default 120, at most 900"},
 			},
@@ -216,7 +217,7 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "restart_session",
-		"description": "Restart the running Claude Code session with this name: stop it and resume the same conversation in a new iTerm tab or tmux window, with the same name, folder and the user's claude flags, to pick up a new ccs, Claude Code or plugin version or a flag it lacked. Returns as soon as the new tab is open. Refused while the session is mid-turn (working, or waiting on a menu or prompt) unless force, which stops it where it is. Called on your own session, it returns at once and the restart happens once your turn ends (or after timeout_seconds), so end the turn straight after. The resumed session's first message says it was restarted; its background tasks, Monitors and subagents don't survive.",
+		"description": "Restart the running Claude Code session with this name (a Codex or agy session is refused, since only Claude Code's session file tells busy from idle: close it and launch_session it again with resume): stop it and resume the same conversation in a new iTerm tab or tmux window, with the same name, folder and the user's claude flags, to pick up a new ccs, Claude Code or plugin version or a flag it lacked. Returns as soon as the new tab is open. Refused while the session is mid-turn (working, or waiting on a menu or prompt) unless force, which stops it where it is. Called on your own session, it returns at once and the restart happens once your turn ends (or after timeout_seconds), so end the turn straight after. The resumed session's first message says it was restarted; its background tasks, Monitors and subagents don't survive.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -408,9 +409,9 @@ func prCall(name string, raw json.RawMessage) (string, error) {
 // which need no transcripts.
 func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	var a struct {
-		Name, Brief, Resume, Cwd, Parent string
-		Codex, Agy                       bool
-		Preamble                         *bool
+		Name, Brief, Resume, Cwd, Parent, Agent string
+		Codex, Agy                              bool
+		Preamble                                *bool
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &a); err != nil {
@@ -432,6 +433,11 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 	if !filepath.IsAbs(a.Cwd) {
 		return "", fmt.Errorf("cwd must be an absolute path")
 	}
+	codex, agy, err := launchAgent(a.Agent, a.Codex, a.Agy)
+	if err != nil {
+		return "", err
+	}
+	a.Codex, a.Agy = codex, agy
 	return capped("launch_session", a.Name, a.Name+" is still starting: check with list_sessions in a minute (its parent is recorded already; the outcome goes to ccs's activity log)", func() (string, error) {
 		l, err := launchFn(sessions.LaunchOpts{Name: a.Name, Brief: a.Brief, Resume: a.Resume, Cwd: a.Cwd, Codex: a.Codex, Agy: a.Agy, NoPreamble: a.Preamble != nil && !*a.Preamble, RecordParent: true})
 		if err != nil {
@@ -439,6 +445,33 @@ func mcpSessionCall(name string, raw json.RawMessage) (string, error) {
 		}
 		return l.Text(a.Name), nil
 	})
+}
+
+// launchAgent is launch_session's agent as LaunchOpts' flags: agent
+// (claude, codex or agy; default claude), or the older codex and agy
+// booleans, which must agree with it when both are given.
+func launchAgent(agent string, codex, agy bool) (bool, bool, error) {
+	if codex && agy {
+		return false, false, errors.New("codex and agy are both true: pick one agent")
+	}
+	old := ""
+	switch {
+	case codex:
+		old = transcript.KindCodex
+	case agy:
+		old = transcript.KindAgy
+	}
+	switch agent {
+	case "":
+		agent = cmp.Or(old, "claude")
+	case "claude", transcript.KindCodex, transcript.KindAgy:
+		if old != "" && old != agent {
+			return false, false, fmt.Errorf("agent %q contradicts %s: true: give one of them", agent, old)
+		}
+	default:
+		return false, false, fmt.Errorf("agent %q: use claude, codex or agy", agent)
+	}
+	return agent == transcript.KindCodex, agent == transcript.KindAgy, nil
 }
 
 // launchFn and closeFn are launch_session's and close_session's work;

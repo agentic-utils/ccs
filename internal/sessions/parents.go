@@ -469,7 +469,11 @@ func Adopt(child, parent string) (string, error) {
 		var found []Caller
 		for id, s := range live {
 			if !s.Codex && s.Stat.Name == parent {
-				found = append(found, Caller{ID: id, Name: parent})
+				c := Caller{ID: id, Name: parent}
+				if s.Agy {
+					c.Kind = transcript.KindAgy
+				}
+				found = append(found, c)
 			}
 		}
 		switch len(found) {

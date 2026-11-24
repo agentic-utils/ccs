@@ -154,6 +154,7 @@ func TestHandoverCloseRefusesWithoutARunningParent(t *testing.T) {
 		{"no record", nil, "worker has no running parent: use ^X K to close it, or adopt it first"},
 		{"a parent that isn't running", &ParentRec{Child: "worker", Parent: "ghost", ParentID: "id-ghost"}, "worker's parent ghost isn't running"},
 		{"a Codex parent", &ParentRec{Child: "worker", Parent: "cx", ParentKind: "codex"}, "is a Codex session"},
+		{"an agy parent", &ParentRec{Child: "worker", Parent: "gem", ParentKind: "agy"}, "is an agy session"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newHandoverFixture(t)

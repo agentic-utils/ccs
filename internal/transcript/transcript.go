@@ -1392,6 +1392,9 @@ func GetConversationsFor(ids []string) []Conversation {
 			path = CodexRollout(id)
 		}
 		if path == "" {
+			path = AgyTranscript(id)
+		}
+		if path == "" {
 			continue
 		}
 		if c := parseForScan(path, time.Time{}, 1024*1024*1024); c != nil {

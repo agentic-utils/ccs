@@ -85,7 +85,7 @@ func TestPRsOrderedReadyFirstMergedLast(t *testing.T) {
 	if got := m.sessionPRs(conv); !slices.Equal(got, []string{prC, prD, prB, prA}) {
 		t.Errorf("ready, needs you, waiting, merged: %v", got)
 	}
-	lines := m.prLines(conv, 100)
+	lines := m.prLines(conv, 100, github.MaxPRLines, true)
 	for i, want := range []string{"r#3 go · ready to merge", "r#4 broken · checks failing", "r#2 waits · review required", "1 merged · ^O all"} {
 		if !strings.Contains(strip2(lines[i]), want) {
 			t.Errorf("line %d = %q, want %q", i, strip2(lines[i]), want)
@@ -231,7 +231,7 @@ func TestPRColoursMatchGitHub(t *testing.T) {
 		u(4): {State: "MERGED"},
 		u(5): {State: "CLOSED"},
 	}
-	lines := m.prLines(conv, 200)
+	lines := m.prLines(conv, 200, github.MaxPRLines, true)
 	for i, want := range []string{"\033[32m✓", "\033[" + amber + "m◷", "\033[90m○"} {
 		if !strings.Contains(lines[i], want) {
 			t.Errorf("line %d should start %q: %q", i, want, lines[i])

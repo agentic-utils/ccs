@@ -1289,3 +1289,71 @@ func TestPreviewShowsQueuedMessages(t *testing.T) {
 		t.Errorf("taken in, the readme is a message above the queue: %q", got)
 	}
 }
+
+// With the details hidden the open PRs still show under the summary line,
+// capped for a short screen; with them shown the PRs come last.
+func TestHeaderPRsCollapsedAndLast(t *testing.T) {
+	var urls []string
+	prs := map[string]github.PRInfo{}
+	for i := 1; i <= 6; i++ {
+		u := fmt.Sprintf("https://github.com/o/r/pull/%d", i)
+		urls = append(urls, u)
+		prs[u] = github.PRInfo{State: "OPEN", MergeState: "CLEAN", Title: fmt.Sprintf("pr%d", i)}
+	}
+	merged := "https://github.com/o/r/pull/9"
+	urls = append(urls, merged)
+	prs[merged] = github.PRInfo{State: "MERGED", Title: "old"}
+	conv := transcript.Conversation{SessionID: "abc", Title: "fix login", Cwd: "/code/api", ActiveModel: "claude-opus-5-5", Size: 2048, PRs: urls,
+		Messages: []transcript.Message{{Role: "assistant", Text: "hello", Ts: "2026-09-11T10:00:00Z"}}}
+	item := listItem{conv: conv}
+	m := initialModel([]listItem{item}, "", nil)
+	m.prs = prs
+	m.width, m.height, m.headerCollapsed = 140, 40, true
+
+	head := m.previewHeader(conv, "")
+	plain := strip2(strings.Join(head, "\n"))
+	if len(head) != 1+collapsedPRMax+1+1 { // summary, PRs, "+N more open", blank
+		t.Fatalf("hidden details should list %d PRs and a more line, got %d rows:\n%s", collapsedPRMax, len(head), plain)
+	}
+	for _, want := range []string{"  PRs:     ✓ r#1 pr1 · ready to merge", "r#3 pr3", "+3 more open · ^O all"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("hidden details should show %q:\n%s", want, plain)
+		}
+	}
+	for _, gone := range []string{"r#4 pr4", "merged ·", "Session:"} {
+		if strings.Contains(plain, gone) {
+			t.Errorf("hidden details shouldn't show %q:\n%s", gone, plain)
+		}
+	}
+	drawn := strings.Split(m.renderPreview(item, 30), "\n")
+	for i := 1; i < len(head)-1; i++ { // the rows under the summary, as drawn
+		if strip2(drawn[i]) != strip2(head[i]) {
+			t.Errorf("row %d drawn %q, header %q", i, strip2(drawn[i]), strip2(head[i]))
+		}
+	}
+
+	// A short screen lists one.
+	m.height = 14
+	if head := strip2(strings.Join(m.previewHeader(conv, ""), "\n")); strings.Contains(head, "r#2") || !strings.Contains(head, "+5 more open") {
+		t.Errorf("a short screen lists one PR:\n%s", head)
+	}
+	m.height = 40
+
+	// A click on a PR row's text (not its link) doesn't open the details.
+	_, _, top := m.listLayout()
+	m = m.handleMouse(tea.MouseMsg{X: m.width - 3, Y: top + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if !m.headerCollapsed {
+		t.Error("a click on a PR row shouldn't toggle the details")
+	}
+
+	// Shown, the PRs end the header, with the merged count.
+	m.headerCollapsed = false
+	open := m.previewHeader(conv, "")
+	rows := strip2(strings.Join(open, "\n"))
+	if p, s := strings.Index(rows, "PRs:"), strings.Index(rows, "Model:"); p < s || s < 0 {
+		t.Errorf("the PRs should come after the other details:\n%s", rows)
+	}
+	if last := strip2(open[len(open)-2]); !strings.Contains(last, "1 merged") {
+		t.Errorf("the PR count line should end the header: %q", last)
+	}
+}

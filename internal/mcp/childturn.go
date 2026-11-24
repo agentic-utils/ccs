@@ -50,8 +50,19 @@ const childTurnDebounce = 30 * time.Second
 const childTurnTail = 1 << 20
 
 // autoNotice is a prompt that only an automatic ccs notice wrote: a child
-// turn notice, a ccs watch nudge, ccs reorg or ccs close.
+// turn notice, a ccs watch nudge, ccs reorg or ccs close (graceful close,
+// handover and the parent's handover note). Delivered to an idle session it
+// is a user line with the "Another Claude session" prefix; queued mid-turn
+// it is a queued_command without it.
 var autoNotice = regexp.MustCompile(`^(Another Claude session sent a message:\s*)?<cross-session-message from-name="ccs (hook|watch|reorg|close)"`)
+
+// closeNotice is a ccs close notice: the session is about to be closed by
+// whoever asked, so a turn it is part of is never worth telling the parent.
+var closeNotice = regexp.MustCompile(`^(Another Claude session sent a message:\s*)?<cross-session-message from-name="ccs close"`)
+
+// harnessPrompt is a prompt Claude Code itself queues into a turn, such as a
+// background task's notification: nobody asked anything by it.
+var harnessPrompt = regexp.MustCompile(`^<(task-notification|system-reminder)>`)
 
 // stopRequest is the part of Claude Code's Stop hook input ccs uses.
 type stopRequest struct {
@@ -146,9 +157,19 @@ func SetChildNotices(parent string, on bool, now time.Time) error {
 // prompt that started the last turn, who the turn sent messages to, and the
 // conversation as far as the tail goes.
 type turnTail struct {
-	Prompt string   // the last prompt's text (typed, queued or a cross-session message)
-	SentTo []string // the "to" of each SendMessage call after it
+	Prompt string   // the text of the prompt that started the last turn (typed or a cross-session message)
+	Auto   bool     // that prompt was an automatic ccs notice
+	Close  bool     // a ccs close notice started the turn or was queued into it
+	Mixed  bool     // something else was queued into it: the user, a session, or anything not the harness's
+	SentTo []string // the "to" of each SendMessage call since it
 	Conv   transcript.Conversation
+}
+
+// byNotice: the turn is an automatic notice's alone, so telling the parent
+// it ended would only cascade notices up the tree. A close notice's turn
+// always is: its session is about to be closed anyway.
+func (t turnTail) byNotice() bool {
+	return t.Close || (t.Auto && !t.Mixed)
 }
 
 // readTurnTail reads the last childTurnTail bytes of path.
@@ -201,13 +222,31 @@ func (t *turnTail) note(line []byte) {
 	if json.Unmarshal(line, &l) != nil || l.IsSide {
 		return
 	}
-	prompt := func(s string) { t.Prompt, t.SentTo = strings.TrimSpace(s), nil }
+	// prompt starts a turn; parts are its text blocks, each tested apart,
+	// so a reminder block before the notice doesn't hide it.
+	prompt := func(parts ...string) {
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		t.Prompt, t.SentTo, t.Auto, t.Close, t.Mixed = strings.Join(parts, "\n"), nil, false, false, false
+		for _, p := range parts {
+			t.Auto = t.Auto || autoNotice.MatchString(p)
+			t.Close = t.Close || closeNotice.MatchString(p)
+		}
+	}
 	switch l.Type {
 	case "attachment":
 		if l.Attachment.Type == "queued_command" {
 			// Arrived mid-turn: the same turn goes on, so what it already
-			// sent still counts.
-			t.Prompt = strings.TrimSpace(l.Attachment.Prompt)
+			// sent still counts, and the prompt that started it stays.
+			q := strings.TrimSpace(l.Attachment.Prompt)
+			switch {
+			case closeNotice.MatchString(q):
+				t.Close = true
+			case autoNotice.MatchString(q), harnessPrompt.MatchString(q):
+			default:
+				t.Mixed = true
+			}
 		}
 	case "user":
 		var s string
@@ -230,7 +269,7 @@ func (t *turnTail) note(line []byte) {
 			}
 		}
 		if len(text) > 0 {
-			prompt(strings.Join(text, "\n"))
+			prompt(text...)
 		}
 	case "assistant":
 		var blocks []struct {
@@ -463,8 +502,8 @@ func childTurn(req stopRequest, now time.Time) (ChildTurnEvent, bool) {
 		state.LogActivity("ccs hook stop: %s: %v", me.Stat.Name, err)
 		return ChildTurnEvent{}, false
 	}
-	if autoNotice.MatchString(tail.Prompt) {
-		return ChildTurnEvent{}, false // a notice started it: telling the parent would cascade up the tree
+	if tail.byNotice() {
+		return ChildTurnEvent{}, false // a notice's turn: telling the parent would cascade up the tree
 	}
 	if ppid != 0 {
 		socket := parentSocket(ppid)

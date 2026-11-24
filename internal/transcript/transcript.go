@@ -170,6 +170,11 @@ type queuedCommand struct {
 	Prompt      json.RawMessage `json:"prompt"`
 	CommandMode string          `json:"commandMode"`
 	IsMeta      bool            `json:"isMeta"`
+	// A hook_permission_decision attachment: a hook decided a tool's
+	// permission prompt (asks.go, noteAskHook).
+	Decision  string `json:"decision"`
+	ToolUseID string `json:"toolUseID"`
+	HookEvent string `json:"hookEvent"`
 }
 
 // TokenUsage sums a conversation's per-reply usage.
@@ -659,7 +664,14 @@ func parseLine(conv *Conversation, line []byte) bool {
 		}
 	case "attachment":
 		var a queuedCommand
-		if json.Unmarshal(raw.Attachment, &a) != nil || a.Type != "queued_command" {
+		if json.Unmarshal(raw.Attachment, &a) != nil {
+			break
+		}
+		if a.Type == "hook_permission_decision" {
+			noteAskHook(conv, a.ToolUseID, a.Decision, a.HookEvent)
+			break
+		}
+		if a.Type != "queued_command" {
 			break
 		}
 		text := extractText(a.Prompt)

@@ -167,9 +167,9 @@ func TestUntrustedTextIsCleanedWhereItEnters(t *testing.T) {
 		if h := conv.Asks[0].Questions[0].Header; h != "hdr" {
 			t.Errorf("the question's header: %q", h)
 		}
-		// The preview's question and answer blocks draw from the cleaned record.
+		// The preview's answer entry draws from the cleaned record.
 		drawn := strings.Join(buildPreviewLines(conv, "", 80), "\n")
-		if poisoned(drawn) || !strings.Contains(strip2(drawn), "AskUserQuestion · hdr") || !strings.Contains(strip2(drawn), "→ a") {
+		if poisoned(drawn) || !strings.Contains(strip2(drawn), "Answered Claude's questions:") || !strings.Contains(strip2(drawn), "→ a") {
 			t.Errorf("the ask in the preview:\n%q", drawn)
 		}
 	})

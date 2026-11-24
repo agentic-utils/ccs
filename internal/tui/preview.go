@@ -432,6 +432,10 @@ func buildPreviewFrom(conv transcript.Conversation, query string, width int, st 
 	drawTools := func(upTo int) {
 		for query == "" && nextTool < len(conv.Tools) && conv.Tools[nextTool].At <= upTo {
 			t := conv.Tools[nextTool]
+			if askCall(conv, t) { // drawn only once answered, as Claude Code does
+				nextTool++
+				continue
+			}
 			stamp(t.Ts)
 			if t.Took > 0 {
 				msgLines = append(msgLines, turnEnd(conv, t), "")
@@ -1055,22 +1059,35 @@ func toolLines(t transcript.ToolUse, width int) []string {
 	return out
 }
 
-// renderToolIn draws a tool call of conv: an AskUserQuestion as its questions
-// or its answer, anything else through renderTool.
+// renderToolIn draws a tool call of conv: an AskUserQuestion's answer as
+// Claude Code's terminal shows it, anything else through renderTool. The
+// call itself draws nothing (askCall), as in Claude Code, where the menu
+// leaves no trace until it's answered.
 func renderToolIn(conv transcript.Conversation, t transcript.ToolUse, width int) []string {
 	if t.Ask > 0 && t.Ask <= len(conv.Asks) {
-		a := conv.Asks[t.Ask-1]
-		if t.Answer {
-			return renderAskAnswer(a, width)
+		if !t.Answer {
+			return nil
 		}
-		return renderAsk(a, width)
+		return renderAskAnswer(conv.Asks[t.Ask-1], width)
 	}
 	return toolLines(t, width)
+}
+
+// askCall: t is an AskUserQuestion call, not its answer, which the preview
+// leaves out.
+func askCall(conv transcript.Conversation, t transcript.ToolUse) bool {
+	return t.Ask > 0 && t.Ask <= len(conv.Asks) && !t.Answer
 }
 
 // wrapUnder wraps text to width under indent, every line indented, each line
 // in style (an SGR such as "\033[90m", or "").
 func wrapUnder(text, indent, style string, width int) []string {
+	return wrapHanging(text, indent, indent, style, width)
+}
+
+// wrapHanging wraps text to width: its first line after first, the rest
+// under indent (a hanging indent when first is as wide), each line in style.
+func wrapHanging(text, first, indent, style string, width int) []string {
 	w := max(width-ansi.StringWidth(indent)-1, 10)
 	var out []string
 	for _, line := range strings.Split(transcript.CleanText(text), "\n") {
@@ -1084,120 +1101,81 @@ func wrapUnder(text, indent, style string, width int) []string {
 			if style != "" {
 				l = style + l + "\033[0m"
 			}
-			out = append(out, mark+indent+l)
+			lead := indent
+			if len(out) == 0 {
+				lead = first
+			}
+			out = append(out, mark+lead+l)
 		}
 	}
 	return out
 }
 
-// renderAsk draws an AskUserQuestion call as Claude Code's menu reads: per
-// question its header, the question wrapped, then its options' labels
-// numbered and dim (descriptions left out, to stay compact). The answer is
-// its own entry, drawn where it arrived (renderAskAnswer), so nothing drawn
-// here changes later and the preview can carry on from it.
-func renderAsk(a transcript.Ask, width int) []string {
-	var out []string
-	for i, q := range a.Questions {
-		head, pick := transcript.CleanText(q.Header), ""
-		if q.MultiSelect {
-			pick = "  \033[90m(pick any)\033[0m"
-		}
-		switch {
-		case i == 0 && head != "":
-			out = append(out, wrapUnder("● \033[1mAskUserQuestion\033[22m · "+head+pick, "", "", width)...)
-		case i == 0:
-			out = append(out, wrapUnder("● \033[1mAskUserQuestion\033[22m"+pick, "", "", width)...)
-		case head != "":
-			out = append(out, wrapUnder("\033[1m"+head+"\033[22m"+pick, "  ", "", width)...)
-		case pick != "":
-			out = append(out, "  "+strings.TrimSpace(pick))
-		}
-		out = append(out, wrapUnder(q.Question, "  ", "", width)...)
-		for j, o := range q.Options {
-			out = append(out, wrapUnder(fmt.Sprintf("%d. %s", j+1, o.Label), "    ", "\033[90m", width)...)
-		}
-	}
-	return out
-}
+// askDim is the grey Claude Code draws an answered menu's bullet and lines in.
+const askDim = "\033[90m"
 
-// renderAskAnswer draws what the user answered an AskUserQuestion with:
-// "→ choice" per question (several choices joined, your own text marked
-// "(other)"), then any notes, dim. A declined menu, or a result without the
-// answers (a pruned transcript), shows the result's text on one line.
+// renderAskAnswer draws an AskUserQuestion's outcome as Claude Code's
+// terminal does, where its result arrived:
+//
+//	● Answered Claude's questions:
+//	  ⎿  · question → answer
+//	     · question → answer
+//	  ⎿  Allowed by PermissionRequest hook
+//
+// the ⎿ lines dim, each question wrapped under its text. Several choices
+// read as Claude Code joins them (", "), your own text as written, and
+// notes follow the answer. A declined menu is "Declined to answer Claude's
+// questions:" with each question's options; a result without the answers
+// (a pruned transcript) shows its text.
 func renderAskAnswer(a transcript.Ask, width int) []string {
-	headerOf := func(question string) string {
+	title, lines := "Answered Claude's questions:", []string{}
+	switch {
+	case a.Failed:
+		title = "Declined to answer Claude's questions:"
 		for _, q := range a.Questions {
-			if q.Question == question {
-				if q.Header != "" {
-					return q.Header
-				}
-				break
+			labels := make([]string, len(q.Options))
+			for i, o := range q.Options {
+				labels[i] = o.Label
 			}
+			line := "· " + q.Question
+			if len(labels) > 0 {
+				line += " (" + strings.Join(labels, " / ") + ")"
+			}
+			lines = append(lines, line)
 		}
-		return transcript.Truncate(question, 40)
-	}
-	if a.Failed || len(a.Answers) == 0 {
-		title := "● \033[1mAnswered\033[22m"
-		if a.Failed {
-			title = "● \033[1mNot answered\033[22m"
-		}
-		out := []string{title}
+	case len(a.Answers) == 0:
 		if r := strings.Join(strings.Fields(a.Result), " "); r != "" {
-			out = append(out, wrapUnder(transcript.Truncate(r, 200), "  ", "\033[90m", width)...)
+			lines = append(lines, transcript.Truncate(r, 200))
 		}
-		return out
+	default:
+		for _, x := range a.Answers {
+			ans := x.Answer
+			if ans == "" {
+				ans = "(no option selected)"
+			}
+			line := "· " + x.Question + " → " + ans
+			if x.Notes != "" {
+				line += " · notes: " + x.Notes
+			}
+			lines = append(lines, line)
+		}
 	}
-	var out []string
-	if len(a.Answers) == 1 {
-		out = append(out, wrapUnder("● \033[1mAnswered\033[22m · "+headerOf(a.Answers[0].Question), "", "", width)...)
-	} else {
-		out = append(out, "● \033[1mAnswered\033[22m")
+	if a.HookAllowed {
+		lines = append(lines, "Allowed by PermissionRequest hook")
 	}
-	for _, x := range a.Answers {
-		ans := x.Answer
-		switch {
-		case ans == "":
-			ans = "\033[90m(no option chosen)\033[0m"
-		case !fromOptions(a, x):
-			ans += "  \033[90m(other)\033[0m"
+	out := []string{askDim + "●\033[0m " + title}
+	for i, l := range lines {
+		first := "     "
+		if i == 0 || (a.HookAllowed && i == len(lines)-1) {
+			first = "  ⎿  "
 		}
-		if len(a.Answers) == 1 {
-			out = append(out, wrapUnder("→ "+ans, "  ", "", width)...)
-		} else {
-			out = append(out, wrapUnder(headerOf(x.Question)+" → "+ans, "  ", "", width)...)
+		indent := "     "
+		if strings.HasPrefix(l, "· ") {
+			indent = "       " // under the text, past "· "
 		}
-		if x.Notes != "" {
-			out = append(out, wrapUnder("note: "+x.Notes, "    ", "\033[90m", width)...)
-		}
+		out = append(out, wrapHanging(l, askDim+first+"\033[0m", indent, askDim, width)...)
 	}
 	return out
-}
-
-// fromOptions: x's answer is its question's options, one or (picking any)
-// several as Claude Code joins them, ", ". Anything else is the user's own text.
-func fromOptions(a transcript.Ask, x transcript.AskAnswer) bool {
-	for _, q := range a.Questions {
-		if q.Question != x.Question {
-			continue
-		}
-		labels := map[string]bool{}
-		for _, o := range q.Options {
-			labels[o.Label] = true
-		}
-		if labels[x.Answer] {
-			return true
-		}
-		if !q.MultiSelect {
-			return false
-		}
-		for _, part := range strings.Split(x.Answer, ", ") {
-			if !labels[part] {
-				return false
-			}
-		}
-		return true
-	}
-	return false
 }
 
 // maxPreviewScroll is the furthest the preview of the current selection can

@@ -597,6 +597,65 @@ func TestTypedMessageDelivery(t *testing.T) {
 	}
 }
 
+// A typed message that reaches the transcript between fast ticks, or while
+// the fast tick isn't following its session, still counts as delivered once
+// the live tick reads it: no "not arrived" for a message in the conversation.
+func TestTypedMessageDeliveredByLiveTick(t *testing.T) {
+	m := chatModel(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	id := m.filtered[m.cursor].conv.SessionID
+	text := "is the made-up widget report finished yet?"
+	m.pending = map[string]string{id: text}
+	mm, _ := m.Update(sendDoneMsg{id: id, note: "✓ Typed into x's iTerm tab (as you)"})
+	m = mm.(model)
+	m.sentAt[id] = time.Now().Add(-2 * heldTimeout)
+	var conv transcript.Conversation
+	for _, item := range m.items {
+		if item.conv.SessionID == id {
+			conv = item.conv
+		}
+	}
+	conv.Messages = append(append([]transcript.Message(nil), conv.Messages...), transcript.Message{Role: "user", Text: text})
+	conv.ReadAt = time.Now()
+	mm, _ = m.Update(liveMsg{live: map[string]bool{id: true}, pids: map[string]int{id: os.Getpid()}, updated: []transcript.Conversation{conv}, gen: m.gen, tickGen: m.liveGen + 1})
+	m = mm.(model)
+	if m.pending[id] != "" || !strings.Contains(m.sendNote[id], "Delivered") {
+		t.Errorf("a typed message the live tick read as a user line is delivered: pending=%q note=%q", m.pending[id], m.sendNote[id])
+	}
+	if v := strip2(m.View()); strings.Contains(v, "not arrived") {
+		t.Errorf("a message in the conversation must not say it hasn't arrived:\n%s", v)
+	}
+	// A truly unsent one still warns.
+	m.pending[id], m.typed[id], m.sentAt[id] = "a made-up line nobody submitted", true, time.Now().Add(-2*heldTimeout)
+	mm, _ = m.Update(liveMsg{live: map[string]bool{id: true}, pids: map[string]int{id: os.Getpid()}, gen: m.gen, tickGen: m.liveGen + 1})
+	m = mm.(model)
+	if v := strip2(m.View()); !strings.Contains(v, "not arrived") {
+		t.Errorf("a typed message missing from the transcript should still warn:\n%s", v)
+	}
+}
+
+// The fast tick's chain survives a tick that fires with no live session
+// selected: its empty result still carries the chain's generation, so
+// Update clears chatTickOn and starts the chain again on a live session.
+func TestChatTickSurvivesNoTarget(t *testing.T) {
+	m := chatModel(t)
+	m.chatGen = 3 // a wake has moved it on
+	m.chatTickOn = true
+	res, ok := m.chatTickCmd()().(chatTickResult)
+	if !ok || res.tickGen != 3 {
+		t.Fatalf("an empty fast-tick result must carry its chain's generation: %+v", res)
+	}
+	mm, _ := m.Update(res)
+	m = mm.(model)
+	if m.chatTickOn {
+		t.Fatal("the chain stopped for good: chatTickOn stayed set with no tick scheduled")
+	}
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyDown}) // onto the live session
+	if !m.chatTickOn || cmd == nil {
+		t.Error("selecting a live session should start the fast tick again")
+	}
+}
+
 func TestDeliveryReceipts(t *testing.T) {
 	defer sessions.CloseInboxes()
 	m := chatModel(t)

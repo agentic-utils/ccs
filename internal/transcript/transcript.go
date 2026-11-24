@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -518,6 +519,12 @@ func appendedSearchText(prev, c *Conversation) (string, string) {
 // up to the last newline; total includes a trailing unterminated line. That
 // line is still parsed (a finished file may lack the final newline); tail
 // reports whether it held a whole record, as opposed to a write in progress.
+//
+// Each line is handed to ParseLine in a buffer that the next line reuses, so
+// nothing ParseLine keeps may alias it (json.Unmarshal copies, string() copies):
+// a first load reads gigabytes, and a fresh slice a line (ReadBytes) was most
+// of its allocation and clearing. TestConsumeLinesMatchesReadBytes holds it
+// to the plain ReadBytes loop.
 func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, tail bool, err error) {
 	size := 1 << 20
 	if f, ok := r.(*os.File); ok {
@@ -528,9 +535,26 @@ func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, tail 
 			}
 		}
 	}
-	br := bufio.NewReaderSize(r, size)
+	var br *bufio.Reader
+	if size == 1<<20 { // a whole file: a pooled reader, not 1MB allocated and cleared per file
+		br = bigReaders.Get().(*bufio.Reader)
+		br.Reset(r)
+		defer func() { br.Reset(nil); bigReaders.Put(br) }()
+	} else {
+		br = bufio.NewReaderSize(r, size)
+	}
+	var long []byte // a line longer than the reader's buffer, gathered
 	for {
-		line, err := br.ReadBytes('\n')
+		chunk, err := br.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			long = append(long, chunk...)
+			continue
+		}
+		line := chunk // valid until the next read, and used before it
+		if len(long) > 0 {
+			long = append(long, chunk...)
+			line = long
+		}
 		if len(line) > 0 {
 			total += int64(len(line))
 			applied := ParseLine(conv, line)
@@ -540,6 +564,7 @@ func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, tail 
 				tail = applied
 			}
 		}
+		long = long[:0]
 		if err == io.EOF {
 			return complete, total, tail, nil
 		}
@@ -548,6 +573,9 @@ func consumeLines(conv *Conversation, r io.Reader) (complete, total int64, tail 
 		}
 	}
 }
+
+// bigReaders are consumeLines' 1MB readers, shared by the scan's workers.
+var bigReaders = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, 1<<20) }}
 
 // ParseLine applies one JSONL record to conv; false if it isn't valid JSON.
 func ParseLine(conv *Conversation, line []byte) bool {
@@ -1310,6 +1338,22 @@ func RecoverWorkerValue(r any) {
 }
 
 func GetConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]Conversation, error) {
+	files, err := ClaudeTranscripts(excludeDirs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Worker pool to limit concurrent file operations. Parsing is CPU-bound
+	// (a first load decodes gigabytes of JSON), so one worker a core.
+	numWorkers := max(runtime.NumCPU(), 2)
+	files = append(files, CodexRollouts()...)  // Codex's sessions sit in the same list
+	files = append(files, AgyTranscripts()...) // agy's sessions sit in the same list
+	return scanFiles(files, numWorkers, cutoff, maxSize)
+}
+
+// ClaudeTranscripts is every Claude Code transcript under the projects
+// folder, subagents' and dot folders' left out, as GetConversations reads.
+func ClaudeTranscripts(excludeDirs []string) ([]string, error) {
 	projectsDir := GetProjectsDir()
 	// Walk swallows a root error, so a vanished dir would read as "no
 	// conversations" and a refresh would wipe the list.
@@ -1339,11 +1383,27 @@ func GetConversations(cutoff time.Time, maxSize int64, excludeDirs []string) ([]
 	if err != nil {
 		return nil, err
 	}
+	return files, nil
+}
 
-	// Worker pool to limit concurrent file operations
-	const numWorkers = 8
-	files = append(files, CodexRollouts()...)  // Codex's sessions sit in the same list
-	files = append(files, AgyTranscripts()...) // agy's sessions sit in the same list
+// ScanTargets is the Claude transcripts a GetConversations with these
+// arguments would parse, by path and size: the list warms their subagents'
+// PRs while the scan parses them.
+func ScanTargets(cutoff time.Time, maxSize int64, excludeDirs []string) []Conversation {
+	files, _ := ClaudeTranscripts(excludeDirs)
+	var out []Conversation
+	for _, f := range files {
+		info, err := os.Stat(f)
+		if err != nil || maxSize > 0 && info.Size() > maxSize || !cutoff.IsZero() && info.ModTime().Before(cutoff) {
+			continue
+		}
+		out = append(out, Conversation{FilePath: f, Size: info.Size()})
+	}
+	return out
+}
+
+// scanFiles parses files with numWorkers at once, newest message first.
+func scanFiles(files []string, numWorkers int, cutoff time.Time, maxSize int64) ([]Conversation, error) {
 	if err := holdScanSlot(files); err != nil {
 		return nil, err
 	}

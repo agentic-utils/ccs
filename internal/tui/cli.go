@@ -423,15 +423,21 @@ func Main(v string) {
 	var conversations []transcript.Conversation
 	if _, err := os.Stat(projectsDir); !os.IsNotExist(err) {
 		fmt.Fprint(os.Stderr, "Loading conversations...")
+		// The subagents' PRs are read alongside the parse, not after it: the
+		// first frame's Tab hint asks every session's.
+		warmed := make(chan struct{})
+		go func() {
+			defer close(warmed)
+			defer transcript.RecoverWorker()
+			github.WarmPRs(transcript.ScanTargets(cutoff, maxSize, excludeDirs))
+		}()
 		conversations, err = transcript.GetConversations(cutoff, maxSize, excludeDirs)
+		<-warmed
 		transcript.ReleaseScanSlot() // the list keeps its cache for good: it never holds a slot for good
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\rError loading conversations: %v\n", err)
 			os.Exit(1)
 		}
-		// Several sessions at once, before the first frame: its Tab hint asks
-		// every session's PRs, and would read their subagents one by one.
-		github.WarmPRs(conversations)
 		fmt.Fprint(os.Stderr, "\r                         \r")
 	}
 

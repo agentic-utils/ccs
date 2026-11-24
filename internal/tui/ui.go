@@ -172,6 +172,7 @@ type model struct {
 	serveChecking    bool
 	confirmRestart   string         // ^X R asked whether to restart this session: y restarts it
 	confirmHandover  string         // ^X W asked whether to hand this session over to its parent and close it: y does
+	confirmSwitch    *switchPrompt  // ^X Z asked which agent to switch this session to: y does
 	handoverTo       string         // with confirmHandover: the parent it goes to
 	reorgPlan        *reorgProposal // ^X M's plan, shown in its popup until enter applies it or esc drops it
 	reorgShownAt     time.Time      // when it came on screen: enter waits updateKeyGrace
@@ -470,7 +471,7 @@ func (m model) stoppable(id string) bool {
 
 // prompting reports an open rename, delete, prune or stop prompt.
 func (m model) prompting() bool {
-	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmHandover != "" || m.launchStep > 0
+	return m.renaming || m.confirmDelete || m.confirmPrune || m.confirmStop != "" || m.confirmServeStop || m.confirmRestart != "" || m.confirmHandover != "" || m.confirmSwitch != nil || m.launchStep > 0
 }
 
 // restartable reports whether ^X R can restart the session: a live Claude
@@ -2206,6 +2207,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.confirmHandover, m.handoverTo = conv.SessionID, parent
 			return m, nil
 		}
+		if k == switchKey && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage {
+			return m.switchKeyPressed()
+		}
 		if k == "^x r" && len(m.filtered) > 0 && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.restart", stats.Key)
 			m.helpOpen = false
@@ -2575,6 +2579,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, nil // Ignore all other keys
+		}
+
+		// Handle switch confirmation mode
+		if m.confirmSwitch != nil {
+			return m.switchConfirmKey(msg.String())
 		}
 
 		// Handle restart confirmation mode
@@ -3127,6 +3136,7 @@ func (m model) shortcuts() [][2]string {
 		add(m.turnRefusal(conv, turnBackground) == "", "^X B", "move the command it's running to the background: Ctrl+B in its tab")
 		add(m.restartable(id), "^X R", "restart it: stop, then resume this conversation in a new tab with the same flags; asks first")
 		add(m.restartable(id), "^X W", "hand its leftovers to its parent, then close it; its PRs and children move to the parent; asks first")
+		add(m.switchRefusal(conv) == "", switchHint, "carry it on in another agent (Claude, Codex or Gemini): closes it, then starts that agent with the same name and folder, briefed with a handover; the new one gets the brief, not its memory, and takes its place, children and PRs; asks first")
 	}
 	add(sel, "^X D", "delete its transcript file; asks first, can't be undone")
 
@@ -3223,7 +3233,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // and what it does, never a mode's on/off (that shows when no chord is
 // pending). Every "^x <letter>" Update handles is here, in order, except ^X H,
 // which is left unadvertised (headless runs stay out of the header).
-var chordPairs = []string{"A", "auto-focus", "B", "background", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "V", "remote control, web", "W", "hand over", "X", "prune", "Y", "usage", keyEnter, "send now", keyEsc, "interrupt or cancel"}
+var chordPairs = []string{"A", "auto-focus", "B", "background", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "G", "group", "I", "auto-update", "K", "stop", "L", "list", "M", "move into topics", "N", "new", "O", "orchestrator", "P", "pin", "Q", "profile", "R", "restart", "S", "snooze", "T", "table", "U", "account", "V", "remote control, web", "W", "hand over", "X", "prune", "Y", "usage", switchLetter, "switch agent", keyEnter, "send now", keyEsc, "interrupt or cancel"}
 
 func toggleHint(key, label string, on bool) string {
 	state := "off"
@@ -3458,6 +3468,8 @@ func (m model) viewScreen() string {
 			Render(fmt.Sprintf("Hand %q over to %s and close it? It sends %s its leftovers first.", name, transcript.Truncate(m.handoverTo, 40), transcript.Truncate(m.handoverTo, 40))) +
 			"  \033[90m" + hints("y", "hand over", "n/"+keyEsc, "cancel") + "\033[0m"
 		sections = append(sections, "  "+inputSection)
+	} else if m.confirmSwitch != nil {
+		sections = append(sections, "  "+m.switchLine())
 	} else if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return m.confirmRestart != "" && it.conv.SessionID == m.confirmRestart }); i >= 0 {
 		name := transcript.Truncate(m.sessionName(m.filtered[i].conv), 50)
 		what, colour := fmt.Sprintf("Restart %q? It stops, then resumes this conversation in a new tab.", name), "214" // Amber

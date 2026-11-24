@@ -118,8 +118,9 @@ func handoverSeen(path string, offset int64, p HandoverParent) bool {
 }
 
 // moveChildren re-parents child's children (by name, or by its session id)
-// to p, so closing it orphans nobody. Returns their names.
-func moveChildren(child, childID string, p HandoverParent) []string {
+// to p (of kind, a Caller.Kind), recorded as source, so closing it orphans
+// nobody. Returns their names.
+func moveChildren(child, childID string, p HandoverParent, kind, source string) []string {
 	var moved []string
 	err := WithParents(func(f *ParentsFile) bool {
 		for k, r := range f.Parents {
@@ -127,7 +128,7 @@ func moveChildren(child, childID string, p HandoverParent) []string {
 			if k == child || !isChild {
 				continue
 			}
-			r.Parent, r.ParentID, r.ParentKind, r.Source, r.At = p.Name, p.ID, "", "handover", time.Now().UTC()
+			r.Parent, r.ParentID, r.ParentKind, r.Source, r.At = p.Name, p.ID, kind, source, time.Now().UTC()
 			f.Parents[k] = r
 			moved = append(moved, cmp.Or(r.Child, k))
 		}
@@ -188,7 +189,7 @@ func CloseHandover(name, id string, timeout time.Duration, onSent func(pid int))
 			state.LogActivity("close %s: couldn't move its PR claims to %s: %v", name, p.Name, err)
 		}
 	}
-	children := moveChildren(name, g.sessionID, p)
+	children := moveChildren(name, g.sessionID, p, "", "handover")
 	state.LogActivity("close %s: handed over to %s (handover message seen: %t); moved claims %v and children %v", name, p.Name, seen, claims, children)
 	said := ""
 	if !seen && g.path != "" {

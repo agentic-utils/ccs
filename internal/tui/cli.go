@@ -250,6 +250,7 @@ Key bindings:
                   ready to merge; then one with any other open PR. Within
                   each, the next after the selection, wrapping; with none,
                   "nothing needs you"
+  Shift+Tab       The same, backwards: the one before the selection
   Ctrl+T Y        Your usage: token use of every session in the last 12h, and
                   your allowance (Ctrl+T Y or Esc to go back)
   Ctrl+L          What changed in each ccs release

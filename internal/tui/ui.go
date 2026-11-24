@@ -2731,18 +2731,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorMsg = ""
 		}
 
-		if msg.String() == "tab" {
+		if k := msg.String(); k == "tab" || k == "shift+tab" {
 			// Tab is only ever for the sessions that need you, then those
 			// with a PR ready to merge, then any other open PR: the next one
-			// after the selection, wrapping. On the usage screen it goes back
-			// to the list first. With none it says so and does nothing
-			// else; ^T Y is the usage screen.
+			// after the selection, wrapping; Shift+Tab the one before. On
+			// the usage screen it goes back to the list first. With none it
+			// says so and does nothing else; ^T Y is the usage screen.
 			m.showUsage = false
-			if id, tier, ok := m.nextWaiting(); ok {
+			step, toWaiting, toPR := m.nextWaiting, stats.Feature("tui.next_waiting"), stats.Feature("tui.next_pr")
+			if k == "shift+tab" {
+				step, toWaiting, toPR = m.prevWaiting, "tui.prev_waiting", "tui.prev_pr"
+			}
+			if id, tier, ok := step(); ok {
 				if tier >= attentionReady {
-					stats.Record("tui.next_pr", stats.Key)
+					stats.Record(toPR, stats.Key)
 				} else {
-					stats.Record("tui.next_waiting", stats.Key)
+					stats.Record(toWaiting, stats.Key)
 				}
 				m.selectSession(id)
 				return m, nil
@@ -3149,9 +3153,10 @@ var keyRule = []string{
 
 // Compact key labels, shared by every hint so they stay consistent.
 const (
-	keyEnter = "enter" // words, not ⏎ ⇥: those draw wider than a cell in some fonts
-	keyTab   = "tab"
-	keyEsc   = "esc"
+	keyEnter   = "enter" // words, not ⏎ ⇥: those draw wider than a cell in some fonts
+	keyTab     = "tab"
+	keyBackTab = "⇧tab"
+	keyEsc     = "esc"
 )
 
 // shortcuts is the keys that do something right now on the list, for the
@@ -3294,6 +3299,7 @@ func (m model) shortcuts() [][2]string {
 	group("ccs")
 	add(true, "^R", "refresh sessions, PRs and allowance now; check for an update")
 	add(true, keyTab, "needs you (question, asked, unread), then ready PRs, open PRs")
+	add(true, keyBackTab, "the same, backwards")
 	add(true, "^L", "what changed in each ccs release")
 	add(true, "?", "this help, from an empty search or message box (after text it's a ?)")
 	add(true, "^C", "quit")

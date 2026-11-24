@@ -120,7 +120,7 @@ func claudeTranscript(t *testing.T) transcript.Conversation {
 				map[string]any{"type": "tool_use", "id": "t1", "name": "Tool" + poison, "input": map[string]any{"x": "arg" + poison}},
 				map[string]any{"type": "tool_use", "id": "b1", "name": "Bash", "input": map[string]any{"command": "sleep 1", "description": "build" + poison, "run_in_background": true}},
 				map[string]any{"type": "tool_use", "id": "q1", "name": "AskUserQuestion", "input": map[string]any{"questions": []any{
-					map[string]any{"question": "pick" + poison, "options": []any{map[string]any{"label": "a" + poison, "description": "d" + poison}}}}}},
+					map[string]any{"question": "pick" + poison, "header": "hdr" + poison, "options": []any{map[string]any{"label": "a" + poison, "description": "d" + poison}}}}}},
 				map[string]any{"type": "tool_use", "id": "m2", "name": "SendMessage", "input": map[string]any{"to": "worker" + poison, "message": "hi there" + poison, "summary": "sum" + poison}},
 			}}}) +
 		jsonLine(t, map[string]any{"type": "user", "timestamp": ts, "message": map[string]any{"role": "user", "content": []any{
@@ -163,6 +163,14 @@ func TestUntrustedTextIsCleanedWhereItEnters(t *testing.T) {
 		}
 		if !strings.HasPrefix(conv.Messages[0].Text, "hello") || conv.Asks[0].Answers[0].Answer != "a" || conv.Asks[0].Answers[0].Notes != "n" {
 			t.Errorf("cleaning lost the text or the answer: %q %+v", conv.Messages[0].Text, conv.Asks[0].Answers)
+		}
+		if h := conv.Asks[0].Questions[0].Header; h != "hdr" {
+			t.Errorf("the question's header: %q", h)
+		}
+		// The preview's question and answer blocks draw from the cleaned record.
+		drawn := strings.Join(buildPreviewLines(conv, "", 80), "\n")
+		if poisoned(drawn) || !strings.Contains(strip2(drawn), "AskUserQuestion · hdr") || !strings.Contains(strip2(drawn), "→ a") {
+			t.Errorf("the ask in the preview:\n%q", drawn)
 		}
 	})
 

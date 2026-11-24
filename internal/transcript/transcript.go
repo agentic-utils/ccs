@@ -7,6 +7,7 @@ package transcript
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -741,6 +742,7 @@ type toolCall struct {
 // askQuestion is one question of an AskUserQuestion call.
 type askQuestion struct {
 	Question    string `json:"question"`
+	Header      string `json:"header"`
 	MultiSelect bool   `json:"multiSelect"`
 	Options     []struct {
 		Label       string `json:"label"`
@@ -788,11 +790,8 @@ func trackTools(conv *Conversation, content json.RawMessage, ts string, line []b
 			noteArtifactCall(conv, call)
 			if call.Name == "SendMessage" {
 				noteSent(conv, call.Input, ts) // drawn as a "To" message, not a tool call
-			} else {
+			} else if call.Name != "AskUserQuestion" || !noteAsk(conv, call, ts) {
 				NoteTool(conv, call.Name, toolArg(call.Input), ts)
-			}
-			if call.Name == "AskUserQuestion" {
-				noteAsk(conv, call, ts)
 			}
 			if strings.HasSuffix(call.Name, "launch_session") {
 				var in struct {
@@ -852,6 +851,11 @@ type ToolUse struct {
 	Name, Arg string
 	Ts        string
 	Took      time.Duration
+	// Ask, when set, is an AskUserQuestion call: conv.Asks[Ask-1]. Answer
+	// marks the entry its result added where it arrived, so the question and
+	// its answer are each drawn once and the preview only ever grows.
+	Ask    int
+	Answer bool
 }
 
 // noteTurnEnd records a finished turn, from the duration the agent recorded:
@@ -955,14 +959,18 @@ func NoteTool(conv *Conversation, name, arg, ts string) {
 
 // toolArgKeys are the inputs that say what a tool call is for, most telling
 // first; a Write's content or an Edit's strings never reach the preview.
-var toolArgKeys = []string{"command", "file_path", "notebook_path", "pattern", "query", "url", "description", "skill", "path", "subject", "name"}
+var toolArgKeys = []string{"command", "file_path", "notebook_path", "pattern", "query", "url", "pr_url", "description", "skill", "path", "subject", "name", "session", "session_id", "title", "reason", "prompt", "message", "text", "cron"}
 
-// toolArg is what a tool call shows in its brackets: a command verbatim, else
-// one line of its most telling input, else its input as compact JSON.
+// toolArg is what a tool call shows in its brackets: a command verbatim, a
+// todo list counted, else one line of its most telling input, else its input
+// as compact JSON.
 func toolArg(input json.RawMessage) string {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(input, &fields) != nil {
 		return ""
+	}
+	if s := todosArg(fields["todos"]); s != "" {
+		return s
 	}
 	for _, k := range toolArgKeys {
 		var s string
@@ -978,6 +986,39 @@ func toolArg(input json.RawMessage) string {
 		return ""
 	}
 	return oneLine(string(input))
+}
+
+// todosArg sums up a TodoWrite's list: "4 todos · 1 done · 1 in progress:
+// <the one in progress>", or "" when raw isn't a todo list.
+func todosArg(raw json.RawMessage) string {
+	var todos []struct {
+		Content    string `json:"content"`
+		Status     string `json:"status"`
+		ActiveForm string `json:"activeForm"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &todos) != nil || len(todos) == 0 {
+		return ""
+	}
+	done, doing, now := 0, 0, ""
+	for _, t := range todos {
+		switch t.Status {
+		case "completed":
+			done++
+		case "in_progress":
+			doing++
+			if now == "" {
+				now = cmp.Or(t.ActiveForm, t.Content)
+			}
+		}
+	}
+	s := fmt.Sprintf("%d todos · %d done", len(todos), done)
+	if doing > 0 {
+		s += fmt.Sprintf(" · %d in progress", doing)
+	}
+	if now != "" {
+		s += ": " + now
+	}
+	return oneLine(s)
 }
 
 // oneLine is s on a single line, cut to maxToolArg.

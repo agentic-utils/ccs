@@ -1357,3 +1357,95 @@ func TestHeaderPRsCollapsedAndLast(t *testing.T) {
 		t.Errorf("the PR count line should end the header: %q", last)
 	}
 }
+
+// An AskUserQuestion draws as Claude Code's menu reads (header, question,
+// options) and its answer as an entry of its own where it arrived, so the
+// cached preview carries on from what it drew rather than redrawing.
+func TestPreviewDrawsAskUserQuestion(t *testing.T) {
+	conv := transcript.Conversation{SessionID: "ask1"}
+	long := "What bothers you most about answering an AskUserQuestion in ccs's bottom pane today, all things considered?"
+	for _, l := range []string{
+		`{"type":"assistant","timestamp":"2026-11-24T10:00:00Z","message":{"id":"m1","content":[{"type":"text","text":"Two questions."}]}}`,
+		`{"type":"assistant","timestamp":"2026-11-24T10:00:01Z","message":{"id":"m1","content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[` +
+			`{"question":"` + long + `","header":"Pain points","multiSelect":true,"options":[{"label":"Too cramped","description":"the box is small"},{"label":"No previews","description":"can't compare"},{"label":"Hard to find"}]},` +
+			`{"question":"Which layout?","header":"Layout","options":[{"label":"Listed"},{"label":"Inline"}]}]}}]}}`,
+	} {
+		transcript.ParseLine(&conv, []byte(l))
+	}
+	c := &previewCache{}
+	const width = 60
+	asked := cachedPreview(c, conv, "", width)
+	plain := strip2(strings.Join(asked, "\n"))
+	for _, want := range []string{"● AskUserQuestion · Pain points  (pick any)", "  What bothers you most", "    1. Too cramped", "    3. Hard to find", "  Layout\n  Which layout?\n    1. Listed\n    2. Inline"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "{") || strings.Contains(plain, "the box is small") || strings.Contains(plain, "Answered") {
+		t.Errorf("no JSON, no descriptions, and no answer yet:\n%s", plain)
+	}
+	if a := strip2(asked[slices.IndexFunc(asked, func(l string) bool { return strings.Contains(l, "1. Too cramped") })]); !strings.HasPrefix(a, "    ") {
+		t.Errorf("options sit under the question: %q", a)
+	}
+
+	// The answer: several picked, your own text, a note.
+	transcript.ParseLine(&conv, []byte(`{"type":"user","timestamp":"2026-11-24T10:02:00Z","toolUseResult":{"answers":{"`+long+`":"Too cramped, No previews","Which layout?":"neither, a table"},"annotations":{"`+long+`":{"notes":"the box is too small on a laptop"}}},"message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"User has answered your questions."}]}}`))
+	answered := cachedPreview(c, conv, "", width)
+	if c.resume == nil || !slices.Equal(answered[:len(asked)-1], asked[:len(asked)-1]) {
+		t.Error("the answer should be added below what was drawn, not change it")
+	}
+	got := strip2(strings.Join(answered[len(asked)-1:], "\n"))
+	for _, want := range []string{"● Answered", "  Pain points → Too cramped, No previews", "    note: the box is too small on a laptop", "  Layout → neither, a table  (other)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Too cramped, No previews  (other)") {
+		t.Errorf("options picked together aren't your own text:\n%s", got)
+	}
+	if !slices.Equal(answered, buildPreviewLines(conv, "", width)) {
+		t.Error("carrying on should draw what a fresh build draws")
+	}
+	for i, l := range answered {
+		if w := ansi.StringWidth(l); w > width {
+			t.Errorf("line %d is %d wide: %q", i, w, l)
+		}
+	}
+	// A search is the matches and their context: no questions.
+	if s := strip2(strings.Join(buildPreviewLines(conv, "questions", width), "\n")); strings.Contains(s, "AskUserQuestion") || strings.Contains(s, "Answered") {
+		t.Errorf("a search shows no tool calls:\n%s", s)
+	}
+}
+
+func TestPreviewAskOneQuestionAndDeclined(t *testing.T) {
+	ask := transcript.Ask{Questions: []transcript.AskQuestion{{Question: "Ship it?", Options: []transcript.AskOption{{Label: "Yes"}, {Label: "No"}}}}}
+	q := strip2(strings.Join(renderAsk(ask, 80), "\n"))
+	if q != "● AskUserQuestion\n  Ship it?\n    1. Yes\n    2. No" {
+		t.Errorf("no header:\n%s", q)
+	}
+	ask.Questions[0].Header = "Ship"
+	ask.Answered, ask.Answers = true, []transcript.AskAnswer{{Question: "Ship it?", Answer: "Yes"}}
+	if got := strip2(strings.Join(renderAskAnswer(ask, 80), "\n")); got != "● Answered · Ship\n  → Yes" {
+		t.Errorf("one answer:\n%s", got)
+	}
+	ask.Answers, ask.Failed, ask.Result = nil, true, "The user doesn't want to proceed with this tool use."
+	if got := strip2(strings.Join(renderAskAnswer(ask, 80), "\n")); got != "● Not answered\n  The user doesn't want to proceed with this tool use." {
+		t.Errorf("declined:\n%s", got)
+	}
+}
+
+func TestToolArgSummarisesTodosAndMore(t *testing.T) {
+	conv := transcript.Conversation{}
+	transcript.ParseLine(&conv, []byte(`{"type":"assistant","timestamp":"2026-11-24T10:00:00Z","message":{"id":"m1","content":[`+
+		`{"type":"tool_use","id":"a","name":"TodoWrite","input":{"todos":[{"content":"Write tests","status":"completed","activeForm":"Writing tests"},{"content":"Open the PR","status":"in_progress","activeForm":"Opening the PR"},{"content":"Watch CI","status":"pending","activeForm":"Watching CI"}]}},`+
+		`{"type":"tool_use","id":"b","name":"ScheduleWakeup","input":{"delaySeconds":1200,"reason":"watching CI run","prompt":"check"}},`+
+		`{"type":"tool_use","id":"c","name":"mcp__ccs__close_session","input":{"name":"worker-1","graceful":true}}]}}`))
+	var args []string
+	for _, tu := range conv.Tools {
+		args = append(args, tu.Arg)
+	}
+	want := []string{"3 todos · 1 done · 1 in progress: Opening the PR", "watching CI run", "worker-1"}
+	if !slices.Equal(args, want) {
+		t.Errorf("got %q, want %q", args, want)
+	}
+}

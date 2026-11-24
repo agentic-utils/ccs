@@ -376,7 +376,7 @@ func buildPreviewFrom(conv transcript.Conversation, query string, width int, st 
 			if t.Took > 0 {
 				msgLines = append(msgLines, turnEnd(conv, t), "")
 			} else {
-				msgLines = append(msgLines, renderTool(t, width)...)
+				msgLines = append(msgLines, renderToolIn(conv, t, width)...)
 				msgLines = append(msgLines, "")
 			}
 			lastRole = ""
@@ -981,6 +981,148 @@ func renderTool(t transcript.ToolUse, width int) []string {
 		out[0] = "● " + strings.TrimPrefix(out[0], "  ")
 	}
 	return out
+}
+
+// renderToolIn draws a tool call of conv: an AskUserQuestion as its questions
+// or its answer, anything else through renderTool.
+func renderToolIn(conv transcript.Conversation, t transcript.ToolUse, width int) []string {
+	if t.Ask > 0 && t.Ask <= len(conv.Asks) {
+		a := conv.Asks[t.Ask-1]
+		if t.Answer {
+			return renderAskAnswer(a, width)
+		}
+		return renderAsk(a, width)
+	}
+	return renderTool(t, width)
+}
+
+// wrapUnder wraps text to width under indent, every line indented, each line
+// in style (an SGR such as "\033[90m", or "").
+func wrapUnder(text, indent, style string, width int) []string {
+	w := max(width-ansi.StringWidth(indent)-1, 10)
+	var out []string
+	for _, line := range strings.Split(transcript.CleanText(text), "\n") {
+		for j, l := range strings.Split(ansi.Wrap(line, w, ""), "\n") {
+			if j > 0 {
+				l = strings.TrimLeft(l, " ")
+			}
+			if style != "" {
+				l = style + l + "\033[0m"
+			}
+			out = append(out, indent+l)
+		}
+	}
+	return out
+}
+
+// renderAsk draws an AskUserQuestion call as Claude Code's menu reads: per
+// question its header, the question wrapped, then its options' labels
+// numbered and dim (descriptions left out, to stay compact). The answer is
+// its own entry, drawn where it arrived (renderAskAnswer), so nothing drawn
+// here changes later and the preview can carry on from it.
+func renderAsk(a transcript.Ask, width int) []string {
+	var out []string
+	for i, q := range a.Questions {
+		head, pick := transcript.CleanText(q.Header), ""
+		if q.MultiSelect {
+			pick = "  \033[90m(pick any)\033[0m"
+		}
+		switch {
+		case i == 0 && head != "":
+			out = append(out, wrapUnder("● \033[1mAskUserQuestion\033[22m · "+head+pick, "", "", width)...)
+		case i == 0:
+			out = append(out, wrapUnder("● \033[1mAskUserQuestion\033[22m"+pick, "", "", width)...)
+		case head != "":
+			out = append(out, wrapUnder("\033[1m"+head+"\033[22m"+pick, "  ", "", width)...)
+		case pick != "":
+			out = append(out, "  "+strings.TrimSpace(pick))
+		}
+		out = append(out, wrapUnder(q.Question, "  ", "", width)...)
+		for j, o := range q.Options {
+			out = append(out, wrapUnder(fmt.Sprintf("%d. %s", j+1, o.Label), "    ", "\033[90m", width)...)
+		}
+	}
+	return out
+}
+
+// renderAskAnswer draws what the user answered an AskUserQuestion with:
+// "→ choice" per question (several choices joined, your own text marked
+// "(other)"), then any notes, dim. A declined menu, or a result without the
+// answers (a pruned transcript), shows the result's text on one line.
+func renderAskAnswer(a transcript.Ask, width int) []string {
+	headerOf := func(question string) string {
+		for _, q := range a.Questions {
+			if q.Question == question {
+				if q.Header != "" {
+					return q.Header
+				}
+				break
+			}
+		}
+		return transcript.Truncate(question, 40)
+	}
+	if a.Failed || len(a.Answers) == 0 {
+		title := "● \033[1mAnswered\033[22m"
+		if a.Failed {
+			title = "● \033[1mNot answered\033[22m"
+		}
+		out := []string{title}
+		if r := strings.Join(strings.Fields(a.Result), " "); r != "" {
+			out = append(out, wrapUnder(transcript.Truncate(r, 200), "  ", "\033[90m", width)...)
+		}
+		return out
+	}
+	var out []string
+	if len(a.Answers) == 1 {
+		out = append(out, wrapUnder("● \033[1mAnswered\033[22m · "+headerOf(a.Answers[0].Question), "", "", width)...)
+	} else {
+		out = append(out, "● \033[1mAnswered\033[22m")
+	}
+	for _, x := range a.Answers {
+		ans := x.Answer
+		switch {
+		case ans == "":
+			ans = "\033[90m(no option chosen)\033[0m"
+		case !fromOptions(a, x):
+			ans += "  \033[90m(other)\033[0m"
+		}
+		if len(a.Answers) == 1 {
+			out = append(out, wrapUnder("→ "+ans, "  ", "", width)...)
+		} else {
+			out = append(out, wrapUnder(headerOf(x.Question)+" → "+ans, "  ", "", width)...)
+		}
+		if x.Notes != "" {
+			out = append(out, wrapUnder("note: "+x.Notes, "    ", "\033[90m", width)...)
+		}
+	}
+	return out
+}
+
+// fromOptions: x's answer is its question's options, one or (picking any)
+// several as Claude Code joins them, ", ". Anything else is the user's own text.
+func fromOptions(a transcript.Ask, x transcript.AskAnswer) bool {
+	for _, q := range a.Questions {
+		if q.Question != x.Question {
+			continue
+		}
+		labels := map[string]bool{}
+		for _, o := range q.Options {
+			labels[o.Label] = true
+		}
+		if labels[x.Answer] {
+			return true
+		}
+		if !q.MultiSelect {
+			return false
+		}
+		for _, part := range strings.Split(x.Answer, ", ") {
+			if !labels[part] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // maxPreviewScroll is the furthest the preview of the current selection can

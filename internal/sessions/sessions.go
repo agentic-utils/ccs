@@ -455,7 +455,24 @@ type OpenRecord struct {
 }
 
 // BootID names the current boot: Linux's boot_id, else macOS's boot time.
+// A boot doesn't change while ccs runs, so the first answer is kept for the
+// process (RecordOpen asks on every live tick, and sysctl is a process start
+// each time); an empty one, a failed read, is asked again next time.
 var BootID = func() string {
+	bootID.Lock()
+	defer bootID.Unlock()
+	if bootID.id == "" {
+		bootID.id = readBootID()
+	}
+	return bootID.id
+}
+
+var bootID struct {
+	sync.Mutex
+	id string
+}
+
+func readBootID() string {
 	if b, err := os.ReadFile("/proc/sys/kernel/random/boot_id"); err == nil {
 		return strings.TrimSpace(string(b))
 	}
@@ -2407,14 +2424,15 @@ var CodexLiveCache struct {
 }
 
 // Frugal is set by the TUI while nobody is using it (unfocused, or no key
-// for a while): the live tick's Codex and agy lookups then skip the full
-// process listing, a command line read for each of hundreds of processes,
-// unless the process table (proc.MayRun) has a process of that name. While
-// it's in use they list as ever, so nothing changes under the user's eyes.
+// for a while).
 var Frugal atomic.Bool
 
-// noneRunning: frugal, and no process called name runs.
-func noneRunning(name string) bool { return Frugal.Load() && !proc.MayRun(name) }
+// noneRunning: no process called name runs. The live tick's Codex and agy
+// lookups then skip the full process listing, a command line read for each
+// of hundreds of processes, since the process table (proc.MayRun, one call)
+// has no process of that name; a session of theirs always has one, so
+// skipping loses nothing whether or not the TUI is in use.
+func noneRunning(name string) bool { return !proc.MayRun(name) }
 
 // LiveCodexSessions is codexLiveSessions; stubbed in tests, which must
 // never see the machine's own Codex tabs.

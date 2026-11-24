@@ -176,7 +176,9 @@ func (m *model) applyRefresh(msg refreshMsg) {
 	m.items = msg.items
 	m.lastFilterQuery = "" // force a full rescan, not incremental narrowing
 	m.hits = &hitCounter{byID: make(map[string]int)}
-	m.preview = &previewCache{}
+	if !m.preview.keepsFor(selectedID, msg.items) {
+		m.preview = &previewCache{}
+	}
 	m.updateFilter()
 	for i, item := range m.filtered {
 		if item.conv.SessionID == selectedID {
@@ -190,6 +192,28 @@ func (m *model) applyRefresh(msg refreshMsg) {
 // ============================================================================
 // Data loading (preserved from original)
 // ============================================================================
+
+// keepsFor: the drawn preview is still right for the selected session id in
+// items, the scan's copy of the same transcript: drawn by its last build
+// without a search, and only added to since (canResume, which checks the
+// last message and tool drawn are still there). The minute's scan would
+// otherwise draw a big selected session again from its first message (a
+// second of CPU for 180 MB), undoing the incremental build.
+func (c *previewCache) keepsFor(id string, items []listItem) bool {
+	if c == nil || c.resume == nil || id == "" || c.resume.id != id {
+		return false
+	}
+	for _, it := range items {
+		if it.conv.SessionID == id {
+			conv := it.conv
+			// The scan's copy has no peer notes (previewLines adds them as it
+			// draws, and cachedPreview checks them again then).
+			conv.PeerNotes = c.resume.peers
+			return c.resume.canResume(conv, "", c.resume.width)
+		}
+	}
+	return false
+}
 
 // buildItems creates list items from conversations
 func buildItems(conversations []transcript.Conversation) []listItem {

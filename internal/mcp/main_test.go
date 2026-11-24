@@ -30,7 +30,8 @@ var (
 // and close_session reach sessions' tab and process hooks, so those are
 // stubbed, and logs, settings and Codex's folder go to a temp folder.
 func TestMain(m *testing.M) {
-	os.Setenv("CCS_NO_STATS", "1") // feature stats are tested in internal/stats; nothing else writes them
+	proc.MayRun = func(string) bool { return true } // never the machine's own processes
+	os.Setenv("CCS_NO_STATS", "1")                  // feature stats are tested in internal/stats; nothing else writes them
 	// ccs prs checks only the claims' pids (github.LiveAmong): through each test's LiveByPID stub.
 	github.LiveAmong = func([]int) map[int]github.PRClaim { return github.LiveByPID() }
 	statusDir, _ := os.MkdirTemp("", "ccs-test-statusline")

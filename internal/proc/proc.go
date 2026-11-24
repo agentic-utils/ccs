@@ -341,7 +341,8 @@ var names struct {
 // a process; false only when the process table, read in one call and shared
 // for ListingShare, has none. Much cheaper than PsAll, which reads every
 // process's command line.
-func MayRun(name string) bool {
+// Stubbed in tests, which must not see this machine's processes.
+var MayRun = func(name string) bool {
 	names.Lock()
 	defer names.Unlock()
 	if names.set == nil || time.Since(names.at) >= ListingShare {

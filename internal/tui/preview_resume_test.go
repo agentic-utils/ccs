@@ -92,3 +92,47 @@ func TestPreviewRebuildsWhenItCantResume(t *testing.T) {
 		t.Error("another width or a search builds afresh")
 	}
 }
+
+// The minute's scan hands over its own copy of every transcript: the drawn
+// preview of the selected one is kept when the copy only adds to it, and
+// built afresh when what was drawn changed.
+func TestRefreshKeepsThePreviewOfTheSameTranscript(t *testing.T) {
+	r := rand.New(rand.NewPCG(7, 1))
+	c := transcript.Conversation{SessionID: "s", LastTimestamp: "2026-11-01T09:00:00Z"}
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	growing(r, &c, &at, 30)
+	c.PeerNotes, c.Queue = nil, nil
+	m := initialModel(buildItems([]transcript.Conversation{c}), "", nil)
+	m.width, m.height = 120, 40
+	m.previewLines()
+	kept := m.preview
+
+	scanned := func(change func(*transcript.Conversation)) []listItem {
+		conv := c
+		conv.Messages, conv.Tools = slices.Clone(c.Messages), slices.Clone(c.Tools)
+		change(&conv)
+		return buildItems([]transcript.Conversation{conv})
+	}
+	m.applyRefresh(refreshMsg{items: scanned(func(*transcript.Conversation) {})})
+	if m.preview != kept {
+		t.Fatal("an unchanged transcript's preview was dropped")
+	}
+	m.applyRefresh(refreshMsg{items: scanned(func(c *transcript.Conversation) {
+		c.Messages = append(c.Messages, transcript.Message{Role: "assistant", Text: "more", Ts: "2026-12-01T09:00:00Z"})
+	})})
+	if m.preview != kept {
+		t.Fatal("a transcript that only grew lost its preview")
+	}
+	if got, want := m.previewLines(), buildPreviewLines(m.filtered[0].conv, "", m.paneWidth()-1); !slices.Equal(got, want) {
+		t.Fatalf("kept preview differs from a full build:\n%q\n%q", got, want)
+	}
+	m.applyRefresh(refreshMsg{items: scanned(func(c *transcript.Conversation) {
+		c.Messages[len(c.Messages)-1].Text = "rewritten"
+	})})
+	if m.preview == kept {
+		t.Fatal("a changed transcript kept its old preview")
+	}
+	if got, want := m.previewLines(), buildPreviewLines(m.filtered[0].conv, "", m.paneWidth()-1); !slices.Equal(got, want) {
+		t.Fatal("rebuilt preview differs from a full build")
+	}
+}

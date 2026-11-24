@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -77,6 +78,61 @@ type previewCache struct {
 	key    string
 	lines  []string
 	stamps []previewStamp
+	// resume is where the last build without a search left off, so a
+	// conversation that only grew is drawn from there (canResume) instead
+	// of again from the start: a big busy session adds a message or tool
+	// call every few seconds, and building one of 6,000 messages takes a
+	// third of a second.
+	resume *previewResume
+}
+
+// previewResume is buildPreview part way: what it has drawn up to message
+// next and tool tools, and what drawing the rest depends on.
+type previewResume struct {
+	lines             []string
+	stamps            []previewStamp
+	lastShown, next   int
+	tools             int
+	lastRole, lastDay string
+	id                string
+	width             int
+	lastMsg           transcript.Message // the last message drawn, to check it's still there
+	lastTool          transcript.ToolUse
+	peers             map[int]string
+}
+
+// canResume: conv is st's conversation with only messages and tools added
+// after it, and none of what was drawn changed.
+func (st *previewResume) canResume(conv transcript.Conversation, query string, width int) bool {
+	if st == nil || query != "" || conv.SessionID != st.id || width != st.width ||
+		len(conv.Messages) < st.next || len(conv.Tools) < st.tools {
+		return false
+	}
+	if st.next > 0 {
+		m := conv.Messages[st.next-1]
+		if m.Ts != st.lastMsg.Ts || m.Role != st.lastMsg.Role || m.Text != st.lastMsg.Text || m.To != st.lastMsg.To || m.Note != st.lastMsg.Note {
+			return false
+		}
+	}
+	if st.tools > 0 && conv.Tools[st.tools-1] != st.lastTool {
+		return false
+	}
+	for _, t := range conv.Tools[st.tools:] {
+		if t.At < st.next { // would be drawn among messages already drawn
+			return false
+		}
+	}
+	for i, n := range st.peers {
+		if conv.PeerNotes[i] != n {
+			return false
+		}
+	}
+	for i := range conv.PeerNotes {
+		if _, ok := st.peers[i]; !ok && i < st.next {
+			return false
+		}
+	}
+	return true
 }
 
 // previewStamp says the preview lines from line on happened at when ("2026-09-29 21:45").
@@ -202,7 +258,11 @@ func cachedPreview(c *previewCache, conv transcript.Conversation, query string, 
 	key := fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%s\x00%v\x00%v", conv.SessionID, len(conv.Messages), len(conv.Tools), width, query, conv.PeerNotes, conv.Queue) // %v sorts map keys
 	if c.key != key {
 		c.key = key
-		c.lines, c.stamps = buildPreview(conv, query, width)
+		from := c.resume
+		if !from.canResume(conv, query, width) {
+			from = nil
+		}
+		c.lines, c.stamps, c.resume = buildPreviewFrom(conv, query, width, from)
 	}
 	return c.lines
 }
@@ -226,6 +286,14 @@ func buildPreviewLines(conv transcript.Conversation, query string, width int) []
 
 // buildPreview is buildPreviewLines with when each message's lines happened.
 func buildPreview(conv transcript.Conversation, query string, width int) ([]string, []previewStamp) {
+	lines, stamps, _ := buildPreviewFrom(conv, query, width, nil)
+	return lines, stamps
+}
+
+// buildPreviewFrom is buildPreview carrying on from st (nil: from the start;
+// only without a search, and only when st.canResume), and where it left off
+// without a search, for the next one.
+func buildPreviewFrom(conv transcript.Conversation, query string, width int, st *previewResume) ([]string, []previewStamp, *previewResume) {
 	var msgLines []string
 
 	// Find messages containing the query
@@ -274,6 +342,13 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 	// and adds a row naming each new day after the first; true at a new day.
 	var stamps []previewStamp
 	lastDay := ""
+	lastShown := -1
+	lastRole := ""
+	nextTool := 0
+	start := 0
+	if st != nil { // appends copy: st's slices are clipped
+		msgLines, stamps, lastDay, lastShown, lastRole, nextTool, start = st.lines, st.stamps, st.lastDay, st.lastShown, st.lastRole, st.tools, st.next
+	}
 	stamp := func(ts string) bool {
 		when := transcript.FormatTimestamp(ts)
 		if when == "" {
@@ -293,9 +368,6 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 
 	// Display messages with gaps. Tool calls and turn ends sit between them,
 	// except in a search, which is the matches and their context.
-	lastShown := -1
-	lastRole := ""
-	nextTool := 0
 	drawTools := func(upTo int) {
 		for query == "" && nextTool < len(conv.Tools) && conv.Tools[nextTool].At <= upTo {
 			t := conv.Tools[nextTool]
@@ -310,7 +382,7 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 			nextTool++
 		}
 	}
-	for i := 0; i < len(conv.Messages); i++ {
+	for i := start; i < len(conv.Messages); i++ {
 		if !showSet[i] {
 			continue
 		}
@@ -446,6 +518,17 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 	}
 	drawTools(len(conv.Messages))
 
+	var next *previewResume
+	if query == "" {
+		next = &previewResume{lines: slices.Clip(msgLines), stamps: slices.Clip(stamps), lastShown: lastShown, next: len(conv.Messages),
+			tools: nextTool, lastRole: lastRole, lastDay: lastDay, id: conv.SessionID, width: width, peers: maps.Clone(conv.PeerNotes)}
+		if n := len(conv.Messages); n > 0 {
+			next.lastMsg = conv.Messages[n-1]
+		}
+		if nextTool > 0 {
+			next.lastTool = conv.Tools[nextTool-1]
+		}
+	}
 	if lastShown < len(conv.Messages)-1 {
 		remaining := len(conv.Messages) - lastShown - 1
 		msgLines = append(msgLines, fmt.Sprintf("\033[90m  ... %d more messages\033[0m", remaining))
@@ -454,7 +537,7 @@ func buildPreview(conv transcript.Conversation, query string, width int) ([]stri
 		msgLines = append(msgLines, queuedLines(conv.Queue, width)...)
 	}
 
-	return msgLines, stamps
+	return msgLines, stamps, next
 }
 
 // queuedLines draws the messages a busy session has queued and not taken in

@@ -240,6 +240,8 @@ type model struct {
 	autoFailed        string       // the version an automatic install failed for: offered, not retried
 	autoInstalling    bool         // this install started on its own: the new ccs says so
 	lastKeyAt         time.Time    // the last key press, for "away"
+	usedAt            time.Time    // the last key, mouse report or focus, and startup: idle (idle.go) counts from it
+	liveGen, chatGen  int          // the live and fast tick chains running now (idle.go)
 	updatedFrom       string       // started after updating itself from this version: the popup says so
 	updatedOpen       bool
 	updateErr         string // last install failure, shown in the popup with a retry
@@ -535,6 +537,7 @@ func initialModel(items []listItem, filterQuery string, claudeFlags []string) mo
 		hits:        &hitCounter{byID: make(map[string]int)},
 		prs:         make(map[string]github.PRInfo),
 		prSelAsked:  make(map[string]bool),
+		usedAt:      time.Now(), // just opened: in use
 	}
 	m.updateFilter()
 	return m
@@ -1263,8 +1266,12 @@ func (m model) Init() tea.Cmd {
 // session is selected.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	quiet := m.quietTick(msg)
+	wasIdle := m.idle()
 	res, cmd := m.update(msg)
 	n := res.(model)
+	if wake := n.wakeIfUsed(msg, wasIdle); wake != nil {
+		cmd = tea.Batch(cmd, wake)
+	}
 	n.openReadyReorg()
 	if !movesOnly(msg) && !quiet {
 		n.sortList()
@@ -1558,6 +1565,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case liveTickMsg:
+		if msg.gen != m.liveGen {
+			return m, nil // a chain a wake replaced
+		}
 		ask := agentsDue(time.Since(m.agentsAt), m.agentsSoon)
 		if ask {
 			m.agentsAt, m.agentsSoon = time.Now(), false
@@ -1625,7 +1635,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyLive(msg.updated)
 		}
 		m.applyStats(msg.stats)
-		cmds := []tea.Cmd{liveTick(), m.autoFocusCmd(), m.heldCmd()}
+		cmds := []tea.Cmd{m.autoFocusCmd(), m.heldCmd()}
+		if msg.tickGen == m.liveGen { // else a wake has started the chain afresh
+			cmds = append(cmds, m.nextLiveTick())
+		}
 		// A session that went live but isn't listed (a brand-new conversation):
 		// scan now rather than at the next minute, at most every 15s.
 		if len(msg.unknown) > 0 && m.refreshStarted.IsZero() && time.Since(m.lastKick) > 15*time.Second {
@@ -1899,10 +1912,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case chatTickMsg:
+		if msg.gen != m.chatGen {
+			return m, nil // a chain a wake replaced
+		}
 		return m, m.chatTickCmd()
 
 	case chatTickResult:
-		m.chatTickOn = false // rescheduled by Update while its session stays live
+		if msg.tickGen == m.chatGen {
+			m.chatTickOn = false // rescheduled by Update while its session stays live
+		}
 		if msg.conv != nil && msg.gen == m.gen && !m.prompting() {
 			m.applyLive([]transcript.Conversation{*msg.conv})
 		}

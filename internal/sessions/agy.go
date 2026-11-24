@@ -80,6 +80,10 @@ func AgyLiveSessions() map[string]LiveSession {
 		return AgyLiveCache.Out
 	}
 	out := map[string]LiveSession{}
+	if noneRunning("agy") { // see Frugal
+		AgyLiveCache.at, AgyLiveCache.Out = time.Now(), out
+		return out
+	}
 	ps, err := proc.PsAll()
 	if err != nil {
 		AgyLiveCache.at, AgyLiveCache.Out = time.Now(), out

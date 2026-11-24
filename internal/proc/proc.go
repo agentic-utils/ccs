@@ -329,3 +329,28 @@ var PsTree = func() (string, error) {
 	}
 	return b.String(), nil
 }
+
+var names struct {
+	sync.Mutex
+	at  time.Time
+	set map[string]bool
+}
+
+// MayRun: a process named name (its executable's name) may be running. True
+// whenever it can't tell, so a caller that skips work on false never misses
+// a process; false only when the process table, read in one call and shared
+// for ListingShare, has none. Much cheaper than PsAll, which reads every
+// process's command line.
+func MayRun(name string) bool {
+	names.Lock()
+	defer names.Unlock()
+	if names.set == nil || time.Since(names.at) >= ListingShare {
+		set, err := sysNames()
+		if err != nil {
+			names.set = nil
+			return true
+		}
+		names.at, names.set = time.Now(), set
+	}
+	return names.set[name]
+}

@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -2167,7 +2168,7 @@ func NoteCodexExecs(sessions map[string]LiveSession) {
 			claude[s.PID] = id
 		}
 	}
-	if len(claude) == 0 {
+	if len(claude) == 0 || noneRunning("codex") {
 		return
 	}
 	out, err := proc.PsTree()
@@ -2405,6 +2406,16 @@ var CodexLiveCache struct {
 	Out map[string]LiveSession
 }
 
+// Frugal is set by the TUI while nobody is using it (unfocused, or no key
+// for a while): the live tick's Codex and agy lookups then skip the full
+// process listing, a command line read for each of hundreds of processes,
+// unless the process table (proc.MayRun) has a process of that name. While
+// it's in use they list as ever, so nothing changes under the user's eyes.
+var Frugal atomic.Bool
+
+// noneRunning: frugal, and no process called name runs.
+func noneRunning(name string) bool { return Frugal.Load() && !proc.MayRun(name) }
+
 // LiveCodexSessions is codexLiveSessions; stubbed in tests, which must
 // never see the machine's own Codex tabs.
 var LiveCodexSessions = CodexLiveSessions
@@ -2423,6 +2434,10 @@ func CodexLiveSessions() map[string]LiveSession {
 		return CodexLiveCache.Out
 	}
 	out := map[string]LiveSession{}
+	if noneRunning("codex") {
+		CodexLiveCache.at, CodexLiveCache.Out = time.Now(), out
+		return out
+	}
 	ps, err := proc.PsAll()
 	if err != nil {
 		CodexLiveCache.at, CodexLiveCache.Out = time.Now(), out

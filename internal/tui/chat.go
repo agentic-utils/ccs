@@ -29,13 +29,15 @@ import (
 // busy/idle status are checked (one stat and one small file read).
 const chatFastRefresh = 250 * time.Millisecond
 
-type chatTickMsg struct{}
+// chatTickMsg starts the fast read; gen is its chain, as liveTickMsg's.
+type chatTickMsg struct{ gen int }
 
 type chatTickResult struct {
-	id   string
-	conv *transcript.Conversation // set when the transcript grew
-	stat sessions.SessionStat
-	gen  int
+	id      string
+	conv    *transcript.Conversation // set when the transcript grew
+	stat    sessions.SessionStat
+	gen     int
+	tickGen int // the fast tick's chain (chatTickMsg.gen)
 }
 
 type sendDoneMsg struct {
@@ -313,7 +315,11 @@ func (m *model) ensureChatTick() tea.Cmd {
 		return nil
 	}
 	m.chatTickOn = true
-	return tea.Tick(chatFastRefresh, func(time.Time) tea.Msg { return chatTickMsg{} })
+	every, gen := chatFastRefresh, m.chatGen
+	if m.idle() {
+		every = chatIdleRefresh
+	}
+	return tea.Tick(every, func(time.Time) tea.Msg { return chatTickMsg{gen} })
 }
 
 // chatTickCmd reads the chatTarget's status and any new transcript lines
@@ -323,10 +329,10 @@ func (m model) chatTickCmd() tea.Cmd {
 	if !ok {
 		return func() tea.Msg { return chatTickResult{} }
 	}
-	gen := m.gen
+	gen, tickGen := m.gen, m.chatGen
 	pid := m.livePIDs[conv.SessionID]
 	return func() (msg tea.Msg) {
-		res := chatTickResult{id: conv.SessionID, gen: gen}
+		res := chatTickResult{id: conv.SessionID, gen: gen, tickGen: tickGen}
 		defer func() {
 			if r := recover(); r != nil {
 				transcript.RecoverWorkerValue(r)

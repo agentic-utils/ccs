@@ -1366,9 +1366,9 @@ func TestHeaderPRsCollapsedAndLast(t *testing.T) {
 	}
 }
 
-// An AskUserQuestion draws as Claude Code's menu reads (header, question,
-// options) and its answer as an entry of its own where it arrived, so the
-// cached preview carries on from what it drew rather than redrawing.
+// An AskUserQuestion draws as Claude Code's terminal shows it: nothing while
+// the menu waits, then one "Answered Claude's questions:" entry where the
+// answer arrived, so the cached preview carries on from what it drew.
 func TestPreviewDrawsAskUserQuestion(t *testing.T) {
 	conv := transcript.Conversation{SessionID: "ask1"}
 	long := "What bothers you most about answering an AskUserQuestion in ccs's bottom pane today, all things considered?"
@@ -1384,32 +1384,37 @@ func TestPreviewDrawsAskUserQuestion(t *testing.T) {
 	const width = 60
 	asked := cachedPreview(c, conv, "", width)
 	plain := strip2(strings.Join(asked, "\n"))
-	for _, want := range []string{"● AskUserQuestion · Pain points  (pick any)", "  What bothers you most", "    1. Too cramped", "    3. Hard to find", "  Layout\n  Which layout?\n    1. Listed\n    2. Inline"} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("missing %q:\n%s", want, plain)
+	for _, no := range []string{"AskUserQuestion", "Too cramped", "Which layout?", "Answered", "Pain points"} {
+		if strings.Contains(plain, no) {
+			t.Errorf("a waiting menu draws nothing, found %q:\n%s", no, plain)
 		}
 	}
-	if strings.Contains(plain, "{") || strings.Contains(plain, "the box is small") || strings.Contains(plain, "Answered") {
-		t.Errorf("no JSON, no descriptions, and no answer yet:\n%s", plain)
-	}
-	if a := strip2(asked[slices.IndexFunc(asked, func(l string) bool { return strings.Contains(l, "1. Too cramped") })]); !strings.HasPrefix(a, "    ") {
-		t.Errorf("options sit under the question: %q", a)
-	}
 
-	// The answer: several picked, your own text, a note.
+	// ccs answered it through the hook; then the answer: several picked,
+	// your own text, a note.
+	transcript.ParseLine(&conv, []byte(`{"type":"attachment","timestamp":"2026-11-24T10:01:59Z","attachment":{"type":"hook_permission_decision","decision":"allow","toolUseID":"q1","hookEvent":"PermissionRequest"}}`))
 	transcript.ParseLine(&conv, []byte(`{"type":"user","timestamp":"2026-11-24T10:02:00Z","toolUseResult":{"answers":{"`+long+`":"Too cramped, No previews","Which layout?":"neither, a table"},"annotations":{"`+long+`":{"notes":"the box is too small on a laptop"}}},"message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"User has answered your questions."}]}}`))
 	answered := cachedPreview(c, conv, "", width)
 	if c.resume == nil || !slices.Equal(answered[:len(asked)-1], asked[:len(asked)-1]) {
 		t.Error("the answer should be added below what was drawn, not change it")
 	}
-	got := strip2(strings.Join(answered[len(asked)-1:], "\n"))
-	for _, want := range []string{"● Answered", "  Pain points → Too cramped, No previews", "    note: the box is too small on a laptop", "  Layout → neither, a table  (other)"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q:\n%s", want, got)
-		}
+	got := strip2(strings.Join(unmarkAll(answered[len(asked)-1:]), "\n"))
+	want := "● Answered Claude's questions:\n" +
+		"  ⎿  · What bothers you most about answering an\n" +
+		"       AskUserQuestion in ccs's bottom pane today, all\n" +
+		"       things considered? → Too cramped, No previews ·\n" +
+		"       notes: the box is too small on a laptop\n" +
+		"     · Which layout? → neither, a table\n" +
+		"  ⎿  Allowed by PermissionRequest hook"
+	if !strings.Contains(got, want) {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
-	if strings.Contains(got, "Too cramped, No previews  (other)") {
-		t.Errorf("options picked together aren't your own text:\n%s", got)
+	for _, l := range answered[len(asked)-1:] {
+		if s := strip2(l); strings.HasPrefix(s, "  ⎿") || strings.HasPrefix(s, "     ") {
+			if !strings.Contains(l, askDim) {
+				t.Errorf("the ⎿ lines are dim: %q", l)
+			}
+		}
 	}
 	if !slices.Equal(unmarkAll(slices.Clone(answered)), buildPreviewLines(conv, "", width)) {
 		t.Error("carrying on should draw what a fresh build draws")
@@ -1420,25 +1425,49 @@ func TestPreviewDrawsAskUserQuestion(t *testing.T) {
 		}
 	}
 	// A search is the matches and their context: no questions.
-	if s := strip2(strings.Join(buildPreviewLines(conv, "questions", width), "\n")); strings.Contains(s, "AskUserQuestion") || strings.Contains(s, "Answered") {
+	if s := strip2(strings.Join(buildPreviewLines(conv, "questions", width), "\n")); strings.Contains(s, "Answered") {
 		t.Errorf("a search shows no tool calls:\n%s", s)
 	}
 }
 
 func TestPreviewAskOneQuestionAndDeclined(t *testing.T) {
-	ask := transcript.Ask{Questions: []transcript.AskQuestion{{Question: "Ship it?", Options: []transcript.AskOption{{Label: "Yes"}, {Label: "No"}}}}}
-	q := strip2(strings.Join(renderAsk(ask, 80), "\n"))
-	if q != "● AskUserQuestion\n  Ship it?\n    1. Yes\n    2. No" {
-		t.Errorf("no header:\n%s", q)
-	}
-	ask.Questions[0].Header = "Ship"
+	ask := transcript.Ask{Questions: []transcript.AskQuestion{{Question: "Ship it?", Header: "Ship", Options: []transcript.AskOption{{Label: "Yes"}, {Label: "No"}}}}}
 	ask.Answered, ask.Answers = true, []transcript.AskAnswer{{Question: "Ship it?", Answer: "Yes"}}
-	if got := strip2(strings.Join(renderAskAnswer(ask, 80), "\n")); got != "● Answered · Ship\n  → Yes" {
-		t.Errorf("one answer:\n%s", got)
+	if got := strip2(strings.Join(renderAskAnswer(ask, 80), "\n")); got != "● Answered Claude's questions:\n  ⎿  · Ship it? → Yes" {
+		t.Errorf("one answer, answered in its tab:\n%s", got)
+	}
+	ask.Answers = []transcript.AskAnswer{{Question: "Ship it?", Notes: "not sure"}}
+	if got := strip2(strings.Join(renderAskAnswer(ask, 80), "\n")); got != "● Answered Claude's questions:\n  ⎿  · Ship it? → (no option selected) · notes: not sure" {
+		t.Errorf("notes only:\n%s", got)
 	}
 	ask.Answers, ask.Failed, ask.Result = nil, true, "The user doesn't want to proceed with this tool use."
-	if got := strip2(strings.Join(renderAskAnswer(ask, 80), "\n")); got != "● Not answered\n  The user doesn't want to proceed with this tool use." {
+	if got := strip2(strings.Join(renderAskAnswer(ask, 80), "\n")); got != "● Declined to answer Claude's questions:\n  ⎿  · Ship it? (Yes / No)" {
 		t.Errorf("declined:\n%s", got)
+	}
+	ask.Failed, ask.Result = false, "User has answered your questions: \"Ship it?\"=\"Yes\"."
+	if got := strip2(strings.Join(renderAskAnswer(ask, 80), "\n")); got != "● Answered Claude's questions:\n  ⎿  User has answered your questions: \"Ship it?\"=\"Yes\"." {
+		t.Errorf("a pruned result shows its text:\n%s", got)
+	}
+}
+
+// Only a PermissionRequest hook's allow, for that very call, marks an ask.
+func TestAskHookDecision(t *testing.T) {
+	conv := transcript.Conversation{}
+	transcript.ParseLine(&conv, []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[{"question":"Ok?","options":[{"label":"Yes"}]}]}}]}}`))
+	for _, a := range []string{
+		`{"type":"hook_permission_decision","decision":"deny","toolUseID":"q1","hookEvent":"PermissionRequest"}`,
+		`{"type":"hook_permission_decision","decision":"allow","toolUseID":"other","hookEvent":"PermissionRequest"}`,
+		`{"type":"hook_permission_decision","decision":"allow","toolUseID":"q1","hookEvent":"PreToolUse"}`,
+	} {
+		transcript.ParseLine(&conv, []byte(`{"type":"attachment","attachment":`+a+`}`))
+	}
+	if conv.Asks[0].HookAllowed {
+		t.Fatal("marked by another decision")
+	}
+	shared := conv
+	transcript.ParseLine(&conv, []byte(`{"type":"attachment","attachment":{"type":"hook_permission_decision","decision":"allow","toolUseID":"q1","hookEvent":"PermissionRequest"}}`))
+	if !conv.Asks[0].HookAllowed || shared.Asks[0].HookAllowed {
+		t.Errorf("allowed: %v; the earlier copy should be untouched: %v", conv.Asks[0].HookAllowed, shared.Asks[0].HookAllowed)
 	}
 }
 

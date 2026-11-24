@@ -28,6 +28,26 @@ type Ask struct {
 	Answers []AskAnswer
 	Result  string
 	Failed  bool // the result was an error: the menu was declined or interrupted
+	// HookAllowed: a PermissionRequest hook allowed it (ccs hook permission,
+	// answered from ccs), as the transcript's hook_permission_decision says.
+	HookAllowed bool
+}
+
+// noteAskHook records a PermissionRequest hook allowing an AskUserQuestion
+// call, which Claude Code writes as an attachment before the call's result.
+func noteAskHook(conv *Conversation, id, decision, event string) {
+	if decision != "allow" || event != "PermissionRequest" || id == "" {
+		return
+	}
+	for i := len(conv.Asks) - 1; i >= 0; i-- {
+		if conv.Asks[i].ID == id {
+			if !conv.Asks[i].HookAllowed {
+				conv.Asks = slices.Clone(conv.Asks) // copies of the conversation share the slice
+				conv.Asks[i].HookAllowed = true
+			}
+			return
+		}
+	}
 }
 
 // AskQuestion is one question of an AskUserQuestion call, as asked.

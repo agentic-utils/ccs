@@ -93,7 +93,7 @@ func TestMenuDigitHighlights(t *testing.T) {
 		t.Fatalf("Enter sends the highlighted option: %+v", *calls)
 	}
 	m, calls, _ = menuPane(t, colour())
-	if m = press(m, "7"); len(*calls) != 0 || !strings.Contains(m.heldNote, "1-3") {
+	if m = press(m, "7"); len(*calls) != 0 || !strings.Contains(m.heldNote, "1-4") { // Other… is 4
 		t.Error("a digit past the options sends nothing")
 	}
 }

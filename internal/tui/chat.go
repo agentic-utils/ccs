@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"os"
 	"path/filepath"
 	"slices"
@@ -872,6 +873,34 @@ type peerLabelCache struct {
 	valid  bool
 	notes  map[int]string
 	builds int // how often peerLabels ran, for tests
+	// topics is a hash of each untitled session's topic once a message has
+	// given it (transcript.MessageTopic), which no later message changes:
+	// finding it can walk every message of a long session.
+	topics map[string]uint64
+}
+
+var topicSeed = maphash.MakeSeed()
+
+// topicKey stands for what an untitled session's name falls back to (its
+// topic), for peerLabelKey: the topic's hash once a message has given it,
+// kept by session; until then its message count, since any message may.
+func (c *peerLabelCache) topicKey(conv *transcript.Conversation) uint64 {
+	if c == nil {
+		return uint64(len(conv.Messages))
+	}
+	if k, ok := c.topics[conv.SessionID]; ok {
+		return k
+	}
+	t, ok := transcript.MessageTopic(conv)
+	if !ok {
+		return uint64(len(conv.Messages))
+	}
+	if c.topics == nil {
+		c.topics = map[string]uint64{}
+	}
+	k := maphash.String(topicSeed, t)
+	c.topics[conv.SessionID] = k
+	return k
 }
 
 // cachedPeerLabels is peerLabels through m.peerNotes.
@@ -890,9 +919,10 @@ func (m model) cachedPeerLabels(conv transcript.Conversation) map[int]string {
 
 // peerLabelKey hashes what peerLabels reads: conv's peers, and for every
 // listed session (in order, since a name match takes the first) its id, its
-// peers, title and message count (sessionName falls back to its topic), and
-// the name its status gives it, plus the live sessions' pids. It reads the
-// items in place, never copying a conversation.
+// peers, title, the name its status gives it and, with neither, its topic
+// (what sessionName falls back to), plus the live sessions' pids. Not their
+// messages: a message anywhere that isn't between sessions leaves the labels
+// as they were. It reads the items in place, never copying a conversation.
 func (m model) peerLabelKey(conv transcript.Conversation) uint64 {
 	h := uint64(14695981039346656037)
 	str := func(s string) {
@@ -909,8 +939,11 @@ func (m model) peerLabelKey(conv transcript.Conversation) uint64 {
 		str(c.SessionID)
 		str(c.Title)
 		num(len(c.Peers))
-		num(len(c.Messages))
-		str(m.chatStatus[c.SessionID].Name)
+		name := m.chatStatus[c.SessionID].Name
+		str(name)
+		if name == "" && c.Title == "" {
+			num(int(m.peerNotes.topicKey(c)))
+		}
 	}
 	var live uint64 // the map's order is random: sum each entry's own hash
 	for id, pid := range m.livePIDs {

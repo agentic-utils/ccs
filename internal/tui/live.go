@@ -120,8 +120,11 @@ func (m model) liveCmd(askAgents bool) tea.Cmd {
 		scanned := sessions.ScanSessions(prev)
 		live := make(map[string]bool, len(scanned))
 		msg := liveMsg{tickGen: tickGen, live: live, pids: make(map[string]int, len(scanned)), gen: gen, stats: make(map[string]sessions.SessionStat, len(scanned)), unverified: make(map[string]bool), scan: scanned}
-		if askAgents {
+		switch {
+		case askAgents && sessions.MayHaveBackground(scanned):
 			msg.bg, _ = sessions.ListAgents() // nil on failure (no claude, or too old): the last answer stands
+		case askAgents:
+			msg.bg = map[string]sessions.BgSession{} // every live session file says interactive: none runs in the background
 		}
 		msg.hosts = map[string]string{}
 		for id, s := range scanned {

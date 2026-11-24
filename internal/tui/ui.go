@@ -140,6 +140,7 @@ type model struct {
 	hosts            map[string]string             // live sessions run by an app with no terminal (hostOf): ccs can't switch to them
 	bg               map[string]sessions.BgSession // background sessions (claude --bg), opened with claude attach
 	agentsAt         time.Time                     // when claude agents was last asked
+	agentsSoon       bool                          // ask claude agents once AgentsSoon has passed (focus, a new live session)
 	confirmStop      string                        // ^X K asked whether to stop this session: y stops it
 	orderingTabs     bool                          // ^T J is putting the terminal tabs in list order
 	confirmServeStop bool                          // ^T V W asked whether to stop ccs serve's agent: y stops it
@@ -1415,6 +1416,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorMsg = "Couldn't stop " + msg.name + ": " + msg.err.Error()
 		} else {
 			m.note("Stopped " + msg.name + " (Enter resumes it)")
+			m.agentsSoon = true // its state, without waiting a minute
 		}
 		return m, nil
 
@@ -1556,9 +1558,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case liveTickMsg:
-		ask := time.Since(m.agentsAt) >= sessions.AgentsInterval
+		ask := agentsDue(time.Since(m.agentsAt), m.agentsSoon)
 		if ask {
-			m.agentsAt = time.Now()
+			m.agentsAt, m.agentsSoon = time.Now(), false
 		}
 		return m, tea.Batch(m.liveCmd(ask), m.serveCheckCmd(), m.heldCmd())
 
@@ -1585,6 +1587,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.heldCmd()
 
 	case liveMsg:
+		if m.newUnknownLive(msg.live) {
+			m.agentsSoon = true // perhaps a claude --bg: say so without waiting a minute
+		}
 		m.live = msg.live
 		if msg.pids != nil {
 			m.livePIDs, m.unverified, m.lastScan, m.hosts = msg.pids, msg.unverified, msg.scan, msg.hosts
@@ -1646,6 +1651,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.FocusMsg: // terminals that report focus; without it ccs counts as focused
 		m.blurred = false
+		m.agentsSoon = true // background sessions' states, fresh for whoever's looking
 		return m, checkHooksCmd
 
 	case hooksMsg:

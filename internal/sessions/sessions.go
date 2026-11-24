@@ -566,8 +566,14 @@ var OpenApp = func(link string) error {
 // done, failed, stopped).
 type BgSession struct{ ID, State string }
 
-// AgentsInterval is how often the live tick asks claude agents.
-const AgentsInterval = 10 * time.Second
+// AgentsInterval is how often the live tick asks claude agents: each ask
+// starts a Node claude, which starts a couple of dozen programs more. It is
+// asked sooner (AgentsSoon after the last ask) when ccs regains focus or a
+// live session appears that it doesn't know as a background one yet.
+const (
+	AgentsInterval = 60 * time.Second
+	AgentsSoon     = 10 * time.Second
+)
 
 // ListAgents is the background sessions by SessionID, from claude agents
 // --json. A variable so tests never run the real one.

@@ -72,6 +72,23 @@ type liveMsg struct {
 	subsKnown bool
 }
 
+// agentsDue: whether this live tick asks claude agents, since ago was the last
+// ask: every AgentsInterval, or once AgentsSoon has passed when soon.
+func agentsDue(ago time.Duration, soon bool) bool {
+	return ago >= sessions.AgentsInterval || soon && ago >= sessions.AgentsSoon
+}
+
+// newUnknownLive: a session live now that wasn't last tick and isn't known
+// as a background one, which a claude --bg just started would be.
+func (m model) newUnknownLive(live map[string]bool) bool {
+	for id := range live {
+		if _, bg := m.bg[id]; !m.live[id] && !bg {
+			return true
+		}
+	}
+	return false
+}
+
 func liveTick() tea.Cmd {
 	return tea.Tick(sessions.LiveInterval, func(time.Time) tea.Msg { return liveTickMsg{} })
 }

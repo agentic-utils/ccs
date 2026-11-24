@@ -34,8 +34,10 @@ func claimEnv(t *testing.T) (live map[int]PRClaim) {
 		return nil, errors.New("no network in tests")
 	}
 	EndState = func(string) (string, error) { return "", errors.New("no network in tests") }
+	ResetClaimedPRs() // PRsOf's claims were another test's file
 	t.Cleanup(func() {
 		state.SettingsPath, LiveByPID, ParentPID, FetchOpenPRs, EndState = oldSettings, oldLive, oldParent, oldFetch, oldEnd
+		ResetClaimedPRs()
 	})
 	return live
 }

@@ -2293,40 +2293,44 @@ func agySession() (PRClaim, bool) {
 	return PRClaim{Session: id, Kind: transcript.KindAgy, Name: cmp.Or(sessions.AgyName(id), id)}, true
 }
 
-// PRsOf is conv's PRs and then its subagents' not among them.
+// PRsOf is conv's PRs, then its subagents' not among them, then the ones
+// claimed for its session not among those (claimedPRs).
 func PRsOf(conv transcript.Conversation) []string {
 	sub := subagentPRs(conv)
-	if len(sub) == 0 {
+	cl := claimedPRs(conv)
+	if len(sub) == 0 && len(cl) == 0 {
 		return conv.PRs
 	}
 	// The list asks for every session on every pass: a session whose
-	// subagents printed a PR it doesn't list gets the merged list built once
-	// and kept until its own or its subagents' list changes.
+	// subagents printed, or whose claims hold, a PR it doesn't list gets the
+	// merged list built once and kept until its own, its subagents' or its
+	// claimed list changes.
 	mergedPRs.Lock()
 	mm, ok := mergedPRs.by[conv.FilePath]
 	mergedPRs.Unlock()
-	if ok && sameArray(mm.sub, sub) && slices.Equal(mm.own, conv.PRs) {
+	if ok && sameArray(mm.sub, sub) && sameArray(mm.claimed, cl) && slices.Equal(mm.own, conv.PRs) {
 		return mm.out
 	}
-	out := mergePRs(conv.PRs, sub)
+	out := mergePRs(mergePRs(conv.PRs, sub), cl)
 	if conv.FilePath != "" {
 		mergedPRs.Lock()
-		mergedPRs.by[conv.FilePath] = mergedList{own: slices.Clone(conv.PRs), sub: sub, out: out}
+		mergedPRs.by[conv.FilePath] = mergedList{own: slices.Clone(conv.PRs), sub: sub, claimed: cl, out: out}
 		mergedPRs.Unlock()
 	}
 	return out
 }
 
 // mergedPRs is PRsOf's last answer for each session (by transcript path)
-// whose subagents printed PRs: its own list, its subagents' (the slice
-// subagentPRs keeps and hands out again while nothing changed), and the
-// two merged. Read only, so callers never write into it.
+// whose subagents printed PRs or whose claims hold some: its own list, its
+// subagents' (the slice subagentPRs keeps and hands out again while nothing
+// changed), its claimed ones (likewise claimedPRs'), and them merged.
+// Read only, so callers never write into it.
 var mergedPRs = struct {
 	sync.Mutex
 	by map[string]mergedList
 }{by: map[string]mergedList{}}
 
-type mergedList struct{ own, sub, out []string }
+type mergedList struct{ own, sub, claimed, out []string }
 
 // sameArray: a and b are the same slice of the same array, not just equal.
 func sameArray(a, b []string) bool {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/agentic-utils/ccs/internal/github"
 	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/state"
+	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
 func TestPRsCLIAndMCP(t *testing.T) {
@@ -72,8 +74,10 @@ func claimEnv(t *testing.T) (live map[int]github.PRClaim) {
 		return nil, errors.New("no network in tests")
 	}
 	github.EndState = func(string) (string, error) { return "", errors.New("no network in tests") }
+	github.ResetClaimedPRs() // a session's PRs read the claims: not another test's
 	t.Cleanup(func() {
 		state.SettingsPath, github.LiveByPID, github.ParentPID, github.FetchOpenPRs, github.EndState = oldSettings, oldLive, oldParent, oldFetch, oldEnd
+		github.ResetClaimedPRs()
 	})
 	return live
 }
@@ -87,5 +91,35 @@ func writeWatchState(t *testing.T, updated time.Time, prs ...*github.WatchedPR) 
 	}
 	if err := github.SavePRWatchState(st); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A PR claimed for a session, which its transcript never linked (opened
+// before a /clear), is in its PRS column, its preview's PR lines and the
+// PR lookups; claims of another session with the same name aren't.
+func TestClaimedPRsShowInTheList(t *testing.T) {
+	claimEnv(t) // the calling session is s-alpha
+	if code := github.RunClaim([]string{claimA}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("ccs claim: exit %d", code)
+	}
+	github.WithClaims(func(c *github.ClaimsFile) bool {
+		c.Claims[claimB] = []github.PRClaim{{Session: "s-other", Name: "alpha"}}
+		return true
+	})
+	github.ResetClaimedPRs()
+	conv := transcript.Conversation{SessionID: "s-alpha", Title: "alpha", FilePath: t.TempDir() + "/s-alpha.jsonl"}
+	m := model{prs: map[string]github.PRInfo{
+		claimA: {State: "OPEN", MergeState: "BLOCKED", Review: "REVIEW_REQUIRED", Title: "claimed"},
+		claimB: {State: "OPEN", MergeState: "CLEAN", Title: "someone else's"},
+	}, width: 100}
+	if got := strings.TrimSpace(m.prCell(conv, false)); got != "◷1" {
+		t.Errorf("PRS column counts the claimed PR only: %q", got)
+	}
+	lines := m.prLines(conv, 100, github.MaxPRLines, true)
+	if len(lines) != 1 || !strings.Contains(strip2(lines[0]), "claimed · review required") {
+		t.Errorf("preview's PR lines: %q", lines)
+	}
+	if got := m.attention(conv); got != attentionOpenPR {
+		t.Errorf("Tab's PR tier counts the claimed PR: %d", got)
 	}
 }

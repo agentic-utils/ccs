@@ -472,3 +472,32 @@ func TestOrderTabsChord(t *testing.T) {
 		t.Errorf("failure: %q", m.errorMsg)
 	}
 }
+
+func TestAgentsAskedLessOften(t *testing.T) {
+	if agentsDue(30*time.Second, false) || !agentsDue(sessions.AgentsInterval, false) {
+		t.Fatal("claude agents is asked once a minute")
+	}
+	if agentsDue(5*time.Second, true) || !agentsDue(sessions.AgentsSoon, true) {
+		t.Fatal("asked soon, but never twice within AgentsSoon")
+	}
+	m := initialModel(nil, "", nil)
+	m.agentsAt = time.Now().Add(-sessions.AgentsSoon)
+	m.live = map[string]bool{"old": true}
+	m.bg = map[string]sessions.BgSession{"bg": {ID: "b1"}}
+	res, _ := m.Update(liveMsg{live: map[string]bool{"old": true, "bg": true}})
+	if m = res.(model); m.agentsSoon {
+		t.Fatal("a known background session appearing is no reason to ask")
+	}
+	res, _ = m.Update(liveMsg{live: map[string]bool{"old": true, "new": true}})
+	if m = res.(model); !m.agentsSoon {
+		t.Fatal("a new live session may be a claude --bg: ask soon")
+	}
+	res, _ = m.Update(liveTickMsg{})
+	if m = res.(model); m.agentsSoon || time.Since(m.agentsAt) > time.Second {
+		t.Fatal("the tick asks and clears the flag")
+	}
+	res, _ = m.Update(tea.FocusMsg{})
+	if m = res.(model); !m.agentsSoon {
+		t.Fatal("focus asks soon")
+	}
+}

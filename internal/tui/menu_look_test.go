@@ -135,12 +135,10 @@ func TestMenuHintRowPerStep(t *testing.T) {
 	if h := hint(m); h != "↑↓ move · space tick · enter confirm · n note · ← back · esc list" {
 		t.Errorf("a pick-any second question: %q", h)
 	}
-	m = keyType(m, tea.KeyUp) // Other…
-	m = keyType(m, tea.KeyEnter)
-	if h := hint(m); h != "enter save · esc cancel" {
-		t.Errorf("the Other box: %q", h)
+	m = keyType(m, tea.KeyUp) // Other…: its field has the keys
+	if h := hint(m); h != "↑↓ move · type your own (ticks it) · enter confirm · esc list" {
+		t.Errorf("the Other field: %q", h)
 	}
-	m = keyType(m, tea.KeyEsc)  // closes the box
 	m = keyType(m, tea.KeyDown) // from Other… round to lint
 	m = press(m, " ")           // tick lint
 	m = keyType(m, tea.KeyEnter)

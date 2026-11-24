@@ -243,7 +243,10 @@ Key bindings:
   ↑↓ Enter 1-9    A prompt ccs holds, in the bottom pane: a question's menu, or a
                   permission prompt's rows as in its tab (Yes, Yes and don't ask
                   again, No and tell Claude what to do); Enter or a row's digit
-                  sends it at once, A yes, D no, Esc back to the list
+                  sends it at once, A yes, D no, Esc back to the list. A
+                  question's Other… row is a text field: with ❯ on it, type
+                  your own answer; n notes the highlighted option (and, in a
+                  single-select question, chooses it)
   Tab             Select the next session that needs you, by priority: a held
                   question, menu or prompt; then one that asked you something;
                   then one done that you haven't read; then one with a PR

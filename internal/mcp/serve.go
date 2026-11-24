@@ -924,21 +924,42 @@ func formAction(r *http.Request) action {
 }
 
 // answerFields are the form's q<i> fields (several for a multi-select).
+// Text typed in a question's Other field is your answer, as in Claude
+// Code's menu, whether or not its Other choice is ticked: a single-select's
+// only when no option is chosen (else the typing is a draft left behind),
+// a pick-any one's (q<i>_multi) beside its ticks, joined as Claude Code
+// sends them ("Red, violet"). promptDecision still checks each against the
+// question itself.
 func answerFields(r *http.Request) (map[string][]string, map[string]bool, map[string]string) {
 	out, other, notes := map[string][]string{}, map[string]bool{}, map[string]string{}
-	for k, vs := range r.PostForm {
-		if q, ok := strings.CutSuffix(k, "_note"); ok && len(q) > 1 && q[0] == 'q' && strings.Trim(q[1:], "0123456789") == "" {
+	isQ := func(q string) bool { return len(q) > 1 && q[0] == 'q' && strings.Trim(q[1:], "0123456789") == "" }
+	keys := map[string]bool{}
+	for k := range r.PostForm {
+		if q, ok := strings.CutSuffix(k, "_note"); ok && isQ(q) {
 			if n := strings.TrimSpace(r.PostFormValue(k)); n != "" {
 				notes[q] = n
 			}
 			continue
 		}
-		if len(k) > 1 && k[0] == 'q' && strings.Trim(k[1:], "0123456789") == "" {
-			if slices.Contains(vs, otherChoice) { // "Other": its text is the answer
-				out[k], other[k] = []string{r.PostFormValue(k + "_other")}, true
-				continue
-			}
-			out[k] = vs
+		if q, ok := strings.CutSuffix(k, "_other"); ok && isQ(q) {
+			keys[q] = true
+		} else if isQ(k) {
+			keys[k] = true
+		}
+	}
+	for k := range keys {
+		vs := r.PostForm[k]
+		typed := r.PostFormValue(k + "_other")
+		picks := slices.DeleteFunc(slices.Clone(vs), func(v string) bool { return v == otherChoice })
+		ticked := len(picks) < len(vs)
+		hasText := strings.TrimSpace(typed) != ""
+		switch {
+		case r.PostFormValue(k+"_multi") != "" && hasText && len(picks) > 0:
+			out[k], other[k] = []string{strings.Join(append(picks, strings.TrimSpace(typed)), ", ")}, true
+		case ticked || (hasText && len(picks) == 0): // "Other", or typed with nothing chosen: its text is the answer
+			out[k], other[k] = []string{typed}, true
+		case len(picks) > 0:
+			out[k] = picks
 		}
 	}
 	return out, other, notes

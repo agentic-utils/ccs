@@ -234,7 +234,7 @@ func (m *model) noteReview() {
 func (m model) heldParts(h mcp.HeldPrompt) (body, tail []string, room int, review bool) {
 	body, tail, review = m.heldSplit(h, m.heldPaneLines(h))
 	room = m.heldRoom() - len(tail)
-	for room < 5 && len(tail) > 1 && (mn(m, h).editing == boxNone || ansi.Strip(tail[0]) == "") {
+	for room < 5 && len(tail) > 1 && (mn(m, h).editing != boxNote || ansi.Strip(tail[0]) == "") {
 		tail, room = tail[1:], room+1
 	}
 	return body, tail, room, review
@@ -255,8 +255,8 @@ func (m model) heldSplit(h mcp.HeldPrompt, pane []string) (body, tail []string, 
 		return pane[:n], pane[n:], false
 	}
 	n := len(m.menuLines(h, m.heldInner(), false)) // the menu without its footer
-	if mnu.editing != boxNone && mnu.step < len(h.Questions) {
-		n -= 2 + len(menuBoxLines(mnu, m.heldInner())) // the open box (a blank, its lines, its hints) belongs to the footer
+	if mnu.editing == boxNote && mnu.step < len(h.Questions) {
+		n -= 2 + len(menuBoxLines(mnu, m.heldInner())) // the open note box (a blank, its lines, its hints) belongs to the footer; the Other… field is a row of the body
 	}
 	n = min(max(n, 0), len(pane))
 	return pane[:n], pane[n:], mnu.step >= len(h.Questions)

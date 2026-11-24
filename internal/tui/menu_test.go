@@ -246,50 +246,6 @@ func TestMenuSeveralQuestions(t *testing.T) {
 	}
 }
 
-// Other…: Enter opens a box (^A and ^K edit in it); its text is the
-// answer, flagged as Other; Esc closes the box without answering.
-func TestMenuOther(t *testing.T) {
-	m, calls, _ := menuPane(t, colour())
-	m = keyType(m, tea.KeyUp) // Other…
-	m = keyType(m, tea.KeyEnter)
-	m = typeIn(m, "xTe")
-	m = ctrl(m, tea.KeyCtrlA)
-	m = keyType(m, tea.KeyDelete)
-	m = keyType(m, tea.KeyEsc)
-	if len(*calls) != 0 || !m.heldKeysActive() || m.textInput.Value() != "" {
-		t.Fatalf("Esc closes the box only; ^A edits the box, not the search: %q", m.textInput.Value())
-	}
-	m = keyType(m, tea.KeyEnter)
-	m = typeIn(m, "al")
-	if !strings.Contains(strip2(m.View()), "Teal") {
-		t.Errorf("the box reopens with its text:\n%s", strip2(m.View()))
-	}
-	m = keyType(m, tea.KeyEnter)
-	if len(*calls) != 1 || (*calls)[0].labels[0][0] != "Teal" || !(*calls)[0].other[0] {
-		t.Errorf("Other's text, flagged: %+v", *calls)
-	}
-}
-
-// A filled-in Other box left open, the selection moved away and back:
-// Enter waits out the first-appearance guard before it sends.
-func TestMenuOtherBoxGuardedWhenShownAgain(t *testing.T) {
-	m, calls, tick := menuPane(t, colour())
-	m = keyType(m, tea.KeyUp)
-	m = keyType(m, tea.KeyEnter)
-	m = typeIn(m, "Teal")
-	m = ctrl(m, tea.KeyCtrlN)
-	m = ctrl(m, tea.KeyCtrlP)
-	m = keyType(m, tea.KeyEnter)
-	if len(*calls) != 0 {
-		t.Fatalf("shown again, Enter in the box waits: %+v", *calls)
-	}
-	tick(time.Second)
-	m = keyType(m, tea.KeyEnter)
-	if len(*calls) != 1 || (*calls)[0].labels[0][0] != "Teal" {
-		t.Errorf("then it sends: %+v", *calls)
-	}
-}
-
 // n puts a note on a question's answer: prefilled when edited, Esc
 // cancels, an empty note removes it; it shows dim under the question and
 // in the footer, and goes with the answer.

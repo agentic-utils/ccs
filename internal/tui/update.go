@@ -265,7 +265,7 @@ func (m model) menuInProgress() bool {
 }
 
 func (mn *heldMenu) inProgress() bool {
-	if mn.step > 0 || mn.editing != boxNone {
+	if mn.step > 0 || mn.editing == boxNote { // the Other… field counts by its text, below
 		return true
 	}
 	for _, p := range mn.picks {

@@ -33,6 +33,8 @@ func TestMain(m *testing.M) {
 	os.Setenv("CCS_NO_STATS", "1") // feature stats are tested in internal/stats; nothing else writes them
 	// ccs prs checks only the claims' pids (github.LiveAmong): through each test's LiveByPID stub.
 	github.LiveAmong = func([]int) map[int]github.PRClaim { return github.LiveByPID() }
+	statusDir, _ := os.MkdirTemp("", "ccs-test-statusline")
+	github.StatusLineDir = func() string { return statusDir } // never the real TMPDIR the status line reads
 	for _, k := range []string{"TERM_PROGRAM", "LC_TERMINAL", "ITERM_SESSION_ID", "TMUX", "CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"} {
 		os.Unsetenv(k)
 	}

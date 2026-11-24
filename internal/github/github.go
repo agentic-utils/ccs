@@ -354,8 +354,10 @@ func RunWatch(args []string) int {
 // in the mcp package, which imports this one.
 var SessionTick func(stallAfter time.Duration, now time.Time) error
 
-// afterPass runs what follows a successful pass: the nudges.
+// afterPass runs what follows a successful pass: the status line files,
+// then the nudges.
 func afterPass(nudge bool) {
+	logStatusLines("", time.Now())
 	if nudge {
 		if err := NudgeTick(time.Now()); err != nil {
 			fmt.Fprintln(os.Stderr, "ccs watch:", err)
@@ -1523,6 +1525,9 @@ func ClaimAs(pr, name string, release bool, now time.Time) (string, error) {
 		}
 		return true
 	})
+	if err == nil && me.Kind != transcript.KindCodex && me.Kind != transcript.KindAgy {
+		logStatusLines(me.Session, now) // its status line shows the change at once
+	}
 	if err == nil && fresh {
 		// Said in the events too, so whoever follows them (an orchestrator) knows
 		// the owner without being told by the session.

@@ -120,7 +120,7 @@ func claudeTranscript(t *testing.T) transcript.Conversation {
 				map[string]any{"type": "tool_use", "id": "t1", "name": "Tool" + poison, "input": map[string]any{"x": "arg" + poison}},
 				map[string]any{"type": "tool_use", "id": "b1", "name": "Bash", "input": map[string]any{"command": "sleep 1", "description": "build" + poison, "run_in_background": true}},
 				map[string]any{"type": "tool_use", "id": "q1", "name": "AskUserQuestion", "input": map[string]any{"questions": []any{
-					map[string]any{"question": "pick" + poison, "header": "hdr" + poison, "options": []any{map[string]any{"label": "a" + poison, "description": "d" + poison}}}}}},
+					map[string]any{"question": "pick" + poison, "header": "hdr" + poison, "options": []any{map[string]any{"label": "a" + poison, "description": "d" + poison, "preview": "line one\nline two" + poison}}}}}},
 				map[string]any{"type": "tool_use", "id": "m2", "name": "SendMessage", "input": map[string]any{"to": "worker" + poison, "message": "hi there" + poison, "summary": "sum" + poison}},
 			}}}) +
 		jsonLine(t, map[string]any{"type": "user", "timestamp": ts, "message": map[string]any{"role": "user", "content": []any{

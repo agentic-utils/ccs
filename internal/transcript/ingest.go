@@ -69,7 +69,7 @@ func cleanAsk(a *Ask) {
 		q.Question, q.Header = CleanText(q.Question), CleanText(q.Header)
 		for k := range q.Options {
 			o := &q.Options[k]
-			o.Label, o.Description = CleanText(o.Label), CleanText(o.Description)
+			o.Label, o.Description, o.Preview = CleanText(o.Label), CleanText(o.Description), CleanText(o.Preview)
 		}
 	}
 	for j := range a.Answers {

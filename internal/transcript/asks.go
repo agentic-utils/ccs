@@ -58,8 +58,10 @@ type AskQuestion struct {
 	Options     []AskOption
 }
 
-// AskOption is one option of a question.
-type AskOption struct{ Label, Description string }
+// AskOption is one option of a question. Preview is the text Claude Code
+// shows beside it while it's highlighted (a draft, a snippet, a mockup),
+// line breaks kept.
+type AskOption struct{ Label, Description, Preview string }
 
 // AskAnswer is the user's choice for one question, and any notes they added.
 type AskAnswer struct{ Question, Answer, Notes string }
@@ -78,7 +80,7 @@ func noteAsk(conv *Conversation, call toolCall, ts string) bool {
 	for _, q := range in.Questions {
 		aq := AskQuestion{Question: q.Question, Header: q.Header, MultiSelect: q.MultiSelect}
 		for _, o := range q.Options {
-			aq.Options = append(aq.Options, AskOption{o.Label, o.Description})
+			aq.Options = append(aq.Options, AskOption{o.Label, o.Description, o.Preview})
 		}
 		a.Questions = append(a.Questions, aq)
 	}
@@ -154,6 +156,12 @@ func (q AskQuestion) Text() string {
 		b.WriteString("\n" + strconv.Itoa(i+1) + ". " + o.Label)
 		if o.Description != "" {
 			b.WriteString(": " + o.Description)
+		}
+		if o.Preview != "" {
+			b.WriteString("\n   preview:")
+			for _, l := range strings.Split(o.Preview, "\n") {
+				b.WriteString("\n   | " + l)
+			}
 		}
 	}
 	return b.String()

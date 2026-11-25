@@ -420,7 +420,9 @@ func (mn *heldMenu) menuAnswer(i int, q mcp.HeldQuestion) string {
 // question wrapped, a blank line, then the options, "❯" on the highlighted
 // one, each "n. label" with its description dim, wrapped and indented
 // under it (two lines at most), ticks for pick-any, "Other…" numbered
-// last, a note under the chosen option; or the review. One dim hint row
+// last, a note under the chosen option, and, when the question has
+// previews, the highlighted option's in a box beside the options (under
+// them on a narrow pane); or the review. One dim hint row
 // shows only the keys that work at that step, and only while the menu has
 // the keys (active).
 func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
@@ -458,6 +460,15 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 	lines = append(lines, paneHeader("\033[1;"+amber+"m"+head+"\033[0m", width))
 	lines = append(lines, wrapIndent("", "\033[1m", q.Question, width)...)
 	lines = append(lines, "")
+	above := len(lines)
+	// With previews, the options take a column of their own (side by side)
+	// or the full width with the preview under them.
+	ow, side := width, false
+	if len(q.Previews) > 0 {
+		ow, side = previewColumns(width)
+	}
+	upper := lines
+	lines = nil // the options, at ow
 	cursor := func(i int) string {
 		if i == mn.cursor && mn.editing != boxNote {
 			return "\033[1;" + amber + "m❯\033[0m "
@@ -492,13 +503,13 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 				label += " ✓"
 			}
 		}
-		lines = append(lines, ansi.Truncate(cursor(i)+number(i)+mark+label, width, "…"))
+		lines = append(lines, ansi.Truncate(cursor(i)+number(i)+mark+label, ow, "…"))
 		indent := strings.Repeat(" ", 2+len(number(i))+len(mark))
 		if i < len(q.Descriptions) && q.Descriptions[i] != "" {
-			lines = append(lines, descLines(q.Descriptions[i], indent, width, 2)...)
+			lines = append(lines, descLines(q.Descriptions[i], indent, ow, 2)...)
 		}
 		if noteAt == i {
-			lines = append(lines, wrapIndent(indent+"note: ", "\033[90m", mn.notes[mn.step], width)...)
+			lines = append(lines, wrapIndent(indent+"note: ", "\033[90m", mn.notes[mn.step], ow)...)
 		}
 	}
 	n := len(q.Options)
@@ -509,10 +520,26 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 			mark = "[x] "
 		}
 	}
-	lines = append(lines, mn.otherLines(cursor(n)+number(n)+mark, q, width, active)...)
+	lines = append(lines, mn.otherLines(cursor(n)+number(n)+mark, q, ow, active)...)
 	if noteAt == n {
-		lines = append(lines, wrapIndent(strings.Repeat(" ", 2+len(number(n)))+"note: ", "\033[90m", mn.notes[mn.step], width)...)
+		lines = append(lines, wrapIndent(strings.Repeat(" ", 2+len(number(n)))+"note: ", "\033[90m", mn.notes[mn.step], ow)...)
 	}
+	if len(q.Previews) > 0 {
+		text := ""
+		if mn.cursor < len(q.Previews) {
+			text = q.Previews[mn.cursor]
+		}
+		// The box's height never depends on active, so heldSplit's count of
+		// the body agrees with what's drawn.
+		if side {
+			lines = besideColumn(lines, ow, previewBox(text, width-ow-previewGap, max(m.heldRoom()-above-previewReserve, 3)))
+		} else if rows := m.heldRoom() - above - len(lines) - 1 - previewReserve; rows >= 3 {
+			lines = append(append(lines, ""), previewBox(text, width, rows)...)
+		} else if text != "" { // no room for a box under the options: say where it is
+			lines = append(lines, ansi.Truncate(fmt.Sprintf("\033[90m▸ preview: %d lines in its tab\033[0m", strings.Count(text, "\n")+1), width, "…"))
+		}
+	}
+	lines = append(upper, lines...)
 	switch mn.editing {
 	case boxNote:
 		lines = append(append(lines, ""), menuBoxLines(mn, width)...)
@@ -547,6 +574,76 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 	}
 	keys = append(keys, keyEsc, "list")
 	return append(lines, paneHintsFit(width, keys...))
+}
+
+// menuPreviewSide is the inner width from which a question's previews go
+// beside its options, as Claude Code puts them on a wide terminal; on a
+// narrower pane the preview goes under the options, the full width.
+const menuPreviewSide = 90
+
+// previewGap is the space between the options column and the preview box.
+const previewGap = 2
+
+// previewReserve is the rows a question's footer (what Enter sends, the
+// hint row, an outcome note) is left under its preview box, so the box is
+// cut, never the footer, and the highlighted option stays on screen.
+const previewReserve = 5
+
+// previewColumns is the options column's width beside a preview box, and
+// whether there is room for one beside them at all.
+func previewColumns(width int) (left int, side bool) {
+	if width < menuPreviewSide {
+		return width, false
+	}
+	return min(max(width*2/5, 32), 56), true
+}
+
+// previewBox draws an option's preview as Claude Code does: in a grey box
+// width wide, its text verbatim, line breaks kept, long lines wrapped
+// (tabs as four spaces), at most rows rows tall borders included; a
+// preview taller than that ends in a dim count of what's cut, which its
+// tab shows in full. The highlighted option without a preview (Other…
+// included) gets a dim "no preview", so the layout doesn't jump.
+func previewBox(text string, width, rows int) []string {
+	width, rows = max(width, 12), max(rows, 3)
+	inner := width - 4
+	var body []string
+	for _, l := range strings.Split(strings.ReplaceAll(text, "\t", "    "), "\n") {
+		for _, w := range strings.Split(ansi.Wrap(l, inner, " "), "\n") {
+			body = append(body, strings.TrimRight(w, " "))
+		}
+	}
+	if strings.TrimSpace(text) == "" {
+		body = []string{"\033[90mno preview\033[0m"}
+	}
+	if len(body) > rows-2 {
+		cut := len(body) - (rows - 3)
+		body = append(body[:rows-3], fmt.Sprintf("\033[90m… %d more lines in its tab\033[0m", cut))
+	}
+	edge := "\033[90m"
+	out := []string{edge + "┌" + strings.Repeat("─", width-2) + "┐\033[0m"}
+	for _, l := range body {
+		l = ansi.Truncate(l, inner, "…")
+		out = append(out, edge+"│\033[0m "+l+"\033[0m"+strings.Repeat(" ", max(inner-ansi.StringWidth(l), 0))+" "+edge+"│\033[0m")
+	}
+	return append(out, edge+"└"+strings.Repeat("─", width-2)+"┘\033[0m")
+}
+
+// besideColumn puts right beside left, left padded to width and a
+// previewGap between them, as many rows as the taller of the two.
+func besideColumn(left []string, width int, right []string) []string {
+	out := make([]string, max(len(left), len(right)))
+	for i := range out {
+		l, r := "", ""
+		if i < len(left) {
+			l = ansi.Truncate(left[i], width, "…") + "\033[0m"
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		out[i] = l + strings.Repeat(" ", max(width-ansi.StringWidth(l), 0)+previewGap) + r
+	}
+	return out
 }
 
 // descLines is an option's description: dim, wrapped to width after

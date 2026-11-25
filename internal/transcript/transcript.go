@@ -759,6 +759,7 @@ type askQuestion struct {
 	Options     []struct {
 		Label       string `json:"label"`
 		Description string `json:"description"`
+		Preview     string `json:"preview"`
 	} `json:"options"`
 }
 

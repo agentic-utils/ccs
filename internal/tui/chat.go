@@ -263,7 +263,8 @@ func (m model) heldSplit(h mcp.HeldPrompt, pane []string) (body, tail []string, 
 }
 
 // cursorWindow fits a question's body into room lines, keeping its header
-// line and the highlighted "❯" row on screen,
+// line and the highlighted "❯" row on screen (a row starting with it: a
+// preview beside the options can hold a ❯ of its own),
 // with "↑ more" or "↓ more" where options are out of view.
 func cursorWindow(body []string, room int) []string {
 	if len(body) <= room || room < 4 {
@@ -275,7 +276,7 @@ func cursorWindow(body []string, room int) []string {
 	head, rest := body[:1], body[1:]
 	at := 0
 	for i, l := range rest {
-		if strings.Contains(l, "❯") {
+		if strings.HasPrefix(l, "\033[1;"+amber+"m❯") {
 			at = i
 		}
 	}

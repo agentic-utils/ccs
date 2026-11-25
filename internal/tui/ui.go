@@ -78,6 +78,7 @@ type model struct {
 	filtered         []listItem
 	textInput        textinput.Model
 	cursor           int
+	listTop          int // the list's first row in view as last drawn; listStart moves it only as far as the selection needs
 	previewScroll    int // lines scrolled back from the newest message; 0 shows the latest at the bottom
 	width            int
 	table            bool                 // ^T T: the full-width table instead of the sidebar
@@ -1331,6 +1332,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	n.keepChatAfterAnswer()
 	n.autoSelect()
+	if !still || n.cursor != m.cursor {
+		n.noteListTop()
+	}
 	if n.showUsage || n.helpOpen || n.popupOpen() { // another screen took over: the pane loses the keys
 		n.heldFocus = false
 	}
@@ -4130,20 +4134,37 @@ func namesSection(name string, n int, it *listItem) bool {
 	return n == 1 && transcript.GetTopic(it.conv) == name
 }
 
-// listStart is the first of h rows in view: the top, until the selection's
-// last row would pass the bottom, then that row at the bottom.
+// listStart is the first of h rows in view: where the list was (listTop),
+// moved only as far as it takes to show the whole selection, so selecting a
+// row already on screen (a click, an arrow) never scrolls the list.
 func (m model) listStart(rows []listRow, h int) int {
-	last := 0
+	first, last := -1, 0
 	for r, row := range rows {
 		if row.item == m.cursor {
+			if first < 0 {
+				first = r
+			}
 			last = r
 		}
 	}
-	start := max(0, last-h+1)
+	start := min(m.listTop, max(0, len(rows)-h)) // no empty rows below a list that shrank
+	if first >= 0 && first < start {
+		start = first
+		for start > 0 && rows[start-1].item < 0 && last-start+1 < h { // with its section's header and blank row
+			start--
+		}
+	}
+	start = max(0, start, last-h+1)
 	for start < len(rows) && rows[start].part > 0 { // never open on half a session
 		start++
 	}
 	return start
+}
+
+// noteListTop keeps where the list is in view, for listStart next time.
+func (m *model) noteListTop() {
+	_, h, _ := m.listLayout()
+	m.listTop = m.listStart(m.listRows(), h)
 }
 
 // groupKey is the folder a session is grouped under: its working directory,

@@ -752,13 +752,12 @@ func TestPeerMessagesLinkBothEnds(t *testing.T) {
 		t.Errorf("the recipient sees the sending session:\n%s", v)
 	}
 	m.selectSession("a")
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
-	if v := strip2(m.View()); !strings.Contains(v, "→ to recipient") || strings.Contains(v, "ccs:session") {
-		t.Fatalf("^O lists the session it messaged:\n%s", v)
+	if links := m.linksWithPRs(); len(links) != 0 {
+		t.Errorf("^O lists no session it messaged or heard from: %+v", links)
 	}
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.linksOpen || m.filtered[m.cursor].conv.SessionID != "b" {
-		t.Errorf("enter on it selects that session")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlO})
+	if v := strip2(m.View()); strings.Contains(v, "→ to") || strings.Contains(v, "← from") {
+		t.Fatalf("^O lists no session rows:\n%s", v)
 	}
 	// Not arrived yet: named by its socket while live, no tick.
 	b2 := b

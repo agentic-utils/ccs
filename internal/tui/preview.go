@@ -804,14 +804,14 @@ func (m model) visibleLinks() []linkItem {
 	return out
 }
 
-// linksWithPRs is what ^O lists: the sessions it messaged, its PRs, its
-// artifacts, then the other links in view.
+// linksWithPRs is what ^O lists: its PRs, its artifacts, then the other
+// links in view.
 func (m model) linksWithPRs() []linkItem {
 	if len(m.filtered) == 0 {
 		return nil
 	}
 	conv := m.filtered[m.cursor].conv
-	out := append(m.sessionLinks(conv), m.prLinks(conv)...)
+	out := m.prLinks(conv)
 	out = append(out, artifactLinks(conv)...)
 	for _, l := range m.visibleLinks() {
 		if !slices.ContainsFunc(out, func(p linkItem) bool { return p.url == l.url }) {
@@ -895,9 +895,8 @@ func (m *model) scrollLinksTo(start int) {
 	m.linksCursor = min(max(l.cur, l.start), max(l.start+l.rows-1, 0))
 }
 
-// openLinkAt opens the ^O popup's link i as Enter does: a session is selected
-// in the list and the popup closes; anything else is returned to be opened,
-// the popup staying open for the next.
+// openLinkAt moves the ^O popup's cursor to link i as Enter does and returns
+// its address to be opened, the popup staying open for the next.
 func (m *model) openLinkAt(i int) string {
 	shown := m.linksShown()
 	if i < 0 || i >= len(shown) {
@@ -905,13 +904,7 @@ func (m *model) openLinkAt(i int) string {
 	}
 	m.linksCursor = i
 	m.linksTop = m.linksView().start
-	u := shown[i].url
-	if id, ok := strings.CutPrefix(u, sessionLink); ok {
-		m.linksOpen = false
-		m.selectSession(id)
-		return ""
-	}
-	return u
+	return shown[i].url
 }
 
 // linksMouse is the mouse in the ^O popup, a shortcut for its keys: the
@@ -993,7 +986,7 @@ func (m model) linksPopup() string {
 		text := m.linkText(l)
 		addr := strings.TrimPrefix(strings.TrimPrefix(l.url, "https://"), "http://")
 		row := text
-		if ansi.Strip(text) != addr && !transcript.PRURL.MatchString(l.url) && !strings.HasPrefix(l.url, sessionLink) {
+		if ansi.Strip(text) != addr && !transcript.PRURL.MatchString(l.url) {
 			row += " \033[90m" + addr + "\033[39m"
 		}
 		row = ansi.Truncate(row, rowW-2, "…")

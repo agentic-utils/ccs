@@ -413,9 +413,10 @@ var spinnerFrames = []string{"·", "✢", "✳", "✶", "✻", "✽", "✻", "�
 
 // workingLine is what a busy session is doing, drawn as Claude Code's terminal
 // does: its glyph and word in the agent's colour, then how long this turn has
-// run and its output tokens so far. Claude Code keeps its verb and tip to
-// itself, so the word is always the same and there's no tip.
-func workingLine(conv transcript.Conversation, st sessions.SessionStat, now time.Time) string {
+// run, its output tokens so far and keys, the hints for the keys that work
+// now ("esc to interrupt"). Claude Code keeps its verb and tip to itself, so
+// the word is always the same and there's no tip.
+func workingLine(conv transcript.Conversation, st sessions.SessionStat, now time.Time, keys ...string) string {
 	_, colour := transcript.AgentGlyph(conv)
 	frame := spinnerFrames[int(now.UnixMilli()/int64(chatFastRefresh/time.Millisecond))%len(spinnerFrames)]
 	var facts []string
@@ -431,6 +432,7 @@ func workingLine(conv transcript.Conversation, st sessions.SessionStat, now time
 			facts = append(facts, "↓ "+count+" tokens")
 		}
 	}
+	facts = append(facts, keys...)
 	line := "\033[" + colour + "m" + frame + " Working…\033[0m"
 	if len(facts) > 0 {
 		line += " \033[90m(" + strings.Join(facts, " · ") + ")\033[0m"
@@ -441,9 +443,10 @@ func workingLine(conv transcript.Conversation, st sessions.SessionStat, now time
 // chatBox draws conv's status line and the message box in, width wide.
 func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus bool, width int) string {
 	id, name := conv.SessionID, m.sessionName(conv)
-	working := ""
-	if st := m.chatStatus[id]; st.Status == "busy" {
-		working = workingLine(conv, st, frameNow()) // the clock frames are keyed by (frame.go)
+	working, st := "", m.chatStatus[id]
+	keys := m.turnHints(conv)
+	if st.Status == "busy" {
+		working = workingLine(conv, st, frameNow(), keys...) // the clock frames are keyed by (frame.go)
 	}
 	full := width
 	width = max(width-lipgloss.Width(working), 0) // what's left for a note beside it
@@ -474,6 +477,10 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 		left = "\033[1;" + amber + "m  ? " + waitingLine(conv) + "\033[0m"
 	}
 	width = full
+	// The key hints go before a note beside the line is cut for them.
+	if len(keys) > 0 && working != "" && lipgloss.Width(working+left) > width {
+		working = workingLine(conv, st, frameNow())
+	}
 	left = ansi.Truncate(working+left, max(width, 1), "…") + "\033[0m"
 	status := left + strings.Repeat(" ", max(width-lipgloss.Width(left), 0))
 

@@ -20,9 +20,9 @@ import (
 // has no control action that interrupts, a socket message with priority
 // "now" waits for the running tool call, and SIGINT quits the session).
 //
-//	^X Esc    interrupt the turn (Esc, chat:cancel)
-//	^X S  send the queued message now (Ctrl+X Ctrl+S, chat:sendNow)
-//	^X B      move the running command to the background (Ctrl+B, task:background)
+//	esc       interrupt the turn (Esc, chat:cancel), from the message box
+//	^X S      send the queued message now (Ctrl+X Ctrl+S, chat:sendNow)
+//	ctrl+b    move the running command to the background (Ctrl+B, task:background), from the message box
 //
 // Each is offered only when it works now: the session busy, and for
 // send-now a reply being written with a message queued (Claude Code ignores
@@ -42,9 +42,9 @@ type turnAct struct {
 }
 
 var (
-	turnInterrupt  = turnAct{"tui.turn_interrupt", "interrupt", sessions.KeyInterrupt, "^X Esc", "[Request interrupted by user"}
+	turnInterrupt  = turnAct{"tui.turn_interrupt", "interrupt", sessions.KeyInterrupt, "esc", "[Request interrupted by user"}
 	turnSendNow    = turnAct{"tui.turn_send_now", "send the queued message now", sessions.KeySendNow, "^X S", `"operation":"dequeue"`}
-	turnBackground = turnAct{"tui.turn_background", "move the running command to the background", sessions.KeyBackground, "^X B", "manually backgrounded by user"}
+	turnBackground = turnAct{"tui.turn_background", "move the running command to the background", sessions.KeyBackground, "ctrl+b", "manually backgrounded by user"}
 )
 
 // turnConfirmWait is how long ccs looks for a turn key's effect after
@@ -225,4 +225,39 @@ func (m *model) applyTurnDone(msg turnDoneMsg) {
 	default:
 		m.note(msg.note)
 	}
+}
+
+// busySelected is the selected session when its status is busy.
+func (m model) busySelected() (transcript.Conversation, bool) {
+	if len(m.filtered) == 0 {
+		return transcript.Conversation{}, false
+	}
+	conv := m.filtered[m.cursor].conv
+	return conv, m.chatStatus[conv.SessionID].Status == "busy"
+}
+
+// turnHintWords are the turn keys' words on the Working… line, as Claude
+// Code's own say them.
+var turnHintWords = map[stats.Feature]string{
+	turnInterrupt.stat:  "to interrupt",
+	turnBackground.stat: "to run in background",
+}
+
+// turnHints are the Working… line's hints, as Claude Code's own "esc to
+// interrupt": Esc and Ctrl+B, each only while the message box has the keys
+// and it works now (turnRefusal), the key in bold as ? help names it.
+func (m model) turnHints(conv transcript.Conversation) []string {
+	if !m.chatFocus {
+		return nil
+	}
+	var out []string
+	for _, act := range []turnAct{turnInterrupt, turnBackground} {
+		if act.stat == turnInterrupt.stat && m.runShown() {
+			continue // Esc stops or closes the command's box first
+		}
+		if m.turnRefusal(conv, act) == "" {
+			out = append(out, hints(act.chord, turnHintWords[act.stat]))
+		}
+	}
+	return out
 }

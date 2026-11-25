@@ -2261,16 +2261,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k == "^t y" && !m.prompting() && !m.acctOpen { // your usage, and back: the only key for the usage screen
 			return m, m.toggleUsage()
 		}
-		// The turn keys (turn.go): Claude Code's own keys for a running turn.
-		// ^X Esc on anything but a live session stays what it always was, a
-		// chord cancelled; either way it ends here, never reaching plain Esc.
-		if (k == "^x esc" || k == "^x s" || k == "^x b") && !m.prompting() && !m.acctOpen && !m.showUsage {
-			act := map[string]turnAct{"^x esc": turnInterrupt, "^x s": turnSendNow, "^x b": turnBackground}[k]
-			if k == "^x esc" && (len(m.filtered) == 0 || !m.live[m.filtered[m.cursor].conv.SessionID]) {
-				return m, nil
-			}
-			stats.Record(act.stat, stats.Key)
-			return m, m.turnKey(act)
+		// ^X S, Claude Code's own send-now (turn.go); Esc and Ctrl+B are the
+		// message box's, below.
+		if k == "^x s" && !m.prompting() && !m.acctOpen && !m.showUsage {
+			stats.Record(turnSendNow.stat, stats.Key)
+			return m, m.turnKey(turnSendNow)
 		}
 		if k == "^t a" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.auto_focus", stats.Key)
@@ -2802,8 +2797,28 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.stopRun() { // a ! command's box: stop it, or close it
 					return m, nil
 				}
+				// Claude Code's Esc: a busy session's turn is interrupted, the
+				// draft kept. One ccs can't reach says why and leaves the box.
+				if conv, busy := m.busySelected(); busy {
+					if why := m.turnRefusal(conv, turnInterrupt); why == "" {
+						stats.Record(turnInterrupt.stat, stats.Key)
+						return m, m.turnCmd(conv, turnInterrupt)
+					} else if m.live[conv.SessionID] {
+						m.note(why)
+					}
+				}
 				m.chatFocus = false // out of the box, the session still selected; the next Esc walks up
 				return m, nil
+			case "ctrl+b":
+				// Claude Code's Ctrl+B while a Bash call runs; otherwise back a
+				// character, as ever.
+				if conv, busy := m.busySelected(); busy && m.turnRefusal(conv, turnBackground) == "" {
+					stats.Record(turnBackground.stat, stats.Key)
+					return m, m.turnCmd(conv, turnBackground)
+				}
+				var cmd tea.Cmd
+				m.chatInput, cmd = editKey(m.chatInput, msg)
+				return m, cmd
 			case "ctrl+c":
 				if m.run != nil && m.run.running && m.stopRun() {
 					return m, nil // stops the command, not ccs
@@ -3165,8 +3180,8 @@ func (m model) overPopups() []popup {
 var keyRule = []string{
 	"single keys act now and leave nothing behind; a chord changes something",
 	"that stays: ^X then a key for the selected session, ^T then a letter for",
-	"views and tools. The ones that can't be undone ask first (not ^X Esc,",
-	"^X S and ^X B, Claude Code's own keys for a running turn, which don't ask)",
+	"views and tools. The ones that can't be undone ask first (not esc, ctrl+b",
+	"and ^X S, Claude Code's own keys for a running turn, which don't ask)",
 }
 
 // Compact key labels, shared by every hint so they stay consistent.
@@ -3215,7 +3230,14 @@ func (m model) shortcuts() [][2]string {
 	switch {
 	case m.chatFocus:
 		add(true, keyEnter, "send the message; on an empty box, go to its tab")
-		add(true, keyEsc, "leave the message box, keeping the session selected (a command's output: stop it, or close it)")
+		if conv, busy := m.busySelected(); busy && m.turnRefusal(conv, turnInterrupt) == "" && !m.runShown() {
+			add(true, keyEsc, "interrupt its turn now: Esc in its tab, as Claude Code's own (no y/n; your draft stays)")
+		} else {
+			add(true, keyEsc, "leave the message box, keeping the session selected (a command's output: stop it, or close it)")
+		}
+		if conv, busy := m.busySelected(); busy && m.turnRefusal(conv, turnBackground) == "" {
+			add(true, "ctrl+b", "move the command it's running to the background: Ctrl+B in its tab, as Claude Code's own")
+		}
 		add(true, "^V", "paste a screenshot from the clipboard into the message")
 		add(true, "!cmd", "run cmd here, in ccs, in the session's folder; its output shows above the box (PgUp/PgDn scroll)")
 		add(m.runSendable(), "^S", "send the finished command's result to the session it ran for: o with its output, e the exit code only")
@@ -3279,9 +3301,7 @@ func (m model) shortcuts() [][2]string {
 		}
 		// The turn keys, each only while it works now (turnRefusal).
 		conv := m.filtered[m.cursor].conv
-		add(m.turnRefusal(conv, turnInterrupt) == "", "^X Esc", "interrupt its turn now: Esc in its tab, as Claude Code's own, which doesn't ask")
 		add(m.turnRefusal(conv, turnSendNow) == "", "^X S", "send its queued message now: Claude Code's ^X ^S (or ctrl+enter), pressed in its tab")
-		add(m.turnRefusal(conv, turnBackground) == "", "^X B", "move the command it's running to the background: Ctrl+B in its tab")
 		add(m.restartable(id), "^X R", "restart it: stop, then resume this conversation in a new tab with the same flags; asks first")
 		add(m.restartable(id), "^X W", "hand its leftovers to its parent, then close it; its PRs and children move to the parent; asks first")
 		add(m.switchRefusal(conv) == "", switchHint, "carry it on in another agent (Claude, Codex or Gemini): closes it, then starts that agent with the same name and folder, briefed with a handover; the new one gets the brief, not its memory, and takes its place, children and PRs; asks first")
@@ -3379,7 +3399,7 @@ func headerLine(width int, title, toggles string, pairs []string, keep int) stri
 // when no chord is pending). Every "^x <key>" and "^t <letter>" Update
 // handles is in its list, in order; TestEveryChordHasAHint checks it.
 var (
-	chordXPairs = []string{switchLetter, "another agent", "B", "background", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "K", "stop", "N", "new", "P", "pin", "R", "restart", "S", "send now", "W", "hand over", "X", "prune", "Z", "snooze", keyEsc, "interrupt"}
+	chordXPairs = []string{switchLetter, "another agent", "C", "closed", "D", "delete", "E", "edit name", "F", "details", "K", "stop", "N", "new", "P", "pin", "R", "restart", "S", "send now", "W", "hand over", "X", "prune", "Z", "snooze"}
 	chordTPairs = []string{"A", "auto-focus", "C", "copy reply", "G", "group", "H", "headless", "I", "auto-update", "J", "tab order", "L", "list", "M", "topics", "O", "orchestrator", "Q", "profile", "T", "table", "U", "account", "V", "remote, web", "Y", "usage"}
 )
 

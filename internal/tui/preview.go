@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
+	"github.com/agentic-utils/ccs/internal/stats"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
@@ -845,18 +846,135 @@ func (m model) linksShown() []linkItem {
 	return out
 }
 
-// linksPopup is the ^O popup: a filter box over linksShown, the cursor on
-// one; a list taller than the screen scrolls with the cursor, with a scrollbar.
-func (m model) linksPopup() string {
-	width := min(max(m.width-12, 30), 90)
-	rows := max(m.height-12, 3) // border, padding, title, filter and hints
-	shown := m.linksShown()
-	cur := min(m.linksCursor, max(len(shown)-1, 0))
-	start := 0
-	if cur >= rows {
-		start = cur - rows + 1
+// linksLayout is the ^O popup as drawn: its text width, the rows the list
+// has, the links shown, the cursor and the part of them in view. linksPopup
+// draws from it and the mouse hit-tests against it, so they never disagree.
+type linksLayout struct {
+	width, rows, cur, start, end int
+	shown                        []linkItem
+}
+
+// The ^O popup's content starts linksPadTop rows and linksPadLeft columns in
+// from its corner (border and padding); in the content, the filter box is row
+// linksFilterRow and the list starts at row linksListRow.
+const (
+	linksPadTop    = 2
+	linksPadLeft   = 4
+	linksFilterRow = 2
+	linksListRow   = 4
+)
+
+// linksView works out linksLayout: the view starts at linksTop, moved only
+// as far as it takes to keep the cursor in it.
+func (m model) linksView() linksLayout {
+	l := linksLayout{width: min(max(m.width-12, 30), 90), rows: max(m.height-12, 3)} // border, padding, title, filter and hints
+	l.shown = m.linksShown()
+	l.cur = min(max(m.linksCursor, 0), max(len(l.shown)-1, 0))
+	l.start = min(max(m.linksTop, 0), max(len(l.shown)-l.rows, 0))
+	if l.cur < l.start {
+		l.start = l.cur
+	} else if l.cur >= l.start+l.rows {
+		l.start = l.cur - l.rows + 1
 	}
-	end := min(start+rows, len(shown))
+	l.end = min(l.start+l.rows, len(l.shown))
+	return l
+}
+
+// moveLinks moves the ^O popup's cursor by n, the view following it.
+func (m *model) moveLinks(n int) {
+	m.linksCursor = min(max(m.linksCursor+n, 0), max(len(m.linksShown())-1, 0))
+	m.linksTop = m.linksView().start
+}
+
+// scrollLinksTo puts the ^O popup's view at start, taking the cursor with it
+// only as far as it takes to keep it in view.
+func (m *model) scrollLinksTo(start int) {
+	l := m.linksView()
+	l.start = min(max(start, 0), max(len(l.shown)-l.rows, 0))
+	m.linksTop = l.start
+	m.linksCursor = min(max(l.cur, l.start), max(l.start+l.rows-1, 0))
+}
+
+// openLinkAt opens the ^O popup's link i as Enter does: a session is selected
+// in the list and the popup closes; anything else is returned to be opened,
+// the popup staying open for the next.
+func (m *model) openLinkAt(i int) string {
+	shown := m.linksShown()
+	if i < 0 || i >= len(shown) {
+		return ""
+	}
+	m.linksCursor = i
+	m.linksTop = m.linksView().start
+	u := shown[i].url
+	if id, ok := strings.CutPrefix(u, sessionLink); ok {
+		m.linksOpen = false
+		m.selectSession(id)
+		return ""
+	}
+	return u
+}
+
+// linksMouse is the mouse in the ^O popup, a shortcut for its keys: the
+// wheel scrolls the list, a click on a link opens it as Enter does, a click
+// on the scrollbar scrolls there, a click in the filter box puts its cursor
+// there, and a click outside the popup closes it. Positions come from the
+// box as drawn and overlayOrigin, where overlayCentre puts it.
+func (m model) linksMouse(msg tea.MouseMsg) model {
+	if msg.Action != tea.MouseActionPress {
+		return m
+	}
+	l := m.linksView()
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.scrollLinksTo(l.start - 3)
+		return m
+	case tea.MouseButtonWheelDown:
+		m.scrollLinksTo(l.start + 3)
+		return m
+	case tea.MouseButtonLeft:
+	default:
+		return m
+	}
+	box := strings.Split(m.linksPopup(), "\n")
+	boxW := 0
+	for _, b := range box {
+		boxW = max(boxW, ansi.StringWidth(b))
+	}
+	top, left := overlayOrigin(len(box), boxW, m.width, m.height)
+	if msg.Y < top || msg.Y >= top+len(box) || msg.X < left || msg.X >= left+boxW {
+		m.linksOpen = false
+		return m
+	}
+	row, col := msg.Y-top-linksPadTop, msg.X-left-linksPadLeft
+	if col < 0 || col >= l.width {
+		return m // the border or padding
+	}
+	switch {
+	case row == linksFilterRow:
+		if p := col - ansi.StringWidth(m.linksInput.Prompt); p >= 0 && ansi.StringWidth(m.linksInput.Value()) < l.width-4-ansi.StringWidth(m.linksInput.Prompt) {
+			m.linksInput.SetCursor(p) // the box isn't scrolled sideways, so a column is a character
+		}
+	case row >= linksListRow && row < linksListRow+l.end-l.start:
+		r := row - linksListRow
+		if _, _, bar := scrollThumb(len(l.shown), l.start, l.end-l.start); bar && col == l.width-1 {
+			span := max(l.end-l.start-1, 1)
+			m.scrollLinksTo((r*(len(l.shown)-l.rows) + span/2) / span)
+			return m
+		}
+		stats.Record("tui.link_open", stats.Mouse)
+		if u := m.openLinkAt(l.start + r); u != "" {
+			m.linkPending = u
+		}
+	}
+	return m
+}
+
+// linksPopup is the ^O popup: a filter box over linksShown, the cursor on
+// one; a list taller than the screen scrolls with the cursor or the wheel,
+// with a scrollbar.
+func (m model) linksPopup() string {
+	l := m.linksView()
+	width, shown, cur, start, end := l.width, l.shown, l.cur, l.start, l.end
 	var b strings.Builder
 	b.WriteString("\033[1mlinks in view\033[0m")
 	if len(shown) > 0 {

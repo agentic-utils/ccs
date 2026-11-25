@@ -1486,3 +1486,78 @@ func TestToolArgSummarisesTodosAndMore(t *testing.T) {
 		t.Errorf("got %q, want %q", args, want)
 	}
 }
+
+// The mouse in the ^O popup is a shortcut for its keys, hit-tested against
+// where the popup is drawn: positions here are found in the drawn screen.
+func TestLinksPopupMouse(t *testing.T) {
+	var opened []string
+	defer func(f func(string) error) { openURL = f }(openURL)
+	openURL = func(u string) error { opened = append(opened, u); return nil }
+	conv := transcript.Conversation{SessionID: "s", Cwd: "/p", Messages: []transcript.Message{
+		{Role: "assistant", Text: "hi", Ts: "2026-09-30T10:00:00Z"},
+	}}
+	m := initialModel([]listItem{{conv: conv}}, "", nil)
+	m.width, m.height = 80, 24
+	for i := range 50 {
+		m.links = append(m.links, linkItem{fmt.Sprintf("https://e.io/%d", i), fmt.Sprintf("lnk%02d", i)})
+	}
+	m.linksOpen = true
+	mouse := func(m model, b tea.MouseButton, x, y int) (model, tea.Cmd) {
+		res, cmd := m.Update(tea.MouseMsg{X: x, Y: y, Button: b, Action: tea.MouseActionPress})
+		return res.(model), cmd
+	}
+	// find is where text is drawn on screen: its row and column.
+	find := func(m model, text string) (x, y int) {
+		t.Helper()
+		for y, l := range strings.Split(strip2(m.View()), "\n") {
+			if i := strings.Index(l, text); i >= 0 {
+				return ansi.StringWidth(l[:i]), y
+			}
+		}
+		t.Fatalf("%q not on screen:\n%s", text, strip2(m.View()))
+		return 0, 0
+	}
+	cx, cy := find(m, "lnk03")
+	m, _ = mouse(m, tea.MouseButtonWheelDown, cx, cy)
+	if v := strip2(m.View()); strings.Contains(v, "lnk00") || !strings.Contains(v, "› lnk03") {
+		t.Errorf("the wheel scrolls the list, taking the cursor along:\n%s", v)
+	}
+	m, _ = mouse(m, tea.MouseButtonWheelUp, cx, cy)
+	if v := strip2(m.View()); !strings.Contains(v, "lnk00") || !strings.Contains(v, "› lnk03") {
+		t.Errorf("the wheel scrolls back, the cursor staying where it is in view:\n%s", v)
+	}
+
+	x, y := find(m, "lnk05")
+	m, cmd := mouse(m, tea.MouseButtonLeft, x+1, y)
+	if cmd == nil || !m.linksOpen {
+		t.Fatal("a click on a link opens it as enter does, leaving the popup open")
+	}
+	cmd()
+	if want := []string{"https://e.io/5"}; !reflect.DeepEqual(opened, want) || !strings.Contains(strip2(m.View()), "› lnk05") {
+		t.Errorf("opened %q, want %q, the cursor on it", opened, want)
+	}
+
+	// The scrollbar is the content's last column: four in from the right
+	// corner (border and padding). Its last row scrolls to the end.
+	rx, _ := find(m, "╮")
+	_, hy := find(m, "move")
+	m, cmd = mouse(m, tea.MouseButtonLeft, rx-4, hy-2)
+	if v := strip2(m.View()); cmd != nil || !strings.Contains(v, "lnk49") || strings.Contains(v, "lnk05") {
+		t.Errorf("a click on the scrollbar's end scrolls there and opens nothing:\n%s", v)
+	}
+
+	m.lastMouse = time.Time{} // a digit right after a mouse event reads as part of a mouse report
+	for _, r := range "lnk4" {
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	fx, fy := find(m, "> lnk4")
+	m, _ = mouse(m, tea.MouseButtonLeft, fx+3, fy)
+	if p := m.linksInput.Position(); p != 1 {
+		t.Errorf("a click in the filter box puts its cursor there: at %d, want 1", p)
+	}
+
+	m, _ = mouse(m, tea.MouseButtonLeft, 0, m.height-1)
+	if m.linksOpen || len(opened) != 1 {
+		t.Error("a click outside the popup closes it, opening nothing")
+	}
+}

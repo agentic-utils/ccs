@@ -312,6 +312,7 @@ type model struct {
 	links       []linkItem
 	linksInput  textinput.Model // filters the links (linksShown)
 	linksCursor int             // into linksShown
+	linksTop    int             // the first of linksShown in view (linksView keeps the cursor in it)
 	accts       []cswapAccount
 	acctCursor  int
 	acctBusy    bool       // a cswap command is running
@@ -377,8 +378,11 @@ func (m model) paneWidth() int {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.linksOpen || m.snoozeOpen || m.rcOpen || len(m.reopen) > 0 || m.reorgPlan != nil || m.offerShown() {
+	if m.snoozeOpen || m.rcOpen || len(m.reopen) > 0 || m.reorgPlan != nil || m.offerShown() {
 		return m // keyboard only while it's open
+	}
+	if m.linksOpen {
+		return m.linksMouse(msg)
 	}
 	if m.helpOpen { // the wheel scrolls the shortcuts, nothing else reacts
 		if msg.Button == tea.MouseButtonWheelUp {
@@ -2209,26 +2213,22 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.quitting = true
 				return m, tea.Quit
 			case "up", "ctrl+p":
-				m.linksCursor = max(m.linksCursor-1, 0)
+				m.moveLinks(-1)
 			case "down", "ctrl+n":
-				m.linksCursor = min(m.linksCursor+1, len(m.linksShown())-1)
+				m.moveLinks(1)
 			case "enter":
 				if shown := m.linksShown(); len(shown) > 0 { // stays open for the next
 					stats.Record("tui.link_open", stats.Key)
-					u := shown[min(m.linksCursor, len(shown)-1)].url
-					if id, ok := strings.CutPrefix(u, sessionLink); ok { // a session: select it, done here
-						m.linksOpen = false
-						m.selectSession(id)
-						return m, nil
+					if u := m.openLinkAt(min(m.linksCursor, len(shown)-1)); u != "" {
+						return m, openLinkCmd(u)
 					}
-					return m, openLinkCmd(u)
 				}
 			default:
 				before := m.linksInput.Value()
 				var cmd tea.Cmd
 				m.linksInput, cmd = editKey(m.linksInput, msg)
 				if m.linksInput.Value() != before {
-					m.linksCursor = 0
+					m.linksCursor, m.linksTop = 0, 0
 				}
 				return m, cmd
 			}
@@ -2468,7 +2468,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.errorMsg = "No links in view"
 				return m, nil
 			}
-			m.linksOpen, m.linksCursor = true, 0
+			m.linksOpen, m.linksCursor, m.linksTop = true, 0, 0
 			m.linksInput.SetValue("")
 			return m, nil
 		}
@@ -3567,6 +3567,14 @@ func (m model) helpPopup() string {
 		Render(b.String())
 }
 
+// overlayOrigin is where overlayCentre puts the top left corner of a box
+// boxW wide and boxH tall: the mouse hit-tests popups against it. Never over
+// the title row, whose notes (the waiting count, an update) stay readable
+// while a popup is open; a box taller than the rest is cut at the bottom.
+func overlayOrigin(boxH, boxW, width, height int) (top, left int) {
+	return max((height-boxH)/2, min(1, height-1)), max((width-boxW)/2, 0)
+}
+
 // overlayCentre draws box over the middle of screen, keeping what's visible
 // either side of it. Widths are measured without ANSI codes.
 func overlayCentre(screen, box string, width, height int) string {
@@ -3583,10 +3591,7 @@ func overlayCentre(screen, box string, width, height int) string {
 	for _, l := range boxLines {
 		boxW = max(boxW, ansi.StringWidth(l))
 	}
-	// Never over the title row, whose notes (the waiting count, an update) stay
-	// readable while a popup is open; a box taller than the rest is cut at the bottom.
-	top := max((height-len(boxLines))/2, min(1, height-1))
-	left := max((width-boxW)/2, 0)
+	top, left := overlayOrigin(len(boxLines), boxW, width, height)
 	for i, bl := range boxLines {
 		row := top + i
 		if row >= len(lines) {

@@ -177,7 +177,7 @@ type questionView struct {
 	Options               []optionView
 }
 
-type optionView struct{ Label, Description string }
+type optionView struct{ Label, Description, Preview string }
 
 type askInput struct {
 	Questions []struct {
@@ -187,6 +187,7 @@ type askInput struct {
 		Options     []struct {
 			Label       string `json:"label"`
 			Description string `json:"description"`
+			Preview     string `json:"preview"`
 		} `json:"options"`
 	} `json:"questions"`
 }
@@ -205,7 +206,7 @@ func (s *server) promptViews(session string, names map[string]string) []promptVi
 			for i, q := range in.Questions {
 				qv := questionView{Key: "q" + strconv.Itoa(i), Question: transcript.CleanText(q.Question), Header: transcript.CleanText(q.Header), Multi: q.MultiSelect}
 				for _, o := range q.Options {
-					qv.Options = append(qv.Options, optionView{transcript.CleanText(o.Label), transcript.CleanText(o.Description)})
+					qv.Options = append(qv.Options, optionView{transcript.CleanText(o.Label), transcript.CleanText(o.Description), transcript.CleanText(o.Preview)})
 				}
 				v.Questions = append(v.Questions, qv)
 			}

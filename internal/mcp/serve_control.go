@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/agentic-utils/ccs/internal/transcript"
@@ -48,6 +49,10 @@ type HeldQuestion struct {
 	Multi        bool     `json:"multi,omitempty"`
 	Options      []string `json:"options"`
 	Descriptions []string `json:"descriptions,omitempty"` // each option's, in order
+	// Previews are each option's preview (markdown or monospace text Claude
+	// Code shows in a box while the option is highlighted), in order, line
+	// breaks kept; none when no option has one.
+	Previews []string `json:"previews,omitempty"`
 }
 
 // controlRequest is a line the TUI sends. It has no field for tool input:
@@ -80,6 +85,10 @@ func heldList(b *promptBook) []HeldPrompt {
 				for _, o := range q.Options {
 					hq.Options = append(hq.Options, transcript.CleanText(o.Label))
 					hq.Descriptions = append(hq.Descriptions, transcript.CleanText(o.Description))
+					hq.Previews = append(hq.Previews, transcript.CleanText(o.Preview))
+				}
+				if !slices.ContainsFunc(hq.Previews, func(p string) bool { return p != "" }) {
+					hq.Previews = nil
 				}
 				h.Questions = append(h.Questions, hq)
 			}

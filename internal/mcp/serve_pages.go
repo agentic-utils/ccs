@@ -71,6 +71,7 @@ legend{font-weight:600;margin-bottom:8px;padding:0}
 .opt input{width:22px;height:22px;margin:1px 0 0;flex:none;accent-color:var(--accent)}
 .opt:has(input:checked){border-color:var(--accent)}
 .opt .desc{display:block;color:var(--dim);font-size:14px}
+.opt pre.preview{font-size:13px;white-space:pre-wrap}
 pre,code{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
 pre{margin:8px 0 0;padding:10px 12px;background:var(--code);border-radius:10px;overflow-x:auto;white-space:pre;max-width:100%}
 pre.wrap-text{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -123,7 +124,7 @@ label.field{display:block;margin:14px 0 6px;font-weight:600}
 <input type="hidden" name="action" value="prompt"><input type="hidden" name="choice" value="answer"><input type="hidden" name="prompt" value="{{.P.ID}}">
 <input type="hidden" name="id" value="{{.SID}}"><input type="hidden" name="name" value="{{.SName}}">
 {{range .P.Questions}}{{$key := .Key}}{{$multi := .Multi}}<fieldset><legend>{{.Question}}{{if .Multi}} <span class="dim">(pick any)</span>{{end}}</legend>
-{{range .Options}}<label class="opt"><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="{{.Label}}"><span>{{.Label}}{{if .Description}}<span class="desc">{{.Description}}</span>{{end}}</span></label>{{end}}
+{{range .Options}}<label class="opt"><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="{{.Label}}"><span>{{.Label}}{{if .Description}}<span class="desc">{{.Description}}</span>{{end}}{{if .Preview}}<pre class="preview">{{.Preview}}</pre>{{end}}</span></label>{{end}}
 <label class="opt"><input type="{{if $multi}}checkbox{{else}}radio{{end}}" name="{{$key}}" value="__other__"><span>Other<span class="desc">your own answer{{if $multi}}, added to any ticked{{else}}, used when no option is chosen{{end}}:</span><input type="text" name="{{$key}}_other" maxlength="2000" autocomplete="off" placeholder="type something"></span></label>{{if $multi}}<input type="hidden" name="{{$key}}_multi" value="1">{{end}}
 <label class="opt"><span>Note<span class="desc">optional, on your answer</span><input type="text" name="{{$key}}_note" maxlength="2000" autocomplete="off"></span></label>
 </fieldset>{{end}}

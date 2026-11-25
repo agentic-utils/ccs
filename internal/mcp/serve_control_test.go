@@ -104,3 +104,29 @@ func TestControlClientTrustsOnlyServe(t *testing.T) {
 		t.Errorf("a socket others can use must be refused, not read: %v", err)
 	}
 }
+
+// An option's preview reaches the TUI's held list verbatim, line breaks
+// kept and escapes cleaned; a question with no previews has none.
+func TestControlListsPreviews(t *testing.T) {
+	s := controlServer(t)
+	in := `{"session_id":"s-1","cwd":"/r","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[` +
+		`{"question":"Which draft?","header":"Draft","options":[{"label":"Short","description":"one line","preview":"Hello all,\n\n\tThe build is \u001b[31mgreen\u001b[0m.\n\nThanks"},{"label":"None"}]},` +
+		`{"question":"Which colour?","options":[{"label":"Red"},{"label":"Blue"}]}]}}`
+	out := runHook(t, in)
+	p := waitHeld(t, s)
+	held, err := HeldPrompts()
+	if err != nil || len(held) != 1 || len(held[0].Questions) != 2 {
+		t.Fatalf("list: %+v %v", held, err)
+	}
+	q := held[0].Questions
+	if want := []string{"Hello all,\n\n\tThe build is green.\n\nThanks", ""}; strings.Join(q[0].Previews, "|") != strings.Join(want, "|") {
+		t.Errorf("previews %q, want %q", q[0].Previews, want)
+	}
+	if q[1].Previews != nil {
+		t.Errorf("a question without previews: %q", q[1].Previews)
+	}
+	if _, err := AnswerHeld(p.id, "answer", map[int][]string{0: {"Short"}, 1: {"Red"}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	hookOutput(t, out)
+}

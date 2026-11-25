@@ -1264,3 +1264,16 @@ func TestTurnOverAfterAStaleBusy(t *testing.T) {
 		t.Error("the next turn ended too")
 	}
 }
+
+// read_session shows an option's preview under it, every line kept and
+// marked, so a draft offered as an option reads as it was offered.
+func TestAskQuestionTextHasPreviews(t *testing.T) {
+	q := AskQuestion{Question: "Which reply?", Options: []AskOption{
+		{Label: "Short", Description: "two lines", Preview: "Hello team,\n\nAll green."},
+		{Label: "Skip"},
+	}}
+	want := "Which reply?\n1. Short: two lines\n   preview:\n   | Hello team,\n   | \n   | All green.\n2. Skip"
+	if got := q.Text(); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}

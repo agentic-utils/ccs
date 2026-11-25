@@ -149,10 +149,10 @@ Key bindings:
   Single keys act now and leave nothing behind; a chord changes something
   that stays (a mark, a setting, a file, whether it runs): Ctrl+X then a key
   for the selected session, Ctrl+T then a letter for views and tools. The
-  ones that can't be undone ask first. Ctrl+X Esc, Ctrl+X S and Ctrl+X B
-  don't: they are Claude Code's own keys for a running turn, which don't ask
-  there either. The second key may be held with Ctrl (Ctrl+X Ctrl+S), and
-  after either prefix ccs lists what each key does.
+  ones that can't be undone ask first. Esc, Ctrl+B and Ctrl+X S in a busy
+  session's message box don't: they are Claude Code's own keys for a running
+  turn, which don't ask there either. The second key may be held with Ctrl
+  (Ctrl+X Ctrl+S), and after either prefix ccs lists what each key does.
 
  Moving around
   ↑/↓, Ctrl+P/N   Move through the list
@@ -175,6 +175,14 @@ Key bindings:
   /cmd            In its message box: type the slash command into its tab
                   (tmux or iTerm) so Claude Code runs it; only while idle
   !!x //x         Send "!x" or "/x" as an ordinary message
+  Esc             In a busy session's message box: interrupt its turn now,
+                  as Claude Code's own Esc (ccs presses Esc in its tab; your
+                  draft stays). Otherwise Esc leaves the box
+  Ctrl+B          In a busy session's message box, while it runs a command:
+                  move it to the background, as Claude Code's own Ctrl+B.
+                  Otherwise back a character. The Working… line names
+                  either key while it works; only in a Claude Code session
+                  in iTerm or tmux
   Ctrl+F          Fork it: a new session with the same history, in a new tab
   Ctrl+O          Open a link in view, one of its PRs or artifacts
 
@@ -191,12 +199,9 @@ Key bindings:
                   rewind history
   Ctrl+X K        Stop it and close its tab, or stop a background session;
                   asks first
-  Ctrl+X Esc      Interrupt its turn now: ccs presses Esc in its tab
   Ctrl+X S        Send its queued message now, as Claude Code's Ctrl+X Ctrl+S
-                  in its tab (while it writes a reply, not during a tool call)
-  Ctrl+X B        Move the command it's running to the background (Ctrl+B
-                  in its tab). These three use Claude Code's own keys, only
-                  in a busy Claude Code session in iTerm or tmux
+                  in its tab (while it writes a reply, not during a tool call;
+                  only in a busy Claude Code session in iTerm or tmux)
   Ctrl+X R        Restart it: stop it, then resume the same conversation in a
                   new tab with the same name, folder and flags; asks first
   Ctrl+X W        Hand it over: it sends its parent its leftovers, then it's

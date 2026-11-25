@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
@@ -45,7 +46,7 @@ func turnModel(t *testing.T, conv transcript.Conversation, st string) (model, *[
 	m := chatModel(t)
 	i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
 	m.filtered[i].conv = conv
-	m.cursor = i
+	m.cursor, m.chatFocus = i, true
 	m.chatStatus = map[string]sessions.SessionStat{"live": {Status: st}}
 	writeTurnFile(t, st)
 	var pressed []string
@@ -65,42 +66,59 @@ func writeTurnFile(t *testing.T, st string) {
 	}
 }
 
-// chordKey presses ^X then k.
-func chordKey(m model, k tea.KeyType) (model, tea.Cmd) {
-	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	return key(m, tea.KeyMsg{Type: k})
-}
-
 func offered(m model, k string) bool {
 	return slices.ContainsFunc(m.shortcuts(), func(s [2]string) bool { return s[0] == k })
 }
 
-// ^X B backgrounds a running Bash call, and only then; ^X S needs a
-// reply being written, so it's refused during the call with a grey note.
+// Ctrl+B in the message box backgrounds a running Bash call, as Claude
+// Code's own does, and only then; otherwise it moves back a character. ^X S
+// needs a reply being written, so it's refused during the call with a note.
 func TestTurnBackgroundWhileBashRuns(t *testing.T) {
 	m, pressed := turnModel(t, turnConv(t, turnUser, turnBash, turnQueued), "busy")
-	if !offered(m, "^X B") || offered(m, "^X S") || !offered(m, "^X Esc") {
-		t.Errorf("a Bash call running: ^X B and ^X Esc offered, not ^X S: %v", m.shortcuts())
+	if !offered(m, "ctrl+b") || offered(m, "^X S") || !strings.Contains(helpFor(m, keyEsc), "interrupt") {
+		t.Errorf("a Bash call running: ctrl+b and esc to interrupt offered, not ^X S: %v", m.shortcuts())
 	}
 	m, cmd := chord(m, "s")
 	if cmd != nil || !strings.Contains(m.noteMsg, "works while "+turnLiveName+" writes a reply; it's running Bash") {
 		t.Errorf("^X S during a tool call is a note: %q", m.noteMsg)
 	}
-	m, cmd = chord(m, "b")
+	m.chatInput.SetValue("draft")
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
 	if cmd == nil {
-		t.Fatalf("^X B presses Ctrl+B: %q", m.noteMsg)
+		t.Fatalf("ctrl+b presses Ctrl+B: %q", m.noteMsg)
 	}
-	m = run(m, cmd)
+	m = runTurn(m, cmd)
 	if len(*pressed) != 1 || (*pressed)[0] != "Ctrl+B" || !strings.Contains(m.noteMsg, "✓ Move the running command to the background") {
 		t.Errorf("pressed %v, note %q", *pressed, m.noteMsg)
 	}
+	if m.chatInput.Value() != "draft" || m.chatInput.Position() != 5 {
+		t.Errorf("the draft and cursor stay: %q at %d", m.chatInput.Value(), m.chatInput.Position())
+	}
+	// No Bash running: ctrl+b is back a character, nothing pressed.
+	m, pressed = turnModel(t, turnConv(t, turnUser, turnWriting), "busy")
+	m.chatInput.SetValue("ab")
+	m.chatInput.CursorEnd()
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	if len(*pressed) != 0 || m.chatInput.Position() != 1 || offered(m, "ctrl+b") {
+		t.Errorf("no command running: ctrl+b edits: %v at %d", *pressed, m.chatInput.Position())
+	}
+}
+
+// helpFor is what ? help says for key, "" when it isn't offered.
+func helpFor(m model, k string) string {
+	for _, s := range m.shortcuts() {
+		if s[0] == k {
+			return s[1]
+		}
+	}
+	return ""
 }
 
 // ^X S sends the queued message while a reply is being written.
 func TestTurnSendNowWhileReplying(t *testing.T) {
 	m, pressed := turnModel(t, turnConv(t, turnUser, turnQueued, turnWriting), "busy")
-	if !offered(m, "^X S") || offered(m, "^X B") {
-		t.Errorf("writing a reply with one queued: ^X S, not ^X B: %v", m.shortcuts())
+	if !offered(m, "^X S") || offered(m, "ctrl+b") {
+		t.Errorf("writing a reply with one queued: ^X S, not ctrl+b: %v", m.shortcuts())
 	}
 	m, cmd := chord(m, "s")
 	m = run(m, cmd)
@@ -115,42 +133,54 @@ func TestTurnSendNowWhileReplying(t *testing.T) {
 	}
 }
 
-// ^X Esc presses Esc at once, as Claude Code's own Esc does: no y/n, but
-// everything is checked again just before the key.
+// Esc in a busy session's message box presses Esc at once, as Claude Code's
+// own does: no y/n, the draft kept and the box keeping the keys, but
+// everything checked again just before the key.
 func TestTurnInterruptPressesAtOnce(t *testing.T) {
 	m, pressed := turnModel(t, turnConv(t, turnUser, turnWriting), "busy")
 	for _, s := range m.shortcuts() {
-		if slices.Contains([]string{"^X Esc", "^X S", "^X B"}, s[0]) && strings.Contains(s[1], "asks first") {
+		if slices.Contains([]string{keyEsc, "^X S", "ctrl+b"}, s[0]) && strings.Contains(s[1], "asks first") {
 			t.Errorf("%s mirrors Claude Code's key, which doesn't ask: %q", s[0], s[1])
 		}
 	}
-	m, cmd := chordKey(m, tea.KeyEsc)
-	if cmd == nil || m.prompting() || strings.Contains(strip2(m.View()), "Interrupt \"Busy one\"'s turn?") {
-		t.Fatalf("^X Esc doesn't ask: prompting %v, cmd %v", m.prompting(), cmd)
+	m.chatInput.SetValue("half a thought")
+	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil || m.prompting() || !m.chatFocus {
+		t.Fatalf("Esc doesn't ask and keeps the box: prompting %v, cmd %v, focus %v", m.prompting(), cmd, m.chatFocus)
 	}
-	m = run(m, cmd)
+	m = runTurn(m, cmd)
 	if len(*pressed) != 1 || (*pressed)[0] != "Esc" || !strings.Contains(m.noteMsg, "✓ Interrupt") {
-		t.Errorf("^X Esc presses Esc: %v %q", *pressed, m.noteMsg)
+		t.Errorf("Esc presses Esc: %v %q", *pressed, m.noteMsg)
+	}
+	if m.chatInput.Value() != "half a thought" {
+		t.Errorf("the draft stays: %q", m.chatInput.Value())
 	}
 	// Idle by the time the key would go (the session file read just
 	// before it): nothing pressed.
 	*pressed = nil
 	writeTurnFile(t, "idle")
-	m, cmd = chordKey(m, tea.KeyEsc)
-	m = run(m, cmd)
+	m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m = runTurn(m, cmd)
 	if len(*pressed) != 0 || !strings.Contains(m.noteMsg, "Esc not pressed") {
 		t.Errorf("rechecked before the key: %v %q", *pressed, m.noteMsg)
+	}
+	// Idle: Esc leaves the box, as ever.
+	m, pressed = turnModel(t, turnConv(t, turnUser, turnWriting), "idle")
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if len(*pressed) != 0 || m.chatFocus || !strings.Contains(helpFor(m, keyEsc), "") {
+		t.Errorf("idle: Esc leaves the box: %v %v", *pressed, m.chatFocus)
 	}
 }
 
 // Never while it waits (Esc would answer no), never into a Codex, agy or
-// idle session, never while ccs holds its question.
+// idle session, never while ccs holds its question. A busy session ccs
+// can't reach says why in a grey note, and Esc still leaves the box.
 func TestTurnKeysRefused(t *testing.T) {
 	for _, c := range []struct {
 		name, st, kind, want string
 	}{
-		{"waiting", "waiting", "", "waiting on a menu"},
-		{"idle", "idle", "", "needs a turn running"},
+		{"waiting", "waiting", "", ""},
+		{"idle", "idle", "", ""},
 		{"codex", "busy", transcript.KindCodex, "Codex session"},
 		{"agy", "busy", transcript.KindAgy, "agy session"},
 	} {
@@ -158,27 +188,82 @@ func TestTurnKeysRefused(t *testing.T) {
 			conv := turnConv(t, turnUser, turnBash)
 			conv.Kind = c.kind
 			m, pressed := turnModel(t, conv, c.st)
-			for _, k := range []tea.KeyType{tea.KeyEsc, tea.KeyEnter} {
-				m, _ = chordKey(m, k)
-			}
-			m, cmd := chord(m, "b")
-			if cmd != nil || len(*pressed) != 0 || !strings.Contains(m.noteMsg, c.want) {
-				t.Errorf("%s: %v %q", c.name, *pressed, m.noteMsg)
-			}
-			if offered(m, "^X Esc") || offered(m, "^X S") || offered(m, "^X B") {
+			if offered(m, "^X S") || offered(m, "ctrl+b") || strings.Contains(helpFor(m, keyEsc), "interrupt") {
 				t.Errorf("%s: no turn key offered", c.name)
+			}
+			m, cmd := key(m, tea.KeyMsg{Type: tea.KeyCtrlB})
+			if m = runTurn(m, cmd); len(*pressed) != 0 {
+				t.Errorf("%s: ctrl+b pressed %v", c.name, *pressed)
+			}
+			m.chatFocus = true
+			m, cmd = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+			if cmd != nil || len(*pressed) != 0 || !strings.Contains(m.noteMsg, c.want) || m.chatFocus {
+				t.Errorf("%s: %v %q focus %v", c.name, *pressed, m.noteMsg, m.chatFocus)
 			}
 		})
 	}
 }
 
-// ^X Esc on a session that isn't running is a cancelled chord, as before.
-func TestChordEscOnNothingLiveCancels(t *testing.T) {
-	m := chatModel(t)
-	i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "idle" })
-	m.cursor = i
-	m, cmd := chordKey(m, tea.KeyEsc)
-	if cmd != nil || m.noteMsg != "" || m.chordX {
-		t.Errorf("a cancelled chord: %q %v", m.noteMsg, m.chordX)
+// The Working… line ends with the hints for the keys that work now, as
+// Claude Code's own says "esc to interrupt", each key bold as ? help names
+// it; never one that would be refused, and never at the cost of a note.
+func TestWorkingLineHintsTheTurnKeys(t *testing.T) {
+	status := func(m model, width int) string {
+		s, _, _ := strings.Cut(m.chatBox(m.filtered[m.cursor].conv, m.chatInput, m.chatFocus, width), "\n")
+		return s
 	}
+	m, _ := turnModel(t, turnConv(t, turnUser, turnBash, turnQueued), "busy")
+	raw := status(m, 140)
+	got := strip2(raw)
+	if !strings.Contains(got, "Working… (") || !strings.Contains(got, "esc to interrupt · ctrl+b to run in background)") {
+		t.Errorf("a Bash call running: both hints, inside the facts: %q", got)
+	}
+	if !strings.Contains(raw, "\033[1mesc\033[22m to interrupt") || !strings.Contains(raw, "\033[1mctrl+b\033[22m to run in background") || !offered(m, keyEsc) || !offered(m, "ctrl+b") {
+		t.Errorf("the keys bold, as ? help names them: %q", raw)
+	}
+	m, _ = turnModel(t, turnConv(t, turnUser, turnQueued, turnWriting), "busy")
+	if got := strip2(status(m, 140)); !strings.Contains(got, "esc to interrupt") || strings.Contains(got, "ctrl+b") {
+		t.Errorf("writing a reply: esc only: %q", got)
+	}
+	// A note beside it keeps its room; the hints go first.
+	m.sendNote = map[string]string{"live": "a note that must be read in full"}
+	if got := strip2(status(m, 60)); !strings.Contains(got, "a note that must be read in full") || strings.Contains(got, "interrupt") {
+		t.Errorf("narrow, with a note: %q", got)
+	}
+	// The search has the keys: Esc is the search's, so no hints.
+	m, _ = turnModel(t, turnConv(t, turnUser, turnBash), "busy")
+	m.chatFocus = false
+	if got := strip2(status(m, 140)); strings.Contains(got, "interrupt") || strings.Contains(got, "ctrl+b") {
+		t.Errorf("box not focused: no hints: %q", got)
+	}
+	// Held for a question: no hints.
+	m, _ = turnModel(t, turnConv(t, turnUser, turnBash), "busy")
+	m.heldPrompt = map[string]mcp.HeldPrompt{"live": {ID: "p"}}
+	if got := strip2(status(m, 140)); strings.Contains(got, "interrupt") {
+		t.Errorf("a held question: no turn keys: %q", got)
+	}
+}
+
+// runTurn runs cmd, a turn key's press, and applies its turnDoneMsg; the
+// other commands Update batches with it (ticks, a blink) are dropped.
+func runTurn(m model, cmd tea.Cmd) model {
+	if cmd == nil {
+		return m
+	}
+	msgs := []tea.Msg{cmd()}
+	if b, ok := msgs[0].(tea.BatchMsg); ok {
+		msgs = nil
+		for _, c := range b {
+			if c != nil {
+				msgs = append(msgs, c())
+			}
+		}
+	}
+	for _, msg := range msgs {
+		if d, ok := msg.(turnDoneMsg); ok {
+			res, _ := m.Update(d)
+			m = res.(model)
+		}
+	}
+	return m
 }

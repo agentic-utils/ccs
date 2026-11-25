@@ -1652,7 +1652,7 @@ func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
 	}
 	// ccs's own actions are chords: ^X for the session, ^T for views and tools.
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlX})
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X session:") || !strings.Contains(head, "B background") {
+	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^X session:") || !strings.Contains(head, "S send now") {
 		t.Errorf("after ^X the header lists what comes next: %q", head)
 	} else if strings.Contains(head, " on ") || strings.Contains(head, " off ") {
 		t.Errorf("after ^X only the next keys show, no on/off: %q", head)

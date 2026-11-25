@@ -908,7 +908,7 @@ func (m *model) openLinkAt(i int) string {
 }
 
 // linksMouse is the mouse in the ^O popup, a shortcut for its keys: the
-// wheel scrolls the list, a click on a link opens it as Enter does, a click
+// wheel moves the cursor a row a notch as ↑/↓ do, a click on a link opens it as Enter does, a click
 // on the scrollbar scrolls there, a click in the filter box puts its cursor
 // there, and a click outside the popup closes it. Positions come from the
 // box as drawn and overlayOrigin, where overlayCentre puts it.
@@ -918,11 +918,11 @@ func (m model) linksMouse(msg tea.MouseMsg) model {
 	}
 	l := m.linksView()
 	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		m.scrollLinksTo(l.start - 3)
+	case tea.MouseButtonWheelUp: // as the session list's wheel does, the cursor moves first and the view follows it
+		m.moveLinks(-1)
 		return m
 	case tea.MouseButtonWheelDown:
-		m.scrollLinksTo(l.start + 3)
+		m.moveLinks(1)
 		return m
 	case tea.MouseButtonLeft:
 	default:
@@ -963,8 +963,8 @@ func (m model) linksMouse(msg tea.MouseMsg) model {
 }
 
 // linksPopup is the ^O popup: a filter box over linksShown, the cursor on
-// one; a list taller than the screen scrolls with the cursor or the wheel,
-// with a scrollbar.
+// one; a list taller than the screen scrolls with the cursor, with a
+// scrollbar.
 func (m model) linksPopup() string {
 	l := m.linksView()
 	width, shown, cur, start, end := l.width, l.shown, l.cur, l.start, l.end

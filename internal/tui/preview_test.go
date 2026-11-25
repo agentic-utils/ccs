@@ -1518,13 +1518,31 @@ func TestLinksPopupMouse(t *testing.T) {
 		return 0, 0
 	}
 	cx, cy := find(m, "lnk03")
+	// The wheel moves the cursor a row a notch, as ↑/↓ do; the view follows
+	// only once the cursor reaches its edge. The list has 12 rows here.
 	m, _ = mouse(m, tea.MouseButtonWheelDown, cx, cy)
-	if v := strip2(m.View()); strings.Contains(v, "lnk00") || !strings.Contains(v, "› lnk03") {
-		t.Errorf("the wheel scrolls the list, taking the cursor along:\n%s", v)
+	if v := strip2(m.View()); !strings.Contains(v, "lnk00") || !strings.Contains(v, "› lnk01") {
+		t.Errorf("a notch down moves the cursor one row, the view staying put:\n%s", v)
+	}
+	for range 11 {
+		m, _ = mouse(m, tea.MouseButtonWheelDown, cx, cy)
+	}
+	if v := strip2(m.View()); strings.Contains(v, "lnk00") || !strings.Contains(v, "› lnk12") || !strings.Contains(v, "lnk01") {
+		t.Errorf("past the bottom edge the view follows the cursor by one row:\n%s", v)
 	}
 	m, _ = mouse(m, tea.MouseButtonWheelUp, cx, cy)
-	if v := strip2(m.View()); !strings.Contains(v, "lnk00") || !strings.Contains(v, "› lnk03") {
-		t.Errorf("the wheel scrolls back, the cursor staying where it is in view:\n%s", v)
+	if v := strip2(m.View()); strings.Contains(v, "lnk00") || !strings.Contains(v, "› lnk11") {
+		t.Errorf("a notch up moves the cursor back, the view staying put:\n%s", v)
+	}
+	for range 11 {
+		m, _ = mouse(m, tea.MouseButtonWheelUp, cx, cy)
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "› lnk00") {
+		t.Errorf("at the top edge the view follows the cursor back up:\n%s", v)
+	}
+	m, _ = mouse(m, tea.MouseButtonWheelUp, cx, cy)
+	if m.linksCursor != 0 {
+		t.Errorf("the wheel stops at the first link: cursor %d", m.linksCursor)
 	}
 
 	x, y := find(m, "lnk05")

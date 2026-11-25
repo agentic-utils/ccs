@@ -571,22 +571,32 @@ func ResolveParents(convs []transcript.Conversation, f ParentsFile) map[string]s
 			newest[c.Title] = c
 		}
 	}
-	find := func(name, id string) string {
+	find := func(name, id string) (string, bool) {
 		if c, ok := newest[name]; ok {
-			return c.SessionID
+			return c.SessionID, true
 		}
 		if id != "" && ids[id] {
-			return id
+			return id, false
 		}
-		return ""
+		return "", false
 	}
 	out := map[string]string{}
-	for _, r := range f.Parents {
-		child, parent := find(r.Child, r.ChildID), find(r.Parent, r.ParentID)
+	won := map[string]claim{}
+	for key, r := range f.Parents {
+		child, byName := find(r.Child, r.ChildID)
+		parent, _ := find(r.Parent, r.ParentID)
 		if child == "" || parent == "" || child == parent {
 			continue
 		}
-		out[child] = parent
+		// Two records can reach one session: a renamed session is still
+		// its old name's record's ChildID, and has its new name's record
+		// once it's adopted under that. The one naming it as it is now
+		// wins, then the newer; never the map's order.
+		c := claim{byName, r.At, key}
+		if w, ok := won[child]; ok && !c.beats(w) {
+			continue
+		}
+		won[child], out[child] = c, parent
 	}
 	// The older sessions with a record's name (before a /clear, or the name
 	// used again) go where the newest does, unless a record of their own
@@ -613,6 +623,26 @@ func ResolveParents(convs []transcript.Conversation, f ParentsFile) map[string]s
 	return out
 }
 
+// claim is how a record reached the session it names, for ResolveParents
+// to choose between two records that reach one session.
+type claim struct {
+	byName bool // by the name it has now, not by a saved id
+	at     time.Time
+	key    string
+}
+
+// beats: c is the record to follow over w, by name before by id, then the
+// newer, then by key so the answer never depends on the map's order.
+func (c claim) beats(w claim) bool {
+	if c.byName != w.byName {
+		return c.byName
+	}
+	if !c.at.Equal(w.at) {
+		return c.at.After(w.at)
+	}
+	return c.key > w.key
+}
+
 // ParentNamesLoaded is ParentNames for a load of only some sessions (the
 // running ones): a child whose parent isn't among convs still gets the name
 // its record gives, so a running session under a closed orchestrator keeps
@@ -628,14 +658,21 @@ func ParentNamesLoaded(convs []transcript.Conversation) map[string]string {
 			}
 		}
 	}
-	for _, r := range LoadParents().Parents {
-		child := byName[r.Child]
+	resolved := maps.Clone(out)
+	won := map[string]claim{}
+	for key, r := range LoadParents().Parents {
+		child, named := byName[r.Child], true
 		if child == "" && ids[r.ChildID] {
-			child = r.ChildID
+			child, named = r.ChildID, false
 		}
-		if child != "" && out[child] == "" && r.Parent != "" {
-			out[child] = r.Parent
+		if child == "" || resolved[child] != "" || r.Parent == "" {
+			continue
 		}
+		c := claim{named, r.At, key} // as in ResolveParents
+		if w, ok := won[child]; ok && !c.beats(w) {
+			continue
+		}
+		won[child], out[child] = c, r.Parent
 	}
 	return out
 }

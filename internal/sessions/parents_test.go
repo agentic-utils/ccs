@@ -190,3 +190,72 @@ func TestResolveParentsOwnRecordWins(t *testing.T) {
 		t.Errorf("w1 under hub-a by name, w0 under hub-b by its own record: %v", got)
 	}
 }
+
+// A session launched as one name, renamed with /rename and then adopted
+// under its new name, stays where the adoption put it: its old name's
+// record still holds its session id, and launching a new session under
+// the old name mustn't hand it back to its first parent. Two records reach
+// one session here, so each step is resolved many times: the answer must
+// never depend on the map's order.
+func TestRenamedSessionKeepsItsAdoption(t *testing.T) {
+	top := Caller{ID: "top-id", Name: "top-orch"}
+	sub := Caller{ID: "sub-id", Name: "sub-orch"}
+	convs := []transcript.Conversation{
+		{SessionID: "top-id", Title: "top-orch", IsCustomTitle: true, LastTimestamp: "2026-11-02T08:00:00Z"},
+		{SessionID: "sub-id", Title: "sub-orch", IsCustomTitle: true, LastTimestamp: "2026-11-02T08:30:00Z"},
+		// launched as old-worker, renamed to new-worker
+		{SessionID: "w-id", Title: "new-worker", IsCustomTitle: true, LastTimestamp: "2026-11-02T09:00:00Z"},
+	}
+	parentOf := func(convs []transcript.Conversation, id string) map[string]bool {
+		seen := map[string]bool{}
+		for range 50 {
+			seen[ResolveParents(convs, LoadParents())[id]] = true
+		}
+		return seen
+	}
+	want := func(step string, convs []transcript.Conversation, id, parent string) {
+		t.Helper()
+		if got := parentOf(convs, id); len(got) != 1 || !got[parent] {
+			t.Errorf("%s: %s's parent is %s every time, got %v", step, id, parent, got)
+		}
+	}
+
+	callAs(t, top, true)
+	recordLaunchParent("old-worker", 0)
+	setParent("old-worker", "w-id", top) // its id, once it registered
+	want("launched", []transcript.Conversation{convs[0], convs[1],
+		{SessionID: "w-id", Title: "old-worker", IsCustomTitle: true, LastTimestamp: "2026-11-02T09:00:00Z"}}, "w-id", "top-id")
+	want("renamed", convs, "w-id", "top-id") // a rename alone keeps its parent
+
+	CallingSession = func() (Caller, bool) { return sub, true } // callAs's cleanup puts it back
+	if _, err := Adopt("new-worker", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Adopt records the child's id when it's running; write that shape too.
+	setParent("new-worker", "w-id", sub)
+	want("adopted", convs, "w-id", "sub-id")
+
+	CallingSession = func() (Caller, bool) { return top, true }
+	// a new session under the old name, launched by top-orch: its record
+	// has no id until it registers, then its own
+	recordLaunchParent("old-worker", 0)
+	want("old name launched again", convs, "w-id", "sub-id")
+	setParent("old-worker", "n-id", top)
+	again := append(convs, transcript.Conversation{SessionID: "n-id", Title: "old-worker", IsCustomTitle: true, LastTimestamp: "2026-11-02T10:00:00Z"})
+	want("the new one registered", again, "w-id", "sub-id")
+	want("the new one registered", again, "n-id", "top-id")
+
+	// Even when the old name's record naming w-id is the newer one, the
+	// record naming it as it is now wins.
+	SetParents([]ParentRec{{Child: "old-worker", ChildID: "w-id", Parent: top.Name, ParentID: top.ID}})
+	SetParentsAt([]ParentRec{{Child: "new-worker", ChildID: "w-id", Parent: sub.Name, ParentID: sub.ID}}, time.Now().Add(-time.Hour))
+	want("adoption older than the stale record", convs, "w-id", "sub-id")
+
+	// A load of only the running sessions (session_triage): the worker
+	// alone, its parents not loaded, still gets the adoption's name.
+	for range 50 {
+		if got := ParentNamesLoaded(convs[2:]); got["w-id"] != "sub-orch" {
+			t.Fatalf("only the worker loaded: its parent is sub-orch, got %v", got)
+		}
+	}
+}

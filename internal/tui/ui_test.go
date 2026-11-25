@@ -2188,3 +2188,58 @@ func TestHelpPopupScrollsToEveryShortcut(t *testing.T) {
 		}
 	}
 }
+
+// A click on a list row selects it and leaves the list where it is: the
+// clicked session stays under the pointer and nothing scrolls, in both
+// layouts, even once the list has been scrolled down past its first screen.
+func TestClickOnListRowKeepsTheListStill(t *testing.T) {
+	var convs []transcript.Conversation
+	for i := range 60 {
+		convs = append(convs, transcript.Conversation{SessionID: fmt.Sprint("s", i), Title: fmt.Sprint("session ", i), Cwd: "/p", Size: 2048,
+			LastTimestamp: time.Now().Add(-time.Duration(i) * time.Minute).Format(time.RFC3339),
+			Messages:      []transcript.Message{{Role: "user", Text: "hello"}}})
+	}
+	for _, table := range []bool{false, true} {
+		m := initialModel(buildItems(convs), "", nil)
+		m.width, m.height, m.table = 120, 40, table
+		listTop, listHeight, _ := m.listLayout()
+		for range 30 { // scroll down past the first screen, the selection at the bottom
+			m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+		}
+		rows := m.listRows()
+		start := m.listStart(rows, listHeight)
+		if start == 0 {
+			t.Fatalf("table=%v: the list scrolled down before the click", table)
+		}
+		// A session in the middle of the screen, above the selection.
+		r := start + listHeight/2
+		for rows[r].item < 0 || rows[r].part > 0 {
+			r++
+		}
+		target := rows[r].item
+		if target == m.cursor {
+			t.Fatalf("table=%v: the clicked row is already selected", table)
+		}
+		title := m.filtered[target].conv.Title
+		y := listTop + r - start
+		before := strings.Split(strip2(m.View()), "\n")
+		res, _ := m.Update(tea.MouseMsg{X: 5, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		m = res.(model)
+		if m.cursor != target {
+			t.Fatalf("table=%v: the click selects %s, cursor=%d", table, title, m.cursor)
+		}
+		if got := m.listStart(m.listRows(), listHeight); got != start {
+			t.Errorf("table=%v: the click scrolled the list from row %d to %d", table, start, got)
+		}
+		after := strings.Split(strip2(m.View()), "\n")
+		if !strings.Contains(after[y], title+" ") || !strings.Contains(before[y], title+" ") {
+			t.Errorf("table=%v: %s stays under the pointer: before %q, after %q", table, title, before[y], after[y])
+		}
+		// Moving on from there scrolls only as far as the selection needs.
+		res, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m = res.(model)
+		if got := m.listStart(m.listRows(), listHeight); got != start {
+			t.Errorf("table=%v: ↑ to a row on screen scrolled the list from %d to %d", table, start, got)
+		}
+	}
+}

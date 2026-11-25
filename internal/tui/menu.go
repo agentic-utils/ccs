@@ -61,6 +61,17 @@ type heldMenu struct {
 	shownAt time.Time       // when this step first showed: menuFresh from it
 	revTop  int             // the review's first line on screen, when it's taller than the pane
 	revSeen bool            // the review's last line has been on screen: only then does Enter send it
+	prevTop int             // the preview box's first line on screen, for prevAt's option
+	prevAt  [2]int          // the step and cursor prevTop scrolls: another option's preview starts at its top
+}
+
+// previewTop is the first line of the highlighted option's preview on
+// screen: 0 once the highlighted option (or question) has changed.
+func (mn *heldMenu) previewTop() int {
+	if mn.prevAt != [2]int{mn.step, mn.cursor} {
+		return 0
+	}
+	return mn.prevTop
 }
 
 func newHeldMenu(id string) *heldMenu {
@@ -171,6 +182,17 @@ func (m *model) menuKey(h mcp.HeldPrompt, name, k string, msg tea.KeyMsg) (tea.C
 	}
 	q := qs[mn.step]
 	rows := len(q.Options) + 1 // and "Other…"
+	// PgUp/PgDn page the highlighted option's preview, a box less a line at a time.
+	if k == "pgup" || k == "pgdown" {
+		if page, ok := m.previewPage(h, mn); ok {
+			if k == "pgup" {
+				page = -page
+			}
+			m.scrollPreview(h, mn, page)
+			return nil, true
+		}
+		return nil, false // nothing to scroll: the list's
+	}
 	if mn.editing == boxOther {
 		return m.menuFieldKey(h, name, mn, q, k, msg)
 	}
@@ -468,7 +490,65 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 		ow, side = previewColumns(width)
 	}
 	upper := lines
-	lines = nil // the options, at ow
+	lines = mn.optionLines(q, ow, active) // the options, at ow
+	if len(q.Previews) > 0 {
+		// The box's height never depends on active, so heldSplit's count of
+		// the body agrees with what's drawn.
+		text, bw, rows, fits := m.previewFit(q, mn, width, above, len(lines))
+		switch {
+		case side:
+			lines = besideColumn(lines, ow, previewBox(text, bw, rows, mn.previewTop()))
+		case fits:
+			lines = append(append(lines, ""), previewBox(text, bw, rows, mn.previewTop())...)
+		case text != "": // no room for a box under the options: say where it is
+			lines = append(lines, ansi.Truncate(fmt.Sprintf("\033[90m▸ preview: %d lines in its tab\033[0m", strings.Count(text, "\n")+1), width, "…"))
+		}
+	}
+	lines = append(upper, lines...)
+	switch mn.editing {
+	case boxNote:
+		lines = append(append(lines, ""), menuBoxLines(mn, width)...)
+		return append(lines, paneHintsFit(width, keyEnter, "save (empty removes it)", keyEsc, "cancel"))
+	}
+	if !active {
+		return lines
+	}
+	if len(qs) == 1 { // no review: say what Enter sends, with its note, as the review would
+		lines = append(lines, paneRule(width))
+		lines = append(lines, wrapIndent("\033[90menter sends\033[0m → ", "\033[1m", mn.pending(q), width)...)
+		if nt := mn.notes[mn.step]; nt != "" {
+			lines = append(lines, wrapIndent("     note: ", "\033[90m", nt, width)...)
+		}
+	} else {
+		lines = append(lines, "")
+	}
+	keys := []string{"↑↓", "move", keyEnter, "pick"}
+	if q.Multi {
+		keys = []string{"↑↓", "move", "space", "tick", keyEnter, "confirm"}
+	}
+	if mn.editing == boxOther { // the field has the keys: n, ← and Space are its own
+		keys = []string{"↑↓", "move", "type", "your answer", keyEnter, "send"}
+		if q.Multi {
+			keys = []string{"↑↓", "move", "type", "your own (ticks it)", keyEnter, "confirm"}
+		}
+	} else {
+		if m.previewScrolls(h) {
+			keys = append(keys, "pgup/dn", "preview")
+		}
+		keys = append(keys, "n", "note")
+		if mn.step > 0 {
+			keys = append(keys, "←", "back")
+		}
+	}
+	keys = append(keys, keyEsc, "list")
+	return append(lines, paneHintsFit(width, keys...))
+}
+
+// optionLines is a question's options as menuLines draws them, ow wide:
+// "❯" on the highlighted one, each "n. label" with its description and a
+// note under the chosen option, then "Other…".
+func (mn *heldMenu) optionLines(q mcp.HeldQuestion, ow int, active bool) []string {
+	var lines []string
 	cursor := func(i int) string {
 		if i == mn.cursor && mn.editing != boxNote {
 			return "\033[1;" + amber + "m❯\033[0m "
@@ -524,56 +604,7 @@ func (m model) menuLines(h mcp.HeldPrompt, width int, active bool) []string {
 	if noteAt == n {
 		lines = append(lines, wrapIndent(strings.Repeat(" ", 2+len(number(n)))+"note: ", "\033[90m", mn.notes[mn.step], ow)...)
 	}
-	if len(q.Previews) > 0 {
-		text := ""
-		if mn.cursor < len(q.Previews) {
-			text = q.Previews[mn.cursor]
-		}
-		// The box's height never depends on active, so heldSplit's count of
-		// the body agrees with what's drawn.
-		if side {
-			lines = besideColumn(lines, ow, previewBox(text, width-ow-previewGap, max(m.heldRoom()-above-previewReserve, 3)))
-		} else if rows := m.heldRoom() - above - len(lines) - 1 - previewReserve; rows >= 3 {
-			lines = append(append(lines, ""), previewBox(text, width, rows)...)
-		} else if text != "" { // no room for a box under the options: say where it is
-			lines = append(lines, ansi.Truncate(fmt.Sprintf("\033[90m▸ preview: %d lines in its tab\033[0m", strings.Count(text, "\n")+1), width, "…"))
-		}
-	}
-	lines = append(upper, lines...)
-	switch mn.editing {
-	case boxNote:
-		lines = append(append(lines, ""), menuBoxLines(mn, width)...)
-		return append(lines, paneHintsFit(width, keyEnter, "save (empty removes it)", keyEsc, "cancel"))
-	}
-	if !active {
-		return lines
-	}
-	if len(qs) == 1 { // no review: say what Enter sends, with its note, as the review would
-		lines = append(lines, paneRule(width))
-		lines = append(lines, wrapIndent("\033[90menter sends\033[0m → ", "\033[1m", mn.pending(q), width)...)
-		if nt := mn.notes[mn.step]; nt != "" {
-			lines = append(lines, wrapIndent("     note: ", "\033[90m", nt, width)...)
-		}
-	} else {
-		lines = append(lines, "")
-	}
-	keys := []string{"↑↓", "move", keyEnter, "pick"}
-	if q.Multi {
-		keys = []string{"↑↓", "move", "space", "tick", keyEnter, "confirm"}
-	}
-	if mn.editing == boxOther { // the field has the keys: n, ← and Space are its own
-		keys = []string{"↑↓", "move", "type", "your answer", keyEnter, "send"}
-		if q.Multi {
-			keys = []string{"↑↓", "move", "type", "your own (ticks it)", keyEnter, "confirm"}
-		}
-	} else {
-		keys = append(keys, "n", "note")
-		if mn.step > 0 {
-			keys = append(keys, "←", "back")
-		}
-	}
-	keys = append(keys, keyEsc, "list")
-	return append(lines, paneHintsFit(width, keys...))
+	return lines
 }
 
 // menuPreviewSide is the inner width from which a question's previews go
@@ -598,33 +629,108 @@ func previewColumns(width int) (left int, side bool) {
 	return min(max(width*2/5, 32), 56), true
 }
 
-// previewBox draws an option's preview as Claude Code does: in a grey box
-// width wide, its text verbatim, line breaks kept, long lines wrapped
-// (tabs as four spaces), at most rows rows tall borders included; a
-// preview taller than that ends in a dim count of what's cut, which its
-// tab shows in full. The highlighted option without a preview (Other…
-// included) gets a dim "no preview", so the layout doesn't jump.
-func previewBox(text string, width, rows int) []string {
-	width, rows = max(width, 12), max(rows, 3)
-	inner := width - 4
+// previewFit is where the highlighted option's preview goes in a question
+// drawn width wide with above rows over its options and opts option rows:
+// its text, the box's width and its most rows, borders included. Beside the
+// options it always fits; under them fits is false when fewer than 3 rows
+// are left, and menuLines then says where it is instead.
+func (m model) previewFit(q mcp.HeldQuestion, mn *heldMenu, width, above, opts int) (text string, bw, rows int, fits bool) {
+	if mn.cursor < len(q.Previews) {
+		text = q.Previews[mn.cursor]
+	}
+	if ow, side := previewColumns(width); side {
+		return text, width - ow - previewGap, max(m.heldRoom()-above-previewReserve, 3), true
+	}
+	rows = m.heldRoom() - above - opts - 1 - previewReserve
+	return text, width, rows, rows >= 3
+}
+
+// previewView is the highlighted option's preview box as menuLines draws
+// it: its body lines and how many show at once. ok is false with no box
+// (no previews, the review, a note box open, no room).
+func (m model) previewView(h mcp.HeldPrompt, mn *heldMenu) (body []string, view int, ok bool) {
+	if mn.step >= len(h.Questions) || mn.editing == boxNote {
+		return nil, 0, false
+	}
+	q := h.Questions[mn.step]
+	if len(q.Previews) == 0 {
+		return nil, 0, false
+	}
+	width := max(m.heldInner(), 20)
+	above := 2 + len(wrapIndent("", "\033[1m", q.Question, width))
+	ow, _ := previewColumns(width)
+	text, bw, rows, fits := m.previewFit(q, mn, width, above, len(mn.optionLines(q, ow, false)))
+	if !fits {
+		return nil, 0, false
+	}
+	return previewBody(text, bw), max(rows, 3) - 2, true
+}
+
+// previewPage is how far PgUp/PgDn move the preview box: its view less a
+// line, so a line of the last view stays on screen. ok is false with no
+// box, or when the preview fits in it.
+func (m model) previewPage(h mcp.HeldPrompt, mn *heldMenu) (int, bool) {
+	body, view, ok := m.previewView(h, mn)
+	if !ok || len(body) <= view {
+		return 0, false
+	}
+	return max(view-1, 1), true
+}
+
+// scrollPreview moves the highlighted option's preview by delta lines,
+// kept between its top and the last line on screen.
+func (m model) scrollPreview(h mcp.HeldPrompt, mn *heldMenu, delta int) {
+	body, view, ok := m.previewView(h, mn)
+	if !ok {
+		return
+	}
+	top := mn.previewTop() + delta
+	mn.prevTop, mn.prevAt = min(max(top, 0), max(len(body)-view, 0)), [2]int{mn.step, mn.cursor}
+}
+
+// previewBody is an option's preview as its box's lines, inner the box's
+// width less borders and padding: its text verbatim, line breaks kept, long
+// lines wrapped, tabs as four spaces; a dim "no preview" when there's none.
+func previewBody(text string, width int) []string {
+	inner := max(width, 12) - 4
+	if strings.TrimSpace(text) == "" {
+		return []string{"\033[90mno preview\033[0m"}
+	}
 	var body []string
 	for _, l := range strings.Split(strings.ReplaceAll(text, "\t", "    "), "\n") {
 		for _, w := range strings.Split(ansi.Wrap(l, inner, " "), "\n") {
 			body = append(body, strings.TrimRight(w, " "))
 		}
 	}
-	if strings.TrimSpace(text) == "" {
-		body = []string{"\033[90mno preview\033[0m"}
-	}
-	if len(body) > rows-2 {
-		cut := len(body) - (rows - 3)
-		body = append(body[:rows-3], fmt.Sprintf("\033[90m… %d more lines in its tab\033[0m", cut))
+	return body
+}
+
+// previewBox draws an option's preview as Claude Code does: in a grey box
+// width wide (previewBody), at most rows rows tall borders included. A
+// preview taller than that shows from line top, and the box's right edge
+// is a scrollbar (scrollThumb, barCell) saying where; PgUp/PgDn and the
+// wheel scroll it (scrollPreview). The highlighted option without a
+// preview (Other… included) gets a dim "no preview", so the layout doesn't
+// jump.
+func previewBox(text string, width, rows, top int) []string {
+	width, rows = max(width, 12), max(rows, 3)
+	inner := width - 4
+	body := previewBody(text, width)
+	view := rows - 2
+	top = min(max(top, 0), max(len(body)-view, 0))
+	thumb, size, bar := scrollThumb(len(body), top, view)
+	if len(body) > view {
+		body = body[top : top+view]
 	}
 	edge := "\033[90m"
 	out := []string{edge + "┌" + strings.Repeat("─", width-2) + "┐\033[0m"}
-	for _, l := range body {
+	for r, l := range body {
 		l = ansi.Truncate(l, inner, "…")
-		out = append(out, edge+"│\033[0m "+l+"\033[0m"+strings.Repeat(" ", max(inner-ansi.StringWidth(l), 0))+" "+edge+"│\033[0m")
+		right := edge + "│\033[0m"
+		if bar {
+			right = barCell(r, thumb, size)
+		}
+		out = append(out, edge+"│\033[0m "+l+"\033[0m"+strings.Repeat(" ", max(inner-ansi.StringWidth(l), 0))+" "+right)
 	}
 	return append(out, edge+"└"+strings.Repeat("─", width-2)+"┘\033[0m")
 }
@@ -846,4 +952,65 @@ func fieldRows(prefix string, val []rune, pos int, placeholder string, width int
 		out = append(out, lead+text)
 	}
 	return out
+}
+
+// previewScrolls says the selected held question's highlighted option has
+// a preview taller than its box, which PgUp/PgDn and the wheel then scroll.
+func (m model) previewScrolls(h mcp.HeldPrompt) bool {
+	_, ok := m.previewPage(h, mn(m, h))
+	return ok
+}
+
+// heldPreviewScrolls is previewScrolls for the held prompt on screen.
+func (m model) heldPreviewScrolls() bool {
+	h, _, ok := m.heldDrawn()
+	return ok && len(h.Questions) > 0 && m.previewScrolls(h)
+}
+
+// overPreviewBox says screen cell (x, y) is on the held question's preview
+// box, so the wheel there scrolls it (scrollPreview) and not the
+// conversation. The box is found as drawn: its corners' columns, and the
+// rows whose cell there is its left edge.
+func (m model) overPreviewBox(x, y int) bool {
+	if !m.heldPreviewScrolls() {
+		return false
+	}
+	lines := m.chatAsk()
+	row := y - (m.height - m.chatRows() + 1) // the status line is above the held box
+	if row < 0 || row >= len(lines) {
+		return false
+	}
+	paneX := 0
+	if sw := m.sidebarWidth(); sw > 0 {
+		paneX = sw + 1
+	}
+	left, right := -1, -1
+	for _, l := range lines {
+		s := ansi.Strip(l)
+		for _, c := range []string{"┌", "└"} {
+			i, j := strings.Index(s, c), strings.LastIndexAny(s, "┐┘")
+			if i >= 0 && j > i {
+				left = ansi.StringWidth(s[:i])
+				right = left + ansi.StringWidth(s[i:j]) // the right corner's column
+			}
+		}
+	}
+	col := x - paneX
+	if left < 0 || col < left || col > right {
+		return false
+	}
+	edge := ansi.Strip(ansi.Cut(lines[row], left, left+1))
+	return edge == "┌" || edge == "│" || edge == "└"
+}
+
+// notePreview starts the held menu's preview box at its top whenever the
+// highlighted option or question has changed since it was scrolled, so
+// coming back to an option shows its preview from the top too. From
+// Update, after every message, as noteReview is.
+func (m *model) notePreview() {
+	for _, mn := range m.menus {
+		if at := [2]int{mn.step, mn.cursor}; mn.prevAt != at {
+			mn.prevTop, mn.prevAt = 0, at
+		}
+	}
 }

@@ -488,8 +488,9 @@ func (m model) heldDrawn() (mcp.HeldPrompt, transcript.Conversation, bool) {
 // (heldKeysActive): a question's menu (menu.go), or a permission prompt's
 // (permmenu.go: ↑/↓, Enter or a digit sends the row, A yes, D no).
 // Esc leaves it for the list (menuLeft): then ↑/↓ move the list, and →
-// or Enter give it the keys again (Tab is never the menu's: it goes to the next session that needs you). ^P/^N, PgUp/PgDn and ^X chords
-// always fall through; so does any key the prompt doesn't use, which goes
+// or Enter give it the keys again (Tab is never the menu's: it goes to the next session that needs you). ^P/^N and ^X chords
+// always fall through, PgUp/PgDn too unless they scroll the review or a
+// preview taller than its box; so does any key the prompt doesn't use, which goes
 // to the search. Right after an auto-select the guard drops keys still
 // being typed.
 func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
@@ -505,6 +506,8 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 	switch {
 	case (k == "pgup" || k == "pgdown") && review && !boxOpen:
 		// the review scrolls with them (menuKey)
+	case (k == "pgup" || k == "pgdown") && menu && m.previewScrolls(h):
+		// so does a preview taller than its box (menuKey)
 	case k == "ctrl+p", k == "ctrl+n", k == "pgup", k == "pgdown", k == "ctrl+c", k == "tab", k == "shift+tab", k == "ctrl+x":
 		return nil, false
 	case (strings.HasPrefix(k, "ctrl+") || strings.HasPrefix(k, "alt+")) && !boxOpen:

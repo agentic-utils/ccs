@@ -435,6 +435,10 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
 		up := msg.Button == tea.MouseButtonWheelUp
 		switch {
+		case m.overPreviewBox(msg.X, msg.Y): // a held question's preview box scrolls itself
+			if h, _, ok := m.heldDrawn(); ok {
+				m.scrollPreview(h, m.menuFor(h), map[bool]int{true: -3, false: 3}[up])
+			}
 		case onPreview && up:
 			m.previewScroll = min(m.previewScroll+3, m.maxPreviewScroll()) // back towards older messages
 		case onPreview:
@@ -1339,6 +1343,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	n.showMenu(n.heldShown())
 	n.noteReview()
+	n.notePreview()
 	n.paneAt = heldNow()                                  // the pane's clock for this frame (paneNow)
 	changed := !still || sorted || n.driftSig() != before // Update's own steps since may have changed something
 	if changed || !n.hdr.valid || n.hdrMinute != minute {
@@ -3258,6 +3263,7 @@ func (m model) shortcuts() [][2]string {
 		add(true, "space", "a pick-any question: tick or untick; enter confirms")
 		add(true, "n", "a note on this question's answer, sent with it (empty removes it); a single-select question's note also chooses the highlighted option")
 		add(true, "←", "back a question, keeping your answers (several end on a review: enter submits)")
+		add(m.heldPreviewScrolls(), "pgup/dn", "a preview taller than its box: scroll it (the mouse wheel over it too); it starts at the top for each option")
 		add(true, keyEsc, "back to the list, keeping your answers (→ or tab returns to the menu)")
 		add(true, "^P ^N", "move the list, menu or not; any other letter types in the search")
 	case live && m.boxHidden() && m.heldPrompt[m.filtered[m.cursor].conv.SessionID].ID != "":

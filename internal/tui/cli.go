@@ -252,7 +252,8 @@ Key bindings:
                   sends it at once, A yes, D no, Esc back to the list. A
                   question's Other… row is a text field: with ❯ on it, type
                   your own answer; n notes the highlighted option (and, in a
-                  single-select question, chooses it)
+                  single-select question, chooses it). A preview taller than
+                  its box scrolls with PgUp/PgDn (the wheel over it too)
   Tab             Select the next session that needs you, by priority: a held
                   question, menu or prompt; then one that asked you something;
                   then one done that you haven't read; then one with a PR

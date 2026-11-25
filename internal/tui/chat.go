@@ -978,33 +978,6 @@ func (m model) convByID() map[string]transcript.Conversation {
 	return out
 }
 
-// sessionLinks are the ^O popup's jumps to the sessions conv messaged or
-// heard from, each once, newest first.
-func (m model) sessionLinks(conv transcript.Conversation) []linkItem {
-	e := m.peerEnds()
-	byID := m.convByID()
-	seen := map[string]bool{}
-	var out []linkItem
-	for i := len(conv.Peers) - 1; i >= 0; i-- {
-		p := conv.Peers[i]
-		id, _ := m.peerOther(e, conv, p)
-		c, ok := byID[id]
-		if !ok || seen[id] {
-			continue
-		}
-		seen[id] = true
-		dir := "← from "
-		if p.Sent {
-			dir = "→ to "
-		}
-		out = append(out, linkItem{sessionLink + id, "\033[36m" + dir + m.sessionName(c) + "\033[39m"})
-	}
-	return out
-}
-
-// sessionLink starts a ^O link that selects a session in the list.
-const sessionLink = "ccs:session:"
-
 // selectSession puts the cursor on session id, clearing the search if it
 // hides it.
 func (m *model) selectSession(id string) {

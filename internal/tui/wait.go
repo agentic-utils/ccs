@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/agentic-utils/ccs/internal/github"
@@ -400,6 +402,106 @@ type autoFocusMsg struct {
 	focused bool
 }
 
+// Auto-focus targets (^T A): where a session that starts waiting on you is
+// brought up. Off, nothing selects or switches to one.
+const (
+	focusCCS  = "ccs"  // select it in ccs's list (autoSelect), a held question's menu focused
+	focusTab  = "tab"  // switch to its iTerm tab or tmux pane (autoFocusCmd)
+	focusBoth = "both" // both: a held question is selected in ccs only, since its menu is answered there
+)
+
+// focusTargets are the picker's rows, in order.
+var focusTargets = []string{focusCCS, focusTab, focusBoth}
+
+// focusFeatures count each focusTargets entry, in its order.
+var focusFeatures = []stats.Feature{"tui.auto_focus_ccs", "tui.auto_focus_tab", "tui.auto_focus_both"}
+
+// focusTargetText says what each target does, for the picker.
+var focusTargetText = map[string]string{
+	focusCCS:  "select it in ccs's list",
+	focusTab:  "switch to its tab or pane",
+	focusBoth: "both",
+}
+
+// focusTarget is the chosen target; "" (saved before there was a choice,
+// when auto-focus did both) is focusBoth.
+func (m model) focusTarget() string {
+	if slices.Contains(focusTargets, m.autoFocusTarget) {
+		return m.autoFocusTarget
+	}
+	return focusBoth
+}
+
+// focusInCCS: auto-focus is on and selects sessions in ccs's list.
+func (m model) focusInCCS() bool {
+	return m.autoFocus && m.focusTarget() != focusTab
+}
+
+// focusTabs: auto-focus is on and switches terminal tabs.
+func (m model) focusTabs() bool {
+	return m.autoFocus && m.focusTarget() != focusCCS
+}
+
+// focusToggle is the header's ^T A toggle: off, or on with its target.
+func (m model) focusToggle() string {
+	if !m.autoFocus {
+		return toggleHint("^T A", "auto-focus", false)
+	}
+	return "\033[1m^T A\033[22m auto-focus: \033[32m" + m.focusTarget() + "\033[90m"
+}
+
+// focusPopup is ^T A's picker, shown when it turns auto-focus on.
+func (m model) focusPopup() string {
+	var b strings.Builder
+	b.WriteString("\033[1mAuto-focus a session that waits on you\033[0m\n\n")
+	for i, t := range focusTargets {
+		row := fmt.Sprintf("%d %-4s  %s", i+1, t, focusTargetText[t])
+		if i == m.autoFocusCursor {
+			row = "\033[1m› " + row + "\033[0m"
+		} else {
+			row = "  " + row
+		}
+		b.WriteString(row + "\n")
+	}
+	b.WriteString("\n\033[90monce you've stopped typing for 2s; ^T A again turns it off\033[0m\n")
+	b.WriteString("\n\033[90m" + hints("↑↓", "move", keyEnter, "turn on", "1-3", "pick", keyEsc, "leave it off") + "\033[0m")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("39")).
+		Padding(1, 3).
+		Render(b.String())
+}
+
+// focusPickKey handles a key while ^T A's picker is open.
+func (m model) focusPickKey(k string) (tea.Model, tea.Cmd) {
+	pick := -1
+	switch k {
+	case "esc", "^t a":
+		m.autoFocusOpen = false
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "up", "ctrl+p", "k":
+		m.autoFocusCursor = max(m.autoFocusCursor-1, 0)
+	case "down", "ctrl+n", "j":
+		m.autoFocusCursor = min(m.autoFocusCursor+1, len(focusTargets)-1)
+	case "enter":
+		pick = m.autoFocusCursor
+	default:
+		if len(k) == 1 && k[0] >= '1' && int(k[0]-'1') < len(focusTargets) {
+			pick = int(k[0] - '1')
+		}
+	}
+	if pick >= 0 {
+		m.autoFocusOpen = false
+		m.autoFocus, m.autoFocusTarget, m.focusHeld = true, focusTargets[pick], ""
+		stats.Record(focusFeatures[pick], stats.Key)
+		state.LogActivity("auto-focus: on, target %s", focusTargets[pick])
+		saveSettings(m.settings())
+	}
+	return m, nil
+}
+
 // autoFocusCmd (^T A) switches to a session that starts waiting on a menu or
 // prompt: once per wait, after autoFocusIdle without input, and not again
 // until the question it switched to is answered (focusHeld). That includes
@@ -407,7 +509,7 @@ type autoFocusMsg struct {
 // across restarts (focusRecordPath), so a restart doesn't switch to them
 // again. Each step goes to the activity log once per wait (focusNoted).
 func (m *model) autoFocusCmd() tea.Cmd {
-	if !m.autoFocus || m.focusBusy {
+	if !m.focusTabs() || m.focusBusy {
 		return nil
 	}
 	if m.focusHandled == nil {
@@ -430,7 +532,7 @@ func (m *model) autoFocusCmd() tea.Cmd {
 		if h, ok := m.focusHandled[sid]; st.Status != "waiting" || ok && h.Equal(st.Since) {
 			continue
 		}
-		if _, held := m.heldPrompt[sid]; held { // its tab shows no menu: ccs selects it instead (autoSelect)
+		if _, held := m.heldPrompt[sid]; held && m.focusInCCS() { // ccs selects it instead (autoSelect), its menu answered here
 			continue
 		}
 		id = sid // ponytail: any one of several waits; the rest follow once it's answered

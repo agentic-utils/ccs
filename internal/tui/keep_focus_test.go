@@ -72,7 +72,7 @@ func readingModel(t *testing.T) model {
 	m := waitModel(t)
 	m.width, m.height = 100, 40
 	m.filtered = m.items
-	m.lastKeyAt = time.Now().Add(-time.Hour)
+	m.lastKeyAt, m.autoFocus = time.Now().Add(-time.Hour), true
 	m.heldPrompt = map[string]mcp.HeldPrompt{"menu": {ID: "pm", Session: "menu", Tool: "Bash", At: time.Now()}}
 	m.cursor = slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == "live" })
 	return m

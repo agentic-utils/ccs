@@ -380,7 +380,7 @@ func TestMenuEscAndNoT(t *testing.T) {
 func TestMenuAfterAutoSelect(t *testing.T) {
 	tick := menuClock(t)
 	m, calls, _ := paneModel(t, colour())
-	m.lastKeyAt = heldNow().Add(-time.Hour)
+	m.lastKeyAt, m.autoFocus = heldNow().Add(-time.Hour), true
 	m.cursor = 0
 	if m.filtered[0].conv.SessionID == "live" {
 		m.cursor = 1

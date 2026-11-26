@@ -19,7 +19,7 @@ Every answer moved into the main view, and Bharat asked for that to be the only 
 | The overlay did | Now |
 | --- | --- |
 | Count the waits | The header's `N waiting` (no key) |
-| Show the next wait | Tab goes to waiting sessions (the list stays in start order); held prompts are selected for you (`autoSelect`, oldest first) |
+| Show the next wait | Tab goes to waiting sessions (the list stays in start order); with ^T A on (target ccs or both), held prompts are selected for you (`autoSelect`, oldest first) |
 | Show the question | The bottom pane, in place of the selected session's message box (`chatAsk`) |
 | Answer | Held prompts in the bottom pane; others in their tab (Enter opens it) |
 | Snooze a wait (Esc, `CCS_SNOOZE`) | `Ctrl+X S` puts a session away for a while; the overlay's own snoozes and `CCS_SNOOZE` are gone |

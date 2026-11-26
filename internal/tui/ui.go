@@ -103,7 +103,10 @@ type model struct {
 	rcOpen           bool                 // ^T V's Remote Control popup (remote.go)
 	rcRunning        bool                 // ^T V is typing /remote-control somewhere
 	snoozeCursor     int
-	autoFocus        bool                 // ^T A: switch to a session that starts waiting on you (autoFocusCmd)
+	autoFocus        bool   // ^T A: bring up a session that starts waiting on you, where autoFocusTarget says; off, nothing does
+	autoFocusTarget  string // ^T A's target: focusCCS, focusTab or focusBoth ("" is focusBoth, from before the choice)
+	autoFocusOpen    bool   // ^T A's target picker (focusPopup)
+	autoFocusCursor  int
 	focusBusy        bool                 // an auto-focus attempt is in flight
 	focusHeld        string               // the session auto-focus switched to; none other until it's answered
 	focusHandled     map[string]time.Time // SessionID -> the wait (statusUpdatedAt) auto-focus has dealt with
@@ -379,7 +382,7 @@ func (m model) paneWidth() int {
 // conversation preview scrolls, the list moves its selection. A click on a
 // list row selects it.
 func (m model) handleMouse(msg tea.MouseMsg) model {
-	if m.snoozeOpen || m.rcOpen || len(m.reopen) > 0 || m.reorgPlan != nil || m.offerShown() {
+	if m.snoozeOpen || m.autoFocusOpen || m.rcOpen || len(m.reopen) > 0 || m.reorgPlan != nil || m.offerShown() {
 		return m // keyboard only while it's open
 	}
 	if m.linksOpen {
@@ -2092,6 +2095,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.snoozeOpen { // owns the keyboard until closed
 			return m.snoozeKey(k)
 		}
+		if m.autoFocusOpen { // owns the keyboard until closed
+			return m.focusPickKey(k)
+		}
 		if m.rcOpen { // owns the keyboard until closed
 			return m.rcKey(k)
 		}
@@ -2278,9 +2284,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if k == "^t a" && !m.prompting() && !m.acctOpen && !m.showUsage {
 			stats.Record("tui.auto_focus", stats.Key)
-			m.helpOpen, m.autoFocus = false, !m.autoFocus
-			m.focusHeld = ""
-			saveSettings(m.settings())
+			m.helpOpen, m.focusHeld = false, ""
+			if m.autoFocus { // off at once; turning it on asks where (focusPopup)
+				m.autoFocus = false
+				saveSettings(m.settings())
+				return m, nil
+			}
+			m.autoFocusOpen, m.autoFocusCursor = true, max(slices.Index(focusTargets, m.focusTarget()), 0)
 			return m, nil
 		}
 		if k == "^t h" && !m.prompting() && !m.acctOpen && !m.showUsage {
@@ -3174,6 +3184,7 @@ func (m model) overPopups() []popup {
 		{m.notesOpen, model.notesPopup},
 		{m.linksOpen, model.linksPopup},
 		{m.snoozeOpen, model.snoozePopup},
+		{m.autoFocusOpen, model.focusPopup},
 		{m.rcOpen, model.rcPopup},
 		{m.serveQROpen, model.serveQRPopup},
 		{m.setup != nil, model.serveSetupPopup},
@@ -3332,8 +3343,8 @@ func (m model) shortcuts() [][2]string {
 	add(!m.table && m.hideSidebar, "^T L", "show the list beside the preview again")
 	add(!showHeadless, "^T H", "show headless runs (claude -p, codex exec)")
 	add(showHeadless, "^T H", "hide headless runs")
-	add(!m.autoFocus, "^T A", "switch to a session's tab when it starts waiting on you")
-	add(m.autoFocus, "^T A", "stop switching to sessions that wait on you")
+	add(!m.autoFocus, "^T A", "bring up a session that starts waiting on you: in ccs, its tab or both")
+	add(m.autoFocus, "^T A", "stop auto-focus: nothing selects or switches to sessions for you")
 	add(!m.serve.Installed, "^T V W", "set up ccs serve: try it on this Mac now, or set it up for your phone")
 	add(m.serve.Installed && !m.serve.Running, "^T V W", "start ccs serve, the sessions in a browser (its launchd agent)")
 	add(m.serve.Running, "^T V W", "ccs serve's address and QR code; s stops it (asks first), e edits its setup")
@@ -3662,7 +3673,7 @@ func (m model) viewScreen() string {
 	// chord is pending: then the row lists only what the next key does.
 	var toggles []string
 	if !m.showUsage && !m.chording() {
-		toggles = append(toggles, toggleHint("^T A", "auto-focus", m.autoFocus))
+		toggles = append(toggles, m.focusToggle())
 		if m.serve.Installed { // set up for remote use: say whether it's reachable
 			toggles = append(toggles, toggleHint("^T V W", "web", m.serve.Running))
 		}
@@ -4417,6 +4428,9 @@ type settings struct {
 	Table     bool `json:"table,omitempty"`
 	Grouped   bool `json:"grouped,omitempty"`
 	AutoFocus bool `json:"auto_focus,omitempty"`
+	// AutoFocusTarget (^T A) is where auto-focus brings a waiting session
+	// up: ccs, tab or both; kept while it's off, so the picker starts there.
+	AutoFocusTarget string `json:"auto_focus_target,omitempty"`
 	// HideSidebar (^T L): the sidebar layout shows the preview alone.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
 	// OpenClosed (^X C): the parents, by session id, whose closed sessions
@@ -4469,7 +4483,7 @@ func (s settings) autoUpdateOn() bool {
 
 func (m model) settings() settings {
 	auto := m.autoUpdate
-	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, HideSidebar: m.hideSidebar, OpenClosed: m.openFolds(), HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto, LaunchAgent: m.launchAgent, KeyLayout: keyLayout}
+	return settings{Table: m.table, Grouped: m.grouped, AutoFocus: m.autoFocus, AutoFocusTarget: m.autoFocusTarget, HideSidebar: m.hideSidebar, OpenClosed: m.openFolds(), HeaderOpen: !m.headerCollapsed, AutoUpdate: &auto, LaunchAgent: m.launchAgent, KeyLayout: keyLayout}
 }
 
 // loadSettings reads them; a missing or unreadable file means the defaults.

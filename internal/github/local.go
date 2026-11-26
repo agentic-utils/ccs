@@ -238,8 +238,8 @@ func (f *localFile) tools(line []byte) {
 }
 
 var (
-	ghMergeCmd  = regexp.MustCompile(`gh pr merge\b([^\n;&|]*)`)
-	ghCreateCmd = regexp.MustCompile(`gh pr create\b`)
+	ghMergeCmd  = regexp.MustCompile(`\bgh pr merge\b([^\n;&|]*)`)
+	ghCreateCmd = regexp.MustCompile(`\bgh pr create\b`)
 	// ghOtherCmd is a gh command that can print a PR's address and isn't a
 	// create or a merge: with one in the same command, whose address a
 	// create's output holds can't be told.
@@ -248,14 +248,159 @@ var (
 	ghMergeValued = []string{"-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit"}
 )
 
+// cmdWrappers run the command after them (`env X=1 gh …`, `time gh …`), as
+// shell keywords do (`do gh …`, `then gh …`).
+// timeout takes a duration first.
+var cmdWrappers = []string{"command", "do", "elif", "else", "env", "exec", "if", "nohup", "sudo", "then", "time", "timeout", "until", "while", "xargs"}
+
+// shellAssign is a word that sets a variable for the command after it.
+var shellAssign = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+
+// commandWords is where each command in a shell line starts: the first word
+// after the start, a separator (; & | newline), an opening ( { or `, or $(
+// (inside double quotes too), past any variable settings and wrappers. Text in
+// quotes, comments and here-documents is never a command: a grep pattern, an
+// echo or a commit message that mentions `gh pr merge` merged nothing.
+func commandWords(cmd string) map[int]bool {
+	starts := map[int]bool{}
+	type ctx byte // what the scanner is inside: code, '…', "…"
+	stack := []ctx{'c'}
+	at := true            // the next word starts a command
+	var heredocs []string // here-document delimiters waiting for the next line
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch stack[len(stack)-1] {
+		case '\'':
+			if c == '\'' {
+				stack = stack[:len(stack)-1]
+			}
+			continue
+		case '"':
+			switch {
+			case c == '\\':
+				i++
+			case c == '"':
+				stack = stack[:len(stack)-1]
+			case c == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
+				i++
+				stack, at = append(stack, 'c'), true
+			case c == '`':
+				stack, at = append(stack, 'c'), true
+			}
+			continue
+		}
+		// Code.
+		switch {
+		case c == ' ' || c == '\t':
+		case c == '\n':
+			at = true
+			if len(heredocs) > 0 {
+				i = skipHeredocs(cmd, i+1, heredocs) - 1
+				heredocs = nil
+			}
+		case c == ';' || c == '&' || c == '|' || c == '{' || c == '!':
+			at = true
+		case c == '(':
+			stack, at = append(stack, 'c'), true
+		case c == ')' || c == '`':
+			if len(stack) > 1 {
+				stack = stack[:len(stack)-1]
+			} else if c == '`' {
+				stack, at = append(stack, 'c'), true
+			}
+		case c == '\'' || c == '"':
+			stack, at = append(stack, ctx(c)), false
+		case c == '\\':
+			i++
+			at = false
+		case c == '#' && (i == 0 || strings.ContainsRune(" \t\n;&|(", rune(cmd[i-1]))):
+			for i+1 < len(cmd) && cmd[i+1] != '\n' {
+				i++
+			}
+		case c == '<' && strings.HasPrefix(cmd[i:], "<<") && !strings.HasPrefix(cmd[i:], "<<<"):
+			j := i + 2
+			if j < len(cmd) && cmd[j] == '-' {
+				j++
+			}
+			for j < len(cmd) && cmd[j] == ' ' {
+				j++
+			}
+			k := j
+			for k < len(cmd) && !strings.ContainsRune(" \t\n;&|<>()", rune(cmd[k])) {
+				k++
+			}
+			if word := strings.Trim(cmd[j:k], `'"\`); word != "" {
+				heredocs = append(heredocs, word)
+			}
+			i, at = k-1, false
+		default: // a word
+			j := i
+			for j < len(cmd) && !strings.ContainsRune(" \t\n;&|(){}<>'\"`\\", rune(cmd[j])) {
+				j++
+			}
+			if j == i { // a lone } < or >
+				at = false
+				continue
+			}
+			word := cmd[i:j]
+			if at {
+				starts[i] = true
+				// Settings and wrappers leave the next word starting the command.
+				at = shellAssign.MatchString(word) || slices.Contains(cmdWrappers, word)
+				if word == "timeout" {
+					for j < len(cmd) && cmd[j] == ' ' {
+						j++
+					}
+					for j < len(cmd) && !strings.ContainsRune(" \t\n;&|", rune(cmd[j])) {
+						j++
+					}
+				}
+			}
+			i = j - 1
+		}
+	}
+	return starts
+}
+
+// skipHeredocs is where code resumes after the here-documents starting at i,
+// each ended by a line holding only its delimiter.
+func skipHeredocs(cmd string, i int, delims []string) int {
+	for _, d := range delims {
+		for i < len(cmd) {
+			end := strings.IndexByte(cmd[i:], '\n')
+			if end < 0 {
+				return len(cmd)
+			}
+			line := strings.TrimLeft(cmd[i:i+end], "\t")
+			i += end + 1
+			if line == d {
+				break
+			}
+		}
+	}
+	return i
+}
+
 // ghActs is the gh pr create and merge calls in one shell command: at most
-// one create (its PR comes from the output) and one act per merge.
+// one create (its PR comes from the output) and one act per merge. Only a gh
+// that is a command counts, never the words in a quoted pattern or message.
 func ghActs(cmd string) []ghAct {
 	var acts []ghAct
-	if ghCreateCmd.MatchString(cmd) {
-		acts = append(acts, ghAct{Mixed: ghOtherCmd.MatchString(cmd) || len(ghCreateCmd.FindAllString(cmd, -1)) > 1})
+	words := commandWords(cmd)
+	creates := 0
+	for _, m := range ghCreateCmd.FindAllStringIndex(cmd, -1) {
+		if words[m[0]] {
+			creates++
+		}
 	}
-	for _, m := range ghMergeCmd.FindAllStringSubmatch(cmd, -1) {
+	if creates > 0 {
+		acts = append(acts, ghAct{Mixed: ghOtherCmd.MatchString(cmd) || creates > 1})
+	}
+	for _, idx := range ghMergeCmd.FindAllStringSubmatchIndex(cmd, -1) {
+		if !words[idx[0]] {
+			continue
+		}
+		m := []string{cmd[idx[0]:idx[1]], cmd[idx[2]:idx[3]]}
 		a := ghAct{Merge: true}
 		repo, words := "", strings.Fields(m[1])
 		var named []string

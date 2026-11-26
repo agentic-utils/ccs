@@ -226,8 +226,10 @@ Key bindings:
   Ctrl+T L        Hide or show the session list, the preview taking its place
   Ctrl+T H        Show or hide headless runs (claude -p, codex exec); --all
                   starts shown
-  Ctrl+T A        When a session starts waiting on you, select it in ccs (and focus a prompt ccs
-                  serve holds, to answer it in the bottom pane) and switch to its tab
+  Ctrl+T A        Auto-focus: when a session starts waiting on you, bring it up where
+                  you pick: ccs (select it in the list, a held question's menu
+                  focused), tab (switch its iTerm tab or tmux pane) or both. Off,
+                  nothing selects or switches to a session for you
   Ctrl+T I        Install ccs updates on their own once you're away (off by
                   default)
   Ctrl+T V        Remote Control: t turns it on now in the selected session,
@@ -505,6 +507,7 @@ func Main(v string) {
 	m := initialModel(items, filterQuery, claudeFlags)
 	s := loadSettings() // the view it was left in
 	m.table, m.grouped, m.autoFocus, m.hideSidebar, m.launchAgent = s.Table, s.Grouped, s.AutoFocus, s.HideSidebar, s.LaunchAgent
+	m.autoFocusTarget = s.AutoFocusTarget
 	m.openClosed = map[string]bool{}
 	for _, id := range s.OpenClosed {
 		m.openClosed[id] = true

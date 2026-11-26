@@ -177,9 +177,9 @@ var (
 // for this list, whatever the focus, since questions arrive while you're
 // in another window, until it's answered (here or on the page), sent
 // back with T, or after tuiHoldWait, or ccs quits or yields to ccs serve;
-// none of those but an answer decides anything. ccs selects the session
-// holding it (autoSelect), so the question is in front of you when you
-// come back.
+// none of those but an answer decides anything. With ^T A on in ccs,
+// ccs selects the session holding it (autoSelect), so the question is in
+// front of you when you come back.
 var tuiHold struct {
 	sync.Mutex
 	h *mcp.Holder
@@ -532,17 +532,17 @@ func (m *model) heldPaneKey(msg tea.KeyMsg, prevKey time.Time) (tea.Cmd, bool) {
 	return cmd, done
 }
 
-// autoSelect: once you've stopped typing in ccs for autoFocusIdle, select
-// a session whose prompt ccs holds, the oldest first, and focus its answer
-// pane behind the guard, whether or not ^T A is on: the hold is how ccs
-// answers, so its question is put in front of you. With ^T A on it also
-// selects a session waiting in its tab. One at a time: never off a held
+// autoSelect: with ^T A on and its target ccs or both (focusInCCS), once
+// you've stopped typing in ccs for autoFocusIdle, select a session whose
+// prompt ccs holds, the oldest first, and focus its answer pane behind the
+// guard, else a session waiting in its tab. Off, it does nothing: the held
+// question waits in the list for Tab. One at a time: never off a held
 // prompt that's still waiting (the next comes once it's answered or sent
 // back). Never while a popup or prompt is open, the search holds text or
 // any box holds unsent text. Once per wait. A deliberate exception to "the
 // selection never changes without the user".
 func (m *model) autoSelect() {
-	if m.showUsage || m.prompting() || m.heldFocus || m.textInput.Value() != "" || m.hasDraft() ||
+	if !m.focusInCCS() || m.showUsage || m.prompting() || m.heldFocus || m.textInput.Value() != "" || m.hasDraft() ||
 		heldNow().Sub(m.lastActive()) < autoFocusIdle ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return
@@ -571,7 +571,7 @@ func (m *model) autoSelect() {
 			break
 		}
 	}
-	if pick == "" && m.autoFocus {
+	if pick == "" {
 		ids = ids[:0]
 		for id, st := range m.chatStatus {
 			if _, held := m.heldPrompt[id]; st.Status == "waiting" && m.live[id] && !held { // a held one is the branch above's

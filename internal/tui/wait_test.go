@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"github.com/agentic-utils/ccs/internal/proc"
 	"github.com/agentic-utils/ccs/internal/sessions"
 	"github.com/agentic-utils/ccs/internal/state"
@@ -477,4 +478,97 @@ func TestAutoFocusSkipsHostedSessions(t *testing.T) {
 	if len(switched) != 1 || switched[0] != 2 {
 		t.Errorf("the one in a terminal is still switched to: %v", switched)
 	}
+}
+
+// ^T A while off opens the target picker; Esc leaves it off, a digit or
+// Enter turns it on with that target, saved; ^T A while on turns it off at
+// once, and the picker opens on the saved target next time.
+func TestAutoFocusPicker(t *testing.T) {
+	os.Remove(state.SettingsPath)
+	t.Cleanup(func() { os.Remove(state.SettingsPath) })
+	m := initialModel(nil, "", nil)
+	m.width, m.height = 120, 40
+	chord := func() {
+		t.Helper()
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	}
+	chord()
+	if m.autoFocus || !m.autoFocusOpen {
+		t.Fatalf("^T A while off asks where: on=%v picker=%v", m.autoFocus, m.autoFocusOpen)
+	}
+	if v := strip2(m.View()); !strings.Contains(v, "1 ccs") || !strings.Contains(v, "2 tab") || !strings.Contains(v, "3 both") {
+		t.Errorf("the picker lists ccs, tab and both: %q", v)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.autoFocus || m.autoFocusOpen {
+		t.Fatal("Esc leaves it off")
+	}
+	chord()
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	if !m.autoFocus || m.autoFocusOpen || m.focusTarget() != focusTab || !m.focusTabs() || m.focusInCCS() {
+		t.Fatalf("2 turns it on for tabs: on=%v target=%q", m.autoFocus, m.autoFocusTarget)
+	}
+	if s := loadSettings(); !s.AutoFocus || s.AutoFocusTarget != focusTab {
+		t.Errorf("saved: %+v", s)
+	}
+	chord()
+	if m.autoFocus || m.autoFocusOpen {
+		t.Fatal("^T A while on turns it off, no picker")
+	}
+	if s := loadSettings(); s.AutoFocus || s.AutoFocusTarget != focusTab {
+		t.Errorf("off is saved, the target kept: %+v", s)
+	}
+	chord()
+	if m.autoFocusCursor != 1 {
+		t.Errorf("the picker opens on the saved target: cursor %d", m.autoFocusCursor)
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.autoFocus || m.focusTarget() != focusBoth || !m.focusTabs() || !m.focusInCCS() {
+		t.Errorf("↓ Enter picks both: target %q", m.autoFocusTarget)
+	}
+	m.autoFocusTarget = "" // saved before the choice existed: both, as auto-focus did then
+	if m.focusTarget() != focusBoth {
+		t.Errorf("no saved target is both: %q", m.focusTarget())
+	}
+}
+
+// Tabs switch only for a target of tab or both; with tab, a prompt ccs
+// holds switches its tab too (its menu is there), since ccs selects nothing.
+func TestAutoFocusTarget(t *testing.T) {
+	var switched []int
+	defer func(u func() (time.Duration, bool), f func(int) bool) { userIdle, autoFocusTab = u, f }(userIdle, autoFocusTab)
+	userIdle = func() (time.Duration, bool) { return time.Minute, true }
+	autoFocusTab = func(pid int) bool { switched = append(switched, pid); return true }
+	now := time.Now()
+	for _, c := range []struct {
+		target string
+		on     bool
+		want   int
+	}{{focusCCS, true, 0}, {focusTab, true, 1}, {focusBoth, true, 0}, {focusTab, false, 0}} {
+		os.Remove(focusRecordPath)
+		switched = nil
+		m := initialModel(nil, "", nil)
+		m.live, m.livePIDs = map[string]bool{"h": true}, map[string]int{"h": 1}
+		m.autoFocus, m.autoFocusTarget = c.on, c.target
+		m.heldPrompt = map[string]mcp.HeldPrompt{"h": {ID: "p", Session: "h", Tool: "Bash", At: now}}
+		m.applyStats(map[string]sessions.SessionStat{"h": {Status: "waiting", Since: now}})
+		if cmd := m.autoFocusCmd(); cmd != nil {
+			m.applyAutoFocus(cmd().(autoFocusMsg))
+		}
+		if len(switched) != c.want {
+			t.Errorf("held, target %s on=%v: switched %v, want %d", c.target, c.on, switched, c.want)
+		}
+		m.heldPrompt = nil
+		m.focusHandled, m.focusHeld = map[string]time.Time{}, ""
+		switched = nil
+		if cmd := m.autoFocusCmd(); cmd != nil {
+			m.applyAutoFocus(cmd().(autoFocusMsg))
+		}
+		if want := map[bool]int{true: 1, false: 0}[c.on && c.target != focusCCS]; len(switched) != want {
+			t.Errorf("waiting in its tab, target %s on=%v: switched %v, want %d", c.target, c.on, switched, want)
+		}
+	}
+	os.Remove(focusRecordPath)
 }

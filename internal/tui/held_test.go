@@ -253,10 +253,10 @@ func TestHeldPermissionWithoutOptions(t *testing.T) {
 	}
 }
 
-// A session whose prompt ccs holds is selected once you've stopped typing
-// in ccs, its held prompt focused behind the typing guard, whether or not
-// ^T A is on; never while typing, with text in the search, or with a popup
-// open.
+// With ^T A on (in ccs or both), a session whose prompt ccs holds is
+// selected once you've stopped typing in ccs, its held prompt focused
+// behind the typing guard; never with ^T A off or on tabs only, while
+// typing, with text in the search, or with a popup open.
 func TestHeldAutoSelect(t *testing.T) {
 	offset := time.Duration(0)
 	old := heldNow
@@ -273,8 +273,20 @@ func TestHeldAutoSelect(t *testing.T) {
 
 	m := fresh()
 	m.autoFocus = false
-	if m.autoSelect(); !selected(m) {
-		t.Error("^T A off: a held prompt is still selected")
+	if m.autoSelect(); selected(m) || m.heldFocus {
+		t.Error("^T A off: nothing is selected for you")
+	}
+	m = fresh()
+	m.autoFocusTarget = focusTab
+	if m.autoSelect(); selected(m) {
+		t.Error("^T A on tabs only: ccs's selection stays")
+	}
+	for _, target := range []string{focusCCS, focusBoth} {
+		m = fresh()
+		m.autoFocusTarget = target
+		if m.autoSelect(); !selected(m) || !m.heldFocus {
+			t.Errorf("^T A on %s: the held prompt is selected and focused", target)
+		}
 	}
 	m = fresh()
 	m.lastKeyAt = time.Now()
@@ -336,14 +348,14 @@ func TestTUIHoldsWhateverTheFocus(t *testing.T) {
 	}
 }
 
-// Held prompts are selected whether or not ^T A is on, the oldest first,
+// With ^T A on, held prompts are selected the oldest first,
 // one at a time: never off a held prompt still waiting, the next once it's
 // settled.
 func TestHeldAutoSelectOldestOneAtATime(t *testing.T) {
 	m := waitModel(t)
 	m.width, m.height = 100, 40
 	m.filtered = m.items
-	m.autoFocus, m.lastKeyAt = false, time.Now().Add(-time.Hour)
+	m.autoFocus, m.lastKeyAt = true, time.Now().Add(-time.Hour)
 	t0 := time.Now()
 	m.heldPrompt = map[string]mcp.HeldPrompt{
 		"menu": {ID: "pm", Session: "menu", Tool: "Bash", At: t0.Add(2 * time.Second)},
@@ -353,7 +365,7 @@ func TestHeldAutoSelectOldestOneAtATime(t *testing.T) {
 	on := func() string { return m.filtered[m.cursor].conv.SessionID }
 	m.autoSelect()
 	if on() != "asks" || !m.heldFocus {
-		t.Fatalf("the oldest held first, ^T A off: on %s, pane %v", on(), m.heldFocus)
+		t.Fatalf("the oldest held first: on %s, pane %v", on(), m.heldFocus)
 	}
 	m.heldFocus = false // Esc out of the pane, still on it
 	m.autoSelect()

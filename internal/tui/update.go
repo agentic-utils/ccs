@@ -354,7 +354,7 @@ func (m model) awayForUpdate() bool {
 	if !m.blurred && time.Since(m.lastKeyAt) < autoUpdateIdle {
 		return false
 	}
-	if m.prompting() || m.resuming || m.orchBusy || m.linksOpen || m.snoozeOpen || len(m.reopen) > 0 ||
+	if m.prompting() || m.resuming || m.orchBusy || m.linksOpen || m.snoozeOpen || m.autoFocusOpen || len(m.reopen) > 0 ||
 		slices.ContainsFunc(m.overPopups(), func(p popup) bool { return p.open }) {
 		return false
 	}

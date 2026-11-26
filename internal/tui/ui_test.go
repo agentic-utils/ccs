@@ -1554,13 +1554,13 @@ func TestHeaderTogglesGreyWithOnGreen(t *testing.T) {
 	m := initialModel(nil, "", nil)
 	m.width, m.height = 170, 20
 	m.checkLatest = func() (string, error) { return "", nil }
-	m.autoFocus, m.autoUpdate = true, false
+	m.autoFocus, m.autoFocusTarget, m.autoUpdate = true, focusCCS, false
 	head := strings.Split(m.View(), "\n")[0]
 	plain := strip2(head)
-	if !strings.HasSuffix(plain, "^T A auto-focus on  ^T I auto-update off   ^T Y usage  ? help  ^C quit") {
+	if !strings.HasSuffix(plain, "^T A auto-focus: ccs  ^T I auto-update off   ^T Y usage  ? help  ^C quit") {
 		t.Errorf("the toggles sit on the right, before the key hints: %q", plain)
 	}
-	if !strings.Contains(head, "auto-focus \033[32mon\033[90m") || !strings.Contains(head, "auto-update off") || strings.Contains(head, "\033[33m^") {
+	if !strings.Contains(head, "auto-focus: \033[32mccs\033[90m") || !strings.Contains(head, "auto-update off") || strings.Contains(head, "\033[33m^") {
 		t.Errorf("only an on state is green, the rest grey: %q", head)
 	}
 	m.width = 90 // the toggles go before the title is cut
@@ -1575,9 +1575,11 @@ func TestHeaderShowsAutoFocusKey(t *testing.T) {
 	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^T A auto-focus off") {
 		t.Errorf("the header should say auto-focus is off, with its key: %q", head)
 	}
-	m.autoFocus = true
-	if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^T A auto-focus on") {
-		t.Errorf("the header should say auto-focus is on: %q", head)
+	for _, target := range focusTargets {
+		m.autoFocus, m.autoFocusTarget = true, target
+		if head := strip2(strings.Split(m.View(), "\n")[0]); !strings.Contains(head, "^T A auto-focus: "+target) {
+			t.Errorf("the header should say auto-focus is on, and where: %q", head)
+		}
 	}
 }
 
@@ -1660,8 +1662,12 @@ func TestTextBoxesEditLikeClaudeCode(t *testing.T) {
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc}) // a chord cancelled
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlA})
-	if !m.autoFocus || m.textInput.Value() != "fix the login " {
-		t.Errorf("^T ^A toggles auto-focus, without editing: on=%v %q", m.autoFocus, m.textInput.Value())
+	if m.autoFocus || !m.autoFocusOpen || m.textInput.Value() != "fix the login " {
+		t.Errorf("^T ^A asks where to auto-focus, without editing: on=%v picker=%v %q", m.autoFocus, m.autoFocusOpen, m.textInput.Value())
+	}
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.autoFocus || m.autoFocusOpen || m.textInput.Value() != "fix the login " {
+		t.Errorf("Enter in the picker turns it on: on=%v %q", m.autoFocus, m.textInput.Value())
 	}
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyCtrlT})
 	if m.textInput.Value() != "fix the login " || !m.chordT {
@@ -1730,6 +1736,7 @@ func TestEveryChordHasAHint(t *testing.T) {
 		func(m *model) { m.notesOpen = true },
 		func(m *model) { m.linksOpen = true },
 		func(m *model) { m.snoozeOpen = true },
+		func(m *model) { m.autoFocusOpen = true },
 		func(m *model) { m.rcOpen = true },
 		func(m *model) { m.serveQROpen = true },
 		func(m *model) { m.setup = &serveSetup{} },

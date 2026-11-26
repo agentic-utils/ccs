@@ -205,7 +205,7 @@ func TestOrchestratorMCPAddedMeanwhileIsNoFailure(t *testing.T) {
 		return []byte("Status: ✔ Connected"), nil
 	}
 	defer func() { mcpRun = old }()
-	done, errs := applyMCP([]mcpFix{{"claude", []string{"mcp", "add", "ccs"}}})
+	done, errs := applyMCP([]mcpFix{{Bin: "claude", Args: []string{"mcp", "add", "ccs"}}})
 	if len(errs) != 0 || len(done) != 1 {
 		t.Errorf("%v %v", done, errs)
 	}
@@ -259,12 +259,12 @@ func TestOrchestratorMCPFailureIsReported(t *testing.T) {
 	oldRun := mcpRun
 	defer func() { mcpRun = oldRun }()
 	mcpRun = func(string, ...string) ([]byte, error) { return []byte("Status: ✗ Failed"), nil }
-	done, errs := applyMCP([]mcpFix{{"claude", []string{"mcp", "add"}}})
+	done, errs := applyMCP([]mcpFix{{Bin: "claude", Args: []string{"mcp", "add"}}})
 	if len(done) != 0 || len(errs) != 1 || !strings.Contains(errs[0], "connected") {
 		t.Errorf("added but not connected must say so: %v %v", done, errs)
 	}
 	mcpRun = func(string, ...string) ([]byte, error) { return []byte("nope"), errors.New("exit 1") }
-	if _, errs := applyMCP([]mcpFix{{"claude", []string{"mcp", "add"}}}); len(errs) != 1 || !strings.Contains(errs[0], "nope") {
+	if _, errs := applyMCP([]mcpFix{{Bin: "claude", Args: []string{"mcp", "add"}}}); len(errs) != 1 || !strings.Contains(errs[0], "nope") {
 		t.Errorf("%v", errs)
 	}
 }
@@ -874,7 +874,7 @@ func TestOrchestratorOfferNeedsADeliberateAnswer(t *testing.T) {
 	t.Run("small screens still show the plan and the keys", func(t *testing.T) {
 		m := offer(newList(t), false)
 		m.width, m.height = 44, 14
-		m.orchOffer.fixes = []mcpFix{{"claude", []string{"mcp", "add", "--scope", "user", "ccs", "--", "ccs", "mcp"}}}
+		m.orchOffer.fixes = []mcpFix{{Bin: "claude", Args: []string{"mcp", "add", "--scope", "user", "ccs", "--", "ccs", "mcp"}}}
 		v := strings.Join(strings.Fields(strip2(m.orchestratorPopup())), " ")
 		for _, want := range []string{"Set up an orchestrator?", "--scope", "enter", "esc"} {
 			if !strings.Contains(v, want) {
@@ -930,7 +930,7 @@ func TestOrchestratorPopupAndKey(t *testing.T) {
 	m := initialModel(buildItems([]transcript.Conversation{{SessionID: "a", Title: "other", LastTimestamp: time.Now().UTC().Format(time.RFC3339)}}), "", nil)
 	m.width, m.height = 140, 40
 
-	res, _ := m.Update(orchestratorOfferMsg{plan: orchestratorPlan{fixes: []mcpFix{{"claude", []string{"mcp", "add", "--scope", "user", "ccs", "--", "ccs", "mcp"}}}}})
+	res, _ := m.Update(orchestratorOfferMsg{plan: orchestratorPlan{fixes: []mcpFix{{Bin: "claude", Args: []string{"mcp", "add", "--scope", "user", "ccs", "--", "ccs", "mcp"}}}}})
 	m = res.(model)
 	m.orchSince = time.Now().Add(-updateKeyGrace)
 	v := strip2(m.View())

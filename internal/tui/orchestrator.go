@@ -9,9 +9,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/agentic-utils/ccs/internal/mcp"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -370,97 +370,23 @@ func sessionTitle(id string) string {
 	return c.Title
 }
 
-// mcpRun runs claude's or codex's mcp commands, detached so it can't prompt
-// and with stderr, where claude says a server is missing. From the home folder,
-// not wherever ccs was started: a repo's own ccs server is no use to the
-// orchestrator, whose folder is elsewhere. Stubbed in tests.
+// mcpRun runs claude's or codex's mcp commands (mcp.RealAgentRun). Stubbed
+// in tests.
 var mcpRun = realMCPRun
 
-func realMCPRun(bin string, args ...string) ([]byte, error) {
-	dir, _ := os.UserHomeDir()
-	return proc.RunCommandIn(dir, 30*time.Second, nil, true, bin, args...)
-}
+func realMCPRun(bin string, args ...string) ([]byte, error) { return mcp.RealAgentRun(bin, args...) }
 
 // mcpFix is one CLI's missing ccs MCP server: the command that adds it.
-type mcpFix struct {
-	bin  string
-	args []string
-}
+type mcpFix = mcp.MCPFix
 
-func (f mcpFix) String() string { return f.bin + " " + strings.Join(f.args, " ") }
-
-// ccsCommand is how an MCP config should start ccs.
-func ccsCommand() string {
-	if _, err := exec.LookPath("ccs"); err == nil {
-		return "ccs"
-	}
-	if self, err := os.Executable(); err == nil {
-		return self
-	}
-	return "ccs"
-}
-
-// missingMCP says which installed CLIs lack the ccs MCP server. A CLI that
-// can't say is left alone, with a note: never install over an unknown.
+// missingMCP says which of Claude Code and Codex lack the ccs MCP server
+// (mcp.MissingMCP, which ccs mcp install shares).
 func missingMCP() (fixes []mcpFix, notes []string) {
-	if _, err := sessions.LookBin("claude"); err == nil {
-		out, err := mcpRun("claude", "mcp", "get", "ccs")
-		switch {
-		case err == nil:
-			if !strings.Contains(string(out), "Connected") {
-				notes = append(notes, "Claude Code has a ccs MCP server that isn't connected, left as it is; the orchestrator can use the ccs commands instead (claude mcp get ccs says why)")
-			}
-		case strings.Contains(string(out), "No MCP server"):
-			fixes = append(fixes, mcpFix{"claude", []string{"mcp", "add", "--scope", "user", "ccs", "--", ccsCommand(), "mcp"}})
-		default:
-			notes = append(notes, fmt.Sprintf("couldn't tell whether Claude Code has the ccs MCP server: %v", err))
-		}
-	}
-	if _, err := sessions.LookBin("codex"); err == nil {
-		out, err := mcpRun("codex", "mcp", "list", "--json")
-		var servers []struct {
-			Name string `json:"name"`
-		}
-		switch {
-		case err != nil || json.Unmarshal(out, &servers) != nil:
-			notes = append(notes, "couldn't tell whether Codex has the ccs MCP server")
-		default:
-			found := false
-			for _, s := range servers {
-				found = found || s.Name == "ccs"
-			}
-			if !found {
-				fixes = append(fixes, mcpFix{"codex", []string{"mcp", "add", "ccs", "--", ccsCommand(), "mcp"}})
-			}
-		}
-	}
-	return fixes, notes
+	return mcp.MissingMCP(mcpRun, sessions.LookBin, "claude", "codex")
 }
 
-// applyMCP adds what's missing and checks it took: Claude Code must report it
-// connected, Codex (which doesn't test servers) must list it.
-func applyMCP(fixes []mcpFix) (done []string, errs []string) {
-	for _, f := range fixes {
-		// Already there means another ccs got there since the plan: check it as any other.
-		if out, err := mcpRun(f.bin, f.args...); err != nil && !strings.Contains(string(out), "already exists") {
-			errs = append(errs, fmt.Sprintf("%s failed: %v: %s", f, err, strings.TrimSpace(string(out))))
-			continue
-		}
-		args := []string{"mcp", "get", "ccs"}
-		out, err := mcpRun(f.bin, args...)
-		switch {
-		case err != nil:
-			errs = append(errs, fmt.Sprintf("added it to %s, but %s %s failed: %v", f.bin, f.bin, strings.Join(args, " "), err))
-		case f.bin == "claude" && !strings.Contains(string(out), "Connected"):
-			errs = append(errs, "added the ccs MCP server to claude, but it doesn't report as connected: "+strings.TrimSpace(string(out)))
-		case f.bin == "claude":
-			done = append(done, "ccs MCP server added to claude and connected")
-		default:
-			done = append(done, "ccs MCP server added to "+f.bin)
-		}
-	}
-	return done, errs
-}
+// applyMCP adds what's missing and checks it took (mcp.ApplyMCP).
+func applyMCP(fixes []mcpFix) (done []string, errs []string) { return mcp.ApplyMCP(mcpRun, fixes) }
 
 // orchestratorPlan is what setting one up will change.
 type orchestratorPlan struct {

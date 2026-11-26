@@ -864,6 +864,7 @@ type ToolUse struct {
 	Name, Arg string
 	Ts        string
 	Took      time.Duration
+	Failed    bool // its result said it failed (agy's, which records it)
 	// Ask, when set, is an AskUserQuestion call: conv.Asks[Ask-1]. Answer
 	// marks the entry its result added where it arrived, so the question and
 	// its answer are each drawn once and the preview only ever grows.

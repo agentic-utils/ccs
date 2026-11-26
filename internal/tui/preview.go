@@ -1069,14 +1069,7 @@ func humanWhen(when, format string) string {
 
 // formatTook is a length of time as Claude Code's terminal says it: 42s, 1m 4s, 1h 5m.
 func formatTook(d time.Duration) string {
-	d = d.Round(time.Second)
-	switch {
-	case d >= time.Hour:
-		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
-	case d >= time.Minute:
-		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
-	}
-	return fmt.Sprintf("%ds", max(int(d.Seconds()), 1))
+	return transcript.FormatDuration(d)
 }
 
 // turnEnd is the dim line after a finished turn: how long it took and when it
@@ -1166,6 +1159,9 @@ func toolLines(t transcript.ToolUse, width int) []string {
 		out[0] = "● \033[1m" + t.Name + "\033[22m" + rest
 	} else { // a name too long for the line, wrapped
 		out[0] = "● " + strings.TrimPrefix(out[0], "  ")
+	}
+	if t.Failed {
+		out[len(out)-1] += " \033[31m· failed\033[39m"
 	}
 	return out
 }

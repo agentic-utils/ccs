@@ -64,8 +64,8 @@ func (m *model) setStat(id string, st sessions.SessionStat) {
 	if st.Status == "busy" {
 		// Claude Code can leave busy in the file after the turn ends; the
 		// transcript says when it really did. Waiting is never overridden,
-		// and Codex's status already comes from its rollout's turn events.
-		if i, ok := m.itemAt(id); ok && m.items[i].conv.Kind != transcript.KindCodex {
+		// and Codex's and agy's status already comes from their own records.
+		if i, ok := m.itemAt(id); ok && m.items[i].conv.Kind != transcript.KindCodex && m.items[i].conv.Kind != transcript.KindAgy {
 			if end, over := m.items[i].conv.TurnOver(st.Since); over {
 				st.Status, st.Since = "idle", end
 			}

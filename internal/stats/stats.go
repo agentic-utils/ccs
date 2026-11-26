@@ -157,6 +157,7 @@ var Registry = []Info{
 	{"cli.depends", "ccs depends"},
 	{"cli.sessions", "ccs sessions"},
 	{"cli.mcp", "ccs mcp"},
+	{"cli.mcp_install", "ccs mcp install"},
 	{"cli.stats", "ccs stats"},
 	{"cli.profile", "ccs profile"},
 

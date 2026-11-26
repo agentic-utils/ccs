@@ -107,8 +107,11 @@ Usage: ccs [filter] [-- claude-flags...]
                             ccs hook child-notices on|off turns that off for one) and SessionStart
                             (a new session's parent is recorded as it starts, however it was started)
        ccs hook status      which of those are installed and which missing (exit 1 when any is)
-       ccs mcp [flags]      MCP server for Claude Code (search earlier sessions); add with
-                            claude mcp add --scope user ccs -- ccs mcp
+       ccs mcp [flags]      MCP server for Claude Code, Codex and agy (search earlier sessions,
+                            message other sessions); add with ccs mcp install
+       ccs mcp install --claude|--codex|--agy [--print]
+                            add the ccs MCP server through the agent's own mcp add;
+                            one already named ccs is left as it is
        ccs stats [--json]   How often you use each ccs feature, and the ones never used;
                             recorded on this machine only (--off / --on, or CCS_NO_STATS=1)
        ccs profile [--pid N | --role tui|watch|mcp|serve] [--kind cpu|heap|trace] [--seconds 30] [--no-wait]
@@ -407,6 +410,11 @@ func Main(v string) {
 		mcp.ServeMain(args[1:], load)
 	}
 
+	if len(args) > 1 && args[0] == "mcp" && args[1] == "install" {
+		code := mcp.RunInstall(args[2:], os.Stdout, os.Stderr)
+		stats.Flush()
+		os.Exit(code)
+	}
 	if len(args) > 0 && args[0] == "mcp" {
 		stop := serveProfiles(profiling.RoleMCP)
 		mcp.Main(cutoff, maxSize, excludeDirs)

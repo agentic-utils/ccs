@@ -174,6 +174,33 @@ func TestUntrustedTextIsCleanedWhereItEnters(t *testing.T) {
 		}
 	})
 
+	t.Run("agy transcript", func(t *testing.T) {
+		agyEnv(t, nil)
+		at := "2026-03-02T10:00:00Z"
+		path := writeAgyTranscript(t, agyConvA,
+			jsonLine(t, map[string]any{"type": "USER_INPUT", "created_at": at, "content": "go" + poison}),
+			jsonLine(t, map[string]any{"type": "PLANNER_RESPONSE", "created_at": at, "model": "gem" + poison, "thinking": "**Topic" + poison + "**",
+				"tool_calls": []any{
+					map[string]any{"name": "run_command", "args": map[string]any{"CommandLine": `"ls` + jsonPoison + `"`}},
+					map[string]any{"name": "tool" + poison, "args": map[string]any{"toolSummary": "sum" + poison}},
+				}}),
+			jsonLine(t, map[string]any{"type": "GENERIC", "status": "ERROR", "created_at": "2026-03-02T10:00:05Z", "content": "x" + poison}),
+			jsonLine(t, map[string]any{"type": "GENERIC", "created_at": "2026-03-02T10:00:06Z", "content": "y"}),
+			jsonLine(t, map[string]any{"type": "PLANNER_RESPONSE", "created_at": "2026-03-02T10:00:07Z", "thinking": "**End" + poison + "**", "content": "done" + poison}),
+		)
+		c, err := transcript.ParseAgyFile(path, time.Time{}, 0)
+		if err != nil || c == nil {
+			t.Fatalf("parse: %v %v", c, err)
+		}
+		assertCleanConv(t, *c)
+		if len(c.Tools) < 5 {
+			t.Fatalf("the fixture didn't reach every record: %+v", c.Tools)
+		}
+		if drawn := strings.Join(buildPreviewLines(*c, "", 80), "\n"); poisoned(drawn) || !strings.Contains(strip2(drawn), "Topic") {
+			t.Errorf("the agy preview:\n%q", drawn)
+		}
+	})
+
 	t.Run("subagent meta.json", func(t *testing.T) {
 		subs := transcript.SubagentsOf(conv)
 		if len(subs) != 1 || subs[0].Name != "worker" {

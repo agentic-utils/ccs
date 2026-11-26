@@ -203,7 +203,8 @@ func agyConvOf(pid int, args []string, locks map[int]string, transcripts []strin
 // from conversation_summaries.db and the tail of its transcript.jsonl.
 func AgyStat(id, path string) SessionStat {
 	st := SessionStat{Status: "idle"}
-	if sum, ok := transcript.AgySummaries()[id]; ok {
+	sum, ok := transcript.AgySummaries()[id]
+	if ok {
 		if name := transcript.AgyLaunchName(transcript.AgyWorkspacePaths(sum.WorkspaceURIs)); name != "" {
 			st.Name = name
 		} else if sum.Title != "" {
@@ -226,23 +227,55 @@ func AgyStat(id, path string) SessionStat {
 	}
 	var last transcript.AgyRecord
 	hasLast := false
+	var prompt time.Time // the last USER_INPUT in the tail: the turn's start
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for sc.Scan() {
 		var rec transcript.AgyRecord
 		if json.Unmarshal(sc.Bytes(), &rec) == nil && rec.Type != "" {
 			last, hasLast = rec, true
+			if rec.Type == "USER_INPUT" {
+				prompt, _ = time.Parse(time.RFC3339Nano, rec.CreatedAt)
+			}
 		}
 	}
-	if hasLast {
-		if t, err := time.Parse(time.RFC3339Nano, last.CreatedAt); err == nil {
-			st.Since = t
+	if !hasLast {
+		return st
+	}
+	if st.Status == "idle" && transcript.AgyRecordBusy(last) {
+		st.Status = "busy"
+	}
+	if st.Status != "waiting" && transcript.AgyAsking(last) {
+		// its question's result comes only once it's answered
+		st.Status, st.WaitingFor = "waiting", "input needed"
+	}
+	st.Since, _ = time.Parse(time.RFC3339Nano, last.CreatedAt)
+	switch {
+	case st.Status == "busy":
+		// The working line's clock runs from the prompt, not the step.
+		// agy's db and the tail can each lag: the later is the turn's.
+		if t := agyPromptAt(sum); t.After(prompt) {
+			prompt = t
 		}
-		if st.Status == "idle" && transcript.AgyRecordBusy(last) {
-			st.Status = "busy"
+		if !prompt.IsZero() {
+			st.Since = prompt
+		}
+	case transcript.AgyFinal(last):
+		// The turn's last record is written as it ends.
+		if info, err := f.Stat(); err == nil {
+			st.Since = info.ModTime()
 		}
 	}
 	return st
+}
+
+// agyPromptAt is when sum's latest prompt arrived, zero when unknown.
+func agyPromptAt(sum transcript.AgySummary) time.Time {
+	t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", sum.LastUserInput)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // AgyConvFor finds the conversation id ccs launch started under name.

@@ -294,3 +294,26 @@ func TestAgyHistoryFallbackErrorsAndDeliver(t *testing.T) {
 		t.Errorf("unverified pid refused: %q %v", note, err)
 	}
 }
+
+// An agy session's preview draws its steps as its terminal lists them: the
+// thinking with its duration and topic, each call, a failed one marked, and
+// the turn's end.
+func TestAgyPreviewSteps(t *testing.T) {
+	conv := transcript.Conversation{Kind: transcript.KindAgy, SessionID: agyConvA,
+		Messages: []transcript.Message{{Role: "user", Text: "go", Ts: "2026-03-02T10:00:00Z"}, {Role: "assistant", Text: "done", Ts: "2026-03-02T10:00:30Z"}},
+		Tools: []transcript.ToolUse{
+			{At: 1, Name: "Thought", Arg: "9s · Planning", Ts: "2026-03-02T10:00:00Z"},
+			{At: 1, Name: "Bash", Arg: "ls weeds", Ts: "2026-03-02T10:00:00Z", Failed: true},
+			{At: 1, Name: "Read", Arg: "/g/roses.txt", Ts: "2026-03-02T10:00:00Z"},
+			{At: 2, Ts: "2026-03-02T10:00:31Z", Took: 31 * time.Second},
+		}}
+	drawn := strip2(strings.Join(buildPreviewLines(conv, "", 80), "\n"))
+	for _, want := range []string{"● Thought(9s · Planning)", "● Bash(ls weeds) · failed", "● Read(/g/roses.txt)", "31s"} {
+		if !strings.Contains(drawn, want) {
+			t.Errorf("missing %q in:\n%s", want, drawn)
+		}
+	}
+	if strings.Contains(drawn, "Read(/g/roses.txt) · failed") {
+		t.Error("a call that worked is marked failed")
+	}
+}

@@ -3108,6 +3108,28 @@ func StripImageNote(text string) string {
 	return imageNote.ReplaceAllString(text, "")
 }
 
+// Claude Code records a long line that reached its prompt as a paste (a
+// message ccs typed into its terminal, say) inside pasted_content blocks,
+// queued or taken in alike: the terminal delivers it in chunks, which can
+// split a word, each one wrapped as
+//
+//	<pasted_content id="18ae">\n…\n</pasted_content id="18ae">\n\n
+//
+// with any typed remainder after the last block. The wrapping adds only
+// those newlines, so dropping it gives back the text as typed.
+var (
+	pastedOpen  = regexp.MustCompile(`\n*<pasted_content id="[^"\n]*">\n`)
+	pastedClose = regexp.MustCompile(`\n</pasted_content id="[^"\n]*">\n*`)
+)
+
+// UnwrapPasted is text without Claude Code's pasted_content wrapping.
+func UnwrapPasted(text string) string {
+	if !strings.Contains(text, "<pasted_content id=") {
+		return text
+	}
+	return pastedOpen.ReplaceAllString(pastedClose.ReplaceAllString(text, ""), "")
+}
+
 func PeerParts(text string) (from, body string, ok bool) {
 	m := PeerMessage.FindStringSubmatch(text)
 	if m == nil {

@@ -293,7 +293,7 @@ func OpenResumeTab(conv transcript.Conversation, claudeFlags []string) (bool, er
 		if err != nil {
 			return false, nil
 		}
-		args = transcript.AgyResumeArgs(agyPath, conv)
+		args = append(transcript.AgyResumeArgs(agyPath, conv), AgyTrust(cwd, conv.SessionID)...)
 	default:
 		claudePath, err := exec.LookPath("claude")
 		if err != nil {
@@ -1111,6 +1111,10 @@ type LaunchOpts struct {
 	// under its name (state.RemoteControlArgs), whatever ^T V says: a
 	// restart of a session that had it on.
 	RemoteControl bool
+	// agyTrust is state.AgyTrustArgs for an agy launch's folder, set by
+	// LaunchSession once the folder is checked: the --settings that answers
+	// agy's folder-trust question when the folder is under agy_trusted_roots.
+	agyTrust []string
 }
 
 // PreamblePath is the text every new session's brief starts with, when the
@@ -1222,6 +1226,9 @@ func launchScript(o LaunchOpts, bin, dir string) string {
 		// Its launch folder first among the added dirs: Named and
 		// AgyLaunchName find it by that.
 		args = append(args, "--add-dir", proc.ShellQuote(dir), "--add-dir", proc.ShellQuote(filepath.Dir(state.SettingsPath)))
+		for _, a := range o.agyTrust {
+			args = append(args, proc.ShellQuote(a))
+		}
 		if o.Brief != "" {
 			args = append(args, "--prompt-interactive", brief)
 		}
@@ -1364,6 +1371,12 @@ func launchSession(o LaunchOpts) (Launched, error) {
 	}
 	if tty := startingOn(o.Name); tty != "" && !o.InPlace {
 		return Launched{}, fmt.Errorf("a session named %s is still starting on %s: answer what its tab asks (a folder-trust question, perhaps), or close that tab first", o.Name, tty)
+	}
+	if o.Agy {
+		if args, root := state.AgyTrustArgs(o.Cwd); args != nil {
+			o.agyTrust = args
+			state.LogActivity("launch %s: trusting %s for agy, under agy_trusted_roots entry %s", o.Name, o.Cwd, root)
+		}
 	}
 	binName := "claude"
 	if o.Codex {

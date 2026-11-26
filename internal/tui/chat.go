@@ -458,8 +458,8 @@ func (m model) chatBox(conv transcript.Conversation, in textinput.Model, focus b
 	case m.pending[id] != "" && m.held[id]:
 		left = "\033[33m  ⏸ held: approve it in " + name + " · " + chatSnippet(m.pending[id], width-50-len(name)) + "\033[0m"
 	case m.pending[id] != "" && m.typed[id] && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
-		why := " · typed, but not in its conversation: it may be sitting unsent in its prompt, press Enter in its tab"
-		left = "\033[31m  ✗ not arrived: " + chatSnippet(m.pending[id], width-20-len(why)) + why + "\033[0m"
+		// What to do comes first, so a narrow line cuts the message instead.
+		left = "\033[31m  ✗ not arrived: press Enter in its tab · " + chatSnippet(m.pending[id], width-45) + "\033[0m"
 	case m.pending[id] != "" && !m.sentAt[id].IsZero() && time.Since(m.sentAt[id]) > heldTimeout:
 		why := " · if it runs with bypass permissions, approve it in that session"
 		if m.chatStatus[id].Status == "waiting" {
@@ -708,11 +708,7 @@ func (m *model) checkDelivered(id string) {
 		}
 		msgs := item.conv.Messages
 		for i := len(msgs) - 1; i >= 0 && i >= len(msgs)-20; i-- {
-			body := msgs[i].Text
-			if _, b, ok := transcript.PeerParts(body); ok {
-				body = b
-			}
-			if msgs[i].Role == "user" && strings.TrimSpace(transcript.StripImageNote(body)) == text {
+			if msgs[i].Role == "user" && sentText(msgs[i].Text) == text {
 				delete(m.pending, id)
 				delete(m.sentAt, id)
 				delete(m.held, id)
@@ -730,15 +726,21 @@ func (m *model) checkDelivered(id string) {
 		// it's busy (over the socket, or typed and submitted), then hands it
 		// to Claude at the next step.
 		for _, q := range item.conv.Queued {
-			body := q
-			if _, b, ok := transcript.PeerParts(q); ok {
-				body = b
-			}
-			if strings.TrimSpace(transcript.StripImageNote(body)) == text {
+			if sentText(q) == text {
 				delete(m.sentAt, id)
 			}
 		}
 	}
+}
+
+// sentText is a user line or queued message as ccs sent it: the body of one
+// sent over the socket, a long typed one without its paste wrapping, and
+// without an image note's paths.
+func sentText(line string) string {
+	if _, b, ok := transcript.PeerParts(line); ok {
+		line = b
+	}
+	return strings.TrimSpace(transcript.StripImageNote(transcript.UnwrapPasted(line)))
 }
 
 // applyReceipt updates the status line from a session's delivery receipt.

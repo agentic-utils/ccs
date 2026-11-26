@@ -1277,3 +1277,18 @@ func TestAskQuestionTextHasPreviews(t *testing.T) {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
 }
+
+// UnwrapPasted gives back a typed line from the shapes Claude Code wrote
+// for it as a paste: chunks that split words, wrapped, with a typed tail.
+func TestUnwrapPasted(t *testing.T) {
+	text := "a made-up line about widget reports that went in as a paste"
+	for _, in := range []string{
+		text,
+		"\n\n<pasted_content id=\"18ae\">\n" + text[:25] + "\n</pasted_content id=\"18ae\">\n\n" + text[25:],
+		"<pasted_content id=\"18ae\">\n" + text[:9] + "\n</pasted_content id=\"18ae\">\n\n\n<pasted_content id=\"18ae\">\n" + text[9:40] + "\n</pasted_content id=\"18ae\">\n\n" + text[40:],
+	} {
+		if got := strings.TrimSpace(UnwrapPasted(in)); got != text {
+			t.Errorf("UnwrapPasted(%q) = %q", in, got)
+		}
+	}
+}

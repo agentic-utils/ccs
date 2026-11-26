@@ -634,6 +634,69 @@ func TestTypedMessageDeliveredByLiveTick(t *testing.T) {
 	}
 }
 
+// A long line typed into a session's terminal arrives as a paste, which
+// Claude Code records in pasted_content blocks (the shapes below are what it
+// wrote for a typed line, idle and busy, with chunks splitting words): that
+// is the message arriving, not missing, and it's never "not in its
+// conversation". The warning that does show keeps what to do in view on a
+// narrow line beside the working line.
+func TestTypedPasteCountsAsArrived(t *testing.T) {
+	text := "a made-up long line about the widget report, typed into its terminal"
+	wrap := func(parts ...string) string {
+		out := ""
+		for _, p := range parts[:len(parts)-1] {
+			out += `<pasted_content id="18ae">` + "\n" + p + "\n" + `</pasted_content id="18ae">` + "\n\n"
+		}
+		return out + parts[len(parts)-1]
+	}
+	for _, tc := range []struct{ name, queued, line string }{
+		{"idle", "", "\n\n" + wrap(text[:30], text[30:])},
+		{"busy", wrap(text[:20], "\n"+wrap(text[20:41], text[41:])), ""},
+		{"busy then taken in", wrap(text[:20], text[20:]), wrap(text[:20], text[20:])},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := chatModel(t)
+			m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+			id := m.filtered[m.cursor].conv.SessionID
+			m.chatStatus = map[string]sessions.SessionStat{id: {Status: "busy", Since: time.Now().Add(-4 * time.Second)}}
+			m.pending = map[string]string{id: text}
+			mm, _ := m.Update(sendDoneMsg{id: id, note: "✓ Typed into x's iTerm tab (as you)"})
+			m = mm.(model)
+			m.sentAt[id] = time.Now().Add(-2 * heldTimeout)
+			for i := range m.items {
+				if m.items[i].conv.SessionID != id {
+					continue
+				}
+				if tc.queued != "" {
+					m.items[i].conv.Queued = []string{tc.queued}
+				}
+				if tc.line != "" {
+					m.items[i].conv.Messages = append(m.items[i].conv.Messages, transcript.Message{Role: "user", Text: tc.line})
+				}
+			}
+			m.checkDelivered(id)
+			if v := strip2(m.View()); strings.Contains(v, "not arrived") {
+				t.Errorf("a pasted copy of the message is the message arriving:\n%s", v)
+			}
+			if tc.line != "" && (m.pending[id] != "" || !strings.Contains(m.sendNote[id], "Delivered")) {
+				t.Errorf("taken in as a pasted user line is delivered: pending=%q note=%q", m.pending[id], m.sendNote[id])
+			}
+		})
+	}
+	m := chatModel(t)
+	m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	id := m.filtered[m.cursor].conv.SessionID
+	m.width = 100
+	m.chatStatus = map[string]sessions.SessionStat{id: {Status: "busy", Since: time.Now().Add(-4 * time.Second)}}
+	m.pending = map[string]string{id: text + " that runs on well past the edge of the pane"}
+	mm, _ := m.Update(sendDoneMsg{id: id, note: "✓ Typed into x's iTerm tab (as you)"})
+	m = mm.(model)
+	m.sentAt[id] = time.Now().Add(-2 * heldTimeout)
+	if v := strip2(m.View()); !strings.Contains(v, "not arrived: press Enter in its tab") {
+		t.Errorf("a narrow line should keep what to do and cut the message:\n%s", v)
+	}
+}
+
 // The fast tick's chain survives a tick that fires with no live session
 // selected: its empty result still carries the chain's generation, so
 // Update clears chatTickOn and starts the chain again on a live session.

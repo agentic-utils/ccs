@@ -92,6 +92,7 @@ func mcpHandle(method string, params json.RawMessage, load mcpSource) (any, map[
 				"and read_session to read one. Sessions are the user's private history; quote only what's relevant. " +
 				"launch_session starts a named session in a new iTerm tab or tmux window and close_session stops one and closes its tab; restart_session stops one and resumes it in a new tab (your own once your turn ends). A session you launch is your child, and adopt_session moves one under you (or another session). " +
 				"list_prs lists the user's open PRs with the session that owns each (or with merged, the recent merges and who merged them); claim_pr records a PR's owner and depends the order PRs must merge in. " +
+				"send_message messages another running session by name, whatever its agent (Claude Code, Codex or agy), as this session; read_messages returns messages sent to this session that didn't arrive in its conversation (always so for agy): call it when your brief or a message says to. " +
 				"profile_ccs records a CPU, heap or trace profile of a running ccs (the TUI by default) that stops by itself.",
 		}, nil
 	case "ping":
@@ -728,6 +729,9 @@ func Call(name string, raw json.RawMessage, load mcpSource) (string, error) {
 	}
 	if name == "child_notices" {
 		return childNoticesCall(raw)
+	}
+	if name == "send_message" || name == "read_messages" {
+		return messageCall(name, raw)
 	}
 	if name == "profile_ccs" {
 		return profileCall(raw)

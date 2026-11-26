@@ -176,6 +176,8 @@ var Registry = []Info{
 	{"mcp.orchestrator_report", "orchestrator_report"},
 	{"mcp.child_notices", "child_notices"},
 	{"mcp.profile_ccs", "profile_ccs"},
+	{"mcp.send_message", "send_message"},
+	{"mcp.read_messages", "read_messages"},
 
 	// ccs watch events and nudges.
 	{"watch.watch_started", "watch started"},

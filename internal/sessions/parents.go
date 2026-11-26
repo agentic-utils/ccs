@@ -236,17 +236,8 @@ type Caller struct {
 // session's process (the MCP server is its session's child; ccs launch run
 // from Bash a grandchild). Stubbed in tests.
 var CallingSession = func() (Caller, bool) {
-	if t := os.Getenv("CODEX_THREAD_ID"); transcript.CodexThreadID.MatchString(t) {
-		name := CodexThreadName(t)
-		if m, ok := transcript.ReadCodexMeta(transcript.CodexRollout(t)); ok {
-			if n := transcript.CodexLaunchName(m); n != "" {
-				name = n
-			}
-		}
-		return Caller{ID: t, Name: name, Kind: transcript.KindCodex}, true
-	}
-	if id := os.Getenv("ANTIGRAVITY_CONVERSATION_ID"); transcript.AgyConvID.MatchString(id) {
-		return Caller{ID: id, Name: AgyName(id), Kind: transcript.KindAgy}, true
+	if c, ok := callerFromEnv(); ok {
+		return c, true
 	}
 	byPID := map[int]Caller{}
 	for id, s := range ScanSessions(nil) {
@@ -254,6 +245,58 @@ var CallingSession = func() (Caller, bool) {
 			byPID[s.PID] = Caller{ID: id, Name: s.Stat.Name}
 		}
 	}
+	return ancestorIn(byPID)
+}
+
+// CodexName is the name a Codex thread goes by: its ccs launch name, else
+// Codex's own thread name.
+func CodexName(thread string) string {
+	if m, ok := transcript.ReadCodexMeta(transcript.CodexRollout(thread)); ok {
+		if n := transcript.CodexLaunchName(m); n != "" {
+			return n
+		}
+	}
+	return CodexThreadName(thread)
+}
+
+// callerFromEnv is the Codex thread or agy conversation the agent named in
+// the environment it gave this process.
+func callerFromEnv() (Caller, bool) {
+	if t := os.Getenv("CODEX_THREAD_ID"); transcript.CodexThreadID.MatchString(t) {
+		return Caller{ID: t, Name: CodexName(t), Kind: transcript.KindCodex}, true
+	}
+	if id := os.Getenv("ANTIGRAVITY_CONVERSATION_ID"); transcript.AgyConvID.MatchString(id) {
+		return Caller{ID: id, Name: AgyName(id), Kind: transcript.KindAgy}, true
+	}
+	return Caller{}, false
+}
+
+// SenderSession is the session a message from this process is sent as:
+// the first ancestor that is a running session of any kind (Claude Code,
+// Codex or agy; the MCP server is its agent's child), else, only when none
+// is, the thread or conversation the environment names. Never a name the
+// caller gives. Stubbed in tests.
+var SenderSession = func() (Caller, bool) {
+	byPID := map[int]Caller{}
+	for id, s := range ScanSessions(nil) {
+		switch {
+		case s.Unverified:
+		case s.Codex:
+			byPID[s.PID] = Caller{ID: id, Name: CodexName(id), Kind: transcript.KindCodex}
+		case s.Agy:
+			byPID[s.PID] = Caller{ID: id, Name: AgyName(id), Kind: transcript.KindAgy}
+		default:
+			byPID[s.PID] = Caller{ID: id, Name: s.Stat.Name, Kind: "claude"}
+		}
+	}
+	if c, ok := ancestorIn(byPID); ok {
+		return c, true
+	}
+	return callerFromEnv()
+}
+
+// ancestorIn is the first of this process's ancestors in byPID.
+func ancestorIn(byPID map[int]Caller) (Caller, bool) {
 	tree, err := proc.PsTree()
 	if err != nil {
 		return Caller{}, false

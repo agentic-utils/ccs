@@ -103,6 +103,7 @@ func TestMain(m *testing.M) {
 	proc.PsAll = func() (string, error) { return "", nil }
 	proc.PsTree = func() (string, error) { return "", nil }
 	sessions.CallingSession = func() (sessions.Caller, bool) { return sessions.Caller{}, false } // never this machine's sessions
+	sessions.SenderSession = func() (sessions.Caller, bool) { return sessions.Caller{}, false }  // never this machine's sessions
 	proc.TTYOf = func(int) string { return "" }
 	proc.SignalPID = func(int, syscall.Signal) error { return errors.New("tests signal nothing") }
 	code := m.Run()

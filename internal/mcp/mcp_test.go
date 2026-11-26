@@ -64,8 +64,8 @@ func TestMCPHandshakeAndTools(t *testing.T) {
 		t.Errorf("should answer in the client's older protocol version, got %v", v)
 	}
 	tools := resps[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 15 {
-		t.Errorf("want 15 tools, got %d", len(tools))
+	if len(tools) != 17 {
+		t.Errorf("want 17 tools, got %d", len(tools))
 	}
 	if resps[2]["error"] == nil {
 		t.Error("unknown method should be an error")

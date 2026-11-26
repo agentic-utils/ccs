@@ -17,6 +17,20 @@ import (
 	"github.com/agentic-utils/ccs/internal/transcript"
 )
 
+// AgyTrust is state.AgyTrustArgs for resuming agy conversation id in cwd,
+// logged when it trusts the folder. Nil for a folder that isn't absolute
+// (a conversation whose folder isn't known resumes in ".").
+func AgyTrust(cwd, id string) []string {
+	if !filepath.IsAbs(cwd) {
+		return nil
+	}
+	args, root := state.AgyTrustArgs(cwd)
+	if args != nil {
+		state.LogActivity("resume agy %s: trusting %s for agy, under agy_trusted_roots entry %s", id, cwd, root)
+	}
+	return args
+}
+
 // Antigravity CLI (agy) live sessions, launch discovery, liveness and delivery.
 
 // AgyIdle is how long an agy conversation nobody launched through ccs and with

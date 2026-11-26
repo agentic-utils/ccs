@@ -655,7 +655,7 @@ func Main(v string) {
 			fmt.Fprintf(os.Stderr, "agy not found in PATH\n")
 			os.Exit(1)
 		}
-		args := transcript.AgyResumeArgs("agy", *conv)
+		args := append(transcript.AgyResumeArgs("agy", *conv), sessions.AgyTrust(conv.Cwd, conv.SessionID)...)
 		syscall.Exec(agyPath, args, os.Environ())
 		return
 	}

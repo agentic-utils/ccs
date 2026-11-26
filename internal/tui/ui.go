@@ -4483,9 +4483,10 @@ func loadSettings() (s settings) {
 
 // foreignSettings are the keys of settings.json something other than the
 // list writes (feature_stats, from ccs stats --off; remote_control, from
-// state.SetRemoteControl): a save carries them
+// state.SetRemoteControl; agy_trusted_roots, which only the user writes): a
+// save carries them
 // over. Every other key is the list's, so one it no longer has (hide_*) goes.
-var foreignSettings = []string{"feature_stats", state.RemoteControlKey}
+var foreignSettings = []string{"feature_stats", state.RemoteControlKey, state.AgyTrustedRootsKey}
 
 // mergeSettings is s as JSON, with the file's foreign keys kept.
 func mergeSettings(s settings) []byte {

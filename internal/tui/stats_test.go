@@ -32,12 +32,15 @@ func TestSaveSettingsKeepsFeatureStats(t *testing.T) {
 	old := state.SettingsPath
 	state.SettingsPath = t.TempDir() + "/settings.json"
 	t.Cleanup(func() { state.SettingsPath = old })
-	os.WriteFile(state.SettingsPath, []byte(`{"feature_stats":false,"table":true,"grouped":true}`), 0o600)
+	os.WriteFile(state.SettingsPath, []byte(`{"feature_stats":false,"agy_trusted_roots":["~/Code"],"table":true,"grouped":true}`), 0o600)
 	saveSettings(settings{Table: false, Grouped: true})
 	b, _ := os.ReadFile(state.SettingsPath)
 	s := string(b)
 	if !strings.Contains(s, `"feature_stats":false`) {
 		t.Errorf("feature_stats lost: %s", s)
+	}
+	if !strings.Contains(s, `"agy_trusted_roots":["~/Code"]`) {
+		t.Errorf("agy_trusted_roots lost: %s", s)
 	}
 	if strings.Contains(s, `"table"`) || !strings.Contains(s, `"grouped":true`) {
 		t.Errorf("the list's own keys not replaced: %s", s)

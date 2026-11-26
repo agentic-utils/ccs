@@ -85,6 +85,26 @@ func TestGhActsReadsCreateAndMergeCommands(t *testing.T) {
 		"gh pr create --fill; gh pr view 3 --json url":        {{mixed: true}},
 		"gh pr create --fill || gh pr create --draft --fill":  {{mixed: true}},
 		"cd /tmp && gh pr checks 9 --watch && gh pr merge 9 ": {{merge: true, nums: []int{9}}},
+		// Only a gh that is the command counts: never one in a quoted pattern,
+		// a message, a comment or a here-document.
+		"grep -ciE 'pulls/[0-9]+/merge|merge-async|gh pr merge' /tmp/x.output": nil,
+		`grep -c "gh pr merge" log; echo 'gh pr create --fill'`:                nil,
+		`git commit -m "fix: say gh pr merge 3 merged it"`:                     nil,
+		"echo gh pr merge 3":      nil,
+		"ls # then gh pr merge 3": nil,
+		"cat <<'EOF' > notes.md\ngh pr merge 3 --merge\nEOF\nwc -l notes.md": nil,
+		"cat <<EOF\ngh pr create\nEOF\ngh pr merge 5 --merge":                {{merge: true, nums: []int{5}}},
+		"xgh pr merge 3": nil,
+		// …and one run through a variable, a wrapper or a subshell does.
+		"GH_TOKEN=x gh pr merge 6 --merge":                     {{merge: true, nums: []int{6}}},
+		"timeout 60 gh pr merge 6 --merge":                     {{merge: true, nums: []int{6}}},
+		"env A=1 B=2 gh pr merge 6":                            {{merge: true, nums: []int{6}}},
+		`url=$(gh pr create --fill) && echo "$url"`:            {{}},
+		`echo "made $(gh pr create --fill)"`:                   {{}},
+		"(cd r && gh pr merge 6 --merge)":                      {{merge: true, nums: []int{6}}},
+		"for p in 1 2; do gh pr merge \"$p\" --merge; done":    {{merge: true, bare: true}},
+		"if true; then { gh pr merge 6; }; fi":                 {{merge: true, nums: []int{6}}},
+		"gh pr view 6 >/dev/null 2>&1 && gh pr merge 6 --auto": {{merge: true, auto: true, nums: []int{6}}},
 	} {
 		got := ghActs(cmd)
 		if len(got) != len(wants) {
@@ -198,6 +218,25 @@ func TestLocalActsFindHowAPRMerged(t *testing.T) {
 	}
 	if by, how := LocalActs(now).merger(p, time.Time{}); by != nil || how != "" {
 		t.Errorf("with no merge time nothing is said: %+v %q", by, how)
+	}
+}
+
+// A session that links a PR and, seconds after it merged in the browser,
+// searched a file for the words "gh pr merge" didn't merge it.
+func TestLocalActsIgnoreAMergeOnlyMentioned(t *testing.T) {
+	localWorld(t)
+	merged := time.Now().Truncate(time.Second)
+	p := &WatchedPR{URL: "https://github.com/o/widget/pull/12", Repo: "o/widget", Number: 12}
+	say(t, "p/s-delta.jsonl", named("delta"), prLink(p.URL),
+		ran("t1", "grep -ciE 'mergePullRequest|pulls/[0-9]+/merge|gh pr merge' /tmp/task.output", merged.Add(8*time.Second)),
+		answered("t1", "0", false, merged.Add(9*time.Second)))
+	if by, how := LocalActs(merged).merger(p, merged); by != nil || how != MergeNotLocal {
+		t.Errorf("a grep for the words isn't a merge: %+v %q", by, how)
+	}
+	// The same session really merging it, by the current branch, still is.
+	say(t, "p/s-delta.jsonl", ran("t2", "gh pr merge --merge", merged.Add(-time.Second)), answered("t2", "", false, merged.Add(time.Second)))
+	if by, how := LocalActs(merged).merger(p, merged); by == nil || by.Name != "delta" || how != MergeLocal {
+		t.Errorf("a bare gh pr merge of its own PR as it merged: %+v %q", by, how)
 	}
 }
 

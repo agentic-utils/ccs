@@ -61,6 +61,8 @@ type closedLine struct {
 	open   bool   // the closed sessions are shown, below the line
 	id     string // the parent's session id: the fold ^X C or a click opens or closes
 	name   string // the parent, as foldName names it
+	footer bool   // an open fold's "▴ hide N closed" line, after its last row shown
+	shown  int    // a footer's: how many of the n closed sessions are listed so far (foldPage at a time)
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -89,6 +91,7 @@ type model struct {
 	chordT           bool                 // ^T pressed: the next key picks a view or tool
 	byID             map[string]int       // m.items by session id, for shownAncestor; rebuilt when an entry is stale
 	openClosed       map[string]bool      // ^X C: parents (by session id) whose closed sessions are shown (saved)
+	foldShown        map[string]int       // open folds (by session id) listed past their first foldPage, by how many (revealFolds; not saved)
 	headerCollapsed  bool                 // ^X F or a click on the summary line: the details under it are hidden
 	selectedID       string               // the selected session, to see when it changes
 	selectedAt       time.Time            // when it was selected: its preview waits previewDebounce
@@ -477,7 +480,16 @@ func (m model) handleMouse(msg tea.MouseMsg) model {
 			return m
 		}
 		rows := m.listRows()
-		r := m.listStart(rows, listHeight) + msg.Y - listTop
+		start, pin, _ := m.listView(rows, listHeight)
+		r := start + msg.Y - listTop
+		if pin != nil { // the pinned heading takes the top row: a click on it closes its fold
+			if msg.Y == listTop {
+				stats.Record("tui.tree_view", stats.Mouse)
+				m.toggleFold(pin.id, pin.name)
+				return m
+			}
+			r--
+		}
 		if r < len(rows) && rows[r].item < 0 && rows[r].fold != "" { // a "N closed" line: the mouse's ^X C
 			stats.Record("tui.tree_view", stats.Mouse)
 			m.toggleFold(rows[r].fold, rows[r].foldName)
@@ -891,16 +903,34 @@ func (m *model) nestFamilies() {
 			return
 		}
 		at := order[len(order)-1]
-		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, showing, it.conv.SessionID, foldName(it.conv)})
+		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, showing, it.conv.SessionID, foldName(it.conv), false, 0})
 		from := len(order)
-		for j, k := range shut {
-			walk(k, depth+1, cwd, below, j == len(shut)-1)
-		}
-		if showing {
+		if !showing {
+			for j, k := range shut {
+				walk(k, depth+1, cwd, below, j == len(shut)-1)
+			}
+			for _, k := range order[from:] {
+				m.filtered[k].hideClosed = true
+			}
 			return
 		}
-		for _, k := range order[from:] {
-			m.filtered[k].hideClosed = true
+		// Open: a footer ends the fold (└), so every closed session is a ├,
+		// and only the first m.foldShown of them are listed; the rest wait
+		// until the footer scrolls into view (revealFolds).
+		shown := m.foldShownCount(it.conv.SessionID, len(shut))
+		cut := -1
+		for j, k := range shut {
+			walk(k, depth+1, cwd, below, false)
+			if j == shown-1 {
+				cut = len(order)
+			}
+		}
+		at = order[len(order)-1]
+		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, true, it.conv.SessionID, foldName(it.conv), true, shown})
+		if cut >= 0 {
+			for _, k := range order[cut:] {
+				m.filtered[k].hideClosed = true
+			}
 		}
 	}
 	for i := range m.filtered {
@@ -958,21 +988,23 @@ func (m *model) foldTrees() {
 		return
 	}
 	kept := m.filtered[:0]
-	under := -1 // depth of the folded row whose tree is being skipped
+	shown := map[string]bool{} // the sessions kept so far: a line's owner always comes before it
 	for i := range m.filtered {
 		it := m.filtered[i]
-		if under >= 0 && it.depth > under || it.hideClosed {
+		if it.hideClosed {
 			m.foldedAway = append(m.foldedAway, it.conv.SessionID)
-			// An ancestor's closed line attached to it moves to the last row shown.
+			// A shown ancestor's line attached to it (an open fold's footer)
+			// moves to the last row shown; a hidden owner's goes with it.
 			if k := len(kept) - 1; k >= 0 {
 				for _, l := range it.linesAfter {
-					if l.owner < it.depth && (under < 0 || l.owner < under) {
+					if shown[l.id] {
 						kept[k].linesAfter = append(kept[k].linesAfter, l)
 					}
 				}
 			}
 			continue
 		}
+		shown[it.conv.SessionID] = true
 		kept = append(kept, it)
 	}
 	m.filtered = kept
@@ -1337,6 +1369,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	n.autoSelect()
 	if !still || n.cursor != m.cursor {
 		n.noteListTop()
+		n.revealFolds()
 	}
 	if n.showUsage || n.helpOpen || n.popupOpen() { // another screen took over: the pane loses the keys
 		n.heldFocus = false
@@ -3834,10 +3867,22 @@ func (m model) viewScreen() string {
 	b.WriteString("\n")
 
 	rows := m.listRows()
-	start := m.listStart(rows, listHeight)
-	top, size, bar := scrollThumb(len(rows), start, listHeight)
+	start, pin, body := m.listView(rows, listHeight)
+	top, size, bar := scrollThumb(len(rows), start, body)
 	for r := range listHeight {
 		line := ""
+		if pin != nil { // the pinned heading on the top row, the list below it
+			if r == 0 {
+				if bar {
+					line = withBar(m.stickyText(*pin), m.width, barCell(-1, top, size))
+				} else {
+					line = m.stickyText(*pin)
+				}
+				b.WriteString(line + "\n")
+				continue
+			}
+			r--
+		}
 		if i := start + r; i < len(rows) && rows[i].item < 0 {
 			line = rows[i].header
 		} else if i < len(rows) {
@@ -4033,7 +4078,7 @@ func (m model) sidebarView() string {
 	_, h, _ := m.listLayout()
 	sw, pw := m.sidebarWidth(), m.paneWidth()
 	rows := m.listRows()
-	start := m.listStart(rows, h)
+	start, pin, body := m.listView(rows, h)
 	var pane []string
 	if len(m.filtered) > 0 {
 		rows := m.chatRows()
@@ -4055,18 +4100,21 @@ func (m model) sidebarView() string {
 		}
 		return strings.Join(pane, "\n")
 	}
-	top, size, bar := scrollThumb(len(rows), start, h)
+	top, size, bar := scrollThumb(len(rows), start, body)
+	off := h - body // 1 while a fold's heading is pinned on the top row
 	lines := make([]string, h)
 	for r := range lines {
 		left := strings.Repeat(" ", sw)
-		if i := start + r; i < len(rows) && rows[i].item < 0 {
+		if i := start + r - off; r < off {
+			left = padRight(ansi.Truncate(m.stickyText(*pin), sw, "…"), sw)
+		} else if i < len(rows) && rows[i].item < 0 {
 			left = padRight(rows[i].header, sw)
 		} else if i < len(rows) {
 			left = m.sidebarRow(m.filtered[rows[i].item], rows[i].item == m.cursor, sw)[rows[i].part]
 		}
 		lines[r] = left + "\033[90m│\033[0m" // the divider doubles as the list's scrollbar
 		if bar {
-			lines[r] = left + barCell(r, top, size)
+			lines[r] = left + barCell(r-off, top, size)
 		}
 		if r < len(pane) {
 			lines[r] += ansi.Truncate(pane[r], pw, "…")
@@ -4090,6 +4138,7 @@ type listRow struct {
 	header     string
 	fold       string // a "N closed" line: its parent's session id, which a click opens or closes
 	foldName   string
+	line       closedLine // a "N closed" line's own: whether it heads or ends an open fold (stickyFold, revealFolds)
 }
 
 // listRows lays the list out in screen rows: a header before each section
@@ -4133,7 +4182,7 @@ func (m model) listRows() []listRow {
 			rows = append(rows, listRow{item: i, part: p})
 		}
 		for _, l := range it.linesAfter {
-			rows = append(rows, listRow{item: -1, header: m.closedLineText(l), fold: l.id, foldName: l.name})
+			rows = append(rows, listRow{item: -1, header: m.closedLineText(l), fold: l.id, foldName: l.name, line: l})
 		}
 	}
 	return rows
@@ -4166,6 +4215,9 @@ func (m model) listStart(rows []listRow, h int) int {
 		}
 	}
 	start = max(0, start, last-h+1)
+	if first >= 0 && !slices.ContainsFunc(rows[last+1:], func(r listRow) bool { return r.item >= 0 }) {
+		start = max(start, min(first, len(rows)-h)) // the last session: the lines after it (a fold's footer) too
+	}
 	for start < len(rows) && rows[start].part > 0 { // never open on half a session
 		start++
 	}
@@ -4175,7 +4227,7 @@ func (m model) listStart(rows []listRow, h int) int {
 // noteListTop keeps where the list is in view, for listStart next time.
 func (m *model) noteListTop() {
 	_, h, _ := m.listLayout()
-	m.listTop = m.listStart(m.listRows(), h)
+	m.listTop = m.listStart(m.listRows(), h) // listView pins a heading from here
 }
 
 // groupKey is the folder a session is grouped under: its working directory,

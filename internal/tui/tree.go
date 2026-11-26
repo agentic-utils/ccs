@@ -125,6 +125,7 @@ func (m *model) toggleFold(id, name string) {
 	}
 	if m.openClosed[id] {
 		delete(m.openClosed, id)
+		delete(m.foldShown, id) // opened again, it starts at its first page
 		m.note("closed sessions under " + name + " hidden; ^X C shows them")
 	} else {
 		m.openClosed[id] = true
@@ -156,20 +157,127 @@ func (m model) openFolds() []string {
 	return ids
 }
 
-// closedLineText draws a closed line, all dim and lined up with the rows'
-// connectors: the tree's guides, then └ ▸ N closed (hidden behind it) or
-// ├ ▾ N closed (shown below it), and the key that changes that, so it can
-// be found where the closed sessions are.
+// foldColour draws the closed lines: ccs's accent (the focused box's border
+// and the selection), so a fold's controls stand out from the grey rows.
+const foldColour = "38;5;62"
+
+// foldPage is how many closed sessions an open fold lists at first, and how
+// many more each time its footer scrolls into view (revealFolds).
+const foldPage = 20
+
+// foldShownCount is how many of a fold's n closed sessions are listed.
+func (m model) foldShownCount(id string, n int) int {
+	return min(max(m.foldShown[id], foldPage), n)
+}
+
+// revealFolds lists another foldPage of each open fold whose footer is on
+// screen with sessions still behind it, until none is: an open fold fills
+// the list as it scrolls, never all at once. The selection stays put.
+func (m *model) revealFolds() {
+	for range 100 { // each pass lists at least foldPage more, so this ends
+		_, h, _ := m.listLayout()
+		rows := m.listRows()
+		start, _, body := m.listView(rows, h)
+		grew := false
+		for r := start; r < min(len(rows), start+body); r++ {
+			if l := rows[r].line; rows[r].fold != "" && l.footer && l.shown < l.n {
+				if m.foldShown == nil {
+					m.foldShown = map[string]int{}
+				}
+				m.foldShown[l.id] = l.shown + foldPage
+				grew = true
+			}
+		}
+		if !grew {
+			return
+		}
+		m.sortList()
+		m.noteListTop()
+	}
+}
+
+// stickyFold is the open fold the list's view starts inside, its "▾ N
+// closed" heading above start and its footer at or below it: the innermost
+// when folds nest. ok is false when the view starts in none.
+func stickyFold(rows []listRow, start int) (l closedLine, ok bool) {
+	var open []closedLine
+	for _, row := range rows[:min(start, len(rows))] {
+		if row.fold == "" || !row.line.open {
+			continue
+		}
+		if !row.line.footer {
+			open = append(open, row.line)
+			continue
+		}
+		if i := slices.IndexFunc(open, func(o closedLine) bool { return o.id == row.line.id }); i >= 0 {
+			open = open[:i]
+		}
+	}
+	if len(open) == 0 {
+		return closedLine{}, false
+	}
+	return open[len(open)-1], true
+}
+
+// listView is the list's view of h rows: the first row of rows in view, and,
+// when that falls inside an open fold whose heading has scrolled off, the
+// heading pinned on the view's top row, leaving body rows for the list.
+// Everything that draws the list or reads a click goes through it.
+//
+// The pin covers the view's top row, so the list below it starts one row
+// later and its bottom row stays where it was, unless the selection starts
+// on that top row, which then stays and the bottom row gives way. m.listTop
+// keeps listStart's own start, so pinning never moves the list on its own.
+func (m model) listView(rows []listRow, h int) (start int, pin *closedLine, body int) {
+	start = m.listStart(rows, h)
+	if _, ok := stickyFold(rows, start); !ok || h < 2 {
+		return start, nil, h
+	}
+	s := start + 1
+	if start < len(rows) && rows[start].item == m.cursor {
+		s = start
+	}
+	for s < len(rows) && rows[s].part > 0 { // never under half a session
+		s++
+	}
+	if l, ok := stickyFold(rows, s); ok {
+		return s, &l, h - 1
+	}
+	return start, nil, h
+}
+
+// closedLineText draws a closed line in foldColour, lined up with the rows'
+// connectors: the tree's guides, then └ ▸ N closed (hidden behind it),
+// ├ ▾ N closed (shown below it) or, ending an open fold, └ ▴ hide N closed,
+// and the key that changes that, so it can be found where the closed
+// sessions are.
 func (m model) closedLineText(l closedLine) string {
+	conn, text := "└", fmt.Sprintf("▸ %d closed · ^X C", l.n)
+	switch {
+	case l.footer:
+		text = fmt.Sprintf("▴ hide %d closed · ^X C", l.n)
+		if l.shown < l.n {
+			text += fmt.Sprintf(" · %d of %d listed, more as you scroll", l.shown, l.n)
+		}
+	case l.open:
+		conn, text = "├", fmt.Sprintf("▾ %d closed · ^X C", l.n)
+	}
+	return m.foldLine(l.guides + conn + " " + text)
+}
+
+// stickyText is an open fold's heading pinned at the top of the list while
+// its own line is scrolled off: at its level, saying how to hide it.
+func (m model) stickyText(l closedLine) string {
+	return m.foldLine(fmt.Sprintf("%s├ ▾ %d closed · ^X C hide", l.guides, l.n))
+}
+
+// foldLine indents a closed line's text to the rows' connectors and colours it.
+func (m model) foldLine(text string) string {
 	lead := " "
 	if m.grouped {
 		lead = "   "
 	}
-	conn, mark := "└", "▸"
-	if l.open {
-		conn, mark = "├", "▾"
-	}
-	return fmt.Sprintf("%s%s\033[90m%s%s %s %d closed · ^X C\033[0m", lead, strings.Repeat(" ", colMarks-2), l.guides, conn, mark, l.n)
+	return lead + strings.Repeat(" ", colMarks-2) + "\033[" + foldColour + "m" + text + "\033[0m"
 }
 
 // inTree: the session is in the orchestrator section, drawn as a tree.

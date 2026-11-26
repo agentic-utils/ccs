@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -243,8 +244,8 @@ func TestClosedSessionsBehindALine(t *testing.T) {
 	if depth["fresh"] != depth["worker"] {
 		t.Errorf("closed sessions sit at their live siblings' level: %v", depth)
 	}
-	if v := view(); !strings.Contains(v, " ├ ▾ 1 closed · ^X C") || !strings.Contains(v, " └ ✻ fresh") || !strings.Contains(v, "│   └ ▸ 1 closed") {
-		t.Errorf("shown, a ▾ line still names ^X C, above them at their level; sub's fold stays closed:\n%s", v)
+	if v := view(); !strings.Contains(v, " ├ ▾ 1 closed · ^X C") || !strings.Contains(v, " ├ ✻ fresh") || !strings.Contains(v, " └ ▴ hide 1 closed · ^X C") || !strings.Contains(v, "│   └ ▸ 1 closed") {
+		t.Errorf("shown, a ▾ line still names ^X C, above them at their level, a ▴ footer ends them; sub's fold stays closed:\n%s", v)
 	}
 	if !slices.Equal(loadSettings().OpenClosed, []string{"hub-id"}) {
 		t.Errorf("the open fold is saved: %v", loadSettings().OpenClosed)
@@ -606,5 +607,198 @@ func TestEscInAPopupLeavesTheSelection(t *testing.T) {
 	m, _ = key(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.helpOpen || selected(m) != "c-id" {
 		t.Errorf("Esc closes help and leaves the child selected: open %v, %s", m.helpOpen, selected(m))
+	}
+}
+
+// bigFoldModel is an orchestrator, boss, with one running child and 50
+// closed ones, the first of which, nest, has 30 closed children of its own:
+// enough that an open fold runs off the screen, with one fold inside another.
+func bigFoldModel(t *testing.T) model {
+	t.Helper()
+	os.Remove(sessions.ParentsPath())
+	t.Cleanup(func() { os.Remove(sessions.ParentsPath()) })
+	now := time.Now().UTC()
+	conv := func(id string, ago time.Duration) transcript.Conversation {
+		return transcript.Conversation{SessionID: id + "-id", Title: id, LastTimestamp: now.Add(-ago).Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}}
+	}
+	convs := []transcript.Conversation{conv("boss", time.Minute), conv("busy", time.Minute), conv("nest", 2*time.Hour)}
+	recs := map[string]string{"busy": "boss", "nest": "boss"}
+	for i := range 49 {
+		name := fmt.Sprintf("old-%02d", i)
+		convs = append(convs, conv(name, time.Hour+time.Duration(i)*time.Minute))
+		recs[name] = "boss"
+	}
+	for i := range 30 {
+		name := fmt.Sprintf("inner-%02d", i)
+		convs = append(convs, conv(name, 3*time.Hour+time.Duration(i)*time.Minute))
+		recs[name] = "nest"
+	}
+	if err := sessions.WithParents(func(f *sessions.ParentsFile) bool {
+		for child, parent := range recs {
+			f.Parents[child] = sessions.ParentRec{Child: child, Parent: parent}
+		}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 110, 40
+	m.marks = &sessionMarks{Since: now.Add(-30 * time.Minute), Seen: map[string]time.Time{}}
+	m.live = map[string]bool{"boss-id": true, "busy-id": true}
+	m.chatStatus = map[string]sessions.SessionStat{"boss-id": {Status: "idle"}, "busy-id": {Status: "idle"}}
+	m.launchLoaded = false
+	m.refilter()
+	return m
+}
+
+func countPrefix(m model, prefix string) int {
+	n := 0
+	for _, it := range m.filtered {
+		if strings.HasPrefix(it.conv.Title, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// foldRow is the row of a fold's heading (or with footer, its footer).
+func foldRow(rows []listRow, id string, footer bool) int {
+	return slices.IndexFunc(rows, func(r listRow) bool { return r.fold == id && r.line.open && r.line.footer == footer })
+}
+
+// An open fold lists foldPage closed sessions, ends in a "▴ hide N closed"
+// footer, and lists more each time the footer scrolls into view.
+func TestOpenFoldListsMoreAsItScrolls(t *testing.T) {
+	m := bigFoldModel(t)
+	if n := countPrefix(m, "old-"); n != 0 {
+		t.Fatalf("the fold starts closed: %d listed", n)
+	}
+	selectTitle(&m, "boss")
+	m, _ = chord(m, "c")
+	if n := countPrefix(m, "old-") + countPrefix(m, "nest"); n != foldPage {
+		t.Errorf("opening lists one page: %d", n)
+	}
+	v := strip2(m.View())
+	if !strings.Contains(v, "├ ▾ 50 closed · ^X C") {
+		t.Errorf("the heading counts all 50:\n%s", v)
+	}
+	rows := m.listRows()
+	f := foldRow(rows, "boss-id", true)
+	if f < 0 || !strings.Contains(strip2(rows[f].header), "└ ▴ hide 50 closed · ^X C · 20 of 50 listed, more as you scroll") {
+		t.Fatalf("a footer ends the fold and says more are behind it: %v", f)
+	}
+	for range 200 { // down to the end of the list
+		m, _ = key(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if n := countPrefix(m, "old-") + countPrefix(m, "nest"); n != 50 {
+		t.Errorf("scrolling to the footer lists the rest: %d", n)
+	}
+	rows = m.listRows()
+	if f := foldRow(rows, "boss-id", true); f < 0 || strings.Contains(rows[f].header, "listed") || !strings.Contains(strip2(rows[f].header), "▴ hide 50 closed · ^X C") {
+		t.Errorf("all listed, the footer just hides them")
+	}
+	selectTitle(&m, "old-05")
+	m, _ = chord(m, "c") // closed and opened again: back to the first page
+	selectTitle(&m, "boss")
+	m, _ = chord(m, "c")
+	if n := countPrefix(m, "old-") + countPrefix(m, "nest"); n != foldPage {
+		t.Errorf("opened again, one page: %d", n)
+	}
+}
+
+// stickyFold pins a fold's heading only while the view starts inside the
+// fold with the heading above it: not on the heading, not past the footer;
+// the innermost of two nested folds.
+func TestStickyFoldBoundaries(t *testing.T) {
+	m := bigFoldModel(t)
+	m.openClosed = map[string]bool{"boss-id": true, "nest-id": true}
+	m.foldShown = map[string]int{"boss-id": 50, "nest-id": 30}
+	m.refilter()
+	rows := m.listRows()
+	h, f := foldRow(rows, "boss-id", false), foldRow(rows, "boss-id", true)
+	ih, iff := foldRow(rows, "nest-id", false), foldRow(rows, "nest-id", true)
+	if h < 0 || f < 0 || ih < 0 || iff < 0 || !(h < ih && ih < iff && iff < f) {
+		t.Fatalf("nest's fold sits inside boss's: %d %d %d %d", h, ih, iff, f)
+	}
+	at := func(start int) string {
+		l, ok := stickyFold(rows, start)
+		if !ok {
+			return ""
+		}
+		return l.id
+	}
+	for _, c := range []struct {
+		start int
+		want  string
+	}{
+		{h, ""}, {h + 1, "boss-id"}, {ih, "boss-id"}, {ih + 1, "nest-id"}, {iff, "nest-id"},
+		{iff + 1, "boss-id"}, {f, "boss-id"}, {f + 1, ""},
+	} {
+		if got := at(c.start); got != c.want {
+			t.Errorf("view starting at %d (heading %d, inner %d-%d, footer %d): pinned %q, want %q", c.start, h, ih, iff, f, got, c.want)
+		}
+	}
+}
+
+// Scrolled into an open fold, its heading is pinned on the list's top row in
+// both layouts, the rows below it are where a click lands, and a click on
+// the pinned heading or the footer closes the fold.
+func TestPinnedFoldHeadingAndClicks(t *testing.T) {
+	for _, table := range []bool{false, true} {
+		open := func() model { // a fresh model each time: a click closes the fold in the maps it shares
+			m := bigFoldModel(t)
+			m.table = table
+			m.openClosed = map[string]bool{"boss-id": true}
+			m.foldShown = map[string]int{"boss-id": 50}
+			m.refilter()
+			return m
+		}
+		m := open()
+		selectTitle(&m, "old-30")
+		m.noteListTop()
+		listTop, listHeight, _ := m.listLayout()
+		rows := m.listRows()
+		start, pin, body := m.listView(rows, listHeight)
+		if pin == nil || pin.id != "boss-id" || body != listHeight-1 || start <= foldRow(rows, "boss-id", false) {
+			t.Fatalf("table %v: boss's heading is pinned (start %d): %v", table, start, pin)
+		}
+		lines := strings.Split(strip2(m.View()), "\n")
+		if !strings.Contains(lines[listTop], "├ ▾ 50 closed · ^X C hide") {
+			t.Errorf("table %v: the top list row is the pinned heading: %q", table, lines[listTop])
+		}
+		if rows[start].item >= 0 && !strings.Contains(lines[listTop+1], m.filtered[rows[start].item].conv.Title) {
+			t.Errorf("table %v: the row under the pin is the view's first: %q", table, lines[listTop+1])
+		}
+		// a click on the row under the pin selects what's drawn there
+		r := start
+		for rows[r].item < 0 {
+			r++
+		}
+		clicked := m.handleMouse(tea.MouseMsg{X: 4, Y: listTop + 1 + r - start, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		if clicked.cursor != rows[r].item {
+			t.Errorf("table %v: a click under the pin selects that row: %d, want %d", table, clicked.cursor, rows[r].item)
+		}
+		closed := m.handleMouse(tea.MouseMsg{X: 4, Y: listTop, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		if countPrefix(closed, "old-") != 0 || closed.filtered[closed.cursor].conv.Title != "boss" {
+			t.Errorf("table %v: a click on the pin closes the fold, the selection on its owner", table)
+		}
+
+		m = open()
+		selectTitle(&m, "nest") // the last session: the footer on screen
+		m.noteListTop()
+		rows = m.listRows()
+		start, pin, _ = m.listView(rows, listHeight)
+		off := 0
+		if pin != nil {
+			off = 1
+		}
+		f := foldRow(rows, "boss-id", true)
+		if f < start || f >= start+listHeight-off {
+			t.Fatalf("table %v: the footer is in view: %d from %d", table, f, start)
+		}
+		closed = m.handleMouse(tea.MouseMsg{X: 4, Y: listTop + off + f - start, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		if countPrefix(closed, "old-") != 0 {
+			t.Errorf("table %v: a click on the footer closes the fold", table)
+		}
 	}
 }

@@ -802,3 +802,172 @@ func TestPinnedFoldHeadingAndClicks(t *testing.T) {
 		}
 	}
 }
+
+// topFoldModel turns the list's own fold on and lists, all made up:
+//
+//	boss (running) ─ kid (closed, behind boss's own fold)
+//	pin  (pinned, closed)
+//	now  (running), cool (stopped 10 minutes ago)
+//	old-claude, old-agy, older-agy (closed for days: Claude and agy)
+//
+// plus extra closed sessions named extra-NN, oldest last.
+func topFoldModel(t *testing.T, extra int) model {
+	t.Helper()
+	foldsTop = true
+	t.Cleanup(func() { foldsTop = false })
+	os.Remove(sessions.ParentsPath())
+	t.Cleanup(func() { os.Remove(sessions.ParentsPath()) })
+	if err := sessions.WithParents(func(f *sessions.ParentsFile) bool {
+		f.Parents["kid"] = sessions.ParentRec{Child: "kid", Parent: "boss"}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	conv := func(id string, ago time.Duration, kind string) transcript.Conversation {
+		return transcript.Conversation{SessionID: id + "-id", Title: id, Kind: kind, LastTimestamp: now.Add(-ago).Format(time.RFC3339), Messages: []transcript.Message{{Role: "user", Text: "x"}}}
+	}
+	day := 24 * time.Hour
+	convs := []transcript.Conversation{
+		conv("boss", time.Minute, ""), conv("kid", 2*day, ""), conv("pin", 5*day, ""),
+		conv("now", time.Minute, ""), conv("cool", 10*time.Minute, ""),
+		conv("old-claude", day, ""), conv("old-agy", 3*day, transcript.KindAgy), conv("older-agy", 4*day, transcript.KindAgy),
+	}
+	for i := range extra {
+		convs = append(convs, conv(fmt.Sprintf("extra-%02d", i), 5*day+time.Duration(i)*time.Minute, ""))
+	}
+	m := initialModel(buildItems(convs), "", nil)
+	m.width, m.height = 110, 40
+	m.marks = &sessionMarks{Since: now.Add(-30 * time.Minute), Seen: map[string]time.Time{}, Pinned: []string{"pin-id"}}
+	m.live = map[string]bool{"boss-id": true, "now-id": true}
+	m.chatStatus = map[string]sessions.SessionStat{"boss-id": {Status: "idle"}, "now-id": {Status: "idle"}}
+	m.launchLoaded = false
+	m.refilter()
+	return m
+}
+
+// Closed top-level sessions with no parent, agy ones too, wait behind one
+// "▸ N closed" line at the end of the list, closed by default; running,
+// just-stopped and pinned sessions stay, and an orchestrator's closed child
+// stays behind its parent's own fold.
+func TestClosedTopLevelSessionsFold(t *testing.T) {
+	m := topFoldModel(t, 0)
+	got := shownTitles(m)
+	for _, title := range []string{"boss", "pin", "now", "cool"} {
+		if !got[title] {
+			t.Errorf("%s stays listed: %v", title, got)
+		}
+	}
+	for _, title := range []string{"old-claude", "old-agy", "older-agy", "kid"} {
+		if got[title] {
+			t.Errorf("%s is folded away: %v", title, got)
+		}
+	}
+	v := strip2(m.View())
+	if !strings.Contains(v, "▸ 3 closed · ^X C") {
+		t.Errorf("the list's own fold counts the three:\n%s", v)
+	}
+	if !strings.Contains(v, "└ ▸ 1 closed · ^X C") {
+		t.Errorf("boss's own fold is unchanged:\n%s", v)
+	}
+	rows := m.listRows()
+	top := slices.IndexFunc(rows, func(r listRow) bool { return r.fold == topFoldID })
+	if top < 0 || top != len(rows)-1 {
+		t.Fatalf("the list's own line ends the list: row %d of %d", top, len(rows))
+	}
+	if strings.Contains(strip2(rows[top].header), "└") {
+		t.Errorf("no tree connector at the top level: %q", strip2(rows[top].header))
+	}
+	last := rows[top-2] // the line follows the rest section's last session
+	if last.item < 0 || m.filtered[last.item].conv.Title != "cool" {
+		t.Errorf("the line sits after the rest's open sessions")
+	}
+
+	// ^X C from a rest row opens it: heading, the closed ones after the
+	// open ones, newest first, then a footer.
+	selectTitle(&m, "now")
+	m, _ = chord(m, "c")
+	if got := strings.Join(order(m)[len(order(m))-4:], ","); got != "cool,old-claude,old-agy,older-agy" {
+		t.Errorf("opened, the closed ones follow the open ones: %s", got)
+	}
+	v = strip2(m.View())
+	if !strings.Contains(v, "▾ 3 closed · ^X C") || !strings.Contains(v, "▴ hide 3 closed · ^X C") {
+		t.Errorf("heading and footer:\n%s", v)
+	}
+	if m.filtered[m.cursor].conv.Title != "now" {
+		t.Errorf("the selection stays put")
+	}
+	if id, _, ok := m.foldOwner(m.cursor); !ok || id != topFoldID {
+		t.Errorf("^X C from a rest row is the list's own fold: %q %v", id, ok)
+	}
+	selectTitle(&m, "old-agy")
+	m, _ = chord(m, "c") // closed from inside: the selection lands nearby
+	if shownTitles(m)["old-agy"] || !strings.Contains(strip2(m.View()), "▸ 3 closed") {
+		t.Errorf("^X C from a closed row hides them again")
+	}
+
+	// A search shows every match, folded or not.
+	m.textInput.SetValue("agy")
+	m.updateFilter()
+	if got := shownTitles(m); !got["old-agy"] || !got["older-agy"] {
+		t.Errorf("a search shows the folded sessions: %v", got)
+	}
+	if m.hasTopFold() {
+		t.Errorf("a search draws no fold line")
+	}
+}
+
+// With nothing open in the rest section, the line still ends the list,
+// parted from the pins by a blank row, and ^X C from a pinned row opens it.
+func TestTopFoldWithNoOpenRestSession(t *testing.T) {
+	m := topFoldModel(t, 0)
+	m.live = map[string]bool{"boss-id": true}
+	ageItem(&m, "cool-id", 2*time.Hour)
+	ageItem(&m, "now-id", 2*time.Hour)
+	m.refilter()
+	rows := m.listRows()
+	n := len(rows)
+	if rows[n-1].fold != topFoldID || rows[n-2].item >= 0 || rows[n-2].header != "" {
+		t.Fatalf("a blank row then the line: %+v", rows[n-2:])
+	}
+	if !strings.Contains(strip2(rows[n-1].header), "▸ 5 closed · ^X C") {
+		t.Errorf("all five rest sessions are behind it: %q", strip2(rows[n-1].header))
+	}
+	selectTitle(&m, "pin")
+	m, _ = chord(m, "c")
+	if !shownTitles(m)["now"] {
+		t.Errorf("^X C from the pins opens the list's own fold when the rest is all behind it")
+	}
+	rows = m.listRows()
+	h := foldRow(rows, topFoldID, false)
+	if h < 1 || rows[h-1].header != "" || rows[h-1].item >= 0 {
+		t.Errorf("opened, its heading leads the rest after the blank row: %d", h)
+	}
+}
+
+// An open top fold lists foldPage sessions at a time, as a parent's does,
+// and Tab or a link to a session behind it opens it.
+func TestTopFoldPagesAndOpensForASelection(t *testing.T) {
+	m := topFoldModel(t, 40)
+	m.openClosed = map[string]bool{topFoldID: true}
+	m.refilter()
+	if n := countPrefix(m, "old") + countPrefix(m, "extra-"); n != foldPage {
+		t.Errorf("one page listed: %d", n)
+	}
+	rows := m.listRows()
+	f := foldRow(rows, topFoldID, true)
+	if f < 0 || !strings.Contains(strip2(rows[f].header), "▴ hide 43 closed · ^X C · 20 of 43 listed, more as you scroll") {
+		t.Fatalf("the footer says how many are behind it")
+	}
+
+	m = topFoldModel(t, 40)
+	m.selectSession("extra-39-id")
+	if m.filtered[m.cursor].conv.Title != "extra-39" || !m.openClosed[topFoldID] {
+		t.Errorf("selecting a folded session opens its fold far enough to list it")
+	}
+	m = topFoldModel(t, 0)
+	m.selectSession("kid-id")
+	if m.filtered[m.cursor].conv.Title != "kid" || !m.openClosed["boss-id"] {
+		t.Errorf("selecting a parent's closed session opens the parent's fold")
+	}
+}

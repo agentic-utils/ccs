@@ -78,7 +78,28 @@ func (m model) foldOwner(i int) (id, name string, ok bool) {
 		}
 		i = m.parentRow(i)
 	}
+	if i >= 0 && i < len(m.filtered) && m.hasTopFold() {
+		// No parent's fold above it: the list's own, from any row of the rest
+		// section, or from anywhere once every one of its rows is behind it.
+		if m.filtered[i].familyState == awake || !slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.familyState == awake }) {
+			return topFoldID, "", true
+		}
+	}
 	return "", "", false
+}
+
+// hasTopFold: the list has its own "N closed" line (foldTop).
+func (m model) hasTopFold() bool {
+	return m.topFoldEnd != nil || slices.ContainsFunc(m.filtered, func(it listItem) bool { return it.lineBefore != nil })
+}
+
+// foldWhere says where a fold's closed sessions are, for notes and help:
+// under their parent, or, for the list's own fold (no name), at its end.
+func foldWhere(name string) string {
+	if name == "" {
+		return " at the end of the list"
+	}
+	return " under " + name
 }
 
 // parentRow is the row of the session the row at i is nested under: the
@@ -126,10 +147,10 @@ func (m *model) toggleFold(id, name string) {
 	if m.openClosed[id] {
 		delete(m.openClosed, id)
 		delete(m.foldShown, id) // opened again, it starts at its first page
-		m.note("closed sessions under " + name + " hidden; ^X C shows them")
+		m.note("closed sessions" + foldWhere(name) + " hidden; ^X C shows them")
 	} else {
 		m.openClosed[id] = true
-		m.note("closed sessions under " + name + " shown; ^X C hides them")
+		m.note("closed sessions" + foldWhere(name) + " shown; ^X C hides them")
 	}
 	saveSettings(m.settings())
 	sel := ""
@@ -262,12 +283,18 @@ func (m model) closedLineText(l closedLine) string {
 	case l.open:
 		conn, text = "├", fmt.Sprintf("▾ %d closed · ^X C", l.n)
 	}
+	if l.top { // the list's own: no tree, so its ▸ sits where the rows' glyphs do
+		return m.foldLine(text)
+	}
 	return m.foldLine(l.guides + conn + " " + text)
 }
 
 // stickyText is an open fold's heading pinned at the top of the list while
 // its own line is scrolled off: at its level, saying how to hide it.
 func (m model) stickyText(l closedLine) string {
+	if l.top {
+		return m.foldLine(fmt.Sprintf("▾ %d closed · ^X C hide", l.n))
+	}
 	return m.foldLine(fmt.Sprintf("%s├ ▾ %d closed · ^X C hide", l.guides, l.n))
 }
 
@@ -346,4 +373,125 @@ func paintTitle(title, colour string) string {
 		return title
 	}
 	return "\033[" + colour + "m" + title + "\033[0m"
+}
+
+// topFoldID is the list's own fold: the closed top-level sessions of the
+// rest section (no parent, not pinned, not in an orchestrator's tree),
+// behind one "▸ N closed" line at the end of it. Kept in m.openClosed with
+// the parents' folds, so it starts closed and ^X C or a click opens it.
+const topFoldID = "~top"
+
+// foldsTop turns the list's own fold on; tests whose made-up sessions are
+// old and not running turn it off (TestMain), and tree_test.go back on.
+var foldsTop = true
+
+// running: c counts as running for the closed folds: open in claude or
+// codex, a busy codex subagent or a running subagent row, or it stopped
+// within closedCooldown (still shown a while: justClosed).
+func (m model) running(c transcript.Conversation) bool {
+	return m.live[c.SessionID] || codexSubagentBusy(c) || m.subagentAliveRow(c) || justClosed(c)
+}
+
+// foldTop moves the rest section's closed families (a top-level session
+// and its tree, none of it running) after its open ones, behind the list's
+// own fold, as nestFamilies does for a parent's closed sessions: closed, a
+// "▸ N closed" line ends the section and they go to m.foldedAway; open, a
+// "▾ N closed" heading leads them and a footer ends them, foldPage families
+// at a time. Pinned sessions, orchestrators' trees and put-away sections
+// are left alone, and a search folds nothing.
+func (m *model) foldTop() {
+	m.topFoldEnd = nil
+	for i := range m.filtered {
+		m.filtered[i].lineBefore, m.filtered[i].inTopFold = nil, false
+	}
+	if m.searching() || !foldsTop {
+		return
+	}
+	start := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.familyState == awake })
+	if start < 0 {
+		return
+	}
+	end := start
+	for end < len(m.filtered) && m.filtered[end].familyState == awake {
+		end++
+	}
+	var open, shut [][2]int // families, as [from, to) in m.filtered
+	for i := start; i < end; {
+		j := i + 1
+		for j < end && m.filtered[j].depth > 0 {
+			j++
+		}
+		closed := !slices.ContainsFunc(m.filtered[i:j], func(it listItem) bool { return m.running(it.conv) })
+		if closed {
+			shut = append(shut, [2]int{i, j})
+		} else {
+			open = append(open, [2]int{i, j})
+		}
+		i = j
+	}
+	if len(shut) == 0 {
+		return
+	}
+	showing := m.showingClosed(topFoldID)
+	shown := 0
+	if showing {
+		shown = m.foldShownCount(topFoldID, len(shut))
+	}
+	rest := make([]listItem, 0, end-start)
+	for _, f := range open {
+		rest = append(rest, m.filtered[f[0]:f[1]]...)
+	}
+	opened := len(rest)
+	for k, f := range shut {
+		for _, it := range m.filtered[f[0]:f[1]] {
+			if k >= shown {
+				m.foldedAway = append(m.foldedAway, it.conv.SessionID)
+				m.foldOf[it.conv.SessionID] = topFoldID
+				continue
+			}
+			it.inTopFold = true
+			rest = append(rest, it)
+		}
+	}
+	line := closedLine{n: len(shut), open: showing, id: topFoldID, top: true}
+	after := m.filtered[end:]
+	m.filtered = slices.Concat(m.filtered[:start], rest, after)
+	switch at := start + opened; {
+	case showing:
+		m.filtered[at].lineBefore = &line
+		last := start + len(rest) - 1
+		footer := line
+		footer.footer, footer.shown = true, shown
+		m.filtered[last].linesAfter = append(m.filtered[last].linesAfter, footer)
+	case at < len(m.filtered):
+		m.filtered[at].lineBefore = &line
+	default:
+		m.topFoldEnd = &line
+	}
+}
+
+// openFoldsOf opens the folds hiding session id, outermost first, each far
+// enough to list it, until find sees it (or it's in none): Tab or a link to
+// a closed session shows it rather than saying it isn't listed.
+func (m *model) openFoldsOf(id string, find func() int) {
+	changed := false
+	for range 8 { // a fold per level: trees are at most a few deep
+		f, ok := m.foldOf[id]
+		if find() >= 0 || !ok {
+			break
+		}
+		if m.openClosed == nil {
+			m.openClosed = map[string]bool{}
+		}
+		if m.foldShown == nil {
+			m.foldShown = map[string]int{}
+		}
+		m.openClosed[f] = true
+		m.foldShown[f] = max(m.foldShown[f], len(m.items)) // every page, so it's listed wherever it falls
+		changed = true
+		m.sortList()
+	}
+	if changed {
+		saveSettings(m.settings())
+	}
 }

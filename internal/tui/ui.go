@@ -48,6 +48,8 @@ type listItem struct {
 	closedKids  int    // its launched sessions that have closed (none of their tree running), behind a "N closed" line
 	hideClosed  bool   // closed, behind its parent's "▸ N closed" line until ^X C opens that fold
 	linesAfter  []closedLine
+	lineBefore  *closedLine // the list's own "N closed" line (foldTop), drawn before this row: closed, before its section's header; open, after it
+	inTopFold   bool        // listed inside the list's own open closed fold: no ^T G folder header of its own
 }
 
 // closedLine is a parent's "▸ N closed" line in an orchestrator's tree,
@@ -63,6 +65,7 @@ type closedLine struct {
 	name   string // the parent, as foldName names it
 	footer bool   // an open fold's "▴ hide N closed" line, after its last row shown
 	shown  int    // a footer's: how many of the n closed sessions are listed so far (foldPage at a time)
+	top    bool   // the list's own fold (topFoldID): top-level sessions, no tree connector
 }
 
 // selectedStyle highlights the cursor row. The rest of the UI is rendered with
@@ -300,6 +303,8 @@ type model struct {
 	launchRes    map[string]string
 	launchResN   int
 	foldedAway   []string
+	foldOf       map[string]string // each folded-away session's fold (its parent's id, or topFoldID), outermost first: selectSession opens it
+	topFoldEnd   *closedLine       // the list's own closed "N closed" line when no row follows it: drawn after the last row
 	// hideSidebar (^T L): the sidebar layout shows only the preview, full width (saved).
 	hideSidebar bool
 	// Each session's PRs (prs.go): what GitHub said, by address.
@@ -702,6 +707,9 @@ func (m *model) sortList() {
 		for _, a := range m.foldedAway {
 			away[a] = true
 		}
+		for _, it := range m.filtered { // a live tick can bring one back already
+			delete(away, it.conv.SessionID)
+		}
 		for _, it := range m.items {
 			if away[it.conv.SessionID] {
 				m.filtered = append(m.filtered, it)
@@ -744,6 +752,7 @@ func (m *model) sortList() {
 		}
 		return first[groupOf(a)] < first[groupOf(b)]
 	})
+	m.foldTop()
 	if i := slices.IndexFunc(m.filtered, func(it listItem) bool { return it.conv.SessionID == id }); i >= 0 {
 		m.cursor = i
 	}
@@ -795,6 +804,7 @@ func (m *model) step(dir int) bool {
 // its first member was in the sorted list: its newest-started session's place.
 func (m *model) nestFamilies() {
 	n := len(m.filtered)
+	m.foldOf = map[string]string{}
 	at := make(map[string]int, n)
 	for i, it := range m.filtered {
 		at[it.conv.SessionID] = i
@@ -834,7 +844,7 @@ func (m *model) nestFamilies() {
 		isAlive = func(i, d int) bool {
 			if alive[i] == 0 {
 				alive[i] = 2
-				if c := m.filtered[i].conv; m.live[c.SessionID] || codexSubagentBusy(c) || m.subagentAliveRow(c) || justClosed(c) {
+				if m.running(m.filtered[i].conv) {
 					alive[i] = 1
 				}
 				for _, k := range kids[i] {
@@ -903,7 +913,7 @@ func (m *model) nestFamilies() {
 			return
 		}
 		at := order[len(order)-1]
-		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, showing, it.conv.SessionID, foldName(it.conv), false, 0})
+		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, showing, it.conv.SessionID, foldName(it.conv), false, 0, false})
 		from := len(order)
 		if !showing {
 			for j, k := range shut {
@@ -911,6 +921,7 @@ func (m *model) nestFamilies() {
 			}
 			for _, k := range order[from:] {
 				m.filtered[k].hideClosed = true
+				m.foldOf[m.filtered[k].conv.SessionID] = it.conv.SessionID // an outer fold's walk writes after
 			}
 			return
 		}
@@ -926,10 +937,11 @@ func (m *model) nestFamilies() {
 			}
 		}
 		at = order[len(order)-1]
-		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, true, it.conv.SessionID, foldName(it.conv), true, shown})
+		m.filtered[at].linesAfter = append(m.filtered[at].linesAfter, closedLine{below, len(shut), depth, true, it.conv.SessionID, foldName(it.conv), true, shown, false})
 		if cut >= 0 {
 			for _, k := range order[cut:] {
 				m.filtered[k].hideClosed = true
+				m.foldOf[m.filtered[k].conv.SessionID] = it.conv.SessionID
 			}
 		}
 	}
@@ -3329,8 +3341,8 @@ func (m model) shortcuts() [][2]string {
 
 	group("^X then a key: this session")
 	if id, name, ok := m.foldOwner(m.cursor); sel && ok {
-		add(!m.showingClosed(id), "^X C", "show the closed sessions under "+name)
-		add(m.showingClosed(id), "^X C", "hide the closed sessions under "+name)
+		add(!m.showingClosed(id), "^X C", "show the closed sessions"+foldWhere(name))
+		add(m.showingClosed(id), "^X C", "hide the closed sessions"+foldWhere(name))
 	}
 	add(sel && m.marks != nil && !pinned, "^X P", "pin it to the top of the list")
 	add(pinned, "^X P", "unpin it")
@@ -4155,8 +4167,17 @@ func (m model) listRows() []listRow {
 		}
 	}
 	rows := make([]listRow, 0, len(m.filtered)*m.rowsPerItem()+2*len(sections)+len(counts))
+	topLine := func(l closedLine) listRow {
+		return listRow{item: -1, header: m.closedLineText(l), fold: l.id, foldName: l.name, line: l}
+	}
 	for i := range m.filtered {
 		it := &m.filtered[i]
+		if l := it.lineBefore; l != nil && !l.open { // closed: it ends the rest, before this row's section
+			if i > 0 && sectionOf(m.filtered[i-1].familyState) != awake {
+				rows = append(rows, listRow{item: -1}) // no rest row above it: parted as a section would be
+			}
+			rows = append(rows, topLine(*l))
+		}
 		if s := sectionOf(it.familyState); i == 0 || s != sectionOf(m.filtered[i-1].familyState) {
 			sec := pinnedSection
 			switch {
@@ -4175,15 +4196,24 @@ func (m model) listRows() []listRow {
 				rows = append(rows, listRow{item: -1, header: fmt.Sprintf("  \033[%sm%s\033[0m \033[90m%d\033[0m", sec.colour, sec.name, sections[s])})
 			}
 		}
-		if k := groupOf(it); m.grouped && it.familyState >= 0 && (i == 0 || k != groupOf(&m.filtered[i-1])) {
+		if k := groupOf(it); m.grouped && it.familyState >= 0 && !it.inTopFold && (i == 0 || k != groupOf(&m.filtered[i-1])) {
 			rows = append(rows, listRow{item: -1, header: fmt.Sprintf("    \033[1;37m%s\033[0m \033[90m%d\033[0m", projectName(groupKey(it.familyCwd)), counts[k])})
+		}
+		if l := it.lineBefore; l != nil && l.open { // open: it heads the closed rows, inside their section
+			rows = append(rows, topLine(*l))
 		}
 		for p := range m.rowsPerItem() {
 			rows = append(rows, listRow{item: i, part: p})
 		}
 		for _, l := range it.linesAfter {
-			rows = append(rows, listRow{item: -1, header: m.closedLineText(l), fold: l.id, foldName: l.name, line: l})
+			rows = append(rows, topLine(l))
 		}
+	}
+	if l := m.topFoldEnd; l != nil {
+		if n := len(m.filtered); n > 0 && sectionOf(m.filtered[n-1].familyState) != awake {
+			rows = append(rows, listRow{item: -1})
+		}
+		rows = append(rows, topLine(*l))
 	}
 	return rows
 }

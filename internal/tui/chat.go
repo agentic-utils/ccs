@@ -995,6 +995,7 @@ func (m *model) selectSession(id string) {
 		m.textInput.SetValue("")
 		m.updateFilter()
 	}
+	m.openFoldsOf(id, find)
 	if i := find(); i >= 0 {
 		m.cursor = i
 		m.previewScroll = 0

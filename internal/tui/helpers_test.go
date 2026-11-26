@@ -58,6 +58,7 @@ func TestMain(m *testing.M) {
 	statusDir, _ := os.MkdirTemp("", "ccs-test-statusline")
 	github.StatusLineDir = func() string { return statusDir } // never the real TMPDIR the status line reads
 	claimHold = func() {}                                     // a test never takes the real hold lock or sockets
+	foldsTop = false                                          // most tests' sessions are old and not running: tree_test.go turns the list's own fold on
 	pbcopy = func(string) error { return errors.New("tests never write the clipboard") }
 	osc52 = func(string) {}
 	// Not in iTerm unless a test says so: inITerm also reads these, and a
